@@ -1,0 +1,63 @@
+name: Build Unix release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to receive the platform archives
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-latest
+            platform: linux-x86_64
+            archive: rpi-packages-linux-x86_64.tar.gz
+          - name: macOS x86_64
+            runner: macos-13
+            platform: macos-x86_64
+            archive: rpi-packages-macos-x86_64.tar.gz
+          - name: macOS arm64
+            runner: macos-14
+            platform: macos-aarch64
+            archive: rpi-packages-macos-aarch64.tar.gz
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release libraries
+        run: cargo build --release --workspace
+
+      - name: Assemble archive
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="dist/rpi-packages-${{ matrix.platform }}"
+          mkdir -p "$stage"
+          find target/release -maxdepth 1 -type f \( -name '*.so' -o -name '*.dylib' \) -exec cp {} "$stage/" \;
+          test "$(find "$stage" -type f | wc -l)" -eq 16
+          chmod +x scripts/install.sh
+          cp catalog/packages.json README.md scripts/install.sh "$stage/"
+          archive="dist/${{ matrix.archive }}"
+          tar -C dist -czf "$archive" "$(basename "$stage")"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload archive to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.tag }}" "${{ steps.bundle.outputs.archive }}" --repo "${{ github.repository }}" --clobber

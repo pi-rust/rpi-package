@@ -59,7 +59,15 @@ powershell -ExecutionPolicy Bypass -File scripts/install-bundle.ps1 `
   -Archive .\rpi-packages-windows-x86_64.zip
 ```
 
-The same script accepts an HTTPS release URL. Developers can instead clone
+On Linux and macOS, extract the platform archive and run the Unix installer:
+
+```bash
+tar -xzf rpi-packages-linux-x86_64.tar.gz
+cd rpi-packages-linux-x86_64
+./install.sh
+```
+
+The PowerShell script accepts an HTTPS release URL. Developers can instead clone
 this repository and run `task install`; the package workspace uses the already
 published `rpi-plugin-sdk` only, so a sibling `pi-rust` checkout is not needed.
 The optional `task smoke` maintainer check exercises the host loader and does
