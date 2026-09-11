@@ -24,7 +24,7 @@ jobs:
             platform: linux-x86_64
             archive: rpi-packages-linux-x86_64.tar.gz
           - name: macOS x86_64
-            runner: macos-13
+            runner: macos-15-intel
             platform: macos-x86_64
             archive: rpi-packages-macos-x86_64.tar.gz
           - name: macOS arm64
