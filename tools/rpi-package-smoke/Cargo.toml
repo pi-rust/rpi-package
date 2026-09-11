@@ -1,0 +1,13 @@
+[package]
+name = "rpi-package-smoke"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rpi-extensions = { path = "../../../pi-rust/crates/rpi-extensions", version = "0.1.6" }
+rpi-agent = { path = "../../../pi-rust/crates/pi-agent", version = "0.1.6" }
+rpi-plugin-sdk = { path = "../../../pi-rust/crates/rpi-plugin-sdk", version = "0.1.6" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-util = { version = "0.7", features = ["rt"] }

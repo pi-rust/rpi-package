@@ -1,0 +1,19 @@
+[package]
+name = "rpi-permissions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Persistent permission policy tool for the rpi Rust agent"
+readme = "README.md"
+keywords = ["rpi", "permissions", "security", "plugin"]
+categories = ["command-line-utilities"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }

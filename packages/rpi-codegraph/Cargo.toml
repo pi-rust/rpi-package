@@ -1,0 +1,19 @@
+[package]
+name = "rpi-codegraph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bounded source file and import graph tool for the rpi Rust agent"
+readme = "README.md"
+keywords = ["rpi", "codegraph", "source", "plugin"]
+categories = ["development-tools"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "rpi-lens"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bounded local code diagnostics extension for the rpi Rust agent"
+readme = "README.md"
+keywords = ["rpi", "lint", "diagnostics", "plugin"]
+categories = ["development-tools"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }
+wait-timeout = { workspace = true }

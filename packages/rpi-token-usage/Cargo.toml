@@ -1,0 +1,19 @@
+[package]
+name = "rpi-token-usage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Token estimate tool and usage renderer for the rpi Rust agent"
+readme = "README.md"
+keywords = ["rpi", "tokens", "usage", "tui", "plugin"]
+categories = ["development-tools"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "rpi-todo"
+version = "0.1.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Persistent project todo tool for the rpi Rust agent"
+readme = "README.md"
+keywords = ["rpi", "todo", "agent", "plugin"]
+categories = ["development-tools"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }

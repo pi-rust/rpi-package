@@ -1,0 +1,19 @@
+[package]
+name = "rpi-subagents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bounded delegation envelope tool for rpi Rust agents"
+readme = "README.md"
+keywords = ["rpi", "subagents", "delegation", "plugin"]
+categories = ["development-tools"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }

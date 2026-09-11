@@ -1,0 +1,146 @@
+[
+  {
+    "name": "rpi-mcp-adapter",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "mcp_request",
+    "inspiredBy": "pi-mcp-adapter",
+    "sourceDownloadsPerMonth": 761442,
+    "install": "rpi install rpi-mcp-adapter"
+  },
+  {
+    "name": "rpi-web-access",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "web_fetch",
+    "inspiredBy": "pi-web-access",
+    "sourceDownloadsPerMonth": 414994,
+    "install": "rpi install rpi-web-access"
+  },
+  {
+    "name": "rpi-subagents",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "delegate_task",
+    "inspiredBy": "pi-subagents",
+    "sourceDownloadsPerMonth": 362483,
+    "install": "rpi install rpi-subagents"
+  },
+  {
+    "name": "rpi-background-tasks",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "background_task",
+    "inspiredBy": "pi-background-tasks",
+    "sourceDownloadsPerMonth": 107663,
+    "install": "rpi install rpi-background-tasks"
+  },
+  {
+    "name": "rpi-lens",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "code_lens",
+    "inspiredBy": "pi-lens",
+    "sourceDownloadsPerMonth": 65476,
+    "install": "rpi install rpi-lens"
+  },
+  {
+    "name": "rpi-todo",
+    "version": "0.1.1",
+    "type": "extension",
+    "tool": "todo",
+    "inspiredBy": "Pi todo extensions",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-todo"
+  },
+  {
+    "name": "rpi-codegraph",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "codegraph",
+    "inspiredBy": "code graph extensions",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-codegraph"
+  },
+  {
+    "name": "rpi-memory",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "memory",
+    "inspiredBy": "Pi memory extensions",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-memory"
+  },
+  {
+    "name": "rpi-token-usage",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "token_count + token-usage renderer",
+    "inspiredBy": "token usage extensions",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-token-usage"
+  },
+  {
+    "name": "rpi-ask-user",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "ask_user",
+    "inspiredBy": "@juicesharp/rpiv-ask-user-question",
+    "sourceDownloadsPerMonth": 151500,
+    "install": "rpi install rpi-ask-user"
+  },
+  {
+    "name": "rpi-permissions",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "permissions",
+    "inspiredBy": "@gotgenes/pi-permission-system",
+    "sourceDownloadsPerMonth": 38300,
+    "install": "rpi install rpi-permissions"
+  },
+  {
+    "name": "rpi-simplify",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "simplify",
+    "inspiredBy": "pi-simplify",
+    "sourceDownloadsPerMonth": 39900,
+    "install": "rpi install rpi-simplify"
+  },
+  {
+    "name": "rpi-search",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "search",
+    "inspiredBy": "@ff-labs/pi-fff",
+    "sourceDownloadsPerMonth": 36400,
+    "install": "rpi install rpi-search"
+  },
+  {
+    "name": "rpi-goal",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "goal",
+    "inspiredBy": "pi-goal-x",
+    "sourceDownloadsPerMonth": 57200,
+    "install": "rpi install rpi-goal"
+  },
+  {
+    "name": "rpi-websearch",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "websearch",
+    "inspiredBy": "web search extensions",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-websearch"
+  },
+  {
+    "name": "rpi-webfetch",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "webfetch",
+    "inspiredBy": "web access extensions",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-webfetch"
+  }
+]
