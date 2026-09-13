@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-ask-user"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -673,6 +673,25 @@ version = "0.1.0"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
+]
+
+[[package]]
+name = "rpi-extension-rpc"
+version = "0.1.0"
+dependencies = [
+ "rpi-plugin-sdk",
+ "serde_json",
+ "wait-timeout",
+]
+
+[[package]]
+name = "rpi-firecrawl"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rpi-plugin-sdk",
+ "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -712,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-permissions"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -729,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-search"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -753,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-todo"
-version = "0.1.1"
+version = "0.1.4"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -779,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-webfetch"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reqwest",
  "rpi-plugin-sdk",
@@ -789,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-websearch"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reqwest",
  "rpi-plugin-sdk",

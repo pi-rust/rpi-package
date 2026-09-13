@@ -48,6 +48,7 @@ fn search(p: &Value) -> Result<String, String> {
         .json()
         .map_err(|e| format!("invalid search response: {e}"))?;
     let mut hits = Vec::new();
+    let mut failed = Vec::new();
     if let Some(text) = value
         .get("AbstractText")
         .and_then(Value::as_str)
@@ -76,7 +77,50 @@ fn search(p: &Value) -> Result<String, String> {
         &mut hits,
         limit,
     );
-    Ok(json!({"query":query,"count":hits.len(),"results":hits}).to_string())
+    // DDG's Instant Answer endpoint is intentionally narrow. Wikipedia gives
+    // useful coverage for ordinary research queries when DDG returns no hits.
+    if hits.len() < limit {
+        let wiki = Url::parse_with_params(
+            "https://en.wikipedia.org/w/api.php",
+            &[
+                ("action", "query"),
+                ("list", "search"),
+                ("srsearch", query),
+                ("srlimit", "8"),
+                ("format", "json"),
+                ("origin", "*"),
+            ],
+        );
+        let wiki_response = wiki.ok().and_then(|u| client.get(u).send().ok());
+        match wiki_response {
+            Some(response) if response.status().is_success() => {
+                if let Ok(wiki_value) = response.json::<Value>() {
+                    if let Some(items) = wiki_value
+                        .get("query")
+                        .and_then(|q| q.get("search"))
+                        .and_then(Value::as_array)
+                    {
+                        for item in items {
+                            if hits.len() >= limit {
+                                break;
+                            }
+                            let title = item.get("title").and_then(Value::as_str).unwrap_or(query);
+                            let pageid = item.get("pageid").and_then(Value::as_u64).unwrap_or(0);
+                            let snippet = item
+                                .get("snippet")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .replace("<span class=\"searchmatch\">", "")
+                                .replace("</span>", "");
+                            hits.push(json!({"title":title,"url":format!("https://en.wikipedia.org/?curid={pageid}"),"snippet":snippet,"source":"wikipedia"}));
+                        }
+                    }
+                }
+            }
+            _ => failed.push("wikipedia"),
+        }
+    }
+    Ok(json!({"query":query,"count":hits.len(),"results":hits,"failed":failed}).to_string())
 }
 extern "C" fn execute(
     _: StbStringRef,
@@ -106,9 +150,31 @@ extern "C" fn poll(h: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void) -> S
     }
     d.done = true;
     match search(&d.params) {
-        Ok(t) => StepResult::done(StbString::from_string(
-            json!({"content":[{"type":"text","text":t}]}).to_string(),
-        )),
+        Ok(t) => {
+            let value: Value = serde_json::from_str(&t).unwrap_or_else(|_| json!({"results":[]}));
+            let query = value.get("query").and_then(Value::as_str).unwrap_or("");
+            let results = value
+                .get("results")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut text = format!(
+                "Found {} web reference(s) for \"{}\":\n",
+                results.len(),
+                query
+            );
+            for hit in &results {
+                text.push_str(&format!(
+                    "\n- {}\n  {}\n  {}\n",
+                    hit.get("title").and_then(Value::as_str).unwrap_or(""),
+                    hit.get("url").and_then(Value::as_str).unwrap_or(""),
+                    hit.get("snippet").and_then(Value::as_str).unwrap_or("")
+                ));
+            }
+            StepResult::done(StbString::from_string(
+                json!({"content":[{"type":"text","text":text}],"details":value}).to_string(),
+            ))
+        }
         Err(e) => StepResult::err(StbString::from_string(e)),
     }
 }

@@ -5,7 +5,7 @@ use rpi_plugin_sdk::{
 use serde_json::{json, Value};
 use std::ffi::c_void;
 use std::io::Read;
-use std::net::IpAddr;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use url::Url;
@@ -27,27 +27,41 @@ fn validate(input: &str) -> Result<Url, String> {
         return Err("local hosts are not allowed".into());
     }
     if let Ok(ip) = h.parse::<IpAddr>() {
-        let blocked = match ip {
-            IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_multicast()
-            }
-            IpAddr::V6(v6) => {
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_multicast()
-                    || v6.is_unique_local()
-                    || v6.is_unicast_link_local()
-            }
-        };
-        if blocked {
+        if blocked_ip(ip) {
             return Err("private or local IPs are not allowed".into());
+        }
+    } else {
+        // Fail closed for hostnames that resolve to loopback, RFC1918,
+        // link-local, multicast, or other non-public addresses. This catches
+        // the common DNS-based SSRF case that a literal-IP check misses.
+        let port = u.port_or_known_default().unwrap_or(443);
+        if let Ok(addrs) = (h, port).to_socket_addrs() {
+            if addrs.into_iter().any(|addr| blocked_ip(addr.ip())) {
+                return Err("hostname resolves to a private or local IP".into());
+            }
         }
     }
     Ok(u)
+}
+
+fn blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.octets()[0] == 0
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+        }
+    }
 }
 fn fetch(p: &Value) -> Result<String, String> {
     let url = validate(
@@ -58,7 +72,7 @@ fn fetch(p: &Value) -> Result<String, String> {
     let max = p
         .get("maxChars")
         .and_then(Value::as_u64)
-        .unwrap_or(12000)
+        .unwrap_or(20480)
         .clamp(256, 50000) as usize;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -163,7 +177,13 @@ extern "C" fn poll(h: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void) -> S
         Ok(t) => StepResult::done(StbString::from_string(
             json!({"content":[{"type":"text","text":t}]}).to_string(),
         )),
-        Err(e) => StepResult::err(StbString::from_string(e)),
+        Err(e) => StepResult::done(StbString::from_string(
+            json!({
+                "content":[{"type":"text","text":format!("webfetch failed: {e}. Proceed with another reference or retry.")}],
+                "details":{"error":true,"message":e}
+            })
+            .to_string(),
+        )),
     }
 }
 extern "C" fn cancel(h: StepHandle) {

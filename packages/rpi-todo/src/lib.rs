@@ -74,6 +74,59 @@ fn save(path: &PathBuf, items: &[Value]) -> Result<(), String> {
     fs::write(path, text).map_err(|e| format!("write todo store: {e}"))
 }
 
+fn next_id(items: &[Value]) -> u64 {
+    items
+        .iter()
+        .filter_map(|v| v.get("id").and_then(Value::as_u64))
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+fn display_list(items: &[Value]) -> String {
+    if items.is_empty() {
+        return "No todos".into();
+    }
+    let completed = items
+        .iter()
+        .filter(|item| item.get("done") == Some(&Value::Bool(true)))
+        .count();
+    let mut lines = vec![format!("{completed}/{} completed", items.len())];
+    for item in items {
+        let id = item.get("id").and_then(Value::as_u64).unwrap_or(0);
+        let text = item.get("text").and_then(Value::as_str).unwrap_or("");
+        let check = if item.get("done") == Some(&Value::Bool(true)) {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        lines.push(format!("{check} #{id} {text}"));
+    }
+    lines.join("\n")
+}
+
+fn result(
+    action: &str,
+    items: &[Value],
+    all_items: &[Value],
+    content: impl Into<String>,
+) -> String {
+    json!({
+        "content": [{"type": "text", "text": content.into()}],
+        "details": {
+            "kind": "todo",
+            "mode": "check",
+            "action": action,
+            "todos": items,
+            // `items` may be a filtered view (includeDone=false). IDs must
+            // always advance from the complete store or a hidden completed
+            // item can cause the next add to reuse an existing ID.
+            "nextId": next_id(all_items),
+        }
+    })
+    .to_string()
+}
+
 fn todo(params: &Value) -> Result<String, String> {
     let path = store_path(params);
     let mut items = load(&path)?;
@@ -91,12 +144,7 @@ fn todo(params: &Value) -> Result<String, String> {
             if text.is_empty() || text.len() > 2000 {
                 return Err("text must contain 1-2000 characters".into());
             }
-            let id = items
-                .iter()
-                .filter_map(|v| v.get("id").and_then(Value::as_u64))
-                .max()
-                .unwrap_or(0)
-                + 1;
+            let id = next_id(&items);
             let tags = params
                 .get("tags")
                 .cloned()
@@ -104,9 +152,14 @@ fn todo(params: &Value) -> Result<String, String> {
                 .unwrap_or_else(|| json!([]));
             items.push(json!({"id": id, "text": text, "done": false, "tags": tags, "createdAt": now(), "updatedAt": now()}));
             save(&path, &items)?;
-            Ok(json!({"action":"add","item":items.last().unwrap()}).to_string())
+            Ok(result(
+                "add",
+                &items,
+                &items,
+                format!("✓ Added #{id} {}", text),
+            ))
         }
-        "done" | "complete" => {
+        "done" | "complete" | "check" | "toggle" => {
             let id = params
                 .get("id")
                 .and_then(Value::as_u64)
@@ -116,12 +169,25 @@ fn todo(params: &Value) -> Result<String, String> {
                     .iter_mut()
                     .find(|v| v.get("id").and_then(Value::as_u64) == Some(id))
                     .ok_or("todo item not found")?;
-                item["done"] = Value::Bool(true);
+                item["done"] = if action == "toggle" {
+                    Value::Bool(item.get("done") != Some(&Value::Bool(true)))
+                } else {
+                    Value::Bool(true)
+                };
                 item["updatedAt"] = json!(now());
                 item.clone()
             };
             save(&path, &items)?;
-            Ok(json!({"action":"done","item":updated}).to_string())
+            let id = updated.get("id").and_then(Value::as_u64).unwrap_or(0);
+            let text = updated.get("text").and_then(Value::as_str).unwrap_or("");
+            let done = updated.get("done") == Some(&Value::Bool(true));
+            let verb = if done { "checked" } else { "unchecked" };
+            Ok(result(
+                action,
+                &items,
+                &items,
+                format!("✓ #{id} {verb} {text}"),
+            ))
         }
         "remove" => {
             let id = params
@@ -134,12 +200,17 @@ fn todo(params: &Value) -> Result<String, String> {
                 return Err("todo item not found".into());
             }
             save(&path, &items)?;
-            Ok(json!({"action":"remove","id":id}).to_string())
+            Ok(result(
+                "remove",
+                &items,
+                &items,
+                format!("✓ Removed todo #{id}"),
+            ))
         }
         "clear" => {
             items.clear();
             save(&path, &items)?;
-            Ok(json!({"action":"clear","count":0}).to_string())
+            Ok(result("clear", &items, &items, "✓ Cleared all todos"))
         }
         "list" => {
             let include_done = params
@@ -147,12 +218,19 @@ fn todo(params: &Value) -> Result<String, String> {
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
             if include_done {
-                Ok(json!({"action":"list","items":items}).to_string())
+                Ok(result("list", &items, &items, display_list(&items)))
             } else {
-                Ok(json!({"action":"list","items":items.into_iter().filter(|v| v.get("done") != Some(&Value::Bool(true))).collect::<Vec<_>>()} ).to_string())
+                let visible: Vec<Value> = items
+                    .iter()
+                    .filter(|v| v.get("done") != Some(&Value::Bool(true)))
+                    .cloned()
+                    .collect();
+                Ok(result("list", &visible, &items, display_list(&visible)))
             }
         }
-        _ => Err("action must be one of: add, list, done, remove, clear".into()),
+        _ => Err(
+            "action must be one of: add, list, done, complete, check, toggle, remove, clear".into(),
+        ),
     }
 }
 
@@ -184,9 +262,11 @@ extern "C" fn poll(handle: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void)
     }
     drive.completed = true;
     match todo(&drive.params) {
-        Ok(text) => StepResult::done(StbString::from_string(
-            json!({"content":[{"type":"text","text":text}]}).to_string(),
-        )),
+        Ok(text) => {
+            let output = serde_json::from_str::<Value>(&text)
+                .unwrap_or_else(|_| json!({"content":[{"type":"text","text":text}]}));
+            StepResult::done(StbString::from_string(output.to_string()))
+        }
         Err(e) => StepResult::err(StbString::from_string(e)),
     }
 }
@@ -224,7 +304,7 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApiVt, abi: u32) -> i32 
         let schema = Box::new(rpi_plugin_sdk::StableToolSchema {
             name: StbString::from_string("todo".into()),
             description: StbString::from_string("Manage persistent project todos.".into()),
-            parameters: StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["add","list","done","remove","clear"]},"text":{"type":"string"},"id":{"type":"integer"},"tags":{"type":"array"},"includeDone":{"type":"boolean"},"cwd":{"type":"string"}}}"#.into()),
+            parameters: StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["add","list","done","complete","check","toggle","remove","clear"]},"text":{"type":"string"},"id":{"type":"integer"},"tags":{"type":"array"},"includeDone":{"type":"boolean"},"cwd":{"type":"string"}}}"#.into()),
         });
         let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
         drop(schema);
@@ -253,5 +333,34 @@ mod tests {
     #[test]
     fn rejects_unknown_action() {
         assert!(todo(&json!({"action":"wat","cwd":"."})).is_err());
+    }
+
+    #[test]
+    fn renders_check_mode_content_and_details() {
+        let path = std::env::temp_dir().join(format!("rpi-todo-display-{}", now()));
+        let cwd = path.to_string_lossy().to_string();
+        let added = todo(&json!({"action":"add","text":"ship it","cwd":cwd})).unwrap();
+        let value: Value = serde_json::from_str(&added).unwrap();
+        assert_eq!(value["details"]["mode"], "check");
+        assert!(value["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Added #1"));
+        fs::remove_dir_all(path).ok();
+    }
+
+    #[test]
+    fn filtered_list_keeps_next_id_from_full_store() {
+        let path = std::env::temp_dir().join(format!("rpi-todo-next-id-{}", now()));
+        let cwd = path.to_string_lossy().to_string();
+        todo(&json!({"action":"add","text":"first","cwd":cwd})).unwrap();
+        todo(&json!({"action":"add","text":"second","cwd":cwd})).unwrap();
+        todo(&json!({"action":"check","id":2,"cwd":cwd})).unwrap();
+        let listed: Value = serde_json::from_str(
+            &todo(&json!({"action":"list","includeDone":false,"cwd":cwd})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed["details"]["nextId"], 3);
+        fs::remove_dir_all(path).ok();
     }
 }

@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-agent"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "futures",
@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-ai"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "base64",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-extensions"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "futures",
@@ -1072,14 +1072,14 @@ dependencies = [
 
 [[package]]
 name = "rpi-plugin-sdk"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "rpi-telemetry"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "async-trait",
  "tokio",

@@ -16,6 +16,8 @@ members = [
     "packages/rpi-goal",
     "packages/rpi-websearch",
     "packages/rpi-webfetch",
+    "packages/rpi-firecrawl",
+    "packages/rpi-extension-rpc",
 ]
 exclude = ["tools/rpi-package-smoke"]
 resolver = "2"

@@ -22,7 +22,9 @@ The workspace also includes local-first workflow packages: `rpi-todo`
 (`todo`), `rpi-codegraph` (`codegraph`), `rpi-memory` (`memory`),
 `rpi-token-usage` (`token_count` plus a `token-usage` renderer),
 `rpi-ask-user`, `rpi-permissions`, `rpi-simplify`, `rpi-search`, `rpi-goal`,
-`rpi-websearch`, and `rpi-webfetch`.
+`rpi-websearch`, `rpi-webfetch`, and `rpi-firecrawl` (`firecrawl_search` +
+`firecrawl_scrape`), plus `rpi-extension-rpc` (`extension_rpc_client` and
+`extension_rpc_server`).
 
 ## Build and install
 
@@ -32,7 +34,7 @@ cargo build --release --workspace
 task install
 ```
 
-`task install` copies the sixteen platform cdylibs to
+`task install` copies the eighteen platform cdylibs to
 `~/.rpi/agent/extensions`. The CLI discovers that directory automatically; an
 explicit directory also works:
 
@@ -76,7 +78,7 @@ require a sibling `pi-rust` checkout.
 For a release preflight, run `task publish-dry-run`. Real crates.io publishing
 is intentionally separate and requires `cargo login`. Since the first nine
 packages are already released, publish this batch with `task publish-new`; use
-`task publish` only for a fresh repository where none of the sixteen names
+`task publish` only for a fresh repository where none of the eighteen names
 exist yet. Each extension is self-contained and can be published in any order.
 `task pack`
 also creates a directly installable Windows

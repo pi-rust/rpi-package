@@ -1,14 +1,14 @@
 [package]
-name = "rpi-websearch"
-version = "0.1.1"
+name = "rpi-firecrawl"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Public web search tool for the rpi Rust agent"
+description = "Firecrawl search and scrape tools for the rpi Rust agent"
 readme = "README.md"
-keywords = ["rpi", "web", "search", "plugin"]
+keywords = ["rpi", "web", "firecrawl", "scrape", "search"]
 categories = ["command-line-utilities"]
 
 [lib]

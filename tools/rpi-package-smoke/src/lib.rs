@@ -41,12 +41,16 @@ mod tests {
             "goal",
             "websearch",
             "webfetch",
+            "firecrawl_search",
+            "firecrawl_scrape",
+            "extension_rpc_client",
+            "extension_rpc_server",
         ]);
         assert_eq!(names, expected);
         assert_eq!(
             session.loaded_paths().len(),
-            16,
-            "all sixteen cdylibs should load"
+            18,
+            "all eighteen cdylibs should load"
         );
         assert_eq!(
             snapshot.renderers().len(),

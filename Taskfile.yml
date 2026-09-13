@@ -39,7 +39,7 @@ tasks:
       - cargo test --manifest-path tools/rpi-package-smoke/Cargo.toml -- --ignored --nocapture
 
   publish-dry-run:
-    desc: Verify all sixteen extensions can be packaged for crates.io
+    desc: Verify all eighteen extensions can be packaged for crates.io
     cmds:
       - task: test
       - cargo publish --dry-run --allow-dirty -p rpi-mcp-adapter
@@ -58,9 +58,11 @@ tasks:
       - cargo publish --dry-run --allow-dirty -p rpi-goal
       - cargo publish --dry-run --allow-dirty -p rpi-websearch
       - cargo publish --dry-run --allow-dirty -p rpi-webfetch
+      - cargo publish --dry-run --allow-dirty -p rpi-firecrawl
+      - cargo publish --dry-run --allow-dirty -p rpi-extension-rpc
 
   publish:
-    desc: Publish the sixteen packages to crates.io
+    desc: Publish the eighteen packages to crates.io
     cmds:
       - task: test
       - cargo publish --allow-dirty -p rpi-mcp-adapter
@@ -79,9 +81,11 @@ tasks:
       - cargo publish --allow-dirty -p rpi-goal
       - cargo publish --allow-dirty -p rpi-websearch
       - cargo publish --allow-dirty -p rpi-webfetch
+      - cargo publish --allow-dirty -p rpi-firecrawl
+      - cargo publish --allow-dirty -p rpi-extension-rpc
 
   publish-new:
-    desc: Publish the seven packages added after the initial release
+    desc: Publish the packages added after the initial release
     cmds:
       - task: test
       - cargo publish --allow-dirty -p rpi-ask-user
@@ -91,6 +95,8 @@ tasks:
       - cargo publish --allow-dirty -p rpi-goal
       - cargo publish --allow-dirty -p rpi-websearch
       - cargo publish --allow-dirty -p rpi-webfetch
+      - cargo publish --allow-dirty -p rpi-firecrawl
+      - cargo publish --allow-dirty -p rpi-extension-rpc
 
   publish-todo:
     desc: Publish the rpi-todo store compatibility fix

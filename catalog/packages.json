@@ -46,7 +46,7 @@
   },
   {
     "name": "rpi-todo",
-    "version": "0.1.1",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "todo",
     "inspiredBy": "Pi todo extensions",
@@ -82,7 +82,7 @@
   },
   {
     "name": "rpi-ask-user",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "type": "extension",
     "tool": "ask_user",
     "inspiredBy": "@juicesharp/rpiv-ask-user-question",
@@ -91,7 +91,7 @@
   },
   {
     "name": "rpi-permissions",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "type": "extension",
     "tool": "permissions",
     "inspiredBy": "@gotgenes/pi-permission-system",
@@ -109,7 +109,7 @@
   },
   {
     "name": "rpi-search",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "type": "extension",
     "tool": "search",
     "inspiredBy": "@ff-labs/pi-fff",
@@ -127,7 +127,7 @@
   },
   {
     "name": "rpi-websearch",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "type": "extension",
     "tool": "websearch",
     "inspiredBy": "web search extensions",
@@ -136,11 +136,29 @@
   },
   {
     "name": "rpi-webfetch",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "type": "extension",
     "tool": "webfetch",
     "inspiredBy": "web access extensions",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-webfetch"
+  },
+  {
+    "name": "rpi-firecrawl",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "firecrawl_search + firecrawl_scrape",
+    "inspiredBy": "Firecrawl open-source web API",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-firecrawl"
+  },
+  {
+    "name": "rpi-extension-rpc",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "extension_rpc_client + extension_rpc_server",
+    "inspiredBy": "Pi RPC mode",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-extension-rpc"
   }
 ]

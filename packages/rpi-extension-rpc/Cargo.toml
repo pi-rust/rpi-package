@@ -1,15 +1,15 @@
 [package]
-name = "rpi-websearch"
-version = "0.1.1"
+name = "rpi-extension-rpc"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Public web search tool for the rpi Rust agent"
+description = "Cross-platform JSONL extension RPC client and localhost server for rpi"
 readme = "README.md"
-keywords = ["rpi", "web", "search", "plugin"]
-categories = ["command-line-utilities"]
+keywords = ["rpi", "extension", "rpc", "jsonl"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -17,5 +17,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rpi-plugin-sdk = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { workspace = true }
-url = { workspace = true }
+wait-timeout = { workspace = true }

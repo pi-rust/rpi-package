@@ -6,6 +6,7 @@ use rpi_plugin_sdk::{
     StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
+use std::sync::{Mutex, OnceLock};
 
 struct Drive {
     params: Value,
@@ -13,7 +14,12 @@ struct Drive {
     done: bool,
 }
 
+static PENDING: OnceLock<Mutex<Option<Value>>> = OnceLock::new();
+
 fn ask(params: &Value) -> Result<String, String> {
+    // Native pi-ask-user uses one question with structured option objects.
+    // Keep the earlier `questions[]` shape as a compatibility alias while
+    // normalizing both forms to the native contract.
     let kind = params
         .get("type")
         .and_then(Value::as_str)
@@ -35,34 +41,141 @@ fn ask(params: &Value) -> Result<String, String> {
                 .to_string(),
         );
     }
-    let questions = params
-        .get("questions")
-        .and_then(Value::as_array)
-        .ok_or("questions is required")?;
-    if questions.is_empty() || questions.len() > 3 {
-        return Err("questions must contain 1-3 items".into());
-    }
     let mut normalized = Vec::new();
-    for item in questions {
-        let question = item
-            .get("question")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
-        if question.is_empty() || question.len() > 500 {
-            return Err("each question must contain 1-500 characters".into());
+    if let Some(question) = params.get("question").and_then(Value::as_str) {
+        normalized.push(normalize_question(params, question)?);
+    } else if let Some(questions) = params.get("questions").and_then(Value::as_array) {
+        if questions.is_empty() || questions.len() > 3 {
+            return Err("questions must contain 1-3 items".into());
         }
-        let options = item
-            .get("options")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        if options.len() > 4 {
-            return Err("each question may contain at most 4 options".into());
+        for item in questions {
+            let question = item.get("question").and_then(Value::as_str).unwrap_or("");
+            normalized.push(normalize_question(item, question)?);
         }
-        normalized.push(json!({"question":question,"options":options,"multiple":item.get("multiple").and_then(Value::as_bool).unwrap_or(false),"allowCustom":item.get("allowCustom").or_else(|| item.get("allow_custom")).and_then(Value::as_bool).unwrap_or(false)}));
+    } else {
+        return Err("question is required".into());
     }
-    Ok(json!({"type":"question","questions":normalized,"suggest":params.get("suggest"),"ui":{"kind":"selector","questions":normalized}}).to_string())
+    Ok(json!({
+        "question": normalized.first().and_then(|v| v.get("question")),
+        "context": params.get("context"),
+        "options": normalized.first().and_then(|v| v.get("options")),
+        "allowMultiple": params.get("allowMultiple").or_else(|| params.get("multiple")).and_then(Value::as_bool).unwrap_or(false),
+        "allowFreeform": params.get("allowFreeform").or_else(|| params.get("allow_custom")).and_then(Value::as_bool).unwrap_or(true),
+        "allowComment": params.get("allowComment").and_then(Value::as_bool).unwrap_or(false),
+        "displayMode": params.get("displayMode"),
+        "timeout": params.get("timeout"),
+        "suggest": params.get("suggest"),
+        "ui": {"kind":"selector", "questions":normalized}
+    })
+    .to_string())
+}
+
+fn normalize_question(item: &Value, question: &str) -> Result<Value, String> {
+    let question = question.trim();
+    if question.is_empty() || question.len() > 500 {
+        return Err("each question must contain 1-500 characters".into());
+    }
+    let options = item
+        .get("options")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if options.len() > 20 {
+        return Err("a question may contain at most 20 options".into());
+    }
+    let options = options
+        .into_iter()
+        .map(|option| match option {
+            Value::String(title) => json!({"title": title}),
+            Value::Object(mut object) => {
+                if !object.contains_key("title") {
+                    for alias in ["label", "text", "value", "name"] {
+                        if let Some(value) = object.remove(alias) {
+                            object.insert("title".into(), value);
+                            break;
+                        }
+                    }
+                }
+                Value::Object(object)
+            }
+            other => json!({"title": other.to_string()}),
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "question": question,
+        "options": options,
+        "allowMultiple": item.get("allowMultiple").or_else(|| item.get("multiple")).and_then(Value::as_bool).unwrap_or(false),
+        "allowFreeform": item.get("allowFreeform").or_else(|| item.get("allow_custom")).and_then(Value::as_bool).unwrap_or(true),
+        "allowComment": item.get("allowComment").and_then(Value::as_bool).unwrap_or(false),
+    }))
+}
+
+fn command_output(out: *mut StbString, value: Value) -> i32 {
+    if out.is_null() {
+        return 1;
+    }
+    unsafe { *out = StbString::from_string(value.to_string()) };
+    0
+}
+
+/// `/ask_user` command bridge for the native rpi selector. Tool calls still
+/// return a selector-shaped result for headless hosts; interactive Pi sessions
+/// can use this command path until tool-to-UI prompting is wired into the loop.
+extern "C" fn ask_command(args_json: StbStringRef, out: *mut StbString, _: *mut c_void) -> i32 {
+    let request_text = unsafe { args_json.as_str().to_owned() };
+    let request: Value = serde_json::from_str(&request_text).unwrap_or(Value::Null);
+    let raw = request.get("args").and_then(Value::as_str).unwrap_or("");
+    let params: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!({"question": raw}));
+    if params.get("action").and_then(Value::as_str) == Some("select") {
+        let value = params.get("value").and_then(Value::as_str).unwrap_or("");
+        let _ = PENDING
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map(|mut p| *p = None);
+        return command_output(
+            out,
+            json!({"kind":"message","text":format!("Selected: {value}")}),
+        );
+    }
+    let normalized = match ask(&params) {
+        Ok(text) => serde_json::from_str::<Value>(&text).unwrap_or(Value::Null),
+        Err(e) => {
+            return command_output(
+                out,
+                json!({"kind":"message","text":format!("ask_user failed: {e}")}),
+            )
+        }
+    };
+    let options = normalized
+        .get("options")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if options.is_empty() {
+        return command_output(out, json!({"kind":"editor","initialText":""}));
+    }
+    let items = options
+        .into_iter()
+        .enumerate()
+        .map(|(i, option)| {
+            let label = option.get("title").and_then(Value::as_str).unwrap_or("");
+            let description = option.get("description").and_then(Value::as_str);
+            let mut item = json!({"value": label, "label": label});
+            if let Some(description) = description {
+                item["description"] = json!(description);
+            }
+            if label.is_empty() {
+                item["value"] = json!(i.to_string());
+                item["label"] = json!(i.to_string());
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    let _ = PENDING
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map(|mut p| *p = Some(normalized));
+    command_output(out, json!({"kind":"selector","items":items}))
 }
 
 extern "C" fn execute(
@@ -135,9 +248,15 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApiVt, abi: u32) -> i32 
         let Some(register) = api.register_tool else {
             return 1;
         };
-        let schema = Box::new(StableToolSchema { name: StbString::from_string("ask_user".into()), description: StbString::from_string("Ask the user validated single or multi-select questions.".into()), parameters: StbString::from_string(r#"{"type":"object","properties":{"type":{"type":"string","enum":["question","confirm"]},"questions":{"type":"array","minItems":1,"maxItems":3},"suggest":{"type":"string"},"summary":{"type":"string"}},"oneOf":[{"properties":{"type":{"const":"question"}},"required":["questions"]},{"properties":{"type":{"const":"confirm"}},"required":["summary"]}]}"#.into()) });
+        let schema = Box::new(StableToolSchema { name: StbString::from_string("ask_user".into()), description: StbString::from_string("Ask the user an interactive question with selectable options or freeform input.".into()), parameters: StbString::from_string(r#"{"type":"object","properties":{"question":{"type":"string"},"context":{"type":"string"},"options":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"object"}]}},"allowMultiple":{"type":"boolean"},"allowFreeform":{"type":"boolean"},"allowComment":{"type":"boolean"},"displayMode":{"type":"string","enum":["overlay","inline"]},"timeout":{"type":"integer","minimum":1},"type":{"type":"string","enum":["question","confirm"]},"questions":{"type":"array","minItems":1,"maxItems":3},"suggest":{"type":"string"},"summary":{"type":"string"}},"additionalProperties":false}"#.into()) });
         let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
         drop(schema);
+        if let Some(register_command) = api.register_command {
+            let name = StbStringRef::from_str("ask_user");
+            let description =
+                StbStringRef::from_str("Ask a question with the interactive Pi selector");
+            let _ = register_command(name, description, ask_command);
+        }
         rc
     })
 }
@@ -153,5 +272,25 @@ mod tests {
                 .contains("selector")
         );
         assert!(ask(&json!({"questions":[]})).is_err());
+    }
+
+    #[test]
+    fn accepts_native_single_question_contract() {
+        let value: Value = serde_json::from_str(
+            &ask(&json!({
+                "question": "Which target?",
+                "options": [{"title":"Linux", "description":"glibc"}, "Windows"],
+                "allowMultiple": true,
+                "allowFreeform": false,
+                "context": "release"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["question"], "Which target?");
+        assert_eq!(value["options"][0]["title"], "Linux");
+        assert_eq!(value["options"][1]["title"], "Windows");
+        assert_eq!(value["allowMultiple"], true);
+        assert_eq!(value["allowFreeform"], false);
     }
 }

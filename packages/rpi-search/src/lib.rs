@@ -19,13 +19,22 @@ fn walk(root: &Path, query: &str, results: &mut Vec<Value>, depth: usize, max: u
     let Ok(rd) = fs::read_dir(root) else {
         return;
     };
-    for e in rd.flatten() {
+    // Sort directory entries so repeated calls produce stable model context.
+    let mut entries = rd.flatten().map(|e| e.path()).collect::<Vec<_>>();
+    entries.sort();
+    for p in entries {
         if results.len() >= max {
             return;
         }
-        let p = e.path();
         let n = p.file_name().and_then(|x| x.to_str()).unwrap_or("");
-        if n == ".git" || n == "target" || n == "node_modules" || n == ".rpi" {
+        if n == ".git"
+            || n == "target"
+            || n == "node_modules"
+            || n == ".rpi"
+            || n == ".pi"
+            || is_sensitive_name(n)
+            || p.is_symlink()
+        {
             continue;
         }
         if p.is_dir() {
@@ -49,6 +58,16 @@ fn walk(root: &Path, query: &str, results: &mut Vec<Value>, depth: usize, max: u
         }
     }
 }
+
+fn is_sensitive_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == ".env"
+        || lower.starts_with(".env.")
+        || lower.contains("secret")
+        || lower.contains("credential")
+        || lower.ends_with(".pem")
+        || lower.ends_with(".key")
+}
 fn search(p: &Value) -> Result<String, String> {
     let query = p
         .get("query")
@@ -70,6 +89,18 @@ fn search(p: &Value) -> Result<String, String> {
         .clamp(1, 200) as usize;
     let mut results = Vec::new();
     if root.is_file() {
+        if root.is_symlink()
+            || root
+                .file_name()
+                .and_then(|x| x.to_str())
+                .map(is_sensitive_name)
+                .unwrap_or(false)
+        {
+            return Ok(
+                json!({"query":query,"root":root,"count":0,"results":[],"truncated":false})
+                    .to_string(),
+            );
+        }
         if let Some(n) = root.file_name().and_then(|x| x.to_str()) {
             if n.to_ascii_lowercase().contains(&query) {
                 results.push(json!({"path":root,"kind":"filename"}));
