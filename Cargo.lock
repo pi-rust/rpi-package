@@ -677,11 +677,10 @@ dependencies = [
 
 [[package]]
 name = "rpi-extension-rpc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
- "wait-timeout",
 ]
 
 [[package]]

@@ -1,35 +1,44 @@
 # rpi-extension-rpc
 
-Cross-platform JSONL RPC transport for extensions and external `rpi`/Pi
-processes. The package exposes two tools:
+Cross-platform client process manager for the native `rpi --mode rpc` JSONL
+protocol. The package exposes two tools:
 
-- `extension_rpc_client`: start a program directly, send one JSON request over
-  stdin, or connect to a server `address`, and collect bounded JSONL
-  responses/events.
-- `extension_rpc_server`: bind `127.0.0.1` and forward each JSONL request to a
-  fresh program process. Use `action=start|status|list|stop` to manage servers.
+- `extension_rpc_server`: start one persistent `rpi --mode rpc` child and manage
+  it with `action=start|status|list|stop`.
+- `extension_rpc_client`: send a native `{id?, type, ...}` RPC command to that
+  child and return its correlated response plus preceding events.
 
-Programs and arguments are passed as an argv array, so Windows, macOS and Linux
-do not depend on shell quoting. The transport accepts LF and CRLF records,
-limits each request/response to 1 MiB, and enforces a configurable timeout.
+The server maps its parameters to rpi's reserved CLI options instead of taking
+an arbitrary program and argv. It always inserts `--mode rpc`; supported
+options include `provider`, `model`, `thinking`, `name`, `session`, `sessionId`,
+`sessionDir`, `noSession`, tool/resource filters, and extension paths. It uses
+the current `rpi` executable, so it does not depend on shell quoting or PATH
+lookup on Windows, macOS, or Linux.
 
-Example client parameters:
+Start an ephemeral RPC session:
 
 ```json
 {
-  "program": "rpi",
-  "args": ["--mode", "rpc", "--no-session"],
-  "request": {"id": "1", "type": "get_state"},
-  "timeoutSeconds": 30
+  "action": "start",
+  "noSession": true,
+  "model": "openai/gpt-5",
+  "thinking": "high"
 }
 ```
 
-The host must provide an RPC-capable program. This package does not modify or
-patch the `pi-rust` CLI; it is a transport adapter that can be installed as a
-normal Rust extension.
-
-For the paired server, pass the returned address to the client:
+Then pass the returned `id` to the client:
 
 ```json
-{"address":"127.0.0.1:43127","request":{"type":"get_state"}}
+{"serverId":"rpi-rpc-1","command":{"type":"get_state"}}
 ```
+
+When `command.id` is omitted, the extension uses rpi's ABI-provided tool call
+ID, preserving native RPC request/response correlation. The same child remains
+alive across commands, so session state is retained. Records are strict JSONL,
+bounded to 1 MiB, and requests have a configurable timeout.
+
+This package is a client/process adapter; an extension cannot replace the
+host's CLI mode dispatcher. The selected `rpi` executable must implement
+`--mode rpc`. A build that only parses the reserved option and reports
+`rpc mode is not implemented` is not sufficient and will return that error to
+the client.
