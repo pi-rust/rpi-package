@@ -135,7 +135,7 @@ macro_rules! export_single_tool_plugin {
         }
 
         #[no_mangle]
-        pub extern "C" fn rpi_plugin_register(
+        pub extern "C" fn rpi_plugin_register_v2(
             api: *const rpi_plugin_sdk::PluginApiVt,
             abi: u32,
         ) -> i32 {

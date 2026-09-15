@@ -48,7 +48,7 @@ into the `rpi` host:
 
 ```powershell
 rpi install rpi-todo
-rpi install rpi-memory --version 0.1.0
+rpi install rpi-memory --version 0.1.1
 ```
 
 The command downloads the crate from crates.io, compiles its cdylib for the

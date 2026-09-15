@@ -153,7 +153,7 @@ extern "C" fn free_string(s: StbString) {
     }
 }
 #[no_mangle]
-pub extern "C" fn rpi_plugin_register(api: *const PluginApiVt, abi: u32) -> i32 {
+pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
     register_entrypoint(api, abi, |api| {
         let Some(register) = api.register_tool else {
             return 1;
