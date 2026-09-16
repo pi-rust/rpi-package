@@ -502,13 +502,12 @@ fn invoke_print_with_retry(
     for attempt in 0..3 {
         match invoke_print_process(prompt, conversation_id, model) {
             Ok(result) => return Ok(result),
-            Err(error)
-                if attempt < 2 && error.to_ascii_lowercase().contains("throttl")
-                    || attempt < 2 && error.to_ascii_lowercase().contains("rate") =>
-            {
-                let delay = Duration::from_secs(5 * (attempt + 1) as u64);
+            Err(error) if attempt < 2 && retryable_print_error(&error) => {
+                let delay = Duration::from_secs(2 * (attempt + 1) as u64);
                 eprintln!(
-                    "rpi-im-message: model request was rate-limited; retrying in {}s",
+                    "rpi-im-message: fallback reply attempt {} failed ({}); retrying in {}s",
+                    attempt + 1,
+                    error,
                     delay.as_secs()
                 );
                 thread::sleep(delay);
@@ -518,6 +517,14 @@ fn invoke_print_with_retry(
         }
     }
     Err(last_error.unwrap_or_else(|| "rpi print process failed after retries".into()))
+}
+
+fn retryable_print_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("empty reply")
+        || error.contains("throttl")
+        || error.contains("rate limit")
+        || error.contains("http transport error")
 }
 
 struct MessageHandler {
@@ -1384,5 +1391,18 @@ mod tests {
         assert!(cli_flag_enabled(&Value::String("TRUE".into())));
         assert!(!cli_flag_enabled(&Value::Bool(false)));
         assert!(!cli_flag_enabled(&Value::String("yes".into())));
+    }
+
+    #[test]
+    fn retries_transient_print_failures() {
+        assert!(retryable_print_error(
+            "rpi print process returned an empty reply"
+        ));
+        assert!(retryable_print_error(
+            "http transport error: connection reset"
+        ));
+        assert!(!retryable_print_error(
+            "rpi print process exited with exit code 2"
+        ));
     }
 }
