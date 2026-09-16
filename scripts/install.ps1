@@ -34,7 +34,8 @@ $names = @(
     "rpi_websearch",
     "rpi_webfetch",
     "rpi_firecrawl",
-    "rpi_extension_rpc"
+    "rpi_extension_rpc",
+    "rpi_im_message"
 )
 
 foreach ($name in $names) {
@@ -45,4 +46,4 @@ foreach ($name in $names) {
     Copy-Item -LiteralPath $source -Destination $resolvedTarget -Force
 }
 
-Write-Host "Installed 18 rpi packages to $resolvedTarget"
+Write-Host "Installed 19 rpi packages to $resolvedTarget"

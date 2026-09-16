@@ -24,7 +24,7 @@ The workspace also includes local-first workflow packages: `rpi-todo`
 `rpi-ask-user`, `rpi-permissions`, `rpi-simplify`, `rpi-search`, `rpi-goal`,
 `rpi-websearch`, `rpi-webfetch`, and `rpi-firecrawl` (`firecrawl_search` +
 `firecrawl_scrape`), plus `rpi-extension-rpc` (`extension_rpc_client` and
-`extension_rpc_server`).
+`extension_rpc_server`) and `rpi-im-message` (`im_message_server`).
 
 ## Build and install
 
@@ -34,7 +34,7 @@ cargo build --release --workspace
 task install
 ```
 
-`task install` copies the eighteen platform cdylibs to
+`task install` copies the nineteen platform cdylibs to
 `~/.rpi/agent/extensions`. The CLI discovers that directory automatically; an
 explicit directory also works:
 
@@ -50,6 +50,17 @@ into the `rpi` host:
 rpi install rpi-todo
 rpi install rpi-memory --version 0.1.1
 ```
+
+`rpi-im-message` can run the Feishu/Lark long-connection server headlessly,
+without opening the TUI:
+
+```powershell
+rpi --im-message-server --im-profile feishu-main
+```
+
+The profile is optional when `defaultProfile` is set in `.rpi/im.json` (or
+`~/.rpi/agent/im.json`). Set the app secret through the profile's environment
+variable before starting the process.
 
 The command downloads the crate from crates.io, compiles its cdylib for the
 current OS and architecture, and places it in `~/.rpi/agent/extensions`.
@@ -78,7 +89,7 @@ require a sibling `pi-rust` checkout.
 For a release preflight, run `task publish-dry-run`. Real crates.io publishing
 is intentionally separate and requires `cargo login`. Since the first nine
 packages are already released, publish this batch with `task publish-new`; use
-`task publish` only for a fresh repository where none of the eighteen names
+`task publish` only for a fresh repository where none of the nineteen names
 exist yet. Each extension is self-contained and can be published in any order.
 `task pack`
 also creates a directly installable Windows

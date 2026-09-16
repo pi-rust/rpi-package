@@ -45,12 +45,13 @@ mod tests {
             "firecrawl_scrape",
             "extension_rpc_client",
             "extension_rpc_server",
+            "im_message_server",
         ]);
         assert_eq!(names, expected);
         assert_eq!(
             session.loaded_paths().len(),
-            18,
-            "all eighteen cdylibs should load"
+            19,
+            "all nineteen cdylibs should load"
         );
         assert_eq!(
             snapshot.renderers().len(),

@@ -1,0 +1,22 @@
+[package]
+name = "rpi-im-message"
+version = "0.1.3"
+edition = "2021"
+rust-version = "1.89"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Persistent Feishu long-connection messaging server for the rpi Rust agent"
+readme = "README.md"
+keywords = ["rpi", "feishu", "lark", "im", "websocket"]
+categories = ["command-line-utilities", "network-programming"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+feishu-sdk = { workspace = true }
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+wait-timeout = { workspace = true }

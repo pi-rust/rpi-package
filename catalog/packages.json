@@ -1,7 +1,7 @@
 [
   {
     "name": "rpi-mcp-adapter",
-    "version": "0.1.1",
+    "version": "0.1.3",
     "type": "extension",
     "tool": "mcp_request",
     "inspiredBy": "pi-mcp-adapter",
@@ -160,5 +160,14 @@
     "inspiredBy": "Pi RPC mode",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-extension-rpc"
+  },
+  {
+    "name": "rpi-im-message",
+    "version": "0.1.1",
+    "type": "extension",
+    "tool": "im_message_server",
+    "inspiredBy": "Hermes Feishu/Lark channels",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-im-message"
   }
 ]
