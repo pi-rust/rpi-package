@@ -1219,7 +1219,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-im-message"
-version = "0.1.4"
+version = "0.1.6"
 dependencies = [
  "feishu-sdk",
  "rpi-plugin-sdk",

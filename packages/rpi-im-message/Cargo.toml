@@ -1,6 +1,6 @@
 [package]
 name = "rpi-im-message"
-version = "0.1.4"
+version = "0.1.6"
 edition = "2021"
 rust-version = "1.89"
 license.workspace = true
@@ -10,6 +10,7 @@ description = "Persistent Feishu long-connection messaging server for the rpi Ru
 readme = "README.md"
 keywords = ["rpi", "feishu", "lark", "im", "websocket"]
 categories = ["command-line-utilities", "network-programming"]
+exclude = [".rpi/**", "src/*.backup"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

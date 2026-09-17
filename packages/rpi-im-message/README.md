@@ -28,6 +28,8 @@ Example:
       "mentionRequired": true,
       "autoReply": true,
       "autoReplyModel": "huoshan-copy/deepseek-v4-flash-ga-260731",
+      "autoReplyTimeoutSeconds": 600,
+      "ackReaction": true,
       "autoReconnect": true,
       "maxQueueSize": 256
     }
@@ -63,6 +65,14 @@ while avoiding concurrent session writes and provider rate spikes.
 Set `autoReplyModel` to an explicit `provider/model` id when the rpi default
 model is unavailable from the headless environment. If omitted, the fallback
 uses the normal rpi model selection.
+
+`autoReplyTimeoutSeconds` controls both the model request timeout and the
+fallback process wait timeout. It defaults to 600 seconds (10 minutes) and
+accepts values from 1 to 3600.
+
+With `ackReaction` enabled (the default), every accepted incoming message is
+immediately acknowledged with one random Feishu reaction: `了解`, `敲键盘`, or
+`冲！`. Set it to `false` to disable this acknowledgement.
 
 ## Headless startup
 

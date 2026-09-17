@@ -15,14 +15,16 @@ use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const EVENT_TYPE_MESSAGE: &str = "im.message.receive_v1";
 const MAX_MESSAGE_BYTES: usize = 1_048_576;
+const DEFAULT_AUTO_REPLY_TIMEOUT_SECONDS: u64 = 600;
 const SERVER_FLAG: &str = "im-message-server";
 const PROFILE_FLAG: &str = "im-profile";
 
@@ -42,6 +44,9 @@ unsafe impl Sync for StartupContext {}
 
 static HOST_RUNTIME: OnceLock<StartupContext> = OnceLock::new();
 static PRINT_PROCESS_LOCK: Mutex<()> = Mutex::new(());
+static ACK_REACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const ACK_REACTIONS: [(&str, &str); 3] = [("了解", "OK"), ("敲键盘", "Typing"), ("冲！", "JIAYI")];
 
 #[derive(Clone, Debug)]
 struct Profile {
@@ -58,6 +63,8 @@ struct Profile {
     default_conversation_id: Option<String>,
     auto_reply: bool,
     auto_reply_model: Option<String>,
+    auto_reply_timeout: Duration,
+    ack_reaction: bool,
 }
 
 impl Profile {
@@ -111,6 +118,14 @@ impl Profile {
                     .ok_or_else(|| "autoReplyModel must be a non-empty string".to_string())
             })
             .transpose()?;
+        let auto_reply_timeout_seconds = u64_field(
+            object,
+            "autoReplyTimeoutSeconds",
+            DEFAULT_AUTO_REPLY_TIMEOUT_SECONDS,
+            1,
+            3600,
+        )?;
+        let ack_reaction = bool_field(object, "ackReaction", true)?;
 
         Ok(Self {
             name: name.to_owned(),
@@ -126,6 +141,8 @@ impl Profile {
             default_conversation_id,
             auto_reply,
             auto_reply_model,
+            auto_reply_timeout: Duration::from_secs(auto_reply_timeout_seconds),
+            ack_reaction,
         })
     }
 }
@@ -388,6 +405,8 @@ impl RuntimeState {
             "dropped": status.dropped,
             "lastError": status.last_error,
             "autoReply": self.profile.auto_reply,
+            "autoReplyTimeoutSeconds": self.profile.auto_reply_timeout.as_secs(),
+            "ackReaction": self.profile.ack_reaction,
             "capabilities": ["text", "markdown", "card", "reaction", "reply", "agent_auto_reply"]
         })
     }
@@ -437,10 +456,48 @@ fn conversation_session_id(conversation_id: &str) -> String {
     }
 }
 
+fn random_ack_reaction() -> (&'static str, &'static str) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default();
+    let counter = ACK_REACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    ACK_REACTIONS[((now ^ counter) as usize) % ACK_REACTIONS.len()]
+}
+
+async fn send_reaction(
+    client: &Client,
+    message_id: &str,
+    emoji_type: &str,
+) -> Result<Value, String> {
+    if message_id.trim().is_empty() {
+        return Err("message_id is empty".into());
+    }
+    let response = client
+        .operation("im.v1.message_reaction.create")
+        .path_param("message_id", message_id)
+        .body_json(&json!({
+            "reaction_type": {"emoji_type": emoji_type}
+        }))
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.status < 200 || response.status >= 300 {
+        return Err(format!(
+            "Feishu reaction API returned HTTP {}: {}",
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        ));
+    }
+    response.json_value().map_err(|error| error.to_string())
+}
+
 fn invoke_print_process(
     prompt: &str,
     conversation_id: &str,
     model: Option<&str>,
+    timeout: Duration,
 ) -> Result<Value, String> {
     let _guard = PRINT_PROCESS_LOCK
         .lock()
@@ -450,7 +507,7 @@ fn invoke_print_process(
         "--print".to_owned(),
         "--no-extensions".to_owned(),
         "--timeout".to_owned(),
-        "120".to_owned(),
+        timeout.as_secs().to_string(),
         "--session-id".to_owned(),
         session_id,
     ];
@@ -465,14 +522,17 @@ fn invoke_print_process(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("failed to start rpi print process: {error}"))?;
-    let status = match wait_timeout::ChildExt::wait_timeout(&mut child, Duration::from_secs(120))
+    let status = match wait_timeout::ChildExt::wait_timeout(&mut child, timeout)
         .map_err(|error| format!("failed waiting for rpi print process: {error}"))?
     {
         Some(status) => status,
         None => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("rpi print process timed out after 120 seconds".into());
+            return Err(format!(
+                "rpi print process timed out after {} seconds",
+                timeout.as_secs()
+            ));
         }
     };
     let output = child
@@ -497,10 +557,11 @@ fn invoke_print_with_retry(
     prompt: &str,
     conversation_id: &str,
     model: Option<&str>,
+    timeout: Duration,
 ) -> Result<Value, String> {
     let mut last_error = None;
     for attempt in 0..3 {
-        match invoke_print_process(prompt, conversation_id, model) {
+        match invoke_print_process(prompt, conversation_id, model, timeout) {
             Ok(result) => return Ok(result),
             Err(error) if attempt < 2 && retryable_print_error(&error) => {
                 let delay = Duration::from_secs(2 * (attempt + 1) as u64);
@@ -589,6 +650,19 @@ impl EventHandler for MessageHandler {
                 chat_id,
                 text.len()
             );
+            if state.profile.ack_reaction && !message_id.trim().is_empty() {
+                let (reaction_label, emoji_type) = random_ack_reaction();
+                if commands
+                    .send(Command::React {
+                        message_id: message_id.clone(),
+                        reaction_label,
+                        emoji_type,
+                    })
+                    .is_err()
+                {
+                    eprintln!("rpi-im-message: failed to queue receive reaction");
+                }
+            }
             let sender_id = message.sender.sender_id.as_ref().and_then(|id| {
                 id.open_id
                     .clone()
@@ -619,6 +693,7 @@ impl EventHandler for MessageHandler {
                 let conversation_id = chat_id.clone();
                 let process_conversation_id = conversation_id.clone();
                 let process_model = state.profile.auto_reply_model.clone();
+                let process_timeout = state.profile.auto_reply_timeout;
                 let reply_commands = commands.clone();
                 eprintln!(
                     "rpi-im-message: scheduling auto reply id={} chat={}",
@@ -641,6 +716,7 @@ impl EventHandler for MessageHandler {
                                     &prompt,
                                     &process_conversation_id,
                                     process_model.as_deref(),
+                                    process_timeout,
                                 )
                             }
                             Err(error) => Err(error),
@@ -708,6 +784,11 @@ fn extract_message_text(message_type: &Option<String>, content: &str) -> String 
 }
 
 enum Command {
+    React {
+        message_id: String,
+        reaction_label: &'static str,
+        emoji_type: &'static str,
+    },
     Send {
         conversation_id: String,
         content: Value,
@@ -871,6 +952,20 @@ async fn run_server(
             }
             command = commands.recv() => {
                 match command {
+                    Some(Command::React {
+                        message_id,
+                        reaction_label,
+                        emoji_type,
+                    }) => match send_reaction(&client, &message_id, emoji_type).await {
+                        Ok(response) => eprintln!(
+                            "rpi-im-message: receive reaction sent message={} reaction={} response={}",
+                            message_id, reaction_label, response
+                        ),
+                        Err(error) => eprintln!(
+                            "rpi-im-message: receive reaction failed message={} reaction={}: {}",
+                            message_id, reaction_label, error
+                        ),
+                    },
                     Some(Command::Send { conversation_id, content, reply }) => {
                         let result = send_message(&client, &conversation_id, &content).await;
                         let _ = reply.send(result);
@@ -1362,6 +1457,32 @@ mod tests {
             profile.auto_reply_model.as_deref(),
             Some("huoshan-copy/deepseek-v4-flash-ga-260731")
         );
+        assert_eq!(profile.auto_reply_timeout, Duration::from_secs(600));
+        assert!(profile.ack_reaction);
+    }
+
+    #[test]
+    fn allows_disabling_ack_reactions_and_custom_timeout() {
+        let profile = Profile::from_value(
+            "test",
+            &json!({
+                "appId":"cli_test",
+                "appSecret":"secret-value",
+                "ackReaction":false,
+                "autoReplyTimeoutSeconds":120
+            }),
+        )
+        .unwrap();
+        assert!(!profile.ack_reaction);
+        assert_eq!(profile.auto_reply_timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn ack_reaction_uses_one_of_supported_choices() {
+        let (label, emoji_type) = random_ack_reaction();
+        assert!(ACK_REACTIONS
+            .iter()
+            .any(|choice| choice == &(label, emoji_type)));
     }
 
     #[test]
