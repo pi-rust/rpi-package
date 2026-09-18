@@ -300,6 +300,8 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "feishu-sdk"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "537bb535c8d3256221ba0b09c9fb50879a41a577e33a88f34777ae3e2fa528d2"
 dependencies = [
  "aes",
  "async-trait",
@@ -1169,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-ask-user"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",

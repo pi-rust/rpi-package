@@ -191,7 +191,7 @@ rpi --im-message-server --action status
 ## 📚 相关资源
 
 - **源码仓库**：`packages/rpi-im-message/`
-- **飞书 SDK**：`third_party/feishu-sdk/`
+- **飞书 SDK**：通过 Cargo 引入 crates.io 上的 `feishu-sdk = 0.1.2`
 - **详细文档**：`packages/rpi-im-message/README.md`
 
 ---

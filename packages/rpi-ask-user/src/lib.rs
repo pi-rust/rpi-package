@@ -15,8 +15,8 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rpi_plugin_sdk::{
     register_entrypoint, FreeStringFn, PluginApiVt, RuntimeActionFn, StableToolSchema, StbString,
@@ -152,12 +152,16 @@ fn parse_options(item: &Value) -> Result<Vec<AskOption>, String> {
                     .filter(|title| !title.is_empty())
                     .ok_or("each option requires a non-empty `title`")?
                     .to_string();
-                let description = object
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-                    .map(str::to_string);
+                let description = match object.get("description") {
+                    None => None,
+                    Some(value) => Some(
+                        value
+                            .as_str()
+                            .ok_or("option `description` must be a string")?
+                            .trim()
+                            .to_string(),
+                    ),
+                };
                 (title, description)
             }
             other => (other.to_string(), None),
@@ -186,8 +190,8 @@ fn normalize_question(
     if question.chars().count() > 500 {
         return Err("each question must contain 1-500 characters".into());
     }
-    let display_mode = opt_string(item, &["displayMode"])
-        .or_else(|| opt_string(defaults, &["displayMode"]));
+    let display_mode =
+        opt_string(item, &["displayMode"]).or_else(|| opt_string(defaults, &["displayMode"]));
     if let Some(mode) = display_mode.as_deref() {
         if mode != "overlay" && mode != "inline" {
             return Err("displayMode must be overlay or inline".into());
@@ -204,15 +208,18 @@ fn normalize_question(
     }
     let options = parse_options(item)?;
     let allow_freeform = opt_bool(item, &["allowFreeform", "allow_freeform", "allow_custom"])
-        .or_else(|| opt_bool(defaults, &["allowFreeform", "allow_freeform", "allow_custom"]))
+        .or_else(|| {
+            opt_bool(
+                defaults,
+                &["allowFreeform", "allow_freeform", "allow_custom"],
+            )
+        })
         .unwrap_or(options.is_empty());
     Ok(AskQuestion {
-        id: opt_string(item, &["id", "questionId"])
-            .unwrap_or_else(|| format!("q{}", index + 1)),
+        id: opt_string(item, &["id", "questionId"]).unwrap_or_else(|| format!("q{}", index + 1)),
         question: question.to_string(),
-        header: opt_string(item, &["header"]),
-        context: opt_string(item, &["context"])
-            .or_else(|| top_context.map(str::to_string)),
+        header: opt_string(item, &["header"]).or_else(|| opt_string(defaults, &["header"])),
+        context: opt_string(item, &["context"]).or_else(|| top_context.map(str::to_string)),
         options,
         allow_multiple: opt_bool(item, &["allowMultiple", "allow_multiple", "multiple"])
             .or_else(|| opt_bool(defaults, &["allowMultiple", "allow_multiple", "multiple"]))
@@ -258,7 +265,12 @@ fn ask(params: &Value) -> Result<AskPlan, String> {
             )?);
         }
     } else {
-        questions.push(normalize_question(params, params, 0, top_context.as_deref())?);
+        questions.push(normalize_question(
+            params,
+            params,
+            0,
+            top_context.as_deref(),
+        )?);
     }
     Ok(AskPlan::Questions { questions })
 }
@@ -333,10 +345,7 @@ fn invoke_ui_dialog(runtime: &HostRuntime, args: &Value) -> Result<Value, String
 }
 
 fn cancel_ui_dialog(runtime: &HostRuntime, request_id: &str) {
-    let _ = invoke_ui_dialog(
-        runtime,
-        &json!({"op": "cancel", "requestId": request_id}),
-    );
+    let _ = invoke_ui_dialog(runtime, &json!({"op": "cancel", "requestId": request_id}));
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +355,7 @@ fn cancel_ui_dialog(runtime: &HostRuntime, request_id: &str) {
 struct PendingQuestion {
     request_id: String,
     question: AskQuestion,
+    deadline: Option<Instant>,
 }
 
 struct AskAnswer {
@@ -459,9 +469,13 @@ fn open_next(drive: &mut Drive, runtime: &HostRuntime) -> Result<Option<Value>, 
         "ui": question.to_ui(None),
     });
     let response = invoke_ui_dialog(runtime, &request)?;
+    let deadline = question
+        .timeout
+        .map(|seconds| Instant::now() + Duration::from_secs(seconds));
     drive.pending = Some(PendingQuestion {
         request_id,
         question,
+        deadline,
     });
     Ok(Some(response))
 }
@@ -472,12 +486,22 @@ fn poll_open_question(drive: &mut Drive, runtime: &HostRuntime) -> Result<Option
     let Some(pending) = drive.pending.as_ref() else {
         return Ok(None);
     };
+    if pending
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        let request_id = pending.request_id.clone();
+        cancel_ui_dialog(runtime, &request_id);
+        drive.pending = None;
+        return Err("ask timed out".into());
+    }
     let request_id = pending.request_id.clone();
-    let response = invoke_ui_dialog(
-        runtime,
-        &json!({"op": "poll", "requestId": request_id}),
-    )?;
-    match response.get("status").and_then(Value::as_str).unwrap_or("pending") {
+    let response = invoke_ui_dialog(runtime, &json!({"op": "poll", "requestId": request_id}))?;
+    match response
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("pending")
+    {
         "answered" => {
             let answer = response.get("answer").cloned().unwrap_or(Value::Null);
             let pending = drive.pending.take().expect("checked above");
@@ -639,7 +663,9 @@ extern "C" fn poll(handle: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void)
                     .map(|pending| pending.question.clone());
                 let progress = question
                     .map(|question| pending_progress(&question))
-                    .unwrap_or_else(|| json!({"content":[{"type":"text","text":"Waiting for your answer…"}]}));
+                    .unwrap_or_else(
+                        || json!({"content":[{"type":"text","text":"Waiting for your answer…"}]}),
+                    );
                 StepResult::pending(StbString::from_string(progress.to_string()))
             }
             Err(error) => StepResult::err(StbString::from_string(error)),
@@ -831,6 +857,7 @@ mod tests {
     fn normalizes_questions_alias_with_ids_and_per_question_defaults() {
         let AskPlan::Questions { questions } = plan(json!({
             "allowFreeform": true,
+            "header": "Questions",
             "questions": [
                 {"id": "proxy_port", "question": "端口?", "options": [], "suggest": "7890"},
                 {"id": "level", "question": "Level?", "options": ["a", "b"], "allowMultiple": true}
@@ -842,6 +869,7 @@ mod tests {
         assert_eq!(questions[0].id, "proxy_port");
         assert!(questions[0].allow_freeform);
         assert_eq!(questions[0].suggest.as_deref(), Some("7890"));
+        assert_eq!(questions[0].header.as_deref(), Some("Questions"));
         assert_eq!(questions[1].id, "level");
         assert!(questions[1].allow_multiple);
     }
@@ -864,6 +892,9 @@ mod tests {
         assert!(ask(&json!({"question": "x", "displayMode": "huge"})).is_err());
         assert!(ask(&json!({"question": "x", "timeout": 0})).is_err());
         assert!(ask(&json!({"question": "x", "options": [{"description": "no title"}]})).is_err());
+        assert!(
+            ask(&json!({"question": "x", "options": [{"title": "x", "description": 42}]})).is_err()
+        );
     }
 
     #[test]

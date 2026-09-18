@@ -1,21 +1,30 @@
 # rpi-ask-user
 
-Structured questions for workflows that need an explicit user decision.
-The `ask_user` tool accepts the native Pi shape (`question`, `context`, option
-objects, `allowMultiple`, `allowFreeform`, `allowComment`, and `displayMode`)
-and also accepts the earlier `questions[]` alias. Its ABI v2 result follows the
-rpi `AgentToolResult` envelope: readable text is returned in `content`, while
-the native selector payload is preserved in `details.ui`.
+Interactive questions for workflows that need an explicit user decision.
 
-In the current rpi TUI, tool results are rendered as transcript text and
-`details.ui` is metadata; it does not open an interactive selector by itself.
-For an interactive selector, use the registered `/ask_user` command. The
-command returns rpi's native `{"kind":"selector","items":[...]}` response
-and the TUI opens the selector. This split avoids showing the transport JSON
-when the tool is called by a headless host.
+The ABI v2 `ask_user` tool normalizes the native Pi shape (`question`,
+`context`, option objects, `allowMultiple`, `allowFreeform`, `allowComment`,
+`displayMode`, `timeout`, and `suggest`) as well as the older `questions[]`
+alias. Each question keeps a stable `id`, optional `header`, context, and
+option descriptions.
 
-Example in the TUI:
+When the host exposes the rpi UI runtime action, the tool sends a unique
+`requestId`/`toolCallId`, returns `Pending`, and waits for the TUI answer before
+returning `Done`. Freeform questions use an input editor; questions with
+options use a selector. Timeout and cancellation close the pending UI request.
+The tool result contains only a readable answer summary and structured answer
+details, never the transport JSON.
+
+Hosts without an interactive UI receive the explicit error
+`ask_user requires an interactive UI`. The registered `/ask_user` command is
+also available for hosts that expose the native command selector directly:
 
 ```text
 /ask_user {"question":"Which target?","options":["Linux","Windows"]}
+```
+
+Install the published package with:
+
+```text
+rpi install rpi-ask-user
 ```

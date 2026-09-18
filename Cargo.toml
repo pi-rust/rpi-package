@@ -23,12 +23,6 @@ members = [
 exclude = ["tools/rpi-package-smoke"]
 resolver = "2"
 
-[patch.crates-io]
-# Local patched copy of feishu-sdk 0.1.2 fixing the long-connection protocol
-# handshake: the crates.io version delays the first ping by the full ping
-# interval, leaving the Feishu session inactive so no events are pushed.
-feishu-sdk = { path = "third_party/feishu-sdk" }
-
 [workspace.package]
 version = "0.1.1"
 edition = "2021"
