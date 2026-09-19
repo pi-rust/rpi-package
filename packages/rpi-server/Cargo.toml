@@ -5,14 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "JSON-RPC server for rpi with streaming subscriptions (based on jsonrpsee)"
-keywords = ["rpi", "extension", "rpc", "jsonrpc", "server", "streaming"]
+keywords = ["rpi", "rpc", "jsonrpc", "server", "streaming"]
 
 [lib]
 crate-type = ["cdylib"]
-
-[[bin]]
-name = "rpi-server"
-path = "src/main.rs"
 
 [dependencies]
 rpi-plugin-sdk = { workspace = true }
