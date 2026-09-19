@@ -19,6 +19,7 @@ members = [
     "packages/rpi-firecrawl",
     "packages/rpi-extension-rpc",
     "packages/rpi-im-message",
+    "packages/rpi-server",
 ]
 exclude = ["tools/rpi-package-smoke"]
 resolver = "2"

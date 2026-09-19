@@ -87,22 +87,77 @@ fn display_list(items: &[Value]) -> String {
     if items.is_empty() {
         return "No todos".into();
     }
+    let total = items.len();
     let completed = items
         .iter()
         .filter(|item| item.get("done") == Some(&Value::Bool(true)))
         .count();
-    let mut lines = vec![format!("{completed}/{} completed", items.len())];
-    for item in items {
+    let pending = total - completed;
+
+    // Progress bar
+    let progress = if total > 0 {
+        let filled = (completed * 20) / total;
+        let empty = 20 - filled;
+        format!("[{}{}] {}%", "█".repeat(filled), "░".repeat(empty), (completed * 100) / total)
+    } else {
+        "[░░░░░░░░░░░░░░░░░░░░] 0%".to_string()
+    };
+
+    let mut output = String::new();
+    output.push_str(&format!("📋 **Todos** | {} done, {} pending\n", completed, pending));
+    output.push_str(&format!("{}\n\n", progress));
+
+    // Table header
+    output.push_str("| Status | ID | Task | Tags |\n");
+    output.push_str("|--------|----|----- :|------|\n");
+
+    // Sort: pending first, then completed
+    let mut sorted_items = items.to_vec();
+    sorted_items.sort_by(|a, b| {
+        let a_done = a.get("done") == Some(&Value::Bool(true));
+        let b_done = b.get("done") == Some(&Value::Bool(true));
+        match (a_done, b_done) {
+            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => std::cmp::Ordering::Greater,
+            _ => {
+                let a_id = a.get("id").and_then(Value::as_u64).unwrap_or(0);
+                let b_id = b.get("id").and_then(Value::as_u64).unwrap_or(0);
+                a_id.cmp(&b_id)
+            }
+        }
+    });
+
+    for item in &sorted_items {
         let id = item.get("id").and_then(Value::as_u64).unwrap_or(0);
         let text = item.get("text").and_then(Value::as_str).unwrap_or("");
-        let check = if item.get("done") == Some(&Value::Bool(true)) {
-            "[x]"
+        let done = item.get("done") == Some(&Value::Bool(true));
+        let tags = item
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+
+        let status = if done { "✅" } else { "⬜" };
+        let display_text = if done {
+            format!("~~{}~~", text)
         } else {
-            "[ ]"
+            text.to_string()
         };
-        lines.push(format!("{check} #{id} {text}"));
+        let tags_display = if tags.is_empty() {
+            "-".to_string()
+        } else {
+            format!("🏷️ {}", tags)
+        };
+
+        output.push_str(&format!("| {} | #{} | {} | {} |\n", status, id, display_text, tags_display));
     }
-    lines.join("\n")
+
+    output.trim_end().to_string()
 }
 
 fn result(

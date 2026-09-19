@@ -195,6 +195,7 @@ fn launch_command(params: &Value) -> Result<(PathBuf, Vec<String>), String> {
         "--enable-pi-packages",
     )?;
     push_switch(&mut args, params, "offline", "--offline")?;
+    push_switch(&mut args, params, "headless", "--headless")?;
     push_repeated(&mut args, params, "extensionsDir", "--extensions-dir")?;
     push_repeated(&mut args, params, "extension", "--extension")?;
     push_repeated(&mut args, params, "skill", "--skill")?;
