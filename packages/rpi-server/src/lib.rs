@@ -2,8 +2,9 @@ mod server;
 mod transport;
 
 use rpi_plugin_sdk::{
-    register_entrypoint, EventTag, FreeStringFn, PluginApiVt, RuntimeActionId, StablePluginEvent,
-    StableToolSchema, StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
+    register_entrypoint, EventTag, FreeStringFn, PluginApiVt, RuntimeActionFn, RuntimeActionId,
+    StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
+    ToolPartialCb,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -25,19 +26,23 @@ fn servers() -> &'static Mutex<HashMap<String, Arc<TcpServerHandle>>> {
     SERVERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-// Store API vtable pointer for runtime_action calls (e.g., GetCliFlag)
-static API_VT: AtomicPtr<PluginApiVt> = AtomicPtr::new(std::ptr::null_mut());
+// The host's `runtime_action` entry point + its opaque `user_data` (the host's
+// `ActionBridge`), copied OUT of the vtable during `register`. The vtable is the
+// host's to own — we must not retain the `api` pointer (that is a
+// use-after-free: the host builds it on the register stack). `GetCliFlag` needs
+// both the entry point and the `user_data`.
+static RUNTIME_ACTION: OnceLock<RuntimeActionFn> = OnceLock::new();
+static RUNTIME_USER_DATA: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+// The host's `free_string`, for reclaiming host-produced `out` strings.
+static HOST_FREE_STRING: OnceLock<FreeStringFn> = OnceLock::new();
 
-fn api_vt() -> &'static PluginApiVt {
-    let ptr = API_VT.load(Ordering::Acquire);
-    assert!(!ptr.is_null(), "API vtable not initialized");
-    unsafe { &*ptr }
-}
-
-/// Call host's GetCliFlag runtime action to read a CLI flag value
+/// Call the host's `GetCliFlag` runtime action to read a parsed CLI flag value.
 fn get_cli_flag(name: &str) -> Option<Value> {
-    let api = api_vt();
-    let runtime_action = api.runtime_action;
+    let runtime_action = *RUNTIME_ACTION.get()?;
+    let user_data = RUNTIME_USER_DATA.load(Ordering::Acquire);
+    if user_data.is_null() {
+        return None;
+    }
 
     let args = json!({"name": name});
     let args_str = args.to_string();
@@ -48,15 +53,21 @@ fn get_cli_flag(name: &str) -> Option<Value> {
         RuntimeActionId::GetCliFlag as u32,
         args_ref,
         &mut out,
-        std::ptr::null_mut(),
+        user_data,
     );
 
-    if rc != 0 {
-        return None;
+    // The host may have produced `out` even on an error path; reclaim it via the
+    // host's free so we don't leak the host allocation.
+    let result_str = if rc == 0 {
+        Some(out.to_string_lossy())
+    } else {
+        None
+    };
+    if let Some(free) = HOST_FREE_STRING.get() {
+        free(out);
     }
 
-    let result_str = out.to_string_lossy();
-    let result: Value = serde_json::from_str(&result_str).ok()?;
+    let result: Value = serde_json::from_str(&result_str?).ok()?;
     result.get("value").cloned()
 }
 
@@ -110,7 +121,21 @@ fn do_start(params: &Value) -> Result<String, String> {
     };
 
     let (executable, args) = launch_args(params)?;
-    let token = optional_string(params, "token")?.unwrap_or_else(generate_token);
+    let no_token = params
+        .get("noToken")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let token = if no_token {
+        // Authentication disabled: any client may connect (trusted local use).
+        String::new()
+    } else {
+        params
+            .get("token")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(generate_token)
+    };
 
     let exec_clone = executable.clone();
     let args_clone = args.clone();
@@ -257,15 +282,26 @@ extern "C" fn on_session_shutdown(event: StablePluginEvent, _: *mut std::ffi::c_
     0
 }
 
+/// Whether a `GetCliFlag` result means the switch is ON. `GetCliFlag` yields
+/// `true` for a bare `--flag`, a string when `--flag=v`, and `null` when unset.
+fn flag_is_on(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => !s.is_empty() && !s.eq_ignore_ascii_case("false"),
+        _ => false,
+    }
+}
+
 /// On SessionStart, check if --server CLI flag was passed and auto-start the TCP server.
 extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
     if event.tag != EventTag::SessionStart {
         return 0;
     }
 
-    // Check if --server flag was passed
-    let server_flag = get_cli_flag("server");
-    if server_flag.is_none() {
+    // Check if --server flag was passed. `GetCliFlag` returns `{"value": null}`
+    // for an *unset* flag, so a bare `is_none()` would wrongly treat that as
+    // present — require an explicit truthy value.
+    if !flag_is_on(get_cli_flag("server").as_ref()) {
         return 0;
     }
 
@@ -284,9 +320,17 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
 
     eprintln!("[rpi-server] --server detected, starting TCP server on {bind}:{port}");
 
+    let token = match get_cli_flag("token") {
+        Some(Value::String(s)) if !s.is_empty() => Some(s),
+        _ => None,
+    };
+    let no_token = flag_is_on(get_cli_flag("no-token").as_ref());
+
     let params = json!({
         "bind": bind,
         "port": port,
+        "token": token,
+        "noToken": no_token,
     });
 
     match do_start(&params) {
@@ -335,6 +379,32 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
             // Connect with retry
             managed.connect_with_retry(&server.address).await
                 .map_err(|e| format!("failed to connect: {e}"))?;
+
+            // Authenticate when the server requires a token.
+            if !server.token.is_empty() {
+                let auth = json!({
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "method": "authenticate",
+                    "params": {"token": server.token},
+                });
+                managed
+                    .send(auth)
+                    .await
+                    .map_err(|e| format!("auth send failed: {e}"))?;
+                match tokio::time::timeout(Duration::from_secs(5), managed.recv()).await {
+                    Ok(Ok(Some(response))) => {
+                        if let Some(error) = response.get("error") {
+                            return Err(format!("authentication failed: {error}"));
+                        }
+                    }
+                    Ok(Ok(None)) => {
+                        return Err("authentication failed: connection closed".into())
+                    }
+                    Ok(Err(e)) => return Err(format!("authentication failed: {e}")),
+                    Err(_) => return Err("authentication failed: timed out".into()),
+                }
+            }
 
             // Send request
             let request = json!({
@@ -587,10 +657,13 @@ const CLIENT_PARAMETERS: &str = r#"{
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
-    // Save API vtable for runtime_action calls (e.g., GetCliFlag)
-    API_VT.store(api as *mut PluginApiVt, Ordering::Release);
-
-    register_entrypoint(api, abi, |api| {
+    unsafe {
+        register_entrypoint(api, abi, |api| {
+            // Copy the host function pointers/handles OUT of the vtable during
+            // register — the `api` pointer is only valid for this call.
+            let _ = RUNTIME_ACTION.set(api.runtime_action);
+            RUNTIME_USER_DATA.store(api.user_data, Ordering::Release);
+            let _ = HOST_FREE_STRING.set(api.free_string);
         let Some(register) = api.register_tool else {
             return 1;
         };
@@ -664,8 +737,9 @@ pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i
 
         drop(server_schema);
         drop(client_schema);
-        fourth
-    })
+            fourth
+        })
+    }
 }
 
 #[cfg(test)]

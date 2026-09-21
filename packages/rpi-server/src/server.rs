@@ -450,6 +450,8 @@ pub async fn handle_connection<C: Connection>(
     mut conn: C,
 ) {
     let conn_id = conn.id().to_string();
+    // Accepts requests only after `authenticate` when the server has a token.
+    let mut authenticated = state.token.is_empty();
     // Map of subscription_id -> broadcast receiver
     let mut sub_receivers: HashMap<u64, broadcast::Receiver<Value>> = HashMap::new();
     let mut sub_sessions: HashMap<u64, Arc<TokioMutex<Session>>> = HashMap::new();
@@ -504,6 +506,51 @@ pub async fn handle_connection<C: Connection>(
             Ok(Ok(Some(msg))) => {
                 // Check if it's a subscribe request — handle specially
                 let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+
+                // Connection-level token gate. When the server was started with a
+                // token, every connection must `authenticate` before it may issue
+                // any other request (including `subscribe`).
+                if !authenticated {
+                    let id = msg.get("id").cloned();
+                    if method == "authenticate" {
+                        let provided = msg
+                            .get("params")
+                            .and_then(|p| p.get("token"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if provided == state.token {
+                            authenticated = true;
+                            let response = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {"authenticated": true},
+                            });
+                            if conn.send(response).await.is_err() {
+                                break;
+                            }
+                        } else {
+                            let response = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {"code": -32001, "message": "invalid token"},
+                            });
+                            let _ = conn.send(response).await;
+                            // Drop the connection on a bad token.
+                            break;
+                        }
+                    } else {
+                        let response = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {"code": -32001, "message": "authentication required"},
+                        });
+                        if conn.send(response).await.is_err() {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
                 if method == "subscribe" {
                     let id = msg.get("id").cloned();
                     let params = msg.get("params").cloned().unwrap_or(json!({}));
@@ -655,7 +702,11 @@ pub async fn run_server<T: Transport>(
     });
 
     println!("rpi-server listening on {addr}");
-    println!("token: {}", handle.token);
+    if handle.token.is_empty() {
+        println!("token: (authentication disabled)");
+    } else {
+        println!("token: {}", handle.token);
+    }
 
     // Accept loop
     let handle_clone = Arc::clone(&handle);
