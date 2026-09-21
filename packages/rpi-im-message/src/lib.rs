@@ -1361,7 +1361,7 @@ extern "C" fn free_string(value: StbString) {
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
-    register_entrypoint(api, abi, |api| {
+    unsafe { register_entrypoint(api, abi, |api| {
         let Some(register_tool) = api.register_tool else {
             return 1;
         };
@@ -1408,7 +1408,7 @@ pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i
             );
         }
         result
-    })
+    }) }
 }
 
 #[cfg(test)]

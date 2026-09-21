@@ -204,7 +204,7 @@ extern "C" fn free_string(s: StbString) {
 }
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
-    register_entrypoint(api, abi, |api| {
+    unsafe { register_entrypoint(api, abi, |api| {
         let Some(register) = api.register_tool else {
             return 1;
         };
@@ -212,7 +212,7 @@ pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i
         let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
         drop(schema);
         rc
-    })
+    }) }
 }
 #[cfg(test)]
 mod tests {

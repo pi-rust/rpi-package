@@ -139,7 +139,7 @@ macro_rules! export_single_tool_plugin {
             api: *const rpi_plugin_sdk::PluginApiVt,
             abi: u32,
         ) -> i32 {
-            rpi_plugin_sdk::register_entrypoint(api, abi, |api| {
+            unsafe { rpi_plugin_sdk::register_entrypoint(api, abi, |api| {
                 let Some(register) = api.register_tool else {
                     return 1;
                 };
@@ -154,7 +154,7 @@ macro_rules! export_single_tool_plugin {
                 );
                 drop(schema);
                 rc
-            })
+            }) }
         }
     };
 }

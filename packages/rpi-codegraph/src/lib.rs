@@ -488,7 +488,7 @@ fn tool_specs() -> Vec<ToolSpec> {
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
-    register_entrypoint(api, abi, |api| {
+    unsafe { register_entrypoint(api, abi, |api| {
         let Some(register) = api.register_tool else {
             return 1;
         };
@@ -505,7 +505,7 @@ pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i
             }
         }
         0
-    })
+    }) }
 }
 
 #[cfg(test)]
