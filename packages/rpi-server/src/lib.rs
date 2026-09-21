@@ -1,26 +1,63 @@
 mod server;
+mod transport;
 
 use rpi_plugin_sdk::{
-    register_entrypoint, EventTag, FreeStringFn, PluginApiVt, StablePluginEvent, StableToolSchema,
-    StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
+    register_entrypoint, EventTag, FreeStringFn, PluginApiVt, RuntimeActionId, StablePluginEvent,
+    StableToolSchema, StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use server::{generate_token, launch_args, start_rpc_server, RpcServerHandle};
+use server::{generate_token, launch_args, run_server, TcpServerHandle};
+use transport::{ManagedConnection, TcpTransport};
 
 const DEFAULT_TIMEOUT: u64 = 30;
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
-static SERVERS: OnceLock<Mutex<HashMap<String, Arc<RpcServerHandle>>>> = OnceLock::new();
+static SERVERS: OnceLock<Mutex<HashMap<String, Arc<TcpServerHandle>>>> = OnceLock::new();
 
-fn servers() -> &'static Mutex<HashMap<String, Arc<RpcServerHandle>>> {
+fn servers() -> &'static Mutex<HashMap<String, Arc<TcpServerHandle>>> {
     SERVERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// Store API vtable pointer for runtime_action calls (e.g., GetCliFlag)
+static API_VT: AtomicPtr<PluginApiVt> = AtomicPtr::new(std::ptr::null_mut());
+
+fn api_vt() -> &'static PluginApiVt {
+    let ptr = API_VT.load(Ordering::Acquire);
+    assert!(!ptr.is_null(), "API vtable not initialized");
+    unsafe { &*ptr }
+}
+
+/// Call host's GetCliFlag runtime action to read a CLI flag value
+fn get_cli_flag(name: &str) -> Option<Value> {
+    let api = api_vt();
+    let runtime_action = api.runtime_action;
+
+    let args = json!({"name": name});
+    let args_str = args.to_string();
+    let args_ref = StbStringRef::from_str(&args_str);
+    let mut out = StbString::empty();
+
+    let rc = runtime_action(
+        RuntimeActionId::GetCliFlag as u32,
+        args_ref,
+        &mut out,
+        std::ptr::null_mut(),
+    );
+
+    if rc != 0 {
+        return None;
+    }
+
+    let result_str = out.to_string_lossy();
+    let result: Value = serde_json::from_str(&result_str).ok()?;
+    result.get("value").cloned()
 }
 
 struct Drive {
@@ -95,7 +132,8 @@ fn do_start(params: &Value) -> Result<String, String> {
         };
 
         let result = runtime.block_on(async {
-            start_rpc_server(&bind_clone, port, token_clone, exec_clone, args_clone).await
+            let transport = Arc::new(TcpTransport::new());
+            run_server(transport, &bind_clone, port, token_clone, exec_clone, args_clone).await
         });
 
         match result {
@@ -121,11 +159,11 @@ fn do_start(params: &Value) -> Result<String, String> {
 
     Ok(json!({
         "id": server.id,
-        "address": format!("ws://{}", server.address),
+        "address": server.address,
         "token": token,
         "state": "running",
-        "protocol": "jsonrpc-2.0",
-        "transport": "websocket",
+        "protocol": "jsonl",
+        "transport": "tcp",
     }).to_string())
 }
 
@@ -154,15 +192,15 @@ fn do_stop(id: &str) -> Result<String, String> {
     }
 }
 
-async fn server_status(server: &Arc<RpcServerHandle>) -> Result<Value, String> {
+async fn server_status(server: &Arc<TcpServerHandle>) -> Result<Value, String> {
     let info = server.info().await;
     Ok(json!({
         "id": info.id,
-        "address": format!("ws://{}", info.address),
+        "address": info.address,
         "token": info.token,
         "state": info.state,
-        "protocol": "jsonrpc-2.0",
-        "transport": "websocket",
+        "protocol": "jsonl",
+        "transport": "tcp",
         "sessions": info.sessions,
     }))
 }
@@ -219,6 +257,46 @@ extern "C" fn on_session_shutdown(event: StablePluginEvent, _: *mut std::ffi::c_
     0
 }
 
+/// On SessionStart, check if --server CLI flag was passed and auto-start the TCP server.
+extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
+    if event.tag != EventTag::SessionStart {
+        return 0;
+    }
+
+    // Check if --server flag was passed
+    let server_flag = get_cli_flag("server");
+    if server_flag.is_none() {
+        return 0;
+    }
+
+    // Read optional --port flag (default 9800)
+    let port: u16 = match get_cli_flag("port") {
+        Some(Value::Number(n)) => n.as_u64().and_then(|n| u16::try_from(n).ok()).unwrap_or(9800),
+        Some(Value::String(s)) => s.parse().unwrap_or(9800),
+        _ => 9800,
+    };
+
+    // Read optional --bind flag (default 127.0.0.1)
+    let bind = match get_cli_flag("bind") {
+        Some(Value::String(s)) if !s.is_empty() => s,
+        _ => "127.0.0.1".to_string(),
+    };
+
+    eprintln!("[rpi-server] --server detected, starting TCP server on {bind}:{port}");
+
+    let params = json!({
+        "bind": bind,
+        "port": port,
+    });
+
+    match do_start(&params) {
+        Ok(info) => eprintln!("[rpi-server] TCP server started: {info}"),
+        Err(e) => eprintln!("[rpi-server] failed to start: {e}"),
+    }
+
+    0
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String> {
@@ -251,31 +329,25 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
             .unwrap();
 
         let result = runtime.block_on(async {
-            use jsonrpsee::ws_client::WsClientBuilder;
-            use jsonrpsee::core::client::ClientT;
+            let transport = Arc::new(TcpTransport::new());
+            let managed = ManagedConnection::new(transport);
 
-            let ws_url = format!("ws://{}", server.address);
-            let client = WsClientBuilder::default()
-                .build(&ws_url)
-                .await
+            // Connect with retry
+            managed.connect_with_retry(&server.address).await
                 .map_err(|e| format!("failed to connect: {e}"))?;
 
+            // Send request
+            let request = json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": rpc_params,
+                "id": 1,
+            });
+            managed.send(request).await
+                .map_err(|e| format!("send failed: {e}"))?;
+
             if subscribe {
-                use jsonrpsee::core::client::SubscriptionClientT;
-                use futures::StreamExt;
-
-                // Convert Value to Vec<Value> for ToRpcParams
-                let params_vec = if rpc_params.is_array() {
-                    rpc_params.as_array().unwrap().clone()
-                } else {
-                    vec![rpc_params.clone()]
-                };
-
-                let mut sub = client
-                    .subscribe::<Value, _>(&method, params_vec, &method)
-                    .await
-                    .map_err(|e| format!("subscribe failed: {e}"))?;
-
+                // Collect streaming events
                 let mut events = Vec::new();
                 let deadline = Instant::now() + wait;
 
@@ -283,11 +355,18 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
                     if cancelled_inner.load(Ordering::Acquire) { break; }
                     if Instant::now() >= deadline { break; }
 
-                    match tokio::time::timeout(Duration::from_millis(100), sub.next()).await {
-                        Ok(Some(Ok(event))) => { events.push(event); }
-                        Ok(Some(Err(e))) => { return Err(format!("subscription error: {e}")); }
-                        Ok(None) => break,
-                        Err(_) => continue,
+                    match tokio::time::timeout(Duration::from_millis(100), managed.recv()).await {
+                        Ok(Ok(Some(event))) => {
+                            // Check for session_end before pushing
+                            let is_end = event.get("type").and_then(Value::as_str) == Some("session_end");
+                            events.push(event);
+                            if is_end {
+                                break;
+                            }
+                        }
+                        Ok(Ok(None)) => break,
+                        Ok(Err(e)) => return Err(format!("recv error: {e}")),
+                        Err(_) => continue, // timeout, loop again
                     }
                 }
 
@@ -298,23 +377,29 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
                     "eventCount": events.len(),
                 }).to_string())
             } else {
-                // Convert Value to Vec<Value> for ToRpcParams
-                let params_vec = if rpc_params.is_array() {
-                    rpc_params.as_array().unwrap().clone()
-                } else {
-                    vec![rpc_params]
-                };
+                // Wait for response
+                let deadline = Instant::now() + wait;
+                loop {
+                    if cancelled_inner.load(Ordering::Acquire) {
+                        return Err("request cancelled".into());
+                    }
+                    if Instant::now() >= deadline {
+                        return Err("request timed out".into());
+                    }
 
-                let result: Value = client
-                    .request(&method, params_vec)
-                    .await
-                    .map_err(|e| format!("RPC call failed: {e}"))?;
-
-                Ok(json!({
-                    "serverId": server_id,
-                    "method": method,
-                    "result": result,
-                }).to_string())
+                    match tokio::time::timeout(Duration::from_millis(100), managed.recv()).await {
+                        Ok(Ok(Some(response))) => {
+                            return Ok(json!({
+                                "serverId": server_id,
+                                "method": method,
+                                "result": response,
+                            }).to_string());
+                        }
+                        Ok(Ok(None)) => return Err("connection closed".into()),
+                        Ok(Err(e)) => return Err(format!("recv error: {e}")),
+                        Err(_) => continue, // timeout, loop again
+                    }
+                }
             }
         });
 
@@ -502,6 +587,9 @@ const CLIENT_PARAMETERS: &str = r#"{
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
+    // Save API vtable for runtime_action calls (e.g., GetCliFlag)
+    API_VT.store(api as *mut PluginApiVt, Ordering::Release);
+
     register_entrypoint(api, abi, |api| {
         let Some(register) = api.register_tool else {
             return 1;
@@ -510,7 +598,7 @@ pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i
         let server_schema = Box::new(StableToolSchema {
             name: StbString::from_string("rpc_server".into()),
             description: StbString::from_string(
-                "Start and manage a JSON-RPC 2.0 server with WebSocket transport and streaming subscriptions.".into(),
+                "Start and manage a TCP JSONL server with streaming subscriptions.".into(),
             ),
             parameters: StbString::from_string(SERVER_PARAMETERS.into()),
         });
@@ -518,7 +606,7 @@ pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i
         let client_schema = Box::new(StableToolSchema {
             name: StbString::from_string("rpc_client".into()),
             description: StbString::from_string(
-                "Send a JSON-RPC request to a running server. Set subscribe=true for streaming responses.".into(),
+                "Send a JSON-RPC request to a running TCP server. Set subscribe=true for streaming responses.".into(),
             ),
             parameters: StbString::from_string(CLIENT_PARAMETERS.into()),
         });
@@ -559,9 +647,24 @@ pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i
             second
         };
 
+        // Register SessionStart handler to auto-start server when --server flag is passed
+        let fourth = if third == 0 {
+            api.register_event_handler
+                .map(|register| {
+                    register(
+                        EventTag::SessionStart,
+                        on_session_start,
+                        std::ptr::null_mut(),
+                    )
+                })
+                .unwrap_or(0)
+        } else {
+            third
+        };
+
         drop(server_schema);
         drop(client_schema);
-        third
+        fourth
     })
 }
 

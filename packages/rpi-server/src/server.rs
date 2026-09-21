@@ -1,10 +1,9 @@
-use jsonrpsee::server::{RpcModule, Server, ServerHandle};
+use crate::transport::{Connection, Transport};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
@@ -63,6 +62,7 @@ pub struct AppState {
     pub token: String,
     pub server_id: String,
     pub bound_address: TokioMutex<String>,
+    pub running: AtomicBool,
 }
 
 impl AppState {
@@ -79,6 +79,7 @@ impl AppState {
             token,
             server_id,
             bound_address: TokioMutex::new(String::new()),
+            running: AtomicBool::new(true),
         }
     }
 
@@ -151,7 +152,9 @@ pub fn spawn_child(
                 continue;
             }
             match serde_json::from_str::<Value>(&line) {
-                Ok(value) => { let _ = events_tx.send(value); }
+                Ok(value) => {
+                    let _ = events_tx.send(value);
+                }
                 Err(e) => {
                     let _ = events_tx.send(json!({"type": "error", "error": format!("invalid json: {e}")}));
                 }
@@ -185,9 +188,15 @@ fn optional_string(params: &Value, key: &str) -> Result<Option<String>, String> 
 }
 
 fn string_array(params: &Value, key: &str) -> Result<Vec<String>, String> {
-    let Some(v) = params.get(key) else { return Ok(Vec::new()); };
-    let arr = v.as_array().ok_or_else(|| format!("{key} must be an array of strings"))?;
-    if arr.len() > 128 { return Err(format!("{key} contains too many values")); }
+    let Some(v) = params.get(key) else {
+        return Ok(Vec::new());
+    };
+    let arr = v
+        .as_array()
+        .ok_or_else(|| format!("{key} must be an array of strings"))?;
+    if arr.len() > 128 {
+        return Err(format!("{key} contains too many values"));
+    }
     arr.iter()
         .map(|v| {
             v.as_str()
@@ -206,7 +215,12 @@ fn bool_param(params: &Value, key: &str) -> Result<bool, String> {
     }
 }
 
-fn push_option(args: &mut Vec<String>, params: &Value, key: &str, flag: &str) -> Result<(), String> {
+fn push_option(
+    args: &mut Vec<String>,
+    params: &Value,
+    key: &str,
+    flag: &str,
+) -> Result<(), String> {
     if let Some(v) = optional_string(params, key)? {
         args.push(flag.into());
         args.push(v);
@@ -215,11 +229,18 @@ fn push_option(args: &mut Vec<String>, params: &Value, key: &str, flag: &str) ->
 }
 
 fn push_switch(args: &mut Vec<String>, params: &Value, key: &str, flag: &str) -> Result<(), String> {
-    if bool_param(params, key)? { args.push(flag.into()); }
+    if bool_param(params, key)? {
+        args.push(flag.into());
+    }
     Ok(())
 }
 
-fn push_repeated(args: &mut Vec<String>, params: &Value, key: &str, flag: &str) -> Result<(), String> {
+fn push_repeated(
+    args: &mut Vec<String>,
+    params: &Value,
+    key: &str,
+    flag: &str,
+) -> Result<(), String> {
     for v in string_array(params, key)? {
         args.push(flag.into());
         args.push(v);
@@ -293,217 +314,375 @@ pub fn launch_args(params: &Value) -> Result<(PathBuf, Vec<String>), String> {
     Ok((executable, args))
 }
 
-// ── Error helper ──────────────────────────────────────────────────────────────
+// ── JSON-RPC message handling ─────────────────────────────────────────────────
 
-fn rpc_err(code: i32, msg: &str) -> jsonrpsee::types::ErrorObjectOwned {
-    jsonrpsee::types::ErrorObjectOwned::owned(code, msg.to_string(), None::<()>)
+
+
+/// Handle a single JSON-RPC request message, returning the response.
+async fn handle_request(
+    state: &Arc<AppState>,
+    msg: &Value,
+) -> Option<Value> {
+    let id = msg.get("id").cloned();
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    let params = msg.get("params").cloned().unwrap_or(json!({}));
+
+    let result = match method {
+        "start_session" => handle_start_session(state).await,
+        "send" => handle_send(state, &params).await,
+        "stop_session" => handle_stop_session(state, &params).await,
+        "list_sessions" => handle_list_sessions(state).await,
+        "server_status" => handle_server_status(state).await,
+        "subscribe" => {
+            // Subscribe is handled separately in handle_connection
+            Err("subscribe should be handled by connection handler".into())
+        }
+        "ping" => Ok(json!({"type": "pong"})),
+        _ => Err(format!("unknown method: {method}")),
+    };
+
+    let response = match result {
+        Ok(value) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": value,
+        }),
+        Err(e) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": -32000, "message": e},
+        }),
+    };
+
+    Some(response)
 }
 
-// ── RPC Module Builder ────────────────────────────────────────────────────────
+async fn handle_start_session(state: &Arc<AppState>) -> Result<Value, String> {
+    let session_id = next_session_id();
+    let (events_tx, _) = broadcast::channel(256);
+    let (child, stdin) = spawn_child(&state.executable, &state.default_args, events_tx.clone())?;
+    let session = Arc::new(TokioMutex::new(Session {
+        id: session_id.clone(),
+        child,
+        stdin,
+        events: events_tx,
+        event_count: 0,
+        state: "running".into(),
+    }));
+    state
+        .sessions
+        .lock()
+        .await
+        .insert(session_id.clone(), Arc::clone(&session));
+    let info = session.lock().await.info();
+    Ok(json!({"sessionId": session_id, "session": info}))
+}
 
-pub async fn build_rpc_module(state: Arc<AppState>) -> Result<RpcModule<Arc<AppState>>, String> {
-    let mut module = RpcModule::new(state);
+async fn handle_send(state: &Arc<AppState>, params: &Value) -> Result<Value, String> {
+    let sid = params
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or("sessionId is required")?
+        .to_string();
+    let cmd = params.get("command").ok_or("command is required")?;
+    let session = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .get(&sid)
+            .ok_or(format!("session {sid} not found"))?
+            .clone()
+    };
+    let mut line = serde_json::to_string(cmd).map_err(|e| e.to_string())?;
+    line.push('\n');
+    let mut sl = session.lock().await;
+    sl.stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+    sl.stdin
+        .flush()
+        .await
+        .map_err(|e| format!("flush: {e}"))?;
+    Ok(json!({"sessionId": sid, "status": "sent"}))
+}
 
-    // ── start_session ─────────────────────────────────────────────────────
-    module.register_async_method("start_session", |_params, ctx, _ext| async move {
-        let session_id = next_session_id();
-        let (events_tx, _) = broadcast::channel(256);
-        let (child, stdin) = spawn_child(&ctx.executable, &ctx.default_args, events_tx.clone())
-            .map_err(|e| rpc_err(-32000, &e))?;
-        let session = Arc::new(tokio::sync::Mutex::new(Session {
-            id: session_id.clone(), child, stdin, events: events_tx, event_count: 0, state: "running".into(),
-        }));
-        ctx.sessions.lock().await
-            .insert(session_id.clone(), Arc::clone(&session));
-        let info = session.lock().await.info();
-        Ok::<Value, jsonrpsee::types::ErrorObjectOwned>(json!({"sessionId": session_id, "session": info}))
-    }).map_err(|e| e.to_string())?;
+async fn handle_stop_session(state: &Arc<AppState>, params: &Value) -> Result<Value, String> {
+    let sid = params
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or("sessionId is required")?
+        .to_string();
+    let session = {
+        let mut sessions = state.sessions.lock().await;
+        sessions
+            .remove(&sid)
+            .ok_or(format!("session {sid} not found"))?
+    };
+    let mut sl = session.lock().await;
+    sl.state = "stopped".into();
+    let _ = sl.child.kill().await;
+    let _ = sl.child.wait().await;
+    Ok(json!({"sessionId": sid, "status": "stopped"}))
+}
 
-    // ── send ──────────────────────────────────────────────────────────────
-    module.register_async_method("send", |params, ctx, _ext| async move {
-        let pv: Value = params.parse().unwrap_or(json!({}));
-        let sid = pv.get("sessionId").and_then(Value::as_str)
-            .ok_or_else(|| rpc_err(-32602, "sessionId is required"))?.to_string();
-        let cmd = pv.get("command").ok_or_else(|| rpc_err(-32602, "command is required"))?;
-        let session = {
-            let sessions = ctx.sessions.lock().await;
-            sessions.get(&sid)
-                .ok_or_else(|| rpc_err(-32000, &format!("session {sid} not found")))?.clone()
-        };
-        let mut line = serde_json::to_string(cmd).map_err(|e| rpc_err(-32000, &e.to_string()))?;
-        line.push('\n');
-        let mut sl = session.lock().await;
-        sl.stdin.write_all(line.as_bytes()).await.map_err(|e| rpc_err(-32000, &format!("write: {e}")))?;
-        sl.stdin.flush().await.map_err(|e| rpc_err(-32000, &format!("flush: {e}")))?;
-        Ok::<Value, jsonrpsee::types::ErrorObjectOwned>(json!({"sessionId": sid, "status": "sent"}))
-    }).map_err(|e| e.to_string())?;
+async fn handle_list_sessions(state: &Arc<AppState>) -> Result<Value, String> {
+    let sessions = state.sessions.lock().await;
+    let mut list = Vec::new();
+    for s in sessions.values() {
+        list.push(s.lock().await.info());
+    }
+    Ok(json!(list))
+}
 
-    // ── stop_session ──────────────────────────────────────────────────────
-    module.register_async_method("stop_session", |params, ctx, _ext| async move {
-        let pv: Value = params.parse().unwrap_or(json!({}));
-        let sid = pv.get("sessionId").and_then(Value::as_str)
-            .ok_or_else(|| rpc_err(-32602, "sessionId is required"))?.to_string();
-        let session = {
-            let mut sessions = ctx.sessions.lock().await;
-            sessions.remove(&sid).ok_or_else(|| rpc_err(-32000, &format!("session {sid} not found")))?
-        };
-        let mut sl = session.lock().await;
-        sl.state = "stopped".into();
-        let _ = sl.child.kill().await;
-        let _ = sl.child.wait().await;
-        Ok::<Value, jsonrpsee::types::ErrorObjectOwned>(json!({"sessionId": sid, "status": "stopped"}))
-    }).map_err(|e| e.to_string())?;
+async fn handle_server_status(state: &Arc<AppState>) -> Result<Value, String> {
+    let address = state.bound_address.lock().await.clone();
+    let info = state.info(&address, "running").await;
+    Ok(json!(info))
+}
 
-    // ── list_sessions ─────────────────────────────────────────────────────
-    module.register_async_method("list_sessions", |_params, ctx, _ext| async move {
-        let sessions = ctx.sessions.lock().await;
-        let mut list = Vec::new();
-        for s in sessions.values() {
-            list.push(s.lock().await.info());
-        }
-        Ok::<Value, jsonrpsee::types::ErrorObjectOwned>(json!(list))
-    }).map_err(|e| e.to_string())?;
+static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
 
-    // ── server_status ─────────────────────────────────────────────────────
-    module.register_async_method("server_status", |_params, ctx, _ext| async move {
-        let address = ctx.bound_address.lock().await.clone();
-        let info = ctx.info(&address, "running").await;
-        Ok::<Value, jsonrpsee::types::ErrorObjectOwned>(json!(info))
-    }).map_err(|e| e.to_string())?;
+// ── Connection handler ────────────────────────────────────────────────────────
 
-    // ── Subscription: subscribe (streaming events) ────────────────────────
-    // jsonrpsee 0.24 register_subscription API:
-    // register_subscription(subscribe_method, notif_method, unsubscribe_method, callback)
-    // callback: Fn(Params<'static>, PendingSubscriptionSink, Arc<Context>, Extensions) -> Fut
-    module.register_subscription(
-        "subscribe",
-        "subscribe",
-        "unsubscribe",
-        |params: jsonrpsee::types::Params<'static>, pending, ctx, _ext| async move {
-            let pv: Value = params.parse().unwrap_or(json!({}));
-            let sid = pv.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string();
-            let session = {
-                let sessions = ctx.sessions.lock().await;
-                match sessions.get(&sid) {
-                    Some(s) => s.clone(),
-                    None => {
-                        let _ = pending.reject(rpc_err(-32000, &format!("session {sid} not found"))).await;
-                        return Ok(());
-                    }
-                }
-            };
-            let sink = match pending.accept().await {
-                Ok(s) => s,
-                Err(_) => return Ok(()),
-            };
-            let mut rx = {
-                let sl = session.lock().await;
-                sl.events.subscribe()
-            };
+/// Handle a single client connection.
+pub async fn handle_connection<C: Connection>(
+    state: Arc<AppState>,
+    mut conn: C,
+) {
+    let conn_id = conn.id().to_string();
+    // Map of subscription_id -> broadcast receiver
+    let mut sub_receivers: HashMap<u64, broadcast::Receiver<Value>> = HashMap::new();
+    let mut sub_sessions: HashMap<u64, Arc<TokioMutex<Session>>> = HashMap::new();
+
+    loop {
+        // Check for subscription events (non-blocking)
+        for (sub_id, rx) in sub_receivers.iter_mut() {
             loop {
-                match rx.recv().await {
+                match rx.try_recv() {
                     Ok(event) => {
-                        {
-                            let mut s = session.lock().await;
-                            s.event_count += 1;
-                        }
-                        let msg = jsonrpsee::server::SubscriptionMessage::from_json(&event)
-                            .map_err(|e| rpc_err(-32000, &format!("serialize: {e}")))?;
-                        if sink.send(msg).await.is_err() {
-                            break;
+                        let notification = json!({
+                            "jsonrpc": "2.0",
+                            "method": "event",
+                            "params": {
+                                "subscriptionId": sub_id,
+                                "event": event,
+                            }
+                        });
+                        if conn.send(notification).await.is_err() {
+                            // Connection closed
+                            return;
                         }
                         if event.get("type").and_then(Value::as_str) == Some("session_end") {
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        let lag = json!({"type": "lagged", "skipped": n});
-                        let msg = jsonrpsee::server::SubscriptionMessage::from_json(&lag)
-                            .map_err(|e| rpc_err(-32000, &format!("serialize: {e}")))?;
-                        if sink.send(msg).await.is_err() {
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        let notification = json!({
+                            "jsonrpc": "2.0",
+                            "method": "event",
+                            "params": {
+                                "subscriptionId": sub_id,
+                                "event": {"type": "lagged", "skipped": n},
+                            }
+                        });
+                        let _ = conn.send(notification).await;
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                }
+            }
+        }
+
+        // Read next message with a short timeout to allow subscription polling
+        let recv_result = tokio::time::timeout(
+            tokio::time::Duration::from_millis(50),
+            conn.recv(),
+        )
+        .await;
+
+        match recv_result {
+            Ok(Ok(Some(msg))) => {
+                // Check if it's a subscribe request — handle specially
+                let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+                if method == "subscribe" {
+                    let id = msg.get("id").cloned();
+                    let params = msg.get("params").cloned().unwrap_or(json!({}));
+                    let sid = params
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+
+                    let session = {
+                        let sessions = state.sessions.lock().await;
+                        sessions.get(&sid).cloned()
+                    };
+
+                    match session {
+                        Some(session) => {
+                            let sub_id = NEXT_SUB_ID.fetch_add(1, Ordering::Relaxed);
+                            let rx = {
+                                let sl = session.lock().await;
+                                sl.events.subscribe()
+                            };
+                            sub_receivers.insert(sub_id, rx);
+                            sub_sessions.insert(sub_id, session);
+
+                            let response = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "subscriptionId": sub_id,
+                                    "sessionId": sid,
+                                    "status": "subscribed",
+                                }
+                            });
+                            if conn.send(response).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => {
+                            let response = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {"code": -32000, "message": format!("session {sid} not found")},
+                            });
+                            if conn.send(response).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // Normal request
+                    if let Some(response) = handle_request(&state, &msg).await {
+                        if conn.send(response).await.is_err() {
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-            Ok(())
-        },
-    ).map_err(|e| e.to_string())?;
+            Ok(Ok(None)) => {
+                // Connection closed
+                break;
+            }
+            Ok(Err(e)) => {
+                eprintln!("[{conn_id}] read error: {e}");
+                break;
+            }
+            Err(_) => {
+                // Timeout — just loop to check subscriptions
+                continue;
+            }
+        }
+    }
 
-    Ok(module)
+    // Cleanup: abort all subscription tasks
+    for (_, session) in sub_sessions {
+        let _ = session;
+    }
 }
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
-pub struct RpcServerHandle {
+pub struct TcpServerHandle {
     pub id: String,
     pub address: String,
     pub token: String,
-    pub handle: tokio::sync::Mutex<Option<ServerHandle>>,
     pub state: Arc<AppState>,
+    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
-impl RpcServerHandle {
+impl TcpServerHandle {
     pub fn is_running(&self) -> bool {
-        self.handle.try_lock().map(|h| h.is_some()).unwrap_or(false)
+        self.state.running.load(Ordering::Relaxed)
     }
 
     pub async fn stop(&self) -> Result<(), String> {
-        // Kill all child processes first
-        {
-            let sessions = self.state.sessions.lock().await;
-            for (_, session) in sessions.iter() {
-                let mut s = session.lock().await;
-                let _ = s.child.kill().await;
-                let _ = s.child.wait().await;
-            }
-        }
-        if let Some(h) = self.handle.lock().await.take() {
-            let _ = h.stop();
+        self.state.running.store(false, Ordering::Relaxed);
+        let _ = self.shutdown_tx.send(true);
+
+        // Kill all child processes
+        let sessions = self.state.sessions.lock().await;
+        for (_, session) in sessions.iter() {
+            let mut s = session.lock().await;
+            let _ = s.child.kill().await;
+            let _ = s.child.wait().await;
         }
         Ok(())
     }
 
     pub async fn info(&self) -> ServerInfo {
-        let state_str = if self.is_running() { "running" } else { "stopped" };
+        let state_str = if self.is_running() {
+            "running"
+        } else {
+            "stopped"
+        };
         self.state.info(&self.address, state_str).await
     }
 }
 
-pub async fn start_rpc_server(
+/// Run the TCP server — accepts connections and spawns handlers.
+pub async fn run_server<T: Transport>(
+    transport: Arc<T>,
     bind: &str,
     port: u16,
     token: String,
     executable: PathBuf,
     args: Vec<String>,
-) -> Result<Arc<RpcServerHandle>, String> {
-    let addr: SocketAddr = format!("{bind}:{port}")
-        .parse()
-        .map_err(|e| format!("invalid bind address: {e}"))?;
+) -> Result<Arc<TcpServerHandle>, String> {
+    let addr = format!("{bind}:{port}");
+    transport.listen(&addr).await?;
 
     let server_id = next_server_id();
-    let state = Arc::new(AppState::new(executable, args, token.clone(), server_id.clone()));
-    let module = build_rpc_module(Arc::clone(&state)).await?;
+    let state = Arc::new(AppState::new(
+        executable,
+        args,
+        token.clone(),
+        server_id.clone(),
+    ));
+    *state.bound_address.lock().await = addr.clone();
 
-    let server = Server::builder()
-        .build(addr)
-        .await
-        .map_err(|e| format!("failed to start server: {e}"))?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    let actual_addr = server.local_addr().map_err(|e| format!("failed to get address: {e}"))?;
-    *state.bound_address.lock().await = actual_addr.to_string();
-    let handle = server.start(module);
-
-    println!("rpi-server listening on ws://{actual_addr}");
-    println!("token: {token}");
-
-    Ok(Arc::new(RpcServerHandle {
+    let handle = Arc::new(TcpServerHandle {
         id: server_id,
-        address: actual_addr.to_string(),
+        address: addr.clone(),
         token,
-        handle: tokio::sync::Mutex::new(Some(handle)),
-        state,
-    }))
+        state: Arc::clone(&state),
+        shutdown_tx,
+        shutdown_rx: shutdown_rx.clone(),
+    });
+
+    println!("rpi-server listening on {addr}");
+    println!("token: {}", handle.token);
+
+    // Accept loop
+    let handle_clone = Arc::clone(&handle);
+    let transport_clone = Arc::clone(&transport);
+    tokio::spawn(async move {
+        let mut shutdown_rx = handle_clone.shutdown_rx.clone();
+        loop {
+            tokio::select! {
+                result = transport_clone.accept() => {
+                    match result {
+                        Ok(conn) => {
+                            let state = Arc::clone(&handle_clone.state);
+                            tokio::spawn(async move {
+                                handle_connection(state, conn).await;
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("accept error: {e}");
+                        }
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(handle)
 }

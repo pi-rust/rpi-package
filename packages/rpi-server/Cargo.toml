@@ -1,11 +1,11 @@
 [package]
 name = "rpi-server"
-version = "0.1.0"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "JSON-RPC server for rpi with streaming subscriptions (based on jsonrpsee)"
-keywords = ["rpi", "rpc", "jsonrpc", "server", "streaming"]
+description = "TCP JSONL server for rpi with streaming subscriptions"
+keywords = ["rpi", "rpc", "tcp", "server", "streaming"]
 
 [lib]
 crate-type = ["cdylib"]
@@ -14,7 +14,5 @@ crate-type = ["cdylib"]
 rpi-plugin-sdk = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
-jsonrpsee = { version = "0.24", features = ["server", "ws-client"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "io-std", "macros"] }
-futures = "0.3"
-ctrlc = "3.4"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "io-std", "macros", "net"] }
+async-trait = "0.1"
