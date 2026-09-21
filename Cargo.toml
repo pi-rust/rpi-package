@@ -33,7 +33,10 @@ authors = ["BigFish <bigfish1913@gmail.com>"]
 repository = "https://github.com/pi-rust/rpi-package"
 
 [workspace.dependencies]
-rpi-plugin-sdk = "=0.1.13"
+# Build the packages against the LOCAL pi-rust SDK so they track the current ABI
+# (EventTag::BeforeTuiStart, the v3 declare ext block, ...). The smoke tool
+# already path-depends on the same crates.
+rpi-plugin-sdk = { path = "../pi-rust/crates/rpi-plugin-sdk" }
 feishu-sdk = { version = "0.1.2", default-features = false, features = ["websocket"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
