@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-background-tasks"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-codegraph"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1213,7 +1213,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-firecrawl"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-adapter"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
@@ -1261,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-memory"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-plugin-sdk"
-version = "0.1.23"
+version = "0.1.25"
 dependencies = [
  "serde_json",
 ]
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "rpi-plugin-sdk",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-simplify"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1327,7 +1327,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-token-usage"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1335,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web-access"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
