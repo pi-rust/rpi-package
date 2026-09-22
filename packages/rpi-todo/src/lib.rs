@@ -211,7 +211,7 @@ fn todo(params: &Value) -> Result<String, String> {
                 "add",
                 &items,
                 &items,
-                format!("✓ Added #{id} {}", text),
+                format!("✓ Added #{id} {}\n\n{}", text, display_list(&items)),
             ))
         }
         "done" | "complete" | "check" | "toggle" => {
@@ -241,7 +241,7 @@ fn todo(params: &Value) -> Result<String, String> {
                 action,
                 &items,
                 &items,
-                format!("✓ #{id} {verb} {text}"),
+                format!("✓ #{id} {verb} {text}\n\n{}", display_list(&items)),
             ))
         }
         "remove" => {
@@ -259,13 +259,13 @@ fn todo(params: &Value) -> Result<String, String> {
                 "remove",
                 &items,
                 &items,
-                format!("✓ Removed todo #{id}"),
+                format!("✓ Removed todo #{id}\n\n{}", display_list(&items)),
             ))
         }
         "clear" => {
             items.clear();
             save(&path, &items)?;
-            Ok(result("clear", &items, &items, "✓ Cleared all todos"))
+            Ok(result("clear", &items, &items, format!("✓ Cleared all todos\n\n{}", display_list(&items))))
         }
         "list" => {
             let include_done = params
@@ -397,10 +397,9 @@ mod tests {
         let added = todo(&json!({"action":"add","text":"ship it","cwd":cwd})).unwrap();
         let value: Value = serde_json::from_str(&added).unwrap();
         assert_eq!(value["details"]["mode"], "check");
-        assert!(value["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Added #1"));
+        let text = value["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Added #1"), "confirmation missing: {text}");
+        assert!(text.contains("Todos"), "list header missing: {text}");
         fs::remove_dir_all(path).ok();
     }
 
@@ -417,5 +416,75 @@ mod tests {
         .unwrap();
         assert_eq!(listed["details"]["nextId"], 3);
         fs::remove_dir_all(path).ok();
+    }
+}
+
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn temp_cwd() -> String {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let p = std::env::temp_dir().join(format!(
+            "rpi-todo-display-{}-{}-{}",
+            std::process::id(),
+            now(),
+            id
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p.to_string_lossy().to_string()
+    }
+
+    fn extract_text(json_str: &str) -> String {
+        let v: Value = serde_json::from_str(json_str).unwrap();
+        v["content"][0]["text"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn add_returns_confirmation_plus_list() {
+        let cwd = temp_cwd();
+        let text = extract_text(&todo(&json!({"action":"add","text":"first","cwd":cwd})).unwrap());
+        assert!(text.contains("Added #1 first"), "confirmation: {}", text);
+        assert!(text.contains("Todos"), "list header: {}", text);
+        assert!(text.contains("█") || text.contains("░"), "progress bar: {}", text);
+        assert!(text.contains("| Status |"), "table header: {}", text);
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn done_returns_confirmation_plus_list() {
+        let cwd = temp_cwd();
+        todo(&json!({"action":"add","text":"task a","cwd":cwd})).unwrap();
+        todo(&json!({"action":"add","text":"task b","cwd":cwd})).unwrap();
+        let text = extract_text(&todo(&json!({"action":"done","id":1,"cwd":cwd})).unwrap());
+        assert!(text.contains("#1 checked task a"), "confirmation: {}", text);
+        assert!(text.contains("50%"), "progress should be 50%: {}", text);
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn remove_returns_confirmation_plus_list() {
+        let cwd = temp_cwd();
+        todo(&json!({"action":"add","text":"task a","cwd":cwd})).unwrap();
+        todo(&json!({"action":"add","text":"task b","cwd":cwd})).unwrap();
+        let text = extract_text(&todo(&json!({"action":"remove","id":1,"cwd":cwd})).unwrap());
+        assert!(text.contains("Removed todo #1"), "confirmation: {}", text);
+        assert!(text.contains("task b"), "remaining task shown: {}", text);
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn clear_returns_confirmation_plus_empty() {
+        let cwd = temp_cwd();
+        todo(&json!({"action":"add","text":"task a","cwd":cwd})).unwrap();
+        let text = extract_text(&todo(&json!({"action":"clear","cwd":cwd})).unwrap());
+        assert!(text.contains("Cleared all todos"), "confirmation: {}", text);
+        assert!(text.contains("No todos"), "empty list: {}", text);
+        std::fs::remove_dir_all(&cwd).ok();
     }
 }
