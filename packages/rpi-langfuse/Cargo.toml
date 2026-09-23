@@ -1,0 +1,20 @@
+[package]
+name = "rpi-langfuse"
+version = "0.1.3"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Langfuse tracing, scoring, and prompt management tools for the rpi Rust agent"
+readme = "README.md"
+keywords = ["rpi", "langfuse", "tracing", "observability", "llm"]
+categories = ["development-tools"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }

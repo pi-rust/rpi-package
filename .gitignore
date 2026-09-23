@@ -3,3 +3,5 @@
 /dist/
 *.log
 .rpi/
+# 部署打包目录
+.deploy/

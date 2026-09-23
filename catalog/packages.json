@@ -169,5 +169,14 @@
     "inspiredBy": "Hermes Feishu/Lark channels",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-im-message"
+  },
+  {
+    "name": "rpi-langfuse",
+    "version": "0.1.1",
+    "type": "extension",
+    "tool": "langfuse_trace + langfuse_score + langfuse_prompt",
+    "inspiredBy": "Langfuse open-source LLM observability platform",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-langfuse"
   }
 ]

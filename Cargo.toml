@@ -20,6 +20,7 @@ members = [
     "packages/rpi-extension-rpc",
     "packages/rpi-im-message",
     "packages/rpi-server",
+    "packages/rpi-langfuse",
 ]
 exclude = ["tools/rpi-package-smoke"]
 resolver = "2"
