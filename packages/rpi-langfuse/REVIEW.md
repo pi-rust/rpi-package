@@ -229,6 +229,65 @@ cargo build --package rpi-langfuse --release
 
 ---
 
+## 第三轮测试（2026-09-24）—— 安装后 TUI panic 崩溃（OOM abort）
+
+### 🔴 严重 Bug（已修复）：`AgentStart` / `ModelSelect` 事件空 payload 被当作 data 读取
+
+**症状**：安装当前扩展（v0.1.4）后，启动 rpi TUI（或 `-p` 模式）立即崩溃：
+
+```
+memory allocation of 1886548987680 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+（分配约 1.9TB 失败 → Rust 默认 OOM abort → 整个宿主进程退出，TUI 崩溃。
+该 abort 发生在 `catch_unwind` 之外，宿主无法拦截。）
+
+**根因**：`on_agent_start` / `on_model_select` 无条件读取事件 union 的 data 成员：
+
+```rust
+let data_str = unsafe { event.payload.data.data.to_string_lossy() };
+```
+
+但宿主的 `StablePluginEvent` 是 `#[repr(C)]` union（`EventEmpty` 只有 1 字节，
+`EventData` 是 16 字节 `StbString{ptr,len}`）。宿主对 `AgentStart`（经
+`translate()`）与生命周期事件都派发 **空 payload**（`StablePluginEvent::empty`），
+union 其余字节是未初始化的栈内存。插件把垃圾字节当作 `StbString` 读，
+`len` 变成 ~1.9TB 的垃圾值，`to_string_lossy()` 尝试分配 → OOM abort。
+
+宿主确认（`pi-rust/crates/rpi-extensions/src/translate.rs`）：
+
+```rust
+AgentEvent::AgentStart
+| AgentEvent::TurnStart
+| AgentEvent::AgentEnd { .. }
+| AgentEvent::TurnEnd { .. } => Some(StablePluginEvent::empty(tag)),
+```
+
+**影响**：只要事件处理器订阅了 `AgentStart` 并读取 data，加载后 rpi 一启动
+（SessionStart 后、首个 AgentStart 派发）即崩溃。TUI / headless 全部受影响。
+
+**修复**（`src/lib.rs`）：
+- `on_agent_start`：不再读取 `event.payload.data.data`（`AgentStart` 无 data），
+  根 observation 以 `None` body 创建。
+- `on_model_select`：改为 no-op（rpi 宿主当前不派发 `ModelSelect`；若派发也
+  可能是空 payload，不能读 data）。
+
+**验证**：
+- 隔离加载仅 rpi_langfuse.dll：`rpi -p "hi"` 不再 OOM（修复前必崩）。
+- 事件日志确认所有处理器返回 Continue：
+  `AgentStart` / `TurnStart` / `BeforeProviderRequest` / `TurnEnd`。
+- 全量扩展环境（含 rpi_server 等）加载同样无崩溃。
+
+### 🟡 附带修复：`BeforeProviderRequest` 重复 push observation
+
+**问题**：`on_before_provider_request` 调用 `start_observation`（内部已把
+observation 注册进 `observations` + `observation_by_id`）后，又手动
+`state.observations.push(obs)` 一次 → Langfuse 出现重复 generation span。
+**修复**：删除重复 push。
+
+---
+
 ## 建议
 
 ### 短期（可选）

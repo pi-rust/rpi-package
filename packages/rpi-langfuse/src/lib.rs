@@ -757,20 +757,16 @@ extern "C" fn on_session_start(_event: StablePluginEvent, _: *mut c_void) -> i32
     0
 }
 
-extern "C" fn on_model_select(event: StablePluginEvent, _: *mut c_void) -> i32 {
+extern "C" fn on_model_select(_event: StablePluginEvent, _: *mut c_void) -> i32 {
     if !is_enabled() {
         return 0;
     }
-    let data_str = unsafe { event.payload.data.data.to_string_lossy() };
-    let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-    
-    let mut state = run_state().lock().unwrap();
-    if let Some(model) = data.get("model").and_then(|m| m.as_str()) {
-        state.current_model = model.to_string();
-    }
-    if let Some(provider) = data.get("provider").and_then(|p| p.as_str()) {
-        state.current_provider = provider.to_string();
-    }
+    // The rpi host does not dispatch `ModelSelect` today (it is not part of
+    // the emitted event set), so there is no stable payload to read. Keep the
+    // handler as a no-op rather than reading `event.payload.data` — the host
+    // may dispatch this tag with an empty payload, and reading the `data`
+    // union member on a non-data event reads uninitialized stack bytes as a
+    // `StbString`, producing a garbage `len` that aborts the whole process.
     0
 }
 
@@ -778,9 +774,14 @@ extern "C" fn on_agent_start(event: StablePluginEvent, _: *mut c_void) -> i32 {
     if !is_enabled() {
         return 0;
     }
-    let data_str = unsafe { event.payload.data.data.to_string_lossy() };
-    let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-    
+    // `AgentStart` is dispatched by the host with an EMPTY payload
+    // (`StablePluginEvent::empty`) — it carries no data JSON. Reading
+    // `event.payload.data.data` here reads uninitialized stack bytes as a
+    // `StbString`, producing a garbage `len` that makes `to_string_lossy`
+    // allocate ~terabytes and abort the whole host (TUI crash). Never read
+    // the `data` union member for a tag the host dispatches empty.
+    let _ = event;
+
     // Check if we need to create root observation
     let need_root = {
         let state = run_state().lock().unwrap();
@@ -788,7 +789,7 @@ extern "C" fn on_agent_start(event: StablePluginEvent, _: *mut c_void) -> i32 {
     };
     
     if need_root {
-        let obs = start_observation("agent-run", Some(data.clone()), Some("span"), None);
+        let obs = start_observation("agent-run", None, Some("span"), None);
         let mut state = run_state().lock().unwrap();
         state.agent_state = Some(AgentState {
             root: Some(obs),
@@ -828,11 +829,11 @@ extern "C" fn on_before_provider_request(event: StablePluginEvent, _: *mut c_voi
         .map(|o| o.id.clone());
     drop(state);
     
-    let obs = start_observation("llm-request", Some(data.clone()), Some("generation"), 
+    // `start_observation` already registers the observation in `observations`
+    // and `observation_by_id`; do not push it again here (that would create
+    // duplicate generation spans in Langfuse).
+    let _obs = start_observation("llm-request", Some(data.clone()), Some("generation"), 
         parent_id.as_deref());
-    
-    let mut state = run_state().lock().unwrap();
-    state.observations.push(obs);
     0
 }
 
