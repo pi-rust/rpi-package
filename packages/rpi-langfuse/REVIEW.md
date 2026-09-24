@@ -127,6 +127,48 @@ let turn = state.active_generations.lock().unwrap()
 
 ---
 
+## 第二轮测试（2026-09-24）—— 手动工具 API 兼容性
+
+### 🔴 发现的 Bug（已修复）
+
+#### 7. `langfuse_prompt get` 路由错误
+**问题**：`get` 使用 `GET /api/public/prompts/{name}`，但 Langfuse v2.95 没有该路径路由，返回 404 HTML（Next.js 页面），扩展解析 JSON 失败报 `invalid langfuse response`。
+**修复**：改用查询参数形式 `GET /api/public/prompts?name=X`（可选 `&version=N`）。
+
+#### 8. `langfuse_prompt list` 参数缺失
+**问题**：Langfuse v2.95 的 `GET /api/public/prompts` **必须**带 `name` 查询参数（否则 400），且该接口返回单个 prompt（最新版本），**没有 list-all-prompts 端点**。扩展原来不带 name 直接请求 → 400。
+**修复**：`list` 要求 `name`，走查询参数形式，并把返回对象包装成 `{data: [v]}` 保持列表语义。
+
+#### 9. `langfuse_trace update` 方法错误
+**问题**：扩展使用 `PUT /api/public/traces/{id}`，但该服务器没有此路由（PATCH/PUT/POST 均返回 405 Method Not Allowed）。
+**修复**：改用 ingestion API 发送 `trace-create` 事件（相同 trace id 即 upsert），已验证 207 成功且字段合并。
+
+### 实测确认的 Langfuse v2.95 API 行为
+
+| 端点 | 行为 |
+|------|------|
+| `GET /api/public/prompts?name=X` | ✅ 200，返回最新版本（单对象） |
+| `GET /api/public/prompts?name=X&version=N` | ✅ 200，返回指定版本 |
+| `GET /api/public/prompts`（无 name） | ❌ 400 name required |
+| `GET /api/public/prompts/{name}` | ❌ 404 HTML（路由不存在） |
+| `POST /api/public/prompts` | ✅ 201 创建 |
+| `PUT/PATCH/POST /api/public/traces/{id}` | ❌ 405 方法不允许 |
+| `POST /api/public/ingestion`（trace-create upsert） | ✅ 207 更新 trace |
+
+### 第二轮工具实测
+
+```
+✅ langfuse_score create（accuracy-continued-test 0.88）
+✅ langfuse_score list（返回 4 条，含新评分）
+✅ langfuse_trace get（显示新评分已挂载）
+✅ langfuse_trace list（分页/过滤）
+✅ langfuse_prompt create（test-prompt-continued）
+✅ 修复后 prompt get/list、trace update 路径经 curl 验证通过
+⏳ 修复后行为需重启 rpi 后经工具再次确认
+```
+
+---
+
 ## 端到端测试结果
 
 ```
