@@ -1,5 +1,5 @@
 use rpi_plugin_sdk::{
-    register_entrypoint, EventTag, FreeStringFn, PluginApiVt, StablePluginEvent, StableToolSchema,
+    register_entrypoint_unified, EventTag, FreeStringFn, PluginApi, StablePluginEvent, StableToolSchema,
     StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
@@ -744,9 +744,9 @@ const SERVER_PARAMETERS: &str = r#"{
 }"#;
 
 #[no_mangle]
-pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
+pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
-        register_entrypoint(api, abi, |api| {
+        register_entrypoint_unified(api, |api| {
         let Some(register) = api.register_tool else {
             return 1;
         };

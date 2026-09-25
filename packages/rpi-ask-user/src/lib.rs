@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rpi_plugin_sdk::{
-    register_entrypoint, FreeStringFn, PluginApiVt, RuntimeActionFn, StableToolSchema, StbString,
+    register_entrypoint_unified, FreeStringFn, PluginApi, RuntimeActionFn, StableToolSchema, StbString,
     StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
@@ -791,8 +791,8 @@ extern "C" fn ask_command(args_json: StbStringRef, out: *mut StbString, _: *mut 
 }
 
 #[no_mangle]
-pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
-    unsafe { register_entrypoint(api, abi, |api| {
+pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
+    unsafe { register_entrypoint_unified(api, |api| {
         let Some(register) = api.register_tool else {
             return 1;
         };

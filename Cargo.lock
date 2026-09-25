@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-ask-user"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-background-tasks"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-codegraph"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-extension-rpc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1213,7 +1213,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-firecrawl"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-im-message"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "feishu-sdk",
  "rpi-plugin-sdk",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-langfuse"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
@@ -1252,7 +1252,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1261,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-adapter"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
@@ -1271,7 +1271,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-memory"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-permissions"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1287,14 +1287,14 @@ dependencies = [
 
 [[package]]
 name = "rpi-plugin-sdk"
-version = "0.1.28"
+version = "0.3.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "rpi-search"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-server"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-trait",
  "rpi-plugin-sdk",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-simplify"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1321,7 +1321,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1329,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-todo"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-token-usage"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -1345,7 +1345,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web-access"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-webfetch"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
@@ -1365,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-websearch"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",

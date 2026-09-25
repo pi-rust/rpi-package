@@ -2,7 +2,7 @@ mod server;
 mod transport;
 
 use rpi_plugin_sdk::{
-    register_entrypoint, EventTag, FreeStringFn, PluginApiVt, RuntimeActionFn, RuntimeActionId,
+    register_entrypoint_unified, EventTag, FreeStringFn, PluginApi, RuntimeActionFn, RuntimeActionId,
     StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
     ToolPartialCb,
 };
@@ -656,9 +656,9 @@ const CLIENT_PARAMETERS: &str = r#"{
 // ── Plugin entry ──────────────────────────────────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn rpi_plugin_register_v2(api: *const PluginApiVt, abi: u32) -> i32 {
+pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
-        register_entrypoint(api, abi, |api| {
+        register_entrypoint_unified(api, |api| {
             // Copy the host function pointers/handles OUT of the vtable during
             // register — the `api` pointer is only valid for this call.
             let _ = RUNTIME_ACTION.set(api.runtime_action);
