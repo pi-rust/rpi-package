@@ -1287,7 +1287,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-plugin-sdk"
-version = "0.3.0"
+version = "0.1.26"
 dependencies = [
  "serde_json",
 ]

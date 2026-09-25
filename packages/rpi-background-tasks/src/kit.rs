@@ -135,11 +135,10 @@ macro_rules! export_single_tool_plugin {
         }
 
         #[no_mangle]
-        pub extern "C" fn rpi_plugin_register_v2(
-            api: *const rpi_plugin_sdk::PluginApiVt,
-            abi: u32,
+        pub extern "C" fn rpi_plugin_register(
+            api: *const rpi_plugin_sdk::PluginApi,
         ) -> i32 {
-            unsafe { rpi_plugin_sdk::register_entrypoint(api, abi, |api| {
+            unsafe { rpi_plugin_sdk::register_entrypoint_unified(api, |api| {
                 let Some(register) = api.register_tool else {
                     return 1;
                 };

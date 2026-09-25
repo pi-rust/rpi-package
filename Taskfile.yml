@@ -39,7 +39,7 @@ tasks:
       - cargo test --manifest-path tools/rpi-package-smoke/Cargo.toml -- --ignored --nocapture
 
   publish-dry-run:
-    desc: Verify all nineteen extensions can be packaged for crates.io
+    desc: Verify all 21 extensions can be packaged for crates.io
     cmds:
       - task: test
       - cargo publish --dry-run --allow-dirty -p rpi-mcp-adapter
@@ -62,9 +62,10 @@ tasks:
       - cargo publish --dry-run --allow-dirty -p rpi-firecrawl
       - cargo publish --dry-run --allow-dirty -p rpi-extension-rpc
       - cargo publish --dry-run --allow-dirty -p rpi-im-message
+      - cargo publish --dry-run --allow-dirty -p rpi-server
 
   publish:
-    desc: Publish the nineteen packages to crates.io
+    desc: Publish all packages to crates.io
     cmds:
       - task: test
       - cargo publish --allow-dirty -p rpi-mcp-adapter
@@ -81,11 +82,13 @@ tasks:
       - cargo publish --allow-dirty -p rpi-simplify
       - cargo publish --allow-dirty -p rpi-search
       - cargo publish --allow-dirty -p rpi-goal
+      - cargo publish --allow-dirty -p rpi-langfuse
       - cargo publish --allow-dirty -p rpi-websearch
       - cargo publish --allow-dirty -p rpi-webfetch
       - cargo publish --allow-dirty -p rpi-firecrawl
       - cargo publish --allow-dirty -p rpi-extension-rpc
       - cargo publish --allow-dirty -p rpi-im-message
+      - cargo publish --allow-dirty -p rpi-server
 
   publish-new:
     desc: Publish the packages added after the initial release

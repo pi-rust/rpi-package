@@ -4,11 +4,14 @@ version = "0.3.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 description = "TCP JSONL server for rpi with streaming subscriptions"
+readme = "README.md"
 keywords = ["rpi", "rpc", "tcp", "server", "streaming"]
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rpi-plugin-sdk = { workspace = true }
