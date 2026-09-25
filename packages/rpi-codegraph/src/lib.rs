@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn schemas_are_valid_json() {
         for spec in tool_specs() {
-            serde_json::from_str::<Value>(spec.parameters)
+            serde_json::from_str::<Value>(&spec.parameters)
                 .unwrap_or_else(|error| panic!("invalid schema for {}: {error}", spec.name));
         }
     }
