@@ -71,7 +71,67 @@ fn save(path: &PathBuf, items: &[Value]) -> Result<(), String> {
     }
     let text =
         serde_json::to_string_pretty(items).map_err(|e| format!("encode todo store: {e}"))?;
-    fs::write(path, text).map_err(|e| format!("write todo store: {e}"))
+    // Write to a sibling temp file and rename it into place.
+    //
+    // A plain `fs::write` opens with `CREATE_ALWAYS`/`O_TRUNC` and then writes
+    // in place. Two rpi sessions sharing one project (or one session caught
+    // mid-write) can therefore leave the *tail of the previous, longer
+    // document* after the new one — the `[...]\n  {"id":3,\n…\n}` shape that
+    // `load` has to defend against with a concatenated-JSON reader. Writing a
+    // complete document elsewhere and renaming it in makes readers observe
+    // either the old document or the new one, never a mixture: `rename`
+    // replaces atomically on Unix and on Windows (`MoveFileEx` with
+    // `MOVEFILE_REPLACE_EXISTING`).
+    let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    fs::write(&tmp, &text).map_err(|e| format!("write todo store: {e}"))?;
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("commit todo store: {error}"));
+    }
+    Ok(())
+}
+
+/// Collapse whitespace and drop a leading list marker from an incoming todo
+/// text.
+///
+/// Agents routinely pass whole plan lines — `"1. Tool names should be
+/// lowercase"`, `"- Fix the bash border"` — and that used to create a second
+/// todo for a task that was already tracked, so the plan looked unfinished and
+/// the agent re-planned it. The stored text should be the task, not the list
+/// position it happened to be read from.
+fn normalize_text(raw: &str) -> String {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut text = collapsed.as_str();
+
+    // `1.` / `12)` — a plan-list number. Only a marker when a separator follows
+    // it (`1. Foo`, `2)Foo`): `1.5x` is a value, not a list position. Leading
+    // digits are ASCII, so the byte offset equals the char offset and
+    // `digits + 1` is always a char boundary.
+    let digits = text.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 {
+        if matches!(text.as_bytes().get(digits), Some(b'.') | Some(b')')) {
+            let after = &text[digits + 1..];
+            if after.is_empty() || after.starts_with(char::is_whitespace) {
+                text = after.trim_start();
+            }
+        }
+    }
+
+    // `-` / `*` / `•` / `·` bullets. A bare `-` or `*` needs a following space
+    // so a hyphenated word or emphasised text is left alone.
+    if let Some(first) = text.chars().next() {
+        let rest = &text[first.len_utf8()..];
+        let is_bullet = match first {
+            '•' | '·' => true,
+            '-' | '*' => rest.is_empty() || rest.starts_with(char::is_whitespace),
+            _ => false,
+        };
+        if is_bullet {
+            text = rest.trim_start();
+        }
+    }
+
+    text.trim().to_string()
 }
 
 fn next_id(items: &[Value]) -> u64 {
@@ -191,13 +251,33 @@ fn todo(params: &Value) -> Result<String, String> {
         .unwrap_or("list");
     match action {
         "add" => {
-            let text = params
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim();
-            if text.is_empty() || text.len() > 2000 {
+            let text = normalize_text(
+                params
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            );
+            if text.is_empty() || text.chars().count() > 2000 {
                 return Err("text must contain 1-2000 characters".into());
+            }
+            // Re-adding a task that is already pending returns the existing
+            // entry instead of tracking it twice. Plan lines are often restated
+            // verbatim across turns; a duplicate made the todo list look like
+            // it still had the work outstanding.
+            if let Some(existing) = items.iter().find(|item| {
+                item.get("done") != Some(&Value::Bool(true))
+                    && item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|stored| normalize_text(stored) == text)
+            }) {
+                let id = existing.get("id").and_then(Value::as_u64).unwrap_or(0);
+                return Ok(result(
+                    "add",
+                    &items,
+                    &items,
+                    format!("# {id} already tracks: {text}\n\n{}", display_list(&items)),
+                ));
             }
             let id = next_id(&items);
             let tags = params
@@ -443,6 +523,87 @@ mod display_tests {
     fn extract_text(json_str: &str) -> String {
         let v: Value = serde_json::from_str(json_str).unwrap();
         v["content"][0]["text"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn add_strips_plan_list_markers() {
+        // Agents pass whole plan lines. "1. Foo" and "- Foo" are the same task
+        // as "Foo", and used to be tracked separately.
+        assert_eq!(
+            normalize_text("1. Tool names lowercase"),
+            "Tool names lowercase"
+        );
+        assert_eq!(
+            normalize_text("12) Tool names lowercase"),
+            "Tool names lowercase"
+        );
+        assert_eq!(normalize_text("-   Bash border color"), "Bash border color");
+        assert_eq!(normalize_text("* Bash border color"), "Bash border color");
+        assert_eq!(normalize_text("• Bash border color"), "Bash border color");
+        // Whitespace/newlines collapse so a re-wrapped plan line still matches.
+        assert_eq!(normalize_text("a\n  b\tc"), "a b c");
+        // A genuine decimal is NOT a list marker when no separator follows the
+        // digits.
+        assert_eq!(normalize_text("1.5x latency"), "1.5x latency");
+        assert_eq!(normalize_text("plain task"), "plain task");
+    }
+
+    #[test]
+    fn add_dedupes_against_a_pending_task() {
+        let cwd = temp_cwd();
+        todo(&json!({"action":"add","text":"Tool names lowercase","cwd":cwd})).unwrap();
+        // The agent restates the plan line with its numbering.
+        let text = extract_text(
+            &todo(&json!({"action":"add","text":"1. Tool names lowercase","cwd":cwd}))
+                .unwrap(),
+        );
+        assert!(text.contains("already tracks"), "dedupe message: {text}");
+        let items = load(&store_path(&json!({"cwd": cwd}))).unwrap();
+        assert_eq!(items.len(), 1, "duplicate todo was stored: {items:?}");
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn add_allows_a_task_again_once_it_is_done() {
+        let cwd = temp_cwd();
+        todo(&json!({"action":"add","text":"repeatable","cwd":cwd})).unwrap();
+        todo(&json!({"action":"done","id":1,"cwd":cwd})).unwrap();
+        todo(&json!({"action":"add","text":"repeatable","cwd":cwd})).unwrap();
+        let items = load(&store_path(&json!({"cwd": cwd}))).unwrap();
+        assert_eq!(items.len(), 2, "a completed task may be re-added: {items:?}");
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn save_leaves_no_stale_tail_when_the_document_shrinks() {
+        // The corruption this guards: a shorter document written over a longer
+        // one used to leave the old tail behind (`[...]\n  {"id":3…}\n]`),
+        // which is invalid JSON and only parsed thanks to `load`'s tolerant
+        // concatenated-JSON reader.
+        let cwd = temp_cwd();
+        let path = store_path(&json!({"cwd": cwd}));
+        for label in ["one", "two", "three"] {
+            let mut items = load(&path).unwrap();
+            let id = next_id(&items);
+            items.push(json!({
+                "id": id,
+                "text": label,
+                "done": false,
+                "tags": [],
+                "createdAt": 0,
+                "updatedAt": 0
+            }));
+            save(&path, &items).unwrap();
+        }
+        // Now shrink it back down.
+        save(&path, &[]).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap(),
+            json!([]),
+            "store must be exactly the new document, got: {raw:?}"
+        );
+        std::fs::remove_dir_all(&cwd).ok();
     }
 
     #[test]

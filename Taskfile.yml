@@ -56,6 +56,7 @@ tasks:
       - cargo publish --dry-run --allow-dirty -p rpi-simplify
       - cargo publish --dry-run --allow-dirty -p rpi-search
       - cargo publish --dry-run --allow-dirty -p rpi-goal
+      - cargo publish --dry-run --allow-dirty -p rpi-langfuse
       - cargo publish --dry-run --allow-dirty -p rpi-websearch
       - cargo publish --dry-run --allow-dirty -p rpi-webfetch
       - cargo publish --dry-run --allow-dirty -p rpi-firecrawl

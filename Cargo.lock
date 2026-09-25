@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-langfuse"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
@@ -1287,7 +1287,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-plugin-sdk"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "serde_json",
 ]
