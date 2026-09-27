@@ -21,16 +21,29 @@ tasks:
       - cargo build --release --workspace
 
   install:
-    desc: Build and copy all extension cdylibs to the rpi extension directory
+    desc: Build and copy the extension cdylibs into the rpi extension directory
     deps: [build]
     cmds:
-      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1
+      - cargo run --release -p rpi-package-install -- install
+
+  install-bundle:
+    desc: Install extensions from a bundle archive (ARCHIVE=path/to/archive)
+    requires:
+      vars: [ARCHIVE]
+    cmds:
+      - cargo run --release -p rpi-package-install -- bundle --archive "{{.ARCHIVE}}"
 
   pack:
-    desc: Create a distributable Windows x86_64 extension bundle
+    desc: Stage a distributable extension bundle under dist/ and archive it
     deps: [build]
     cmds:
-      - powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack.ps1
+      - cargo run --release -p rpi-package-install -- pack
+
+  pack-stage:
+    desc: Stage the bundle under dist/ without creating the archive
+    deps: [build]
+    cmds:
+      - cargo run --release -p rpi-package-install -- pack --no-archive
 
   smoke:
     desc: Load all built packages through the pi-rust extension loader
@@ -39,7 +52,7 @@ tasks:
       - cargo test --manifest-path tools/rpi-package-smoke/Cargo.toml -- --ignored --nocapture
 
   publish-dry-run:
-    desc: Verify all 21 extensions can be packaged for crates.io
+    desc: Verify all 22 extensions can be packaged for crates.io
     cmds:
       - task: test
       - cargo publish --dry-run --allow-dirty -p rpi-mcp-adapter
@@ -63,6 +76,7 @@ tasks:
       - cargo publish --dry-run --allow-dirty -p rpi-extension-rpc
       - cargo publish --dry-run --allow-dirty -p rpi-im-message
       - cargo publish --dry-run --allow-dirty -p rpi-server
+      - cargo publish --dry-run --allow-dirty -p rpi-voice
 
   publish:
     desc: Publish all packages to crates.io
@@ -89,6 +103,7 @@ tasks:
       - cargo publish --allow-dirty -p rpi-extension-rpc
       - cargo publish --allow-dirty -p rpi-im-message
       - cargo publish --allow-dirty -p rpi-server
+      - cargo publish --allow-dirty -p rpi-voice
 
   publish-new:
     desc: Publish the packages added after the initial release

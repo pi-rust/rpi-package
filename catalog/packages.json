@@ -55,7 +55,7 @@
   },
   {
     "name": "rpi-codegraph",
-    "version": "0.1.1",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "codegraph",
     "inspiredBy": "code graph extensions",
@@ -172,11 +172,20 @@
   },
   {
     "name": "rpi-langfuse",
-    "version": "0.1.1",
+    "version": "0.2.2",
     "type": "extension",
     "tool": "langfuse_trace + langfuse_score + langfuse_prompt",
     "inspiredBy": "Langfuse open-source LLM observability platform",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-langfuse"
+  },
+  {
+    "name": "rpi-voice",
+    "version": "0.2.0",
+    "type": "extension",
+    "tool": "/voice command + push-to-talk shortcut",
+    "inspiredBy": "hands-free voice assistants, made local",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-voice"
   }
 ]

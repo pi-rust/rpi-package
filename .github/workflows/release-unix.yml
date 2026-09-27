@@ -42,19 +42,19 @@ jobs:
       - name: Build release libraries
         run: cargo build --release --workspace
 
-      - name: Assemble archive
+      - name: Assemble bundle
         id: bundle
         shell: bash
         run: |
           set -euo pipefail
-          stage="dist/rpi-packages-${{ matrix.platform }}"
-          mkdir -p "$stage"
-          find target/release -maxdepth 1 -type f \( -name '*.so' -o -name '*.dylib' \) -exec cp {} "$stage/" \;
-          test "$(find "$stage" -type f | wc -l)" -eq 16
-          chmod +x scripts/install.sh
-          cp catalog/packages.json README.md scripts/install.sh "$stage/"
+          # The extension list is derived from `cargo metadata` filtered by
+          # catalog/packages.json, and the tool fails if a catalogued package
+          # was not built - so a package can no longer be silently dropped from
+          # a release the way the old hardcoded install.sh list allowed.
+          cargo run --release -p rpi-package-install -- pack
+          test -d "dist/rpi-packages-${{ matrix.platform }}"
           archive="dist/${{ matrix.archive }}"
-          tar -C dist -czf "$archive" "$(basename "$stage")"
+          test -f "$archive"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
 
       - name: Upload archive to GitHub Release

@@ -1,0 +1,45 @@
+[package]
+name = "rpi-voice"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Voice conversation extension for rpi — offline STT + auto-TTS replies"
+readme = "README.md"
+keywords = ["rpi", "voice", "tts", "stt", "plugin"]
+categories = ["development-tools"]
+
+[features]
+# Embedded offline STT via sherpa-onnx (SenseVoice). `download-binaries` fetches
+# the prebuilt STATIC sherpa-onnx libs at build time (no cmake, no LLVM); `static`
+# means no runtime DLL next to the extension. Off by default so the workspace
+# CI/release builds stay toolchain-light.
+default = []
+local-stt = ["dep:sherpa-rs"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true, features = ["multipart"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+
+# Embedded offline STT (optional): sherpa-onnx, statically linked, prebuilt
+# binaries auto-downloaded at build time.
+sherpa-rs = { version = "0.6.8", default-features = false, features = ["download-binaries", "static"], optional = true }
+
+# Audio I/O
+cpal = "0.15"
+hound = "3.5"        # WAV encoding
+# Edge TTS returns MP3 — the `mp3` feature (symphonia, pure Rust) is required
+# or `Decoder::new` rejects the data with "Unrecognized format".
+rodio = { version = "0.19", default-features = false, features = ["wav", "mp3"] }

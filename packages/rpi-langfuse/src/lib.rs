@@ -472,39 +472,43 @@ fn to_multimodal_content(text: &str, images: &[Value]) -> Value {
 }
 
 fn mark_data_uris(text: &str) -> String {
-    // Simple implementation: replace data URIs with size markers
-    let mut result = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == 'd' && text[result.len()..].starts_with("data:") {
-            // Found potential data URI
-            let start = result.len();
-            let mut uri = String::from("data:");
-            for _ in 0..5 {
-                chars.next();
-            }
-            while let Some(&c) = chars.peek() {
-                if c.is_whitespace() || c == ',' || c == ';' {
-                    break;
-                }
-                uri.push(c);
-                chars.next();
-            }
-            // Skip to end of base64 data
-            while let Some(&c) = chars.peek() {
-                if c.is_whitespace() || (!c.is_ascii_alphanumeric() && c != '+' && c != '/' && c != '=') {
-                    break;
-                }
-                uri.push(c);
-                chars.next();
-            }
+    // Replace data URIs with size markers. All slicing is done on byte offsets
+    // that are known char boundaries (`find`/`len` of sub-slices of `text`),
+    // so multi-byte UTF-8 content can never split a character.
+    const MARKER: &str = "data:";
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(idx) = rest.find(MARKER) {
+        result.push_str(&rest[..idx]);
+        let after = &rest[idx..];
+        // A data URI ends at the first whitespace, or at end of input.
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        let uri = &after[..end];
+        if uri.contains(";base64,") {
             let kb = (uri.len() * 3) / 4 / 1024;
             result.push_str(&format!("[data uri ~{}KB]", kb));
         } else {
-            result.push(c);
+            // Not a base64 data URI: keep the original text verbatim so no
+            // content is silently dropped from the trace.
+            result.push_str(uri);
         }
+        rest = &after[end..];
     }
+    result.push_str(rest);
     result
+}
+
+/// Truncate to at most `max` bytes without splitting a UTF-8 character.
+#[cfg_attr(not(test), allow(dead_code))]
+fn truncate_chars(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 fn safe_stringify(value: &Value) -> String {
@@ -2949,17 +2953,17 @@ mod tests {
         assert!(
             seen,
             "plugin output never showed up on v2/observations: {}",
-            &text[..text.len().min(400)]
+            truncate_chars(&text, 400)
         );
         assert!(
             text.contains(ROOT_OBSERVATION_NAME),
             "root observation name missing: {}",
-            &text[..text.len().min(400)]
+            truncate_chars(&text, 400)
         );
         assert!(
             text.contains(GENERATION_PREFIX),
             "generation observation name missing: {}",
-            &text[..text.len().min(400)]
+            truncate_chars(&text, 400)
         );
     }
 
@@ -3077,6 +3081,48 @@ mod tests {
         match chat_ml {
             ChatMlMessage::User { content } => assert_eq!(content, "hello"),
             _ => panic!("Expected User message"),
+        }
+    }
+
+    #[test]
+    fn test_mark_data_uris_multibyte_is_boundary_safe() {
+        // Regression: previously sliced `text` with `result.len()`, which panics on
+        // multi-byte chars once earlier replacements shifted byte offsets.
+        let text = concat!(
+            "创建项目并上传图片 ",
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg== ",
+            "接着继续处理中文内容"
+        );
+        let marked = mark_data_uris(text);
+        assert!(marked.contains("[data uri ~0KB]"), "got: {marked}");
+        assert!(marked.contains("创建项目并上传图片"), "got: {marked}");
+        assert!(marked.contains("接着继续处理中文内容"), "got: {marked}");
+        assert!(!marked.contains("iVBORw0KGgoAAAANSUhEUg=="));
+    }
+
+    #[test]
+    fn test_mark_data_uris_edge_cases() {
+        assert_eq!(mark_data_uris(""), "");
+        // Not a data URI -> left untouched.
+        assert_eq!(mark_data_uris("data: not a uri"), "data: not a uri");
+        assert_eq!(mark_data_uris("数据: 中文"), "数据: 中文");
+        // Unterminated URI at end of string.
+        let s = "data:text/plain;base64,aGVsbG8=";
+        assert_eq!(mark_data_uris(s), "[data uri ~0KB]");
+    }
+
+    #[test]
+    fn test_mark_data_uris_keeps_non_base64_text() {
+        // Regression: the boundary-safe rewrite used to emit only the literal
+        // "data:" prefix for a non-base64 match, silently dropping the rest.
+        for s in [
+            "data:X,件件件d件件件",
+            "before data:plain text after",
+            "data:",
+            "data",
+            "meta data: value",
+        ] {
+            assert_eq!(mark_data_uris(s), s, "input was mangled: {s:?}");
         }
     }
 }

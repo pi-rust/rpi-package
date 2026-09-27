@@ -91,4 +91,73 @@ mod tests {
         assert!(text.text.contains("rpi-delegation"));
         assert!(text.text.contains("review the package workspace"));
     }
+
+    /// Loads a single built `rpi_voice` cdylib and checks the command/event
+    /// wiring end to end (no mic, no audio). Point `RPI_VOICE_DLL` at the built
+    /// artifact to run; otherwise it is a no-op.
+    #[tokio::test]
+    async fn voice_extension_registers_command_and_event() {
+        use rpi_extensions::{host_free_string, load_session_mixed};
+        use rpi_plugin_sdk::{EventTag, StablePluginEvent};
+
+        let Ok(dll) = std::env::var("RPI_VOICE_DLL") else {
+            eprintln!("RPI_VOICE_DLL not set; skipping voice integration test");
+            return;
+        };
+        // Keep any stray MessageEnd from synthesizing/playing audio.
+        std::env::set_var("RPI_VOICE_AUTO_TTS", "off");
+
+        let session = load_session_mixed(
+            &[],
+            &[PathBuf::from(&dll)],
+            Arc::new(NullDiagnostics),
+            None,
+        );
+        let snapshot = session.snapshot().expect("voice extension should register");
+
+        let cmd = snapshot
+            .commands()
+            .iter()
+            .find(|c| c.name == "voice")
+            .expect("/voice command should be registered");
+
+        // Synchronous subcommands return a TUI message payload.
+        for (args, needle) in [("status", "rpi-voice"), ("model", "STT")] {
+            let mut out = StbString::empty();
+            let payload = format!(r#"{{"args":"{args}","command":"/voice"}}"#);
+            let rc = (cmd.handler)(
+                StbStringRef::from_str(&payload),
+                &mut out as *mut StbString,
+                cmd.user_data,
+            );
+            assert_eq!(rc, 0, "/voice {args} rc");
+            let text = out.to_string_lossy();
+            assert!(text.contains(needle), "/voice {args} -> {text}");
+            eprintln!("/voice {args}: {text}");
+            host_free_string(out);
+        }
+
+        let handlers = snapshot.handlers_for(EventTag::MessageEnd);
+        assert!(
+            !handlers.is_empty(),
+            "MessageEnd handler should be registered"
+        );
+
+        // Dispatch a real MessageEnd so the handler body runs (TTS off → no audio).
+        let message = StbString::from_string(
+            serde_json::json!({
+                "role": "assistant",
+                "kind": "assistant",
+                "content": [{"type": "text", "text": "integration test"}]
+            })
+            .to_string(),
+        );
+        let event = StablePluginEvent::message(EventTag::MessageEnd, message);
+        let handler = &handlers[0];
+        let rc = (handler.handler)(event, handler.user_data);
+        assert_eq!(rc, 0, "MessageEnd handler rc");
+        // SAFETY: tag == MessageEnd, so the `message` arm is the live variant.
+        let payload = unsafe { event.payload.message.message };
+        host_free_string(payload);
+    }
 }

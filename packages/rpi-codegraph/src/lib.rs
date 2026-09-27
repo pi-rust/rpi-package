@@ -54,6 +54,76 @@ fn project_root(params: &Value) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// Resolve the `codegraph` executable path. On Windows, npm/Scoop shims
+/// don't resolve reliably via `Command::new("codegraph")`, so we ask
+/// PowerShell to find the native application shim.
+#[cfg(windows)]
+fn resolve_codegraph_cmd() -> Result<Command, String> {
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-Command",
+            "(Get-Command codegraph -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source",
+        ])
+        .output()
+        .map_err(|e| format!("failed to locate codegraph: {e}"))?;
+    if !output.status.success() {
+        return Err("codegraph command not found; install @colbymchenry/codegraph".into());
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return Err("codegraph command not found; install @colbymchenry/codegraph".into());
+    }
+    Ok(Command::new(path))
+}
+
+#[cfg(not(windows))]
+fn resolve_codegraph_cmd() -> Result<Command, String> {
+    Ok(Command::new("codegraph"))
+}
+
+/// If the project has no `.codegraph/` directory, run `codegraph init` to
+/// create the initial index automatically.
+fn ensure_initialized(root: &Path) -> Result<(), String> {
+    if root.join(".codegraph").is_dir() {
+        return Ok(());
+    }
+    let mut cmd = resolve_codegraph_cmd()?;
+    let output = cmd
+        .args(["init"])
+        .arg(root)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run codegraph init: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("codegraph init failed: {stderr}"));
+    }
+    Ok(())
+}
+
+/// Run `codegraph sync` to pick up any file changes since the last index.
+fn sync_index(root: &Path) -> Result<(), String> {
+    let mut cmd = resolve_codegraph_cmd()?;
+    let output = cmd
+        .args(["sync"])
+        .arg(root)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run codegraph sync: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("codegraph sync failed: {stderr}"));
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn spawn_server(root: &Path) -> Result<Child, String> {
     // Command::new("codegraph") does not reliably resolve npm/Scoop .cmd shims
@@ -231,6 +301,9 @@ fn sanitize_diagnostic(text: &str) -> String {
 
 fn call_codegraph(tool: &str, params: &Value, cancelled: &AtomicBool) -> Result<String, String> {
     let root = project_root(params)?;
+    // Auto-init if no index exists, then sync to pick up recent changes.
+    ensure_initialized(&root)?;
+    sync_index(&root)?;
     let mut child = spawn_server(&root)?;
     let mut stdin = child
         .stdin
