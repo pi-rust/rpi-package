@@ -1,7 +1,8 @@
 //! rpi-voice — Voice conversation extension for rpi.
 //!
 //! Provides hybrid voice interaction:
-//! - **Auto-TTS**: assistant replies are queued and spoken aloud via Edge TTS
+//! - **Auto-TTS**: when enabled, assistant replies are queued and spoken aloud
+//!   via Edge TTS; it is opt-in and disabled by default.
 //! - **Voice input**: `/voice` records the microphone, transcribes via Whisper,
 //!   and drops the text into the prompt editor as an editable draft (see
 //!   *Output* below)
@@ -177,8 +178,8 @@ impl RuntimeContext {
 // State
 // ---------------------------------------------------------------------------
 
-/// Auto-TTS enabled flag (default: true)
-static AUTO_TTS_ENABLED: AtomicBool = AtomicBool::new(true);
+/// Auto-TTS enabled flag (default: false; opt in with `/voice on` or `RPI_VOICE_AUTO_TTS=on`)
+static AUTO_TTS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Currently playing TTS (to avoid overlapping playback / drive status)
 static TTS_PLAYING: AtomicBool = AtomicBool::new(false);
@@ -2127,13 +2128,14 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             };
             let _ = RUNTIME_CTX.set(ctx);
 
-            // `RPI_VOICE_AUTO_TTS=off` starts with replies muted.
+            // Auto-TTS is opt-in. Set `RPI_VOICE_AUTO_TTS=on` to enable it
+            // for the whole session, or use `/voice on` interactively.
             if let Ok(v) = std::env::var("RPI_VOICE_AUTO_TTS") {
                 let on = !matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false" | "no");
                 AUTO_TTS_ENABLED.store(on, Ordering::Relaxed);
             }
 
-            // Auto-TTS on every assistant message.
+            // Auto-TTS is opt-in for every assistant message.
             if let Some(register_event) = api.register_event_handler {
                 let rc = register_event(EventTag::MessageEnd, on_message_end, api.user_data);
                 if rc != 0 {

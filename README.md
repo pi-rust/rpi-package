@@ -19,12 +19,12 @@ that map cleanly onto the current Rust SDK:
 These are independent Rust implementations, not ports of upstream source code.
 
 The workspace also includes local-first workflow packages: `rpi-todo`
-(`todo`), `rpi-codegraph` (`codegraph`), `rpi-memory` (`memory`),
+(`todo`), `rpi-plan-mode` (`/plan`, `plan_mode_start`, `plan_mode_complete`),
+`rpi-codegraph` (`codegraph`), `rpi-memory` (`memory`),
 `rpi-token-usage` (`token_count` plus a `token-usage` renderer),
 `rpi-ask-user`, `rpi-permissions`, `rpi-simplify`, `rpi-search`, `rpi-goal`,
 `rpi-websearch`, `rpi-webfetch`, and `rpi-firecrawl` (`firecrawl_search` +
-`firecrawl_scrape`), plus `rpi-extension-rpc` (`extension_rpc_client` and
-`extension_rpc_server`) and `rpi-im-message` (`im_message_server`), plus
+`firecrawl_scrape`), plus `rpi-im-message` (`im_message_server`), plus
 `rpi-voice`, which adds `/voice` dictation and spoken replies to the running
 TUI. Its STT is OpenAI-compatible by default; built with `--features local-stt`
 it embeds sherpa-onnx + SenseVoice and runs entirely offline (see

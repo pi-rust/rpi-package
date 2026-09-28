@@ -33,6 +33,8 @@ mod tests {
             "codegraph",
             "memory",
             "todo",
+            "plan_mode_start",
+            "plan_mode_complete",
             "token_count",
             "ask_user",
             "permissions",
@@ -43,8 +45,6 @@ mod tests {
             "webfetch",
             "firecrawl_search",
             "firecrawl_scrape",
-            "extension_rpc_client",
-            "extension_rpc_server",
             "im_message_server",
         ]);
         assert_eq!(names, expected);

@@ -61,6 +61,7 @@ tasks:
       - cargo publish --dry-run --allow-dirty -p rpi-background-tasks
       - cargo publish --dry-run --allow-dirty -p rpi-lens
       - cargo publish --dry-run --allow-dirty -p rpi-todo
+      - cargo publish --dry-run --allow-dirty -p rpi-plan-mode
       - cargo publish --dry-run --allow-dirty -p rpi-codegraph
       - cargo publish --dry-run --allow-dirty -p rpi-memory
       - cargo publish --dry-run --allow-dirty -p rpi-token-usage
@@ -73,7 +74,6 @@ tasks:
       - cargo publish --dry-run --allow-dirty -p rpi-websearch
       - cargo publish --dry-run --allow-dirty -p rpi-webfetch
       - cargo publish --dry-run --allow-dirty -p rpi-firecrawl
-      - cargo publish --dry-run --allow-dirty -p rpi-extension-rpc
       - cargo publish --dry-run --allow-dirty -p rpi-im-message
       - cargo publish --dry-run --allow-dirty -p rpi-server
       - cargo publish --dry-run --allow-dirty -p rpi-voice
@@ -88,6 +88,7 @@ tasks:
       - cargo publish --allow-dirty -p rpi-background-tasks
       - cargo publish --allow-dirty -p rpi-lens
       - cargo publish --allow-dirty -p rpi-todo
+      - cargo publish --allow-dirty -p rpi-plan-mode
       - cargo publish --allow-dirty -p rpi-codegraph
       - cargo publish --allow-dirty -p rpi-memory
       - cargo publish --allow-dirty -p rpi-token-usage
@@ -100,7 +101,6 @@ tasks:
       - cargo publish --allow-dirty -p rpi-websearch
       - cargo publish --allow-dirty -p rpi-webfetch
       - cargo publish --allow-dirty -p rpi-firecrawl
-      - cargo publish --allow-dirty -p rpi-extension-rpc
       - cargo publish --allow-dirty -p rpi-im-message
       - cargo publish --allow-dirty -p rpi-server
       - cargo publish --allow-dirty -p rpi-voice
@@ -110,6 +110,7 @@ tasks:
     cmds:
       - task: test
       - cargo publish --allow-dirty -p rpi-ask-user
+      - cargo publish --allow-dirty -p rpi-plan-mode
       - cargo publish --allow-dirty -p rpi-permissions
       - cargo publish --allow-dirty -p rpi-simplify
       - cargo publish --allow-dirty -p rpi-search
@@ -117,7 +118,6 @@ tasks:
       - cargo publish --allow-dirty -p rpi-websearch
       - cargo publish --allow-dirty -p rpi-webfetch
       - cargo publish --allow-dirty -p rpi-firecrawl
-      - cargo publish --allow-dirty -p rpi-extension-rpc
       - cargo publish --allow-dirty -p rpi-im-message
 
   publish-todo:

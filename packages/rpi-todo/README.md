@@ -36,8 +36,10 @@ than inventing a shared pseudo-session.
 
 ## Responses
 
-Every action returns a confirmation plus the current list, as a task list the
-TUI renders with checkboxes (one line per item, instead of a bordered row whose
+Every action returns a confirmation plus the current list. Mutation actions persist
+immediately and already include the complete updated list, so callers should not
+issue a separate `list` call just to refresh the result. The list is rendered as
+a task list with checkboxes (one line per item, instead of a bordered row whose
 widest column is always the task text). Completed items are folded into a count
 unless `includeDone=true`:
 

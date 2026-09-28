@@ -54,6 +54,15 @@
     "install": "rpi install rpi-todo"
   },
   {
+    "name": "rpi-plan-mode",
+    "version": "0.1.3",
+    "type": "extension",
+    "tool": "plan_mode_start + plan_mode_complete",
+    "inspiredBy": "pi-plan-mode",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-plan-mode"
+  },
+  {
     "name": "rpi-codegraph",
     "version": "0.1.4",
     "type": "extension",
@@ -151,15 +160,6 @@
     "inspiredBy": "Firecrawl open-source web API",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-firecrawl"
-  },
-  {
-    "name": "rpi-extension-rpc",
-    "version": "0.1.2",
-    "type": "extension",
-    "tool": "extension_rpc_client + extension_rpc_server",
-    "inspiredBy": "Pi RPC mode",
-    "sourceDownloadsPerMonth": null,
-    "install": "rpi install rpi-extension-rpc"
   },
   {
     "name": "rpi-im-message",

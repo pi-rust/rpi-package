@@ -1,15 +1,15 @@
 [package]
-name = "rpi-extension-rpc"
-version = "0.1.3"
+name = "rpi-plan-mode"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Cross-platform JSONL extension RPC client and localhost server for rpi"
+description = "CodeX-like plan mode for the rpi Rust agent"
 readme = "README.md"
-keywords = ["rpi", "extension", "rpc", "jsonl"]
-categories = ["command-line-utilities", "development-tools"]
+keywords = ["rpi", "plan", "planning", "plugin"]
+categories = ["development-tools"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

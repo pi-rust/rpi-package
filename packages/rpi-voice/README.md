@@ -1,7 +1,8 @@
 # rpi-voice
 
-Hands-free voice conversation for the rpi Rust agent — assistant replies are
-spoken aloud (TTS) and you can talk to the agent instead of typing (STT).
+Hands-free voice conversation for the rpi Rust agent — assistant replies can be
+spoken aloud (TTS), and you can talk to the agent instead of typing (STT).
+Auto-TTS is opt-in and starts disabled.
 
 Unlike a standalone voice-assistant binary, this is an **rpi extension**: it
 loads into the running TUI, so the normal text conversation stays intact and
@@ -47,7 +48,7 @@ voice is layered on top.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `RPI_VOICE` | `zh-CN-XiaoxiaoNeural` | TTS voice name |
-| `RPI_VOICE_AUTO_TTS` | `on` | Set `off` to start with replies muted |
+| `RPI_VOICE_AUTO_TTS` | `off` | Set `on` to start speaking assistant replies automatically |
 | `OPENAI_API_KEY` | — | STT key (only required for the hosted OpenAI endpoint) |
 | `RPI_STT_API_KEY` | — | STT key; takes precedence over `OPENAI_API_KEY` |
 | `RPI_STT_API_BASE` | `https://api.openai.com/v1` | OpenAI-compatible STT base URL |

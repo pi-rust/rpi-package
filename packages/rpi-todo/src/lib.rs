@@ -673,7 +673,7 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             name: StbString::from_string("todo".into()),
             description: StbString::from_string(
                 "Manage todos. Two separate lists: this session's plan (the default) and the project backlog \
-                 (scope=\"project\"). Completed items are folded into a count unless includeDone=true."
+                 (scope=\"project\"). Mutation actions (`add`, `done`, `remove`, `clear`) persist immediately and return the complete updated list; do not call `list` afterward just to refresh. Completed items are folded into a count unless includeDone=true."
                     .into(),
             ),
             // `cwd` is deliberately absent: the host injects the working

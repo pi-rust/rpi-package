@@ -1931,14 +1931,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpi-extension-rpc"
-version = "0.1.3"
-dependencies = [
- "rpi-plugin-sdk",
- "serde_json",
-]
-
-[[package]]
 name = "rpi-firecrawl"
 version = "0.1.3"
 dependencies = [
@@ -2017,6 +2009,14 @@ dependencies = [
 
 [[package]]
 name = "rpi-permissions"
+version = "0.1.3"
+dependencies = [
+ "rpi-plugin-sdk",
+ "serde_json",
+]
+
+[[package]]
+name = "rpi-plan-mode"
 version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk",
