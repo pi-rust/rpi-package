@@ -465,13 +465,13 @@ fn output_mode_label() -> String {
 /// Session-level TTS voice override (set via `/voice set <name>`)
 static VOICE_OVERRIDE: Mutex<Option<String>> = Mutex::new(None);
 
-/// Which STT engine to use: `auto` (default), `local`, or `api`.
+/// Which STT engine to use: `local` (default), `auto`, or `api`.
 fn stt_engine_pref() -> String {
     std::env::var("RPI_STT_ENGINE")
         .ok()
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "auto".to_string())
+        .unwrap_or_else(|| "local".to_string())
 }
 
 /// Single TTS worker queue — replies enqueue here instead of racing threads.
@@ -610,12 +610,24 @@ fn handle_editor_change(raw: &str) -> i32 {
 
     // A missing `source` is treated as the user: the conservative reading, since
     // getting it wrong only stops a voice, never edits the draft.
-    let from_extension = serde_json::from_str::<Value>(raw)
-        .ok()
-        .and_then(|v| v.get("source").and_then(Value::as_str).map(str::to_string))
+    let parsed = serde_json::from_str::<Value>(raw).ok();
+    let from_extension = parsed
+        .as_ref()
+        .and_then(|v| v.get("source").and_then(Value::as_str))
         .is_some_and(|source| source == "extension");
     if from_extension {
         debug_log("editor change from the extension (ignored)");
+        return CONTINUE;
+    }
+    // Executing a slash command normally clears the editor after the command
+    // has been dispatched. That emptying is not the user taking over the
+    // conversation; treating it as typing immediately cancels `/voice auto`.
+    let editor_empty = parsed
+        .as_ref()
+        .and_then(|v| v.get("empty").and_then(Value::as_bool))
+        .unwrap_or(false);
+    if editor_empty {
+        debug_log("editor cleared after command (ignored)");
         return CONTINUE;
     }
     debug_log("editor change from the user — barge-in");
@@ -650,7 +662,10 @@ fn handle_ptt_key(raw: &str, wanted: &str) -> i32 {
         return CONTINUE;
     }
     // Modifier chords stay available for the editor (Ctrl+Space etc.).
-    if payload.get("ctrl").and_then(Value::as_bool).unwrap_or(false)
+    if payload
+        .get("ctrl")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
         || payload.get("alt").and_then(Value::as_bool).unwrap_or(false)
     {
         return CONTINUE;
@@ -726,9 +741,7 @@ fn arm_ptt_start(token: u64, hold_ms: u64) {
                 // Still held, and still the same press?
                 let (ours, nothing_held) = {
                     let ptt = PTT.lock().unwrap();
-                    let ours = ptt.pressed_at.is_some()
-                        && ptt.token == token
-                        && ptt.stop.is_none();
+                    let ours = ptt.pressed_at.is_some() && ptt.token == token && ptt.stop.is_none();
                     (ours, ptt.pressed_at.is_none())
                 };
                 if !ours {
@@ -798,8 +811,7 @@ fn start_ptt_recording(token: u64, runtime: RuntimeContext) {
     // whose width tracks the microphone — the user sees the meter move as they
     // speak, and a still bar means the mic isn't picking anything up.
     let meter = recorder::LevelMeter::new();
-    let animation =
-        start_listening_animation(runtime, meter.clone(), ListenHint::Release, None, 0);
+    let animation = start_listening_animation(runtime, meter.clone(), ListenHint::Release, None, 0);
 
     std::thread::Builder::new()
         .name("rpi-voice-ptt".to_string())
@@ -1044,14 +1056,11 @@ fn playing_status(level: f32, frame: u64, elapsed_ms: u64) -> String {
         let phase = frame as f32 * 0.6 - i as f32 * 0.85;
         let wave = 0.5 + 0.5 * phase.sin();
         let height = (level * (0.4 + 0.6 * wave)).clamp(0.0, 1.0);
-        let idx = ((height * (EQ_GLYPHS.len() - 1) as f32).round() as usize)
-            .min(EQ_GLYPHS.len() - 1);
+        let idx =
+            ((height * (EQ_GLYPHS.len() - 1) as f32).round() as usize).min(EQ_GLYPHS.len() - 1);
         bars.push(EQ_GLYPHS[idx]);
     }
-    format!(
-        "voice: ♪ {bars} playing {:.1}s",
-        elapsed_ms as f64 / 1000.0
-    )
+    format!("voice: ♪ {bars} playing {:.1}s", elapsed_ms as f64 / 1000.0)
 }
 
 /// Handle to the running playback animation; stopping it publishes the final
@@ -1325,14 +1334,18 @@ fn sanitize_for_speech(text: &str) -> String {
     let mut cleaned = String::with_capacity(body.len());
     for line in body.lines() {
         let trimmed = line.trim_start();
-        let stripped = trimmed
-            .trim_start_matches(|c: char| c == '#' || c == '>' || c.is_whitespace());
+        let stripped =
+            trimmed.trim_start_matches(|c: char| c == '#' || c == '>' || c.is_whitespace());
         let stripped = stripped
             .strip_prefix("- ")
             .or_else(|| stripped.strip_prefix("* "))
             .or_else(|| stripped.strip_prefix("+ "))
             .unwrap_or(stripped);
-        if stripped.chars().all(|c| c == '-' || c == '*' || c == '_' || c == ' ') && !stripped.is_empty() {
+        if stripped
+            .chars()
+            .all(|c| c == '-' || c == '*' || c == '_' || c == ' ')
+            && !stripped.is_empty()
+        {
             continue; // horizontal rule
         }
         cleaned.push_str(stripped);
@@ -1437,9 +1450,19 @@ extern "C" fn voice_command(
     match verb {
         "off" => {
             AUTO_TTS_ENABLED.store(false, Ordering::Relaxed);
+            // Turning Auto-TTS off must also stop hands-free mode. Otherwise a
+            // running continuous loop can call `enable_auto_talk` on its next
+            // turn and silently turn Auto-TTS back on.
+            AUTO_TALK_ENABLED.store(false, Ordering::Relaxed);
+            if let Some(stop) = AUTO_TALK_STOP.lock().unwrap().take() {
+                stop.store(true, Ordering::Relaxed);
+            }
             // Muting means silence *now*, not from the next reply on.
             stop_playback();
-            set_output(out, json!({"kind": "message", "text": "🔇 Auto-TTS disabled"}));
+            set_output(
+                out,
+                json!({"kind": "message", "text": "🔇 Auto-TTS disabled; continuous mode stopped"}),
+            );
             return 0;
         }
         "auto" | "talk" | "continuous" => {
@@ -1500,7 +1523,10 @@ extern "C" fn voice_command(
         }
         "on" => {
             AUTO_TTS_ENABLED.store(true, Ordering::Relaxed);
-            set_output(out, json!({"kind": "message", "text": "🔊 Auto-TTS enabled"}));
+            set_output(
+                out,
+                json!({"kind": "message", "text": "🔊 Auto-TTS enabled"}),
+            );
             return 0;
         }
         "status" => {
@@ -1677,7 +1703,10 @@ extern "C" fn voice_command(
         "model" => {
             if rest == "download" {
                 let Some(ctx) = RUNTIME_CTX.get().copied() else {
-                    set_output(out, json!({"kind": "message", "text": "❌ Runtime context not available"}));
+                    set_output(
+                        out,
+                        json!({"kind": "message", "text": "❌ Runtime context not available"}),
+                    );
                     return 1;
                 };
                 set_output(
@@ -1866,7 +1895,10 @@ fn finish_recording(
     LAST_PEAK_LEVEL.store(recording.peak_level.to_bits(), Ordering::Relaxed);
     LAST_SPEECH_MS.store(recording.speech_ms as usize, Ordering::Relaxed);
     LAST_GAIN.store(recording.gain.to_bits(), Ordering::Relaxed);
-    LAST_DURATION_MS.store((recording.duration_secs() * 1000.0) as usize, Ordering::Relaxed);
+    LAST_DURATION_MS.store(
+        (recording.duration_secs() * 1000.0) as usize,
+        Ordering::Relaxed,
+    );
     debug_log(&format!(
         "recording: {:.2}s device='{}' peak={:.4} gain={:.1}x clipped={:.1}% speech={}ms samples={}",
         recording.duration_secs(),
@@ -2131,7 +2163,10 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             // Auto-TTS is opt-in. Set `RPI_VOICE_AUTO_TTS=on` to enable it
             // for the whole session, or use `/voice on` interactively.
             if let Ok(v) = std::env::var("RPI_VOICE_AUTO_TTS") {
-                let on = !matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false" | "no");
+                let on = matches!(
+                    v.trim().to_lowercase().as_str(),
+                    "on" | "1" | "true" | "yes"
+                );
                 AUTO_TTS_ENABLED.store(on, Ordering::Relaxed);
             }
 
@@ -2306,12 +2341,16 @@ mod tests {
         // Decorated sentinels must still classify as empty turns. Regression: an
         // exact match meant adding the clipping hint to the message turned a
         // retryable empty turn into a fatal error that stopped the session.
-        assert!(is_empty_turn(&format!("{ERR_NO_SPEECH} — gain x20 clipped 40%")));
+        assert!(is_empty_turn(&format!(
+            "{ERR_NO_SPEECH} — gain x20 clipped 40%"
+        )));
         assert!(is_empty_turn(&format!("{ERR_TOO_SHORT} (0.2s)")));
         assert!(!is_empty_turn("Build input stream error: device busy"));
         assert!(!is_empty_turn("STT request failed: 401 Unauthorized"));
         // A message merely *containing* the phrase must not qualify.
-        assert!(!is_empty_turn("request failed after no speech detected timeout"));
+        assert!(!is_empty_turn(
+            "request failed after no speech detected timeout"
+        ));
     }
 
     /// A turn we ourselves cut short must never be blamed on the microphone.
@@ -2333,7 +2372,11 @@ mod tests {
         // Mode switched off underneath us.
         assert!(!counts_as_empty_turn(ERR_TOO_SHORT, false, false));
         // A real error never counts, whatever the flags say.
-        assert!(!counts_as_empty_turn("no input device (microphone) found", false, true));
+        assert!(!counts_as_empty_turn(
+            "no input device (microphone) found",
+            false,
+            true
+        ));
     }
 
     /// The hands-free loop must not misread its own injected transcription as
@@ -2349,6 +2392,12 @@ mod tests {
         assert!(
             AUTO_TALK_ENABLED.load(Ordering::Relaxed),
             "the loop cancelled itself on its own injected draft"
+        );
+
+        handle_editor_change(r#"{"chars":0,"empty":true}"#);
+        assert!(
+            AUTO_TALK_ENABLED.load(Ordering::Relaxed),
+            "clearing the command editor must not pause continuous mode"
         );
 
         handle_editor_change(r#"{"chars":6,"empty":false,"source":"user"}"#);
@@ -2442,7 +2491,10 @@ mod tests {
         PLAYBACK_LEVEL.store(0.5f32.to_bits(), Ordering::Relaxed);
 
         assert!(stop_playback(), "a playing utterance must report a stop");
-        assert!(flag.load(Ordering::Relaxed), "the player's flag must be set");
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "the player's flag must be set"
+        );
         assert_eq!(
             f32::from_bits(PLAYBACK_LEVEL.load(Ordering::Relaxed)),
             0.0,
@@ -2514,7 +2566,9 @@ mod tests {
     #[test]
     fn kinds_and_roles_both_detected() {
         assert_eq!(
-            json!({"role": "assistant"}).get("role").and_then(Value::as_str),
+            json!({"role": "assistant"})
+                .get("role")
+                .and_then(Value::as_str),
             Some("assistant")
         );
     }
@@ -2598,7 +2652,10 @@ mod tests {
             // Malformed JSON must not panic or claim.
             assert_eq!(handle_ptt_key("not json", "space"), CONTINUE);
             // An unknown kind is not ours.
-            assert_eq!(handle_ptt_key(&key_json("space", "weird"), "space"), CONTINUE);
+            assert_eq!(
+                handle_ptt_key(&key_json("space", "weird"), "space"),
+                CONTINUE
+            );
         });
     }
 
@@ -2606,8 +2663,14 @@ mod tests {
     fn ptt_declines_while_disabled_so_the_key_still_types() {
         with_ptt_state(|| {
             // Disabled: even the configured key passes through to the editor.
-            assert_eq!(handle_ptt_key(&key_json("space", "press"), "space"), CONTINUE);
-            assert_eq!(handle_ptt_key(&key_json("space", "release"), "space"), CONTINUE);
+            assert_eq!(
+                handle_ptt_key(&key_json("space", "press"), "space"),
+                CONTINUE
+            );
+            assert_eq!(
+                handle_ptt_key(&key_json("space", "release"), "space"),
+                CONTINUE
+            );
         });
     }
 
@@ -2615,12 +2678,24 @@ mod tests {
     fn ptt_claims_press_and_release_while_enabled() {
         with_ptt_state(|| {
             PTT_ENABLED.store(true, Ordering::Relaxed);
-            assert_eq!(handle_ptt_key(&key_json("space", "press"), "space"), CLAIMED);
+            assert_eq!(
+                handle_ptt_key(&key_json("space", "press"), "space"),
+                CLAIMED
+            );
             // Repeats while held are swallowed too.
-            assert_eq!(handle_ptt_key(&key_json("space", "repeat"), "space"), CLAIMED);
-            assert_eq!(handle_ptt_key(&key_json("space", "release"), "space"), CLAIMED);
+            assert_eq!(
+                handle_ptt_key(&key_json("space", "repeat"), "space"),
+                CLAIMED
+            );
+            assert_eq!(
+                handle_ptt_key(&key_json("space", "release"), "space"),
+                CLAIMED
+            );
             // A release without a matching press is not ours.
-            assert_eq!(handle_ptt_key(&key_json("space", "release"), "space"), CONTINUE);
+            assert_eq!(
+                handle_ptt_key(&key_json("space", "release"), "space"),
+                CONTINUE
+            );
         });
     }
 
@@ -2657,10 +2732,16 @@ mod tests {
                 ptt.recording_owner = Some(ptt.token);
             }
             let owner = PTT.lock().unwrap().token;
-            assert_eq!(handle_ptt_key(&key_json("space", "release"), "space"), CLAIMED);
+            assert_eq!(
+                handle_ptt_key(&key_json("space", "release"), "space"),
+                CLAIMED
+            );
             // Release stops the capture and flags it to be sent.
             assert!(stop.load(Ordering::Relaxed), "release must stop recording");
-            assert!(ptt_finish(owner), "release must mark the recording for sending");
+            assert!(
+                ptt_finish(owner),
+                "release must mark the recording for sending"
+            );
             // State is clean for the next hold.
             assert!(PTT.lock().unwrap().pressed_at.is_none());
         });

@@ -53,11 +53,7 @@ pub fn play_mp3(mp3_data: &[u8], stop: Arc<AtomicBool>, level: &AtomicU32) -> Re
             return Ok(());
         }
         level.store(level_bits(chunk), Ordering::Relaxed);
-        sink.append(SamplesBuffer::new(
-            channels,
-            sample_rate,
-            chunk.to_vec(),
-        ));
+        sink.append(SamplesBuffer::new(channels, sample_rate, chunk.to_vec()));
         // Feed at real time, so the level we publish corresponds to the audio
         // being consumed rather than racing ahead of the device.
         std::thread::sleep(Duration::from_millis(CHUNK_MS));

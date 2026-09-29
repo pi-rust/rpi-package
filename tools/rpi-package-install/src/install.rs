@@ -69,8 +69,7 @@ pub fn select(
 ) -> Result<Vec<Extension>> {
     let mut chosen: Vec<Extension> = match catalog {
         Some(names) if !all => {
-            let built_names: BTreeSet<&str> =
-                built.iter().map(|e| e.package.as_str()).collect();
+            let built_names: BTreeSet<&str> = built.iter().map(|e| e.package.as_str()).collect();
             let missing: Vec<&str> = names
                 .iter()
                 .map(String::as_str)
@@ -102,9 +101,7 @@ pub fn select(
 /// Standalone mode: every cdylib sitting in `dir`.
 pub fn discover_standalone(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("cannot read {}", dir.display()))?
-    {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))? {
         let path = entry?.path();
         let matches = path
             .extension()
@@ -157,10 +154,16 @@ pub fn run(opts: &Options) -> Result<Vec<PathBuf>> {
             let catalog = crate::catalog::load(&crate::catalog::default_path(&ws.root))?;
             let selected = select(&ws.extensions, catalog.as_deref(), &opts.exclude, opts.all)?;
             let note = match &catalog {
-                Some(names) if !opts.all => format!("{} listed in catalog/packages.json", names.len()),
+                Some(names) if !opts.all => {
+                    format!("{} listed in catalog/packages.json", names.len())
+                }
                 _ => format!("all {} workspace cdylibs", ws.extensions.len()),
             };
-            (selected, opts.source_dir.clone().unwrap_or_else(|| ws.release_dir()), Some(note))
+            (
+                selected,
+                opts.source_dir.clone().unwrap_or_else(|| ws.release_dir()),
+                Some(note),
+            )
         }
         None => {
             let source = opts
@@ -376,7 +379,10 @@ mod tests {
         let err = plan(&[ext("rpi-lens"), ext("rpi-langfuse")], &tmp, &tmp).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("rpi_langfuse"), "{msg}");
-        assert!(!msg.contains("rpi_lens.dll"), "built artifact must not be reported: {msg}");
+        assert!(
+            !msg.contains("rpi_lens.dll"),
+            "built artifact must not be reported: {msg}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -415,7 +421,10 @@ mod tests {
         // Only assert the shape; mutating the process env would race with
         // other tests in this binary.
         let dir = default_target_dir().expect("home dir should resolve");
-        assert!(dir.ends_with("extensions") || dir.ends_with("extensions/"), "{dir:?}");
+        assert!(
+            dir.ends_with("extensions") || dir.ends_with("extensions/"),
+            "{dir:?}"
+        );
     }
 
     #[test]

@@ -300,8 +300,7 @@ impl TcpConnection {
 #[async_trait]
 impl Connection for TcpConnection {
     async fn send(&mut self, msg: Value) -> Result<(), String> {
-        let mut line =
-            serde_json::to_string(&msg).map_err(|e| format!("serialize failed: {e}"))?;
+        let mut line = serde_json::to_string(&msg).map_err(|e| format!("serialize failed: {e}"))?;
         line.push('\n');
 
         self.writer
@@ -318,8 +317,8 @@ impl Connection for TcpConnection {
         match self.reader.read_line(&mut line).await {
             Ok(0) => Ok(None), // EOF
             Ok(_) => {
-                let msg = serde_json::from_str(line.trim())
-                    .map_err(|e| format!("parse failed: {e}"))?;
+                let msg =
+                    serde_json::from_str(line.trim()).map_err(|e| format!("parse failed: {e}"))?;
                 Ok(Some(msg))
             }
             Err(e) => Err(format!("read failed: {e}")),

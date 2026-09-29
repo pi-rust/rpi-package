@@ -122,7 +122,10 @@ pub fn next_server_id() -> String {
 }
 
 pub fn next_session_id() -> String {
-    format!("session-{}", NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "session-{}",
+        NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 // ── Child process ─────────────────────────────────────────────────────────────
@@ -156,7 +159,8 @@ pub fn spawn_child(
                     let _ = events_tx.send(value);
                 }
                 Err(e) => {
-                    let _ = events_tx.send(json!({"type": "error", "error": format!("invalid json: {e}")}));
+                    let _ = events_tx
+                        .send(json!({"type": "error", "error": format!("invalid json: {e}")}));
                 }
             }
         }
@@ -228,7 +232,12 @@ fn push_option(
     Ok(())
 }
 
-fn push_switch(args: &mut Vec<String>, params: &Value, key: &str, flag: &str) -> Result<(), String> {
+fn push_switch(
+    args: &mut Vec<String>,
+    params: &Value,
+    key: &str,
+    flag: &str,
+) -> Result<(), String> {
     if bool_param(params, key)? {
         args.push(flag.into());
     }
@@ -249,8 +258,8 @@ fn push_repeated(
 }
 
 pub fn launch_args(params: &Value) -> Result<(PathBuf, Vec<String>), String> {
-    let executable = std::env::current_exe()
-        .map_err(|e| format!("failed to locate rpi executable: {e}"))?;
+    let executable =
+        std::env::current_exe().map_err(|e| format!("failed to locate rpi executable: {e}"))?;
     let mut args = vec!["--mode".into(), "rpc".into()];
 
     push_option(&mut args, params, "provider", "--provider")?;
@@ -283,10 +292,20 @@ pub fn launch_args(params: &Value) -> Result<(PathBuf, Vec<String>), String> {
     push_switch(&mut args, params, "noTools", "--no-tools")?;
     push_switch(&mut args, params, "noBuiltinTools", "--no-builtin-tools")?;
     push_switch(&mut args, params, "noSkills", "--no-skills")?;
-    push_switch(&mut args, params, "noPromptTemplates", "--no-prompt-templates")?;
+    push_switch(
+        &mut args,
+        params,
+        "noPromptTemplates",
+        "--no-prompt-templates",
+    )?;
     push_switch(&mut args, params, "noContextFiles", "--no-context-files")?;
     push_switch(&mut args, params, "noExtensions", "--no-extensions")?;
-    push_switch(&mut args, params, "enablePiPackages", "--enable-pi-packages")?;
+    push_switch(
+        &mut args,
+        params,
+        "enablePiPackages",
+        "--enable-pi-packages",
+    )?;
     push_switch(&mut args, params, "offline", "--offline")?;
     push_switch(&mut args, params, "headless", "--headless")?;
     push_repeated(&mut args, params, "extensionsDir", "--extensions-dir")?;
@@ -316,13 +335,8 @@ pub fn launch_args(params: &Value) -> Result<(PathBuf, Vec<String>), String> {
 
 // ── JSON-RPC message handling ─────────────────────────────────────────────────
 
-
-
 /// Handle a single JSON-RPC request message, returning the response.
-async fn handle_request(
-    state: &Arc<AppState>,
-    msg: &Value,
-) -> Option<Value> {
+async fn handle_request(state: &Arc<AppState>, msg: &Value) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     let params = msg.get("params").cloned().unwrap_or(json!({}));
@@ -399,10 +413,7 @@ async fn handle_send(state: &Arc<AppState>, params: &Value) -> Result<Value, Str
         .write_all(line.as_bytes())
         .await
         .map_err(|e| format!("write: {e}"))?;
-    sl.stdin
-        .flush()
-        .await
-        .map_err(|e| format!("flush: {e}"))?;
+    sl.stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
     Ok(json!({"sessionId": sid, "status": "sent"}))
 }
 
@@ -445,10 +456,7 @@ static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
 // ── Connection handler ────────────────────────────────────────────────────────
 
 /// Handle a single client connection.
-pub async fn handle_connection<C: Connection>(
-    state: Arc<AppState>,
-    mut conn: C,
-) {
+pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C) {
     let conn_id = conn.id().to_string();
     // Accepts requests only after `authenticate` when the server has a token.
     let mut authenticated = state.token.is_empty();
@@ -496,11 +504,8 @@ pub async fn handle_connection<C: Connection>(
         }
 
         // Read next message with a short timeout to allow subscription polling
-        let recv_result = tokio::time::timeout(
-            tokio::time::Duration::from_millis(50),
-            conn.recv(),
-        )
-        .await;
+        let recv_result =
+            tokio::time::timeout(tokio::time::Duration::from_millis(50), conn.recv()).await;
 
         match recv_result {
             Ok(Ok(Some(msg))) => {

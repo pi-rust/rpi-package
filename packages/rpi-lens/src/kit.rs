@@ -135,25 +135,25 @@ macro_rules! export_single_tool_plugin {
         }
 
         #[no_mangle]
-        pub extern "C" fn rpi_plugin_register(
-            api: *const rpi_plugin_sdk::PluginApi,
-        ) -> i32 {
-            unsafe { rpi_plugin_sdk::register_entrypoint_unified(api, |api| {
-                let Some(register) = api.register_tool else {
-                    return 1;
-                };
-                let schema = Box::new($crate::kit::schema($name, $description, $parameters));
-                let rc = register(
-                    &*schema,
-                    package_execute,
-                    package_poll,
-                    package_cancel,
-                    package_destroy,
-                    $crate::kit::plugin_free_string,
-                );
-                drop(schema);
-                rc
-            }) }
+        pub extern "C" fn rpi_plugin_register(api: *const rpi_plugin_sdk::PluginApi) -> i32 {
+            unsafe {
+                rpi_plugin_sdk::register_entrypoint_unified(api, |api| {
+                    let Some(register) = api.register_tool else {
+                        return 1;
+                    };
+                    let schema = Box::new($crate::kit::schema($name, $description, $parameters));
+                    let rc = register(
+                        &*schema,
+                        package_execute,
+                        package_poll,
+                        package_cancel,
+                        package_destroy,
+                        $crate::kit::plugin_free_string,
+                    );
+                    drop(schema);
+                    rc
+                })
+            }
         }
     };
 }

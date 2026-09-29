@@ -221,15 +221,17 @@ extern "C" fn free_string(s: StbString) {
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
-    unsafe { register_entrypoint_unified(api, |api| {
-        let Some(register) = api.register_tool else {
-            return 1;
-        };
-        let schema=Box::new(rpi_plugin_sdk::StableToolSchema{name:StbString::from_string("memory".into()),description:StbString::from_string("Remember and recall project-local facts.".into()),parameters:StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["remember","recall","list","forget","clear"]},"text":{"type":"string"},"query":{"type":"string"},"id":{"type":"integer"},"tags":{"type":"array"},"limit":{"type":"integer"},"cwd":{"type":"string"}}}"#.into())});
-        let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
-        drop(schema);
-        rc
-    }) }
+    unsafe {
+        register_entrypoint_unified(api, |api| {
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
+            let schema=Box::new(rpi_plugin_sdk::StableToolSchema{name:StbString::from_string("memory".into()),description:StbString::from_string("Remember and recall project-local facts.".into()),parameters:StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["remember","recall","list","forget","clear"]},"text":{"type":"string"},"query":{"type":"string"},"id":{"type":"integer"},"tags":{"type":"array"},"limit":{"type":"integer"},"cwd":{"type":"string"}}}"#.into())});
+            let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
+            drop(schema);
+            rc
+        })
+    }
 }
 
 #[cfg(test)]

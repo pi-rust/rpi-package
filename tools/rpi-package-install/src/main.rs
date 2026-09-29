@@ -77,7 +77,11 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
     if matches!(command, "version" | "--version" | "-V") {
-        println!("rpi-package-install {} ({})", env!("CARGO_PKG_VERSION"), platform::slug());
+        println!(
+            "rpi-package-install {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            platform::slug()
+        );
         return Ok(());
     }
 
@@ -85,9 +89,7 @@ fn run() -> anyhow::Result<()> {
         "install" => {
             let manifest = resolve_manifest(&args)?;
             let installed = if manifest.is_none() && args.source_dir.is_none() {
-                anyhow::bail!(
-                    "no workspace found and no --source-dir given; nothing to install"
-                );
+                anyhow::bail!("no workspace found and no --source-dir given; nothing to install");
             } else {
                 install::run(&install::Options {
                     manifest,
@@ -182,9 +184,13 @@ fn apply(args: &mut Args, flag: &str, value: &str) -> anyhow::Result<()> {
         "--target-dir" => args.target_dir = Some(PathBuf::from(value)),
         "--archive" => args.archive = Some(PathBuf::from(value)),
         "--out" => args.out = Some(PathBuf::from(value)),
-        "--exclude" => args
-            .exclude
-            .extend(value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from)),
+        "--exclude" => args.exclude.extend(
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+        ),
         other => anyhow::bail!("unknown option `{other}` (try --help)"),
     }
     Ok(())

@@ -88,7 +88,8 @@ async fn synthesize_async(
         );
         headers.insert(
             "Cookie",
-            HeaderValue::from_str(&format!("muid={muid};")).map_err(|e| format!("Cookie error: {e}"))?,
+            HeaderValue::from_str(&format!("muid={muid};"))
+                .map_err(|e| format!("Cookie error: {e}"))?,
         );
     }
 

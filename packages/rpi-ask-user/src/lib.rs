@@ -19,8 +19,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, FreeStringFn, PluginApi, RuntimeActionFn, StableToolSchema, StbString,
-    StbStringRef, StepHandle, StepResult, ToolPartialCb,
+    register_entrypoint_unified, FreeStringFn, PluginApi, RuntimeActionFn, StableToolSchema,
+    StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
 
@@ -792,27 +792,29 @@ extern "C" fn ask_command(args_json: StbStringRef, out: *mut StbString, _: *mut 
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
-    unsafe { register_entrypoint_unified(api, |api| {
-        let Some(register) = api.register_tool else {
-            return 1;
-        };
-        let runtime = HostRuntime {
-            runtime_action: api.runtime_action,
-            free_string: api.free_string,
-            user_data: api.user_data,
-        };
-        let _ = HOST_RUNTIME.set(runtime);
-        let schema = Box::new(StableToolSchema { name: StbString::from_string("ask_user".into()), description: StbString::from_string("Ask the user an interactive question with selectable options or freeform input.".into()), parameters: StbString::from_string(r#"{"type":"object","properties":{"question":{"type":"string"},"context":{"type":"string"},"options":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"object"}]}},"allowMultiple":{"type":"boolean"},"allowFreeform":{"type":"boolean"},"allowComment":{"type":"boolean"},"displayMode":{"type":"string","enum":["overlay","inline"]},"timeout":{"type":"integer","minimum":1},"type":{"type":"string","enum":["question","confirm"]},"questions":{"type":"array","minItems":1,"maxItems":3},"suggest":{"type":"string"},"summary":{"type":"string"}},"additionalProperties":false}"#.into()) });
-        let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
-        drop(schema);
-        if let Some(register_command) = api.register_command {
-            let name = StbStringRef::from_str("ask_user");
-            let description =
-                StbStringRef::from_str("Ask a question with the interactive Pi selector");
-            let _ = register_command(name, description, ask_command);
-        }
-        rc
-    }) }
+    unsafe {
+        register_entrypoint_unified(api, |api| {
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
+            let runtime = HostRuntime {
+                runtime_action: api.runtime_action,
+                free_string: api.free_string,
+                user_data: api.user_data,
+            };
+            let _ = HOST_RUNTIME.set(runtime);
+            let schema = Box::new(StableToolSchema { name: StbString::from_string("ask_user".into()), description: StbString::from_string("Ask the user an interactive question with selectable options or freeform input.".into()), parameters: StbString::from_string(r#"{"type":"object","properties":{"question":{"type":"string"},"context":{"type":"string"},"options":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"object"}]}},"allowMultiple":{"type":"boolean"},"allowFreeform":{"type":"boolean"},"allowComment":{"type":"boolean"},"displayMode":{"type":"string","enum":["overlay","inline"]},"timeout":{"type":"integer","minimum":1},"type":{"type":"string","enum":["question","confirm"]},"questions":{"type":"array","minItems":1,"maxItems":3},"suggest":{"type":"string"},"summary":{"type":"string"}},"additionalProperties":false}"#.into()) });
+            let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
+            drop(schema);
+            if let Some(register_command) = api.register_command {
+                let name = StbStringRef::from_str("ask_user");
+                let description =
+                    StbStringRef::from_str("Ask a question with the interactive Pi selector");
+                let _ = register_command(name, description, ask_command);
+            }
+            rc
+        })
+    }
 }
 
 #[cfg(test)]

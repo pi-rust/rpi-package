@@ -2,18 +2,18 @@ mod server;
 mod transport;
 
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, EventTag, FreeStringFn, PluginApi, RuntimeActionFn, RuntimeActionId,
-    StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
-    ToolPartialCb,
+    register_entrypoint_unified, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
+    RuntimeActionId, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
+    StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
+use server::{generate_token, launch_args, run_server, TcpServerHandle};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use server::{generate_token, launch_args, run_server, TcpServerHandle};
 use transport::{ManagedConnection, TcpTransport};
 
 const DEFAULT_TIMEOUT: u64 = 30;
@@ -113,7 +113,8 @@ fn timeout_param(params: &Value) -> Result<Duration, String> {
 fn do_start(params: &Value) -> Result<String, String> {
     let bind_addr = optional_string(params, "bind")?.unwrap_or_else(|| "127.0.0.1".into());
     let port: u16 = match params.get("port") {
-        Some(Value::Number(n)) => n.as_u64()
+        Some(Value::Number(n)) => n
+            .as_u64()
             .and_then(|n| u16::try_from(n).ok())
             .ok_or("port must be an integer 0–65535")?,
         None => 9800,
@@ -158,7 +159,15 @@ fn do_start(params: &Value) -> Result<String, String> {
 
         let result = runtime.block_on(async {
             let transport = Arc::new(TcpTransport::new());
-            run_server(transport, &bind_clone, port, token_clone, exec_clone, args_clone).await
+            run_server(
+                transport,
+                &bind_clone,
+                port,
+                token_clone,
+                exec_clone,
+                args_clone,
+            )
+            .await
         });
 
         match result {
@@ -173,7 +182,11 @@ fn do_start(params: &Value) -> Result<String, String> {
             }
         }
 
-        runtime.block_on(async { loop { tokio::time::sleep(Duration::from_secs(3600)).await; } });
+        runtime.block_on(async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        });
     });
 
     let server = match ready_rx.recv_timeout(Duration::from_secs(10)) {
@@ -189,7 +202,8 @@ fn do_start(params: &Value) -> Result<String, String> {
         "state": "running",
         "protocol": "jsonl",
         "transport": "tcp",
-    }).to_string())
+    })
+    .to_string())
 }
 
 fn do_stop(id: &str) -> Result<String, String> {
@@ -250,7 +264,11 @@ async fn do_list() -> Result<String, String> {
 }
 
 async fn server_tool(params: &Value) -> Result<String, String> {
-    match params.get("action").and_then(Value::as_str).unwrap_or("start") {
+    match params
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("start")
+    {
         "start" => do_start(params),
         "stop" => {
             let id = string_param(params, "id")?;
@@ -261,7 +279,9 @@ async fn server_tool(params: &Value) -> Result<String, String> {
             do_status(&id).await
         }
         "list" => do_list().await,
-        other => Err(format!("action must be one of: start, stop, status, list (got {other})")),
+        other => Err(format!(
+            "action must be one of: start, stop, status, list (got {other})"
+        )),
     }
 }
 
@@ -307,7 +327,10 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
 
     // Read optional --port flag (default 9800)
     let port: u16 = match get_cli_flag("port") {
-        Some(Value::Number(n)) => n.as_u64().and_then(|n| u16::try_from(n).ok()).unwrap_or(9800),
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .and_then(|n| u16::try_from(n).ok())
+            .unwrap_or(9800),
         Some(Value::String(s)) => s.parse().unwrap_or(9800),
         _ => 9800,
     };
@@ -360,7 +383,10 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
     }
 
     let wait = timeout_param(params)?;
-    let subscribe = params.get("subscribe").and_then(Value::as_bool).unwrap_or(false);
+    let subscribe = params
+        .get("subscribe")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let (tx, rx) = mpsc::channel();
     let cancelled_clone = Arc::new(AtomicBool::new(cancelled.load(Ordering::Acquire)));
@@ -377,7 +403,9 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
             let managed = ManagedConnection::new(transport);
 
             // Connect with retry
-            managed.connect_with_retry(&server.address).await
+            managed
+                .connect_with_retry(&server.address)
+                .await
                 .map_err(|e| format!("failed to connect: {e}"))?;
 
             // Authenticate when the server requires a token.
@@ -398,9 +426,7 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
                             return Err(format!("authentication failed: {error}"));
                         }
                     }
-                    Ok(Ok(None)) => {
-                        return Err("authentication failed: connection closed".into())
-                    }
+                    Ok(Ok(None)) => return Err("authentication failed: connection closed".into()),
                     Ok(Err(e)) => return Err(format!("authentication failed: {e}")),
                     Err(_) => return Err("authentication failed: timed out".into()),
                 }
@@ -413,7 +439,9 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
                 "params": rpc_params,
                 "id": 1,
             });
-            managed.send(request).await
+            managed
+                .send(request)
+                .await
                 .map_err(|e| format!("send failed: {e}"))?;
 
             if subscribe {
@@ -422,13 +450,18 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
                 let deadline = Instant::now() + wait;
 
                 loop {
-                    if cancelled_inner.load(Ordering::Acquire) { break; }
-                    if Instant::now() >= deadline { break; }
+                    if cancelled_inner.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
 
                     match tokio::time::timeout(Duration::from_millis(100), managed.recv()).await {
                         Ok(Ok(Some(event))) => {
                             // Check for session_end before pushing
-                            let is_end = event.get("type").and_then(Value::as_str) == Some("session_end");
+                            let is_end =
+                                event.get("type").and_then(Value::as_str) == Some("session_end");
                             events.push(event);
                             if is_end {
                                 break;
@@ -445,7 +478,8 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
                     "method": method,
                     "events": events,
                     "eventCount": events.len(),
-                }).to_string())
+                })
+                .to_string())
             } else {
                 // Wait for response
                 let deadline = Instant::now() + wait;
@@ -463,7 +497,8 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
                                 "serverId": server_id,
                                 "method": method,
                                 "result": response,
-                            }).to_string());
+                            })
+                            .to_string());
                         }
                         Ok(Ok(None)) => return Err("connection closed".into()),
                         Ok(Err(e)) => return Err(format!("recv error: {e}")),
@@ -514,13 +549,15 @@ extern "C" fn execute_server(
                     .enable_all()
                     .build()
                     .unwrap();
-                runtime.block_on(async {
-                    server_tool(&p).await
-                })
+                runtime.block_on(async { server_tool(&p).await })
             });
         let _ = tx.send(result);
     });
-    Box::into_raw(Box::new(Drive { receiver: rx, cancelled, done: false })) as StepHandle
+    Box::into_raw(Box::new(Drive {
+        receiver: rx,
+        cancelled,
+        done: false,
+    })) as StepHandle
 }
 
 extern "C" fn execute_client(
@@ -540,7 +577,11 @@ extern "C" fn execute_client(
             .and_then(|p| client_tool(&p, &cancelled_clone));
         let _ = tx.send(result);
     });
-    Box::into_raw(Box::new(Drive { receiver: rx, cancelled, done: false })) as StepHandle
+    Box::into_raw(Box::new(Drive {
+        receiver: rx,
+        cancelled,
+        done: false,
+    })) as StepHandle
 }
 
 extern "C" fn poll(
@@ -553,7 +594,9 @@ extern "C" fn poll(
     }
     let drive = unsafe { &mut *(handle as *mut Drive) };
     if drive.done {
-        return StepResult::err(StbString::from_string("handle polled after completion".into()));
+        return StepResult::err(StbString::from_string(
+            "handle polled after completion".into(),
+        ));
     }
     if drive.cancelled.load(Ordering::Acquire) {
         drive.done = true;
@@ -573,14 +616,20 @@ extern "C" fn poll(
         Err(mpsc::TryRecvError::Empty) => StepResult::pending(StbString::empty()),
         Err(mpsc::TryRecvError::Disconnected) => {
             drive.done = true;
-            StepResult::err(StbString::from_string("worker stopped without result".into()))
+            StepResult::err(StbString::from_string(
+                "worker stopped without result".into(),
+            ))
         }
     }
 }
 
 extern "C" fn cancel(handle: StepHandle) {
     if !handle.is_null() {
-        unsafe { (&*(handle as *mut Drive)).cancelled.store(true, Ordering::Release); }
+        unsafe {
+            (&*(handle as *mut Drive))
+                .cancelled
+                .store(true, Ordering::Release);
+        }
     }
 }
 
@@ -664,19 +713,19 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             let _ = RUNTIME_ACTION.set(api.runtime_action);
             RUNTIME_USER_DATA.store(api.user_data, Ordering::Release);
             let _ = HOST_FREE_STRING.set(api.free_string);
-        let Some(register) = api.register_tool else {
-            return 1;
-        };
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
 
-        let server_schema = Box::new(StableToolSchema {
-            name: StbString::from_string("rpc_server".into()),
-            description: StbString::from_string(
-                "Start and manage a TCP JSONL server with streaming subscriptions.".into(),
-            ),
-            parameters: StbString::from_string(SERVER_PARAMETERS.into()),
-        });
+            let server_schema = Box::new(StableToolSchema {
+                name: StbString::from_string("rpc_server".into()),
+                description: StbString::from_string(
+                    "Start and manage a TCP JSONL server with streaming subscriptions.".into(),
+                ),
+                parameters: StbString::from_string(SERVER_PARAMETERS.into()),
+            });
 
-        let client_schema = Box::new(StableToolSchema {
+            let client_schema = Box::new(StableToolSchema {
             name: StbString::from_string("rpc_client".into()),
             description: StbString::from_string(
                 "Send a JSON-RPC request to a running TCP server. Set subscribe=true for streaming responses.".into(),
@@ -684,59 +733,59 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             parameters: StbString::from_string(CLIENT_PARAMETERS.into()),
         });
 
-        let first = register(
-            &*server_schema,
-            execute_server,
-            poll,
-            cancel,
-            destroy,
-            free_string,
-        );
-
-        let second = if first == 0 {
-            register(
-                &*client_schema,
-                execute_client,
+            let first = register(
+                &*server_schema,
+                execute_server,
                 poll,
                 cancel,
                 destroy,
                 free_string,
-            )
-        } else {
-            first
-        };
+            );
 
-        let third = if second == 0 {
-            api.register_event_handler
-                .map(|register| {
-                    register(
-                        EventTag::SessionShutdown,
-                        on_session_shutdown,
-                        std::ptr::null_mut(),
-                    )
-                })
-                .unwrap_or(0)
-        } else {
-            second
-        };
+            let second = if first == 0 {
+                register(
+                    &*client_schema,
+                    execute_client,
+                    poll,
+                    cancel,
+                    destroy,
+                    free_string,
+                )
+            } else {
+                first
+            };
 
-        // Register SessionStart handler to auto-start server when --server flag is passed
-        let fourth = if third == 0 {
-            api.register_event_handler
-                .map(|register| {
-                    register(
-                        EventTag::SessionStart,
-                        on_session_start,
-                        std::ptr::null_mut(),
-                    )
-                })
-                .unwrap_or(0)
-        } else {
-            third
-        };
+            let third = if second == 0 {
+                api.register_event_handler
+                    .map(|register| {
+                        register(
+                            EventTag::SessionShutdown,
+                            on_session_shutdown,
+                            std::ptr::null_mut(),
+                        )
+                    })
+                    .unwrap_or(0)
+            } else {
+                second
+            };
 
-        drop(server_schema);
-        drop(client_schema);
+            // Register SessionStart handler to auto-start server when --server flag is passed
+            let fourth = if third == 0 {
+                api.register_event_handler
+                    .map(|register| {
+                        register(
+                            EventTag::SessionStart,
+                            on_session_start,
+                            std::ptr::null_mut(),
+                        )
+                    })
+                    .unwrap_or(0)
+            } else {
+                third
+            };
+
+            drop(server_schema);
+            drop(client_schema);
             fourth
         })
     }

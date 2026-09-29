@@ -32,11 +32,13 @@ struct PlanState {
 }
 
 fn state() -> &'static Mutex<PlanState> {
-    STATE.get_or_init(|| Mutex::new(PlanState {
-        active: false,
-        plan: None,
-        previous_tools: None,
-    }))
+    STATE.get_or_init(|| {
+        Mutex::new(PlanState {
+            active: false,
+            plan: None,
+            previous_tools: None,
+        })
+    })
 }
 
 fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
@@ -84,10 +86,7 @@ fn current_tools() -> Result<Vec<String>, String> {
 }
 
 fn set_tools(tools: &[String]) -> Result<(), String> {
-    call_runtime(
-        RuntimeActionId::SetActiveTools,
-        json!({"tools": tools}),
-    )?;
+    call_runtime(RuntimeActionId::SetActiveTools, json!({"tools": tools}))?;
     Ok(())
 }
 
@@ -130,15 +129,31 @@ fn saved_plan() -> Option<String> {
     })
 }
 
-fn markdown_plan(plan: Option<&str>) -> String {
-    match plan {
-        Some(plan) if !plan.trim().is_empty() => format!("## Plan\n\n{plan}"),
-        _ => "## Plan mode\n\nNo completed plan yet.".to_string(),
-    }
+fn markdown_plan(plan: Option<&str>, active: bool) -> String {
+    let (status, hint) = if active {
+        (
+            "🟡 Planning",
+            "Explore first, then call `plan_mode_complete` when the plan is ready.",
+        )
+    } else {
+        (
+            "✅ Ready",
+            "Use `/plan start` or `plan_mode_start` to create a new plan.",
+        )
+    };
+    let body = match plan {
+        Some(plan) if !plan.trim().is_empty() => plan.trim().to_string(),
+        _ => "_No completed plan yet._".to_string(),
+    };
+    format!(
+        "## Plan Mode\n\n**Status:** {status}\n\n### Implementation plan\n\n{body}\n\n---\n\n_{hint}_"
+    )
 }
 
 fn activate() -> Result<bool, String> {
-    let mut guard = state().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.active {
         return Ok(false);
     }
@@ -151,7 +166,9 @@ fn activate() -> Result<bool, String> {
 }
 
 fn deactivate() -> Result<bool, String> {
-    let mut guard = state().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !guard.active {
         return Ok(false);
     }
@@ -163,17 +180,25 @@ fn deactivate() -> Result<bool, String> {
 }
 
 fn plan_status() -> String {
-    let guard = state().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let saved = saved_plan();
     let stored = guard.plan.as_deref().or(saved.as_deref());
-    let status = if guard.active { "active" } else { "inactive" };
+    let path = plan_path();
+    let location = if path.exists() {
+        format!("Saved plan: `{}`", path.display())
+    } else {
+        "Saved plan: _none_".to_string()
+    };
     format!(
-        "{}\n\nStatus: `{status}`\n\n{}",
-        markdown_plan(stored),
+        "{}\n\n{}\n\n{}",
+        markdown_plan(stored, guard.active),
+        location,
         if guard.active {
-            "Use `plan_mode_complete` when the plan is ready, or `/plan exit` to cancel."
+            "Next: continue inspecting the repository, then call `plan_mode_complete`."
         } else {
-            "Use `/plan start` to inspect the codebase before implementation."
+            "Next: use `/plan start` or `plan_mode_start` to begin planning."
         }
     )
 }
@@ -184,20 +209,12 @@ fn start_plan(raw: &Value) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|request| !request.is_empty());
-    let started = activate()?;
-    let text = match request {
-        Some(request) => format!(
-            "Plan mode {}. User request:\n\n{}\n\nInspect the repository without editing files, then call `{PLAN_TOOL}` with the complete implementation-ready plan.",
-            if started { "enabled" } else { "is already active" },
-            request
-        ),
-        None => format!(
-            "Plan mode {}. Inspect the repository without editing files, then call `{PLAN_TOOL}` with the complete implementation-ready plan.",
-            if started { "enabled" } else { "is already active" }
-        ),
-    };
+    activate()?;
     Ok(json!({
-        "content": [{"type": "text", "text": text}],
+        "content": [{"type": "text", "text": format!(
+            "## Plan Mode\n\n**Status:** 🟡 Planning\n\n{}\n\n---\n\n_The model must inspect the repository without editing files, then submit the complete plan with `plan_mode_complete`._",
+            request.map(|value| format!("### Request\n\n> {value}" )).unwrap_or_else(|| "_No request supplied._".to_string())
+        )}],
         "details": {"kind": "plan", "active": true}
     }).to_string())
 }
@@ -213,19 +230,23 @@ fn complete_plan(raw: &Value) -> Result<String, String> {
         return Err(format!("plan must not exceed {MAX_PLAN_CHARS} characters"));
     }
     {
-        let guard = state().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !guard.active {
             return Err("plan_mode_complete is only available while plan mode is active".into());
         }
     }
     let path = save_plan(plan)?;
     {
-        let mut guard = state().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.plan = Some(plan.to_string());
     }
     deactivate()?;
     Ok(json!({
-        "content": [{"type": "text", "text": format!("{}\n\nSaved to `{}`. Plan mode disabled. Full tool access restored.", markdown_plan(Some(plan)), path.display())}],
+        "content": [{"type": "text", "text": format!("{}\n\n**Saved to:** `{}`\n\n**Next:** Plan Mode is complete; normal tool access has been restored.", markdown_plan(Some(plan), false), path.display())}],
         "details": {"kind": "plan", "plan": plan, "path": path, "active": false, "markdown": true}
     })
     .to_string())
@@ -251,11 +272,7 @@ extern "C" fn execute(
     })) as StepHandle
 }
 
-extern "C" fn poll(
-    handle: StepHandle,
-    _: Option<ToolPartialCb>,
-    _: *mut c_void,
-) -> StepResult {
+extern "C" fn poll(handle: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void) -> StepResult {
     if handle.is_null() {
         return StepResult::err(StbString::from_string("null plan handle".into()));
     }
@@ -265,7 +282,9 @@ extern "C" fn poll(
         return StepResult::err(StbString::from_string("plan cancelled".into()));
     }
     if drive.done {
-        return StepResult::err(StbString::from_string("plan polled after completion".into()));
+        return StepResult::err(StbString::from_string(
+            "plan polled after completion".into(),
+        ));
     }
     drive.done = true;
     let result = if drive.params.get("plan").is_some() {
@@ -281,13 +300,17 @@ extern "C" fn poll(
 
 extern "C" fn cancel(handle: StepHandle) {
     if !handle.is_null() {
-        unsafe { (&mut *(handle as *mut Drive)).cancelled = true; }
+        unsafe {
+            (&mut *(handle as *mut Drive)).cancelled = true;
+        }
     }
 }
 
 extern "C" fn destroy(handle: StepHandle) {
     if !handle.is_null() {
-        unsafe { drop(Box::from_raw(handle as *mut Drive)); }
+        unsafe {
+            drop(Box::from_raw(handle as *mut Drive));
+        }
     }
 }
 
@@ -311,11 +334,18 @@ fn command_output(out: *mut StbString, value: Value) -> i32 {
 extern "C" fn plan_command(args_json: StbStringRef, out: *mut StbString, _: *mut c_void) -> i32 {
     let raw = unsafe { args_json.as_str().to_owned() };
     let envelope: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-    let args = envelope.get("args").and_then(Value::as_str).unwrap_or("").trim();
+    let args = envelope
+        .get("args")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     let first = args.split_whitespace().next().unwrap_or("").to_lowercase();
     let result = match first.as_str() {
         "start" => match activate() {
-            Ok(true) => "Plan mode enabled. Inspect the codebase and call `plan_mode_complete` when ready.".to_string(),
+            Ok(true) => {
+                "Plan mode enabled. Inspect the codebase and call `plan_mode_complete` when ready."
+                    .to_string()
+            }
             Ok(false) => "Plan mode is already active.".to_string(),
             Err(error) => format!("Unable to enter plan mode: {error}"),
         },
@@ -323,7 +353,10 @@ extern "C" fn plan_command(args_json: StbStringRef, out: *mut StbString, _: *mut
         "finalize" => {
             let path = plan_path();
             if path.exists() {
-                format!("Plan saved at `{}`. Use `/plan show` to review it.", path.display())
+                format!(
+                    "Plan saved at `{}`. Use `/plan show` to review it.",
+                    path.display()
+                )
             } else {
                 "No saved plan yet. Complete plan mode with `plan_mode_complete` first.".to_string()
             }
@@ -338,7 +371,9 @@ extern "C" fn plan_command(args_json: StbStringRef, out: *mut StbString, _: *mut
                 let prompt = format!(
                     "You are now in Plan mode. Do not edit files or implement changes.\n\nUser request: {args}\n\nInspect the repository, resolve important decisions, and call `plan_mode_complete` with a complete implementation-ready Markdown plan when finished."
                 );
-                if let Err(error) = call_runtime(RuntimeActionId::SendUserMessage, json!({"text": prompt})) {
+                if let Err(error) =
+                    call_runtime(RuntimeActionId::SendUserMessage, json!({"text": prompt}))
+                {
                     let _ = deactivate();
                     format!("Unable to start planning request: {error}")
                 } else {
@@ -355,7 +390,9 @@ extern "C" fn plan_command(args_json: StbStringRef, out: *mut StbString, _: *mut
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
         register_entrypoint_unified(api, |api| {
-            let Some(register) = api.register_tool else { return 1; };
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
             let _ = RUNTIME.set(Runtime {
                 action: api.runtime_action,
                 free_string: api.free_string,
@@ -372,7 +409,9 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             });
             let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
             drop(schema);
-            if rc != 0 { return rc; }
+            if rc != 0 {
+                return rc;
+            }
             let start_schema = Box::new(StableToolSchema {
                 name: StbString::from_string(START_TOOL.into()),
                 description: StbString::from_string(
@@ -384,10 +423,13 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             });
             let start_rc = register(&*start_schema, execute, poll, cancel, destroy, free_string);
             drop(start_schema);
-            if start_rc != 0 { return start_rc; }
+            if start_rc != 0 {
+                return start_rc;
+            }
             if let Some(register_command) = api.register_command {
                 let name = StbStringRef::from_str("plan");
-                let description = StbStringRef::from_str("Enter, inspect, or exit CodeX-like plan mode");
+                let description =
+                    StbStringRef::from_str("Enter, inspect, or exit CodeX-like plan mode");
                 let _ = register_command(name, description, plan_command);
             }
             0
@@ -401,7 +443,7 @@ mod tests {
 
     #[test]
     fn renders_empty_status() {
-        assert!(markdown_plan(None).contains("No completed plan"));
+        assert!(markdown_plan(None, false).contains("No completed plan"));
     }
 
     #[test]

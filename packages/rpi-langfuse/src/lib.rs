@@ -1,12 +1,12 @@
 //! Langfuse Observability Extension for RPI Agent
-//! 
+//!
 //! 1:1 Rust implementation based on pi-observability-plugin TypeScript reference
 //! Uses OpenTelemetry-style observation hierarchy with Langfuse HTTP ingestion API
 
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, EventTag, EventHandlerFn, FreeStringFn, PluginApi, RuntimeActionFn,
-    StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
-    ToolPartialCb,
+    register_entrypoint_unified, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
+    RuntimeActionFn, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
+    StepResult, ToolPartialCb,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -98,7 +98,7 @@ fn load_config() -> Option<LangfuseConfig> {
     }
 
     let file_config = load_config_file().unwrap_or_default();
-    
+
     let as_trimmed_string = |v: Option<String>| -> Option<String> {
         v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     };
@@ -216,16 +216,34 @@ fn load_config_file() -> Result<FileConfig, String> {
     }
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("read config {}: {e}", path.display()))?;
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|e| format!("parse config {}: {e}", path.display()))?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse config {}: {e}", path.display()))?;
 
     Ok(FileConfig {
-        public_key: value.get("publicKey").and_then(Value::as_str).map(String::from),
-        secret_key: value.get("secretKey").and_then(Value::as_str).map(String::from),
-        base_url: value.get("baseUrl").and_then(Value::as_str).map(String::from),
-        user_id: value.get("userId").and_then(Value::as_str).map(String::from),
-        environment: value.get("environment").and_then(Value::as_str).map(String::from),
-        release: value.get("release").and_then(Value::as_str).map(String::from),
+        public_key: value
+            .get("publicKey")
+            .and_then(Value::as_str)
+            .map(String::from),
+        secret_key: value
+            .get("secretKey")
+            .and_then(Value::as_str)
+            .map(String::from),
+        base_url: value
+            .get("baseUrl")
+            .and_then(Value::as_str)
+            .map(String::from),
+        user_id: value
+            .get("userId")
+            .and_then(Value::as_str)
+            .map(String::from),
+        environment: value
+            .get("environment")
+            .and_then(Value::as_str)
+            .map(String::from),
+        release: value
+            .get("release")
+            .and_then(Value::as_str)
+            .map(String::from),
     })
 }
 
@@ -274,7 +292,9 @@ fn escape_reg_exp_literal(text: &str) -> String {
     result
 }
 
-fn create_secret_redactor(extra_secrets: Vec<String>) -> Box<dyn Fn(&Value) -> Value + Send + Sync> {
+fn create_secret_redactor(
+    extra_secrets: Vec<String>,
+) -> Box<dyn Fn(&Value) -> Value + Send + Sync> {
     let mut alternatives: Vec<String> = extra_secrets
         .into_iter()
         .filter(|s| !s.is_empty())
@@ -282,7 +302,7 @@ fn create_secret_redactor(extra_secrets: Vec<String>) -> Box<dyn Fn(&Value) -> V
         .collect();
     alternatives.push(LANGFUSE_KEY_PATTERN.to_string());
     let pattern = alternatives.join("|");
-    
+
     Box::new(move |value: &Value| {
         fn walk(value: &Value, pattern: &str, ancestors: &mut Vec<*const Value>) -> Value {
             match value {
@@ -340,19 +360,17 @@ fn redact_langfuse_keys(value: &Value) -> Value {
 fn extract_text(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
-        Value::Array(items) => {
-            items
-                .iter()
-                .filter_map(|p| {
-                    if p.get("type").and_then(Value::as_str) == Some("text") {
-                        p.get("text").and_then(Value::as_str).map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("")
-        }
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|p| {
+                if p.get("type").and_then(Value::as_str) == Some("text") {
+                    p.get("text").and_then(Value::as_str).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
         _ => String::new(),
     }
 }
@@ -443,7 +461,9 @@ fn is_valid_base64(s: &str) -> bool {
         return false;
     }
     let len = s.len();
-    let valid_chars = s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
+    let valid_chars = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
     if !valid_chars {
         return false;
     }
@@ -594,35 +614,38 @@ fn extract_model_parameters(
     thinking_level: Option<&str>,
 ) -> Option<Map<String, Value>> {
     let mut out = Map::new();
-    
+
     if let Some(max_tokens) = find_number(payload, MAX_TOKENS_KEYS, 2) {
         out.insert("max_tokens".to_string(), json!(max_tokens));
     }
-    
+
     if let (Some(model), Some(level)) = (model, thinking_level) {
-        if model.get("reasoning").and_then(Value::as_bool).unwrap_or(false)
+        if model
+            .get("reasoning")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
             && level != "off"
         {
             out.insert("thinking_level".to_string(), json!(level));
         }
     }
-    
+
     if let Some(budget) = find_number(payload, THINKING_BUDGET_KEYS, 2) {
         out.insert("thinking_budget_tokens".to_string(), json!(budget));
     }
-    
+
     if let Some(retention) = pick_cache_retention(payload) {
         out.insert("prompt_cache_retention".to_string(), json!(retention));
     }
-    
+
     if let Some(tier) = payload.get("service_tier").and_then(Value::as_str) {
         out.insert("service_tier".to_string(), json!(tier));
     }
-    
+
     if let Some(choice) = pick_tool_choice(payload) {
         out.insert("tool_choice".to_string(), json!(choice));
     }
-    
+
     if let Some(model) = model {
         if let Some(Value::Object(params)) = model.get("samplingParams") {
             for (key, value) in params {
@@ -647,7 +670,7 @@ fn extract_model_parameters(
             }
         }
     }
-    
+
     if out.is_empty() {
         None
     } else {
@@ -686,7 +709,7 @@ fn parse_usage(value: &Value) -> Option<PiUsage> {
     let cache_write = value.get("cacheWrite")?.as_u64()?;
     let reasoning = value.get("reasoning").and_then(Value::as_u64);
     let cache_write_1h = value.get("cacheWrite1h").and_then(Value::as_u64);
-    
+
     let cost = value.get("cost").and_then(|c| {
         Some(CostDetails {
             input: c.get("input")?.as_u64()?,
@@ -696,7 +719,7 @@ fn parse_usage(value: &Value) -> Option<PiUsage> {
             total: c.get("total")?.as_u64()?,
         })
     });
-    
+
     Some(PiUsage {
         input,
         output,
@@ -716,34 +739,40 @@ fn resolve_reasoning_split(usage: &PiUsage) -> (u64, bool) {
 
 fn build_usage_details(usage: &PiUsage) -> Option<Map<String, Value>> {
     let mut details = Map::new();
-    
+
     if usage.input > 0 {
         details.insert("input".to_string(), json!(usage.input));
     }
-    
+
     let (reasoning, can_split) = resolve_reasoning_split(usage);
     let output = if can_split {
         usage.output - reasoning
     } else {
         usage.output
     };
-    
+
     if output > 0 {
         details.insert("output".to_string(), json!(output));
     }
-    
+
     if can_split {
         details.insert("output_reasoning_tokens".to_string(), json!(reasoning));
     }
-    
+
     if usage.cache_read > 0 {
-        details.insert("cache_read_input_tokens".to_string(), json!(usage.cache_read));
+        details.insert(
+            "cache_read_input_tokens".to_string(),
+            json!(usage.cache_read),
+        );
     }
-    
+
     if usage.cache_write > 0 {
-        details.insert("cache_creation_input_tokens".to_string(), json!(usage.cache_write));
+        details.insert(
+            "cache_creation_input_tokens".to_string(),
+            json!(usage.cache_write),
+        );
     }
-    
+
     if details.is_empty() {
         None
     } else {
@@ -756,18 +785,19 @@ fn build_cost_details(usage: &PiUsage) -> Option<Map<String, Value>> {
     if cost.total == 0 {
         return None;
     }
-    
+
     let mut details = Map::new();
     details.insert("total".to_string(), json!(cost.total));
-    
+
     if cost.input > 0 {
         details.insert("input".to_string(), json!(cost.input));
     }
-    
+
     if cost.output > 0 {
         let (reasoning, can_split) = resolve_reasoning_split(usage);
         if can_split {
-            let reasoning_cost = (cost.output as f64 * (reasoning as f64 / usage.output as f64)) as u64;
+            let reasoning_cost =
+                (cost.output as f64 * (reasoning as f64 / usage.output as f64)) as u64;
             let non_reasoning_cost = cost.output - reasoning_cost;
             if non_reasoning_cost > 0 {
                 details.insert("output".to_string(), json!(non_reasoning_cost));
@@ -779,15 +809,21 @@ fn build_cost_details(usage: &PiUsage) -> Option<Map<String, Value>> {
             details.insert("output".to_string(), json!(cost.output));
         }
     }
-    
+
     if cost.cache_read > 0 {
-        details.insert("cache_read_input_tokens".to_string(), json!(cost.cache_read));
+        details.insert(
+            "cache_read_input_tokens".to_string(),
+            json!(cost.cache_read),
+        );
     }
-    
+
     if cost.cache_write > 0 {
-        details.insert("cache_creation_input_tokens".to_string(), json!(cost.cache_write));
+        details.insert(
+            "cache_creation_input_tokens".to_string(),
+            json!(cost.cache_write),
+        );
     }
-    
+
     Some(details)
 }
 
@@ -810,7 +846,9 @@ struct ChatMlThinkingPart {
 
 #[derive(Debug, Clone)]
 enum ChatMlMessage {
-    User { content: String },
+    User {
+        content: String,
+    },
     Assistant {
         content: Option<String>,
         thinking: Vec<ChatMlThinkingPart>,
@@ -873,7 +911,7 @@ fn history_tool_calls(content: &Value) -> Vec<ChatMlToolCall> {
 
 fn to_chat_ml_message(message: &Value) -> Option<ChatMlMessage> {
     let role = message.get("role").and_then(Value::as_str)?;
-    
+
     match role {
         "user" => {
             let content = message.get("content")?;
@@ -891,19 +929,26 @@ fn to_chat_ml_message(message: &Value) -> Option<ChatMlMessage> {
             let text = extract_text(content);
             let thinking = extract_thinking(content);
             let tool_calls = history_tool_calls(content);
-            
+
             if text.is_empty() && thinking.is_empty() && tool_calls.is_empty() {
                 return None;
             }
-            
+
             Some(ChatMlMessage::Assistant {
-                content: if text.is_empty() { None } else { Some(mark_data_uris(&text)) },
+                content: if text.is_empty() {
+                    None
+                } else {
+                    Some(mark_data_uris(&text))
+                },
                 thinking,
                 tool_calls,
             })
         }
         "toolResult" => {
-            let tool_call_id = message.get("toolCallId").and_then(Value::as_str)?.to_string();
+            let tool_call_id = message
+                .get("toolCallId")
+                .and_then(Value::as_str)?
+                .to_string();
             let name = message.get("toolName").and_then(Value::as_str)?.to_string();
             let content = message.get("content")?;
             let text = if content.is_string() {
@@ -911,8 +956,11 @@ fn to_chat_ml_message(message: &Value) -> Option<ChatMlMessage> {
             } else {
                 render_content_with_image_markers(content)
             };
-            let is_error = message.get("isError").and_then(Value::as_bool).unwrap_or(false);
-            
+            let is_error = message
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
             Some(ChatMlMessage::Tool {
                 tool_call_id,
                 name,
@@ -944,36 +992,51 @@ fn chat_ml_message_to_value(msg: &ChatMlMessage) -> Value {
         ChatMlMessage::User { content } => {
             json!({ "role": "user", "content": content })
         }
-        ChatMlMessage::Assistant { content, thinking, tool_calls } => {
+        ChatMlMessage::Assistant {
+            content,
+            thinking,
+            tool_calls,
+        } => {
             let mut result = json!({ "role": "assistant" });
             if let Some(content) = content {
                 result["content"] = json!(content);
             }
             if !thinking.is_empty() {
-                result["thinking"] = json!(thinking.iter().map(|t| {
-                    let mut part = json!({ "type": "thinking", "content": t.content });
-                    if t.redacted {
-                        part["redacted"] = json!(true);
-                    }
-                    part
-                }).collect::<Vec<_>>());
+                result["thinking"] = json!(thinking
+                    .iter()
+                    .map(|t| {
+                        let mut part = json!({ "type": "thinking", "content": t.content });
+                        if t.redacted {
+                            part["redacted"] = json!(true);
+                        }
+                        part
+                    })
+                    .collect::<Vec<_>>());
             }
             if !tool_calls.is_empty() {
-                result["tool_calls"] = json!(tool_calls.iter().map(|tc| {
-                    let mut call = json!({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": { "name": tc.name }
-                    });
-                    if let Some(args) = &tc.arguments {
-                        call["function"]["arguments"] = json!(args);
-                    }
-                    call
-                }).collect::<Vec<_>>());
+                result["tool_calls"] = json!(tool_calls
+                    .iter()
+                    .map(|tc| {
+                        let mut call = json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": { "name": tc.name }
+                        });
+                        if let Some(args) = &tc.arguments {
+                            call["function"]["arguments"] = json!(args);
+                        }
+                        call
+                    })
+                    .collect::<Vec<_>>());
             }
             result
         }
-        ChatMlMessage::Tool { tool_call_id, name, content, is_error } => {
+        ChatMlMessage::Tool {
+            tool_call_id,
+            name,
+            content,
+            is_error,
+        } => {
             let mut result = json!({
                 "role": "tool",
                 "tool_call_id": tool_call_id,
@@ -1218,7 +1281,10 @@ fn span_to_otlp(rec: &SpanRecord, is_root: bool, inherited_parent: Option<&str>)
     if let Some(ref cost) = rec.cost_details {
         for (k, v) in cost {
             if let Some(n) = v.as_f64() {
-                attrs.push(attr_double(&format!("langfuse.observation.cost_details.{k}"), n));
+                attrs.push(attr_double(
+                    &format!("langfuse.observation.cost_details.{k}"),
+                    n,
+                ));
             }
         }
     }
@@ -1266,7 +1332,11 @@ fn span_to_otlp(rec: &SpanRecord, is_root: bool, inherited_parent: Option<&str>)
     put_unix_nanos(&mut span, "startTimeUnixNano", rec.start_ms);
     // An un-ended record is only exported when the caller forces it (session
     // shutdown): collapse it to a zero-length span rather than dropping it.
-    put_unix_nanos(&mut span, "endTimeUnixNano", rec.end_ms.unwrap_or(rec.start_ms));
+    put_unix_nanos(
+        &mut span,
+        "endTimeUnixNano",
+        rec.end_ms.unwrap_or(rec.start_ms),
+    );
     span.insert("attributes".into(), Value::Array(attrs));
     Value::Object(span)
 }
@@ -1329,7 +1399,11 @@ fn flush_ended_spans(include_open: bool) -> Result<usize, String> {
         let store = state.spans.lock().unwrap();
         for rec in store.iter() {
             if rec.end_ms.is_some() || include_open {
-                spans.push(span_to_otlp(rec, rec.parent_id.is_none(), inherited_parent.as_deref()));
+                spans.push(span_to_otlp(
+                    rec,
+                    rec.parent_id.is_none(),
+                    inherited_parent.as_deref(),
+                ));
             }
         }
     }
@@ -1486,9 +1560,8 @@ fn next_hex(bytes: usize) -> String {
     use std::sync::atomic::AtomicU64;
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut x = id_seed()
-        ^ (u64::from(std::process::id()) << 32)
-        ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mut x =
+        id_seed() ^ (u64::from(std::process::id()) << 32) ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let mut out = String::with_capacity(bytes * 2);
     while out.len() < bytes * 2 {
         // splitmix64: cheap, well mixed, no extra dependency
@@ -1592,30 +1665,34 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
     if !is_enabled() {
         return 0;
     }
-    
+
     let data_str = unsafe { event.payload.data.data.to_string_lossy() };
     let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-    
+
     // Finalize previous state if exists
     if let Some(state) = prompt_state().lock().unwrap().take() {
         finalize_root(&state, true);
     }
-    
+
     let prompt = data.get("prompt").and_then(Value::as_str).unwrap_or("");
-    let images = data.get("images").and_then(|i| i.as_array()).cloned().unwrap_or_default();
-    
+    let images = data
+        .get("images")
+        .and_then(|i| i.as_array())
+        .cloned()
+        .unwrap_or_default();
+
     let user_text = if images.is_empty() {
         prompt.to_string()
     } else {
         let image_descs: Vec<String> = images.iter().map(|img| describe_image(img)).collect();
         format!("{}\n{}", prompt, image_descs.join("\n"))
     };
-    
+
     let session_id = std::env::var("RPI_SESSION_ID").unwrap_or_else(|_| "default".to_string());
     let turn_number = resolve_turn_number(&session_id, prompt);
-    
+
     let is_subagent = std::env::var(ENV_PARENT_TRACE_ID).is_ok();
-    
+
     let root_name = if is_subagent {
         SUBAGENT_ROOT_OBSERVATION_NAME
     } else {
@@ -1630,11 +1707,11 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
     } else {
         trace_id()
     };
-    
+
     let mut metadata = trace_metadata();
     metadata.insert("session_id".into(), json!(session_id));
     metadata.insert("turn_number".into(), json!(turn_number));
-    
+
     if is_subagent {
         metadata.insert("pi_subagent".into(), json!(true));
         if let Ok(depth) = std::env::var(ENV_PARENT_DEPTH) {
@@ -1644,7 +1721,7 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
             metadata.insert("parent_session_id".into(), json!(parent_session));
         }
     }
-    
+
     let root_obs_id = start_observation(
         root_name,
         "span",
@@ -1653,7 +1730,7 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
         Some(json!({ "role": "user", "content": user_text })),
         Some(metadata),
     );
-    
+
     // Publish parent context for subagents
     if !is_subagent {
         std::env::set_var(ENV_PARENT_TRACE_ID, &trace_id_val);
@@ -1661,7 +1738,7 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
         std::env::set_var(ENV_PARENT_SESSION_ID, &session_id);
         std::env::set_var(ENV_PARENT_DEPTH, "0");
     }
-    
+
     let state = PromptState {
         root_obs_id,
         trace_id: trace_id_val,
@@ -1677,7 +1754,7 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
         system_prompt: None,
         session_id,
     };
-    
+
     *prompt_state().lock().unwrap() = Some(state);
 
     // Armed: the trace exists from here on. The footer flips to
@@ -1713,12 +1790,12 @@ extern "C" fn on_agent_start(event: StablePluginEvent, _: *mut c_void) -> i32 {
     }
     // AgentStart is dispatched with empty payload - don't read data
     let _ = event;
-    
+
     // Capture system prompt if available
     // In the new protocol, system prompt is retrieved via ctx.getSystemPrompt()
     // but we don't have direct access to that in the Rust SDK
     // For now, we'll skip this
-    
+
     0
 }
 
@@ -1727,38 +1804,41 @@ extern "C" fn on_before_provider_request(event: StablePluginEvent, _: *mut c_voi
     if !is_enabled() {
         return 0;
     }
-    
+
     let mut state_guard = prompt_state().lock().unwrap();
     let Some(state) = state_guard.as_mut() else {
         return 0;
     };
-    
+
     // Close previous generation if still open
     if let Some(gen) = state.open_generation.take() {
         if !gen.finished {
-            update_observation(&gen.obs_id, json!({
-                "level": "WARNING",
-                "statusMessage": "Superseded by provider retry",
-                "metadata": { "superseded": true }
-            }));
+            update_observation(
+                &gen.obs_id,
+                json!({
+                    "level": "WARNING",
+                    "statusMessage": "Superseded by provider retry",
+                    "metadata": { "superseded": true }
+                }),
+            );
             end_observation(&gen.obs_id);
         }
     }
-    
+
     let data_str = unsafe { event.payload.data.data.to_string_lossy() };
     let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-    
+
     let index = state.generation_count + 1;
     state.generation_count = index;
-    
+
     // Build generation input
     let mut generation_input = Vec::new();
-    
+
     // Add system prompt if available
     if let Some(system_prompt) = &state.system_prompt {
         generation_input.push(json!({ "role": "system", "content": system_prompt }));
     }
-    
+
     // Add user prompt for first generation
     if index == 1 {
         generation_input.push(json!({ "role": "user", "content": state.user_text }));
@@ -1768,24 +1848,24 @@ extern "C" fn on_before_provider_request(event: StablePluginEvent, _: *mut c_voi
             generation_input.push(result.clone());
         }
     }
-    
+
     let input = if generation_input.is_empty() {
         None
     } else {
         Some(Value::Array(generation_input))
     };
-    
+
     let model = data.get("model").and_then(Value::as_str);
     let model_params = extract_model_parameters(&data, None, None);
-    
+
     let mut metadata = Map::new();
     metadata.insert("assistant_index".into(), json!(index - 1));
     metadata.insert("input_source".into(), json!("delta"));
-    
+
     if let Some(model) = model {
         metadata.insert("model".into(), json!(model));
     }
-    
+
     let obs_id = start_observation(
         GENERATION_PREFIX,
         "generation",
@@ -1794,18 +1874,18 @@ extern "C" fn on_before_provider_request(event: StablePluginEvent, _: *mut c_voi
         input,
         Some(metadata),
     );
-    
+
     if let Some(params) = model_params {
         update_observation(&obs_id, json!({ "modelParameters": params }));
     }
-    
+
     state.open_generation = Some(OpenGeneration {
         obs_id,
         index,
         saw_first_token: false,
         finished: false,
     });
-    
+
     0
 }
 
@@ -1813,33 +1893,36 @@ extern "C" fn on_message_update(event: StablePluginEvent, _: *mut c_void) -> i32
     if !is_enabled() {
         return 0;
     }
-    
+
     let mut state_guard = prompt_state().lock().unwrap();
     let Some(state) = state_guard.as_mut() else {
         return 0;
     };
-    
+
     let Some(gen) = &mut state.open_generation else {
         return 0;
     };
-    
+
     if gen.finished || gen.saw_first_token {
         return 0;
     }
-    
+
     let data_str = unsafe { event.payload.message.message.to_string_lossy() };
     let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-    
+
     let content = data.get("content").unwrap_or(&Value::Null);
     let text = extract_text(content);
-    
+
     if !text.is_empty() {
         gen.saw_first_token = true;
-        update_observation(&gen.obs_id, json!({
-            "completionStartTime": now_iso()
-        }));
+        update_observation(
+            &gen.obs_id,
+            json!({
+                "completionStartTime": now_iso()
+            }),
+        );
     }
-    
+
     0
 }
 
@@ -1848,17 +1931,20 @@ extern "C" fn on_message_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
     if !is_enabled() {
         return 0;
     }
-    
+
     let mut state_guard = prompt_state().lock().unwrap();
     let Some(state) = state_guard.as_mut() else {
         return 0;
     };
-    
+
     let data_str = unsafe { event.payload.message.message.to_string_lossy() };
     let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-    
+
     // Check if this is an assistant message (new protocol uses "role", old uses "kind")
-    let role = data.get("role").or_else(|| data.get("kind")).and_then(Value::as_str);
+    let role = data
+        .get("role")
+        .or_else(|| data.get("kind"))
+        .and_then(Value::as_str);
     if role != Some("assistant") {
         // Handle user message for backwards compatibility
         if role == Some("user") {
@@ -1869,53 +1955,60 @@ extern "C" fn on_message_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
         }
         return 0;
     }
-    
+
     let Some(gen) = state.open_generation.take() else {
         return 0;
     };
-    
+
     if gen.finished {
         return 0;
     }
-    
+
     let content = data.get("content").unwrap_or(&Value::Null);
     let text = extract_text(content);
     let tool_calls = extract_tool_calls(content);
     let thinking = extract_thinking(content);
-    
+
     let stop_reason = data.get("stopReason").and_then(Value::as_str);
     let is_error = stop_reason == Some("error") || stop_reason == Some("aborted");
-    
+
     if stop_reason == Some("error") {
         state.saw_error = true;
     }
-    
+
     // Build output
     let mut output = json!({ "role": "assistant" });
     if !text.is_empty() {
         output["content"] = json!(text);
     }
     if !thinking.is_empty() {
-        output["thinking"] = json!(thinking.iter().map(|t| {
-            let mut part = json!({ "type": "thinking", "content": t.content });
-            if t.redacted {
-                part["redacted"] = json!(true);
-            }
-            part
-        }).collect::<Vec<_>>());
+        output["thinking"] = json!(thinking
+            .iter()
+            .map(|t| {
+                let mut part = json!({ "type": "thinking", "content": t.content });
+                if t.redacted {
+                    part["redacted"] = json!(true);
+                }
+                part
+            })
+            .collect::<Vec<_>>());
     }
     if !tool_calls.is_empty() {
         output["tool_calls"] = json!(tool_calls);
     }
-    
+
     let mut updates = json!({
         "output": output,
     });
-    
-    if let Some(model) = data.get("responseModel").or_else(|| data.get("model")).and_then(Value::as_str) {
+
+    if let Some(model) = data
+        .get("responseModel")
+        .or_else(|| data.get("model"))
+        .and_then(Value::as_str)
+    {
         updates["model"] = json!(model);
     }
-    
+
     if let Some(usage) = data.get("usage").and_then(parse_usage) {
         if let Some(usage_details) = build_usage_details(&usage) {
             updates["usageDetails"] = json!(usage_details);
@@ -1924,23 +2017,26 @@ extern "C" fn on_message_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
             updates["costDetails"] = json!(cost_details);
         }
     }
-    
+
     if is_error {
         updates["level"] = json!("ERROR");
-        let error_msg = data.get("errorMessage").and_then(Value::as_str).unwrap_or("error");
+        let error_msg = data
+            .get("errorMessage")
+            .and_then(Value::as_str)
+            .unwrap_or("error");
         updates["statusMessage"] = json!(error_msg);
     }
-    
+
     let mut metadata = Map::new();
     metadata.insert("tool_count".into(), json!(tool_calls.len()));
     if let Some(reason) = stop_reason {
         metadata.insert("stop_reason".into(), json!(reason));
     }
     updates["metadata"] = json!(metadata);
-    
+
     update_observation(&gen.obs_id, updates);
     end_observation(&gen.obs_id);
-    
+
     if !text.is_empty() {
         state.last_assistant_text = Some(text);
     }
@@ -1953,9 +2049,8 @@ extern "C" fn on_message_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
     // turn is over: close the root observation and export right away.
     // Interactive sessions are unaffected (AgentSettled still finalizes), and a
     // tool-call reply keeps the turn open for the follow-up request.
-    let turn_finished = tool_calls.is_empty()
-        && state.open_generation.is_none()
-        && state.open_tools.is_empty();
+    let turn_finished =
+        tool_calls.is_empty() && state.open_generation.is_none() && state.open_tools.is_empty();
     drop(state_guard);
 
     if turn_finished {
@@ -1978,23 +2073,23 @@ extern "C" fn on_tool_execution_start(event: StablePluginEvent, _: *mut c_void) 
     if !is_enabled() {
         return 0;
     }
-    
+
     let tool_call_id = unsafe { event.payload.tool_call.tool_call_id.to_string_lossy() };
     let tool_name = unsafe { event.payload.tool_call.tool_name.to_string_lossy() };
     let params = unsafe { event.payload.tool_call.params.to_string_lossy() };
-    
+
     let mut state_guard = prompt_state().lock().unwrap();
     let Some(state) = state_guard.as_mut() else {
         return 0;
     };
-    
+
     let input: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
     let redacted_input = redact_langfuse_keys(&input);
-    
+
     let mut metadata = Map::new();
     metadata.insert("tool_name".into(), json!(tool_name));
     metadata.insert("tool_id".into(), json!(tool_call_id));
-    
+
     let obs_id = start_observation(
         &format!("{} {}", TOOL_PREFIX, tool_name),
         "span",
@@ -2003,13 +2098,16 @@ extern "C" fn on_tool_execution_start(event: StablePluginEvent, _: *mut c_void) 
         Some(redacted_input),
         Some(metadata),
     );
-    
-    state.open_tools.insert(tool_call_id.clone(), OpenTool {
-        obs_id: obs_id.clone(),
-        name: tool_name.clone(),
-        started_at: Instant::now(),
-    });
-    
+
+    state.open_tools.insert(
+        tool_call_id.clone(),
+        OpenTool {
+            obs_id: obs_id.clone(),
+            name: tool_name.clone(),
+            started_at: Instant::now(),
+        },
+    );
+
     0
 }
 
@@ -2017,32 +2115,32 @@ extern "C" fn on_tool_execution_end(event: StablePluginEvent, _: *mut c_void) ->
     if !is_enabled() {
         return 0;
     }
-    
+
     let tool_call_id = unsafe { event.payload.tool_result.tool_call_id.to_string_lossy() };
     let result = unsafe { event.payload.tool_result.result.to_string_lossy() };
     let is_error = unsafe { event.payload.tool_result.is_error } != 0;
-    
+
     let mut state_guard = prompt_state().lock().unwrap();
     let Some(state) = state_guard.as_mut() else {
         return 0;
     };
-    
+
     let Some(tool) = state.open_tools.remove(&tool_call_id) else {
         return 0;
     };
-    
+
     let result_value: Value = serde_json::from_str(&result).unwrap_or(Value::Null);
-    
+
     let output = if let Some(content) = result_value.get("content") {
         render_content_with_image_markers(content)
     } else {
         safe_stringify(&result_value)
     };
-    
+
     if is_error {
         state.saw_error = true;
     }
-    
+
     // Check for tool result usage
     if let Some(usage_value) = result_value.get("usage") {
         if let Some(usage) = parse_usage(usage_value) {
@@ -2051,7 +2149,7 @@ extern "C" fn on_tool_execution_end(event: StablePluginEvent, _: *mut c_void) ->
             metadata.insert("tool_name".into(), json!(tool.name));
             metadata.insert("source".into(), json!("tool_result_usage"));
             metadata.insert("model_is_session_model".into(), json!(true));
-            
+
             let usage_obs_id = start_observation(
                 TOOL_USAGE_OBSERVATION_NAME,
                 "generation",
@@ -2060,7 +2158,7 @@ extern "C" fn on_tool_execution_end(event: StablePluginEvent, _: *mut c_void) ->
                 None,
                 Some(metadata),
             );
-            
+
             let mut updates = Map::new();
             if let Some(usage_details) = build_usage_details(&usage) {
                 updates.insert("usageDetails".to_string(), json!(usage_details));
@@ -2068,30 +2166,30 @@ extern "C" fn on_tool_execution_end(event: StablePluginEvent, _: *mut c_void) ->
             if let Some(cost_details) = build_cost_details(&usage) {
                 updates.insert("costDetails".to_string(), json!(cost_details));
             }
-            
+
             if !updates.is_empty() {
                 update_observation(&usage_obs_id, Value::Object(updates));
             }
             end_observation(&usage_obs_id);
         }
     }
-    
+
     let mut updates = json!({
         "output": output,
     });
-    
+
     if is_error {
         updates["level"] = json!("ERROR");
         updates["statusMessage"] = json!("Tool execution failed");
     }
-    
+
     let mut metadata = Map::new();
     metadata.insert("is_error".into(), json!(is_error));
     updates["metadata"] = json!(metadata);
-    
+
     update_observation(&tool.obs_id, updates);
     end_observation(&tool.obs_id);
-    
+
     // Add to pending tool results
     state.pending_tool_results.push(json!({
         "role": "tool",
@@ -2099,7 +2197,7 @@ extern "C" fn on_tool_execution_end(event: StablePluginEvent, _: *mut c_void) ->
         "name": tool.name,
         "content": output,
     }));
-    
+
     0
 }
 
@@ -2116,26 +2214,32 @@ extern "C" fn on_session_compact(event: StablePluginEvent, _: *mut c_void) -> i3
     if !is_enabled() {
         return 0;
     }
-    
+
     let data_str = unsafe { event.payload.data.data.to_string_lossy() };
     let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-    
+
     let entry = data.get("compactionEntry");
-    let reason = data.get("reason").and_then(Value::as_str).unwrap_or("unknown");
-    let will_retry = data.get("willRetry").and_then(Value::as_bool).unwrap_or(false);
-    
+    let reason = data
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let will_retry = data
+        .get("willRetry")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
     if let Some(entry) = entry {
         let summary = entry.get("summary").and_then(Value::as_str).unwrap_or("");
         let usage = entry.get("usage").and_then(parse_usage);
-        
+
         let mut metadata = Map::new();
         metadata.insert("compaction_reason".into(), json!(reason));
         metadata.insert("will_retry".into(), json!(will_retry));
-        
+
         if let Some(tokens_before) = entry.get("tokensBefore").and_then(Value::as_u64) {
             metadata.insert("tokens_before".into(), json!(tokens_before));
         }
-        
+
         let trace_id_val = trace_id();
         let obs_id = start_observation(
             COMPACTION_OBSERVATION_NAME,
@@ -2145,12 +2249,15 @@ extern "C" fn on_session_compact(event: StablePluginEvent, _: *mut c_void) -> i3
             None,
             Some(metadata),
         );
-        
+
         let mut updates = Map::new();
         if !summary.is_empty() {
-            updates.insert("output".to_string(), json!({ "role": "assistant", "content": summary }));
+            updates.insert(
+                "output".to_string(),
+                json!({ "role": "assistant", "content": summary }),
+            );
         }
-        
+
         if let Some(usage) = usage {
             if let Some(usage_details) = build_usage_details(&usage) {
                 updates.insert("usageDetails".to_string(), json!(usage_details));
@@ -2159,13 +2266,13 @@ extern "C" fn on_session_compact(event: StablePluginEvent, _: *mut c_void) -> i3
                 updates.insert("costDetails".to_string(), json!(cost_details));
             }
         }
-        
+
         if !updates.is_empty() {
             update_observation(&obs_id, Value::Object(updates));
         }
         end_observation(&obs_id);
     }
-    
+
     0
 }
 
@@ -2173,24 +2280,28 @@ extern "C" fn on_session_tree(event: StablePluginEvent, _: *mut c_void) -> i32 {
     if !is_enabled() {
         return 0;
     }
-    
+
     let data_str = unsafe { event.payload.data.data.to_string_lossy() };
     let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-    
+
     let entry = data.get("summaryEntry");
     if entry.is_none() {
         return 0;
     }
     let entry = entry.unwrap();
-    
+
     let summary = entry.get("summary").and_then(Value::as_str).unwrap_or("");
     let usage = entry.get("usage").and_then(parse_usage);
-    
+
     let mut metadata = Map::new();
-    if data.get("fromExtension").and_then(Value::as_bool).unwrap_or(false) {
+    if data
+        .get("fromExtension")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         metadata.insert("from_extension".into(), json!(true));
     }
-    
+
     let trace_id_val = trace_id();
     let obs_id = start_observation(
         BRANCH_SUMMARY_OBSERVATION_NAME,
@@ -2200,12 +2311,15 @@ extern "C" fn on_session_tree(event: StablePluginEvent, _: *mut c_void) -> i32 {
         None,
         Some(metadata),
     );
-    
+
     let mut updates = Map::new();
     if !summary.is_empty() {
-        updates.insert("output".to_string(), json!({ "role": "assistant", "content": summary }));
+        updates.insert(
+            "output".to_string(),
+            json!({ "role": "assistant", "content": summary }),
+        );
     }
-    
+
     if let Some(usage) = usage {
         if let Some(usage_details) = build_usage_details(&usage) {
             updates.insert("usageDetails".to_string(), json!(usage_details));
@@ -2214,12 +2328,12 @@ extern "C" fn on_session_tree(event: StablePluginEvent, _: *mut c_void) -> i32 {
             updates.insert("costDetails".to_string(), json!(cost_details));
         }
     }
-    
+
     if !updates.is_empty() {
         update_observation(&obs_id, Value::Object(updates));
     }
     end_observation(&obs_id);
-    
+
     0
 }
 
@@ -2228,14 +2342,14 @@ extern "C" fn on_agent_settled(_event: StablePluginEvent, _: *mut c_void) -> i32
     if !is_enabled() {
         return 0;
     }
-    
+
     if let Some(state) = prompt_state().lock().unwrap().take() {
         finalize_root(&state, false);
     }
-    
+
     let state = tracer();
     force_flush(&state);
-    
+
     0
 }
 
@@ -2243,40 +2357,52 @@ fn finalize_root(state: &PromptState, cancelled: bool) {
     // Close any open generation
     if let Some(gen) = &state.open_generation {
         if !gen.finished {
-            update_observation(&gen.obs_id, json!({
-                "level": "WARNING",
-                "statusMessage": "Generation interrupted",
-                "metadata": { "interrupted": true }
-            }));
+            update_observation(
+                &gen.obs_id,
+                json!({
+                    "level": "WARNING",
+                    "statusMessage": "Generation interrupted",
+                    "metadata": { "interrupted": true }
+                }),
+            );
             end_observation(&gen.obs_id);
         }
     }
-    
+
     // Close any open tools
     for (_, tool) in &state.open_tools {
-        update_observation(&tool.obs_id, json!({
-            "level": "WARNING",
-            "statusMessage": "Tool run interrupted",
-            "metadata": { "interrupted": true }
-        }));
+        update_observation(
+            &tool.obs_id,
+            json!({
+                "level": "WARNING",
+                "statusMessage": "Tool run interrupted",
+                "metadata": { "interrupted": true }
+            }),
+        );
         end_observation(&tool.obs_id);
     }
-    
+
     // Update root with final input/output
     let mut updates = Map::new();
-    
+
     if !state.turn_images.is_empty() {
-        updates.insert("input".to_string(), to_multimodal_content(&state.user_text, &state.turn_images));
+        updates.insert(
+            "input".to_string(),
+            to_multimodal_content(&state.user_text, &state.turn_images),
+        );
     }
-    
+
     if let Some(text) = &state.last_assistant_text {
-        updates.insert("output".to_string(), json!({ "role": "assistant", "content": text }));
+        updates.insert(
+            "output".to_string(),
+            json!({ "role": "assistant", "content": text }),
+        );
     }
-    
+
     if state.saw_error {
         updates.insert("level".to_string(), json!("ERROR"));
     }
-    
+
     let mut metadata = Map::new();
     if !state.turn_images.is_empty() {
         metadata.insert("image_count".into(), json!(state.turn_images.len()));
@@ -2284,17 +2410,17 @@ fn finalize_root(state: &PromptState, cancelled: bool) {
     if cancelled {
         metadata.insert("cancelled".into(), json!(true));
     }
-    
+
     if !metadata.is_empty() {
         updates.insert("metadata".to_string(), json!(metadata));
     }
-    
+
     if !updates.is_empty() {
         update_observation(&state.root_obs_id, Value::Object(updates));
     }
-    
+
     end_observation(&state.root_obs_id);
-    
+
     // Withdraw parent context
     std::env::remove_var(ENV_PARENT_TRACE_ID);
     std::env::remove_var(ENV_PARENT_SPAN_ID);
@@ -2307,14 +2433,14 @@ extern "C" fn on_session_shutdown(_event: StablePluginEvent, _: *mut c_void) -> 
     if !is_enabled() {
         return 0;
     }
-    
+
     if let Some(state) = prompt_state().lock().unwrap().take() {
         finalize_root(&state, true);
     }
-    
+
     let state = tracer();
     force_flush(&state);
-    
+
     0
 }
 
@@ -2379,9 +2505,15 @@ pub fn score(p: &Value) -> Result<String, String> {
     let action = p.get("action").and_then(Value::as_str).unwrap_or("create");
     match action {
         "create" => {
-            let name = p.get("name").and_then(Value::as_str).ok_or("name is required")?;
+            let name = p
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or("name is required")?;
             let value = p.get("value").ok_or("value is required")?;
-            let trace_id = p.get("traceId").and_then(Value::as_str).ok_or("traceId is required")?;
+            let trace_id = p
+                .get("traceId")
+                .and_then(Value::as_str)
+                .ok_or("traceId is required")?;
             let mut body = json!({"name": name, "value": value, "traceId": trace_id});
             if let Some(obs_id) = p.get("observationId").and_then(Value::as_str) {
                 body["observationId"] = json!(obs_id);
@@ -2410,7 +2542,12 @@ pub fn score(p: &Value) -> Result<String, String> {
             };
             // Langfuse v4: the score *read* endpoints moved to Scores API v3
             // (`GET /api/public/scores` and `/v2/scores` return 404).
-            let v = api_request(&client(30)?, "GET", &format!("/api/public/v3/scores{}", qs), None)?;
+            let v = api_request(
+                &client(30)?,
+                "GET",
+                &format!("/api/public/v3/scores{}", qs),
+                None,
+            )?;
             Ok(json!({"action":"list","scores":v}).to_string())
         }
         _ => Err("action must be one of: create, list".into()),
@@ -2421,7 +2558,10 @@ pub fn prompt(p: &Value) -> Result<String, String> {
     let action = p.get("action").and_then(Value::as_str).unwrap_or("create");
     match action {
         "create" => {
-            let name = p.get("name").and_then(Value::as_str).ok_or("name is required")?;
+            let name = p
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or("name is required")?;
             let prompt_text = p.get("prompt").ok_or("prompt is required")?;
             let mut body = json!({"name": name, "prompt": prompt_text, "isActive": true});
             if let Some(config) = p.get("config") {
@@ -2431,13 +2571,21 @@ pub fn prompt(p: &Value) -> Result<String, String> {
             Ok(json!({"action":"create","prompt":v}).to_string())
         }
         "get" => {
-            let name = p.get("name").and_then(Value::as_str).ok_or("name is required")?;
+            let name = p
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or("name is required")?;
             let mut query = vec![format!("name={}", name)];
             if let Some(version) = p.get("version").and_then(Value::as_u64) {
                 query.push(format!("version={}", version));
             }
             let qs = format!("?{}", query.join("&"));
-            let v = api_request(&client(30)?, "GET", &format!("/api/public/prompts{}", qs), None)?;
+            let v = api_request(
+                &client(30)?,
+                "GET",
+                &format!("/api/public/prompts{}", qs),
+                None,
+            )?;
             Ok(json!({"action":"get","prompt":v}).to_string())
         }
         "list" => {
@@ -2457,7 +2605,12 @@ pub fn prompt(p: &Value) -> Result<String, String> {
                 query.push(format!("page={}", page.max(1)));
             }
             let qs = format!("?{}", query.join("&"));
-            let v = api_request(&client(30)?, "GET", &format!("/api/public/prompts{}", qs), None)?;
+            let v = api_request(
+                &client(30)?,
+                "GET",
+                &format!("/api/public/prompts{}", qs),
+                None,
+            )?;
             let prompts = json!([v]);
             Ok(json!({"action":"list","prompts":prompts}).to_string())
         }
@@ -2469,7 +2622,10 @@ pub fn trace(p: &Value) -> Result<String, String> {
     let action = p.get("action").and_then(Value::as_str).unwrap_or("get");
     match action {
         "get" => {
-            let id = p.get("id").and_then(Value::as_str).ok_or("id is required")?;
+            let id = p
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or("id is required")?;
             // Langfuse v4 removed GET /api/public/traces/{id} (404). A trace is
             // now represented by its observations, so read them through
             // Observations API v2 filtered by traceId.
@@ -2512,7 +2668,6 @@ pub fn trace(p: &Value) -> Result<String, String> {
     }
 }
 
-
 fn start(params: StbString, free: Option<FreeStringFn>, builder: Builder) -> StepHandle {
     let t = params.to_string_lossy();
     params.free_with(free);
@@ -2525,15 +2680,27 @@ fn start(params: StbString, free: Option<FreeStringFn>, builder: Builder) -> Ste
     })) as StepHandle
 }
 
-extern "C" fn execute_score(_: StbStringRef, params: StbString, free: Option<FreeStringFn>) -> StepHandle {
+extern "C" fn execute_score(
+    _: StbStringRef,
+    params: StbString,
+    free: Option<FreeStringFn>,
+) -> StepHandle {
     start(params, free, score)
 }
 
-extern "C" fn execute_prompt(_: StbStringRef, params: StbString, free: Option<FreeStringFn>) -> StepHandle {
+extern "C" fn execute_prompt(
+    _: StbStringRef,
+    params: StbString,
+    free: Option<FreeStringFn>,
+) -> StepHandle {
     start(params, free, prompt)
 }
 
-extern "C" fn execute_trace(_: StbStringRef, params: StbString, free: Option<FreeStringFn>) -> StepHandle {
+extern "C" fn execute_trace(
+    _: StbStringRef,
+    params: StbString,
+    free: Option<FreeStringFn>,
+) -> StepHandle {
     start(params, free, trace)
 }
 
@@ -2546,7 +2713,9 @@ extern "C" fn poll(h: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void) -> S
         return StepResult::err(StbString::from_string("langfuse cancelled".into()));
     }
     if d.done {
-        return StepResult::err(StbString::from_string("langfuse polled after completion".into()));
+        return StepResult::err(StbString::from_string(
+            "langfuse polled after completion".into(),
+        ));
     }
     d.done = true;
     let result = (d.builder)(&d.params);
@@ -2561,7 +2730,9 @@ extern "C" fn poll(h: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void) -> S
 extern "C" fn cancel(h: StepHandle) {
     if !h.is_null() {
         unsafe {
-            (&*(h as *mut Drive)).cancelled.store(true, Ordering::SeqCst);
+            (&*(h as *mut Drive))
+                .cancelled
+                .store(true, Ordering::SeqCst);
         }
     }
 }
@@ -2589,44 +2760,45 @@ extern "C" fn free_string(s: StbString) {
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
-    unsafe { register_entrypoint_unified(api, |api| {
-        // Capture the host's action trampoline before anything else can run:
-        // event handlers and the flush path both publish status through it.
-        let _ = HOST_RUNTIME.set(HostRuntime {
-            runtime_action: api.runtime_action,
-            free_string: api.free_string,
-            user_data: api.user_data,
-        });
+    unsafe {
+        register_entrypoint_unified(api, |api| {
+            // Capture the host's action trampoline before anything else can run:
+            // event handlers and the flush path both publish status through it.
+            let _ = HOST_RUNTIME.set(HostRuntime {
+                runtime_action: api.runtime_action,
+                free_string: api.free_string,
+                user_data: api.user_data,
+            });
 
-        if let Some(register_event) = api.register_event_handler {
-            let handlers: &[(EventTag, EventHandlerFn)] = &[
-                (EventTag::SessionStart, on_session_start),
-                (EventTag::BeforeAgentStart, on_before_agent_start),
-                (EventTag::Context, on_context),
-                (EventTag::AgentStart, on_agent_start),
-                (EventTag::BeforeProviderRequest, on_before_provider_request),
-                (EventTag::MessageUpdate, on_message_update),
-                (EventTag::MessageEnd, on_message_end),
-                (EventTag::ToolExecutionStart, on_tool_execution_start),
-                (EventTag::ToolExecutionEnd, on_tool_execution_end),
-                (EventTag::SessionBeforeCompact, on_session_before_compact),
-                (EventTag::SessionCompact, on_session_compact),
-                (EventTag::SessionTree, on_session_tree),
-                (EventTag::AgentSettled, on_agent_settled),
-                (EventTag::SessionShutdown, on_session_shutdown),
-            ];
-            for &(tag, handler) in handlers {
-                let rc = register_event(tag, handler, std::ptr::null_mut());
-                if rc != 0 {
-                    return rc;
+            if let Some(register_event) = api.register_event_handler {
+                let handlers: &[(EventTag, EventHandlerFn)] = &[
+                    (EventTag::SessionStart, on_session_start),
+                    (EventTag::BeforeAgentStart, on_before_agent_start),
+                    (EventTag::Context, on_context),
+                    (EventTag::AgentStart, on_agent_start),
+                    (EventTag::BeforeProviderRequest, on_before_provider_request),
+                    (EventTag::MessageUpdate, on_message_update),
+                    (EventTag::MessageEnd, on_message_end),
+                    (EventTag::ToolExecutionStart, on_tool_execution_start),
+                    (EventTag::ToolExecutionEnd, on_tool_execution_end),
+                    (EventTag::SessionBeforeCompact, on_session_before_compact),
+                    (EventTag::SessionCompact, on_session_compact),
+                    (EventTag::SessionTree, on_session_tree),
+                    (EventTag::AgentSettled, on_agent_settled),
+                    (EventTag::SessionShutdown, on_session_shutdown),
+                ];
+                for &(tag, handler) in handlers {
+                    let rc = register_event(tag, handler, std::ptr::null_mut());
+                    if rc != 0 {
+                        return rc;
+                    }
                 }
             }
-        }
 
-        let Some(register) = api.register_tool else {
-            return 1;
-        };
-        let schemas = [
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
+            let schemas = [
             (
                 "langfuse_score",
                 "Create or list Langfuse scores",
@@ -2643,26 +2815,27 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
                 r#"{"type":"object","properties":{"action":{"type":"string","enum":["get","list"]},"id":{"type":"string","description":"trace id (action=get)"},"userId":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":1000}}}"#,
             ),
         ];
-        for (name, desc, params) in schemas {
-            let schema = Box::new(StableToolSchema {
-                name: StbString::from_string(name.into()),
-                description: StbString::from_string(desc.into()),
-                parameters: StbString::from_string(params.into()),
-            });
-            let execute = match name {
-                "langfuse_score" => execute_score,
-                "langfuse_prompt" => execute_prompt,
-                "langfuse_trace" => execute_trace,
-                _ => unreachable!(),
-            };
-            let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
-            drop(schema);
-            if rc != 0 {
-                return rc;
+            for (name, desc, params) in schemas {
+                let schema = Box::new(StableToolSchema {
+                    name: StbString::from_string(name.into()),
+                    description: StbString::from_string(desc.into()),
+                    parameters: StbString::from_string(params.into()),
+                });
+                let execute = match name {
+                    "langfuse_score" => execute_score,
+                    "langfuse_prompt" => execute_prompt,
+                    "langfuse_trace" => execute_trace,
+                    _ => unreachable!(),
+                };
+                let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
+                drop(schema);
+                if rc != 0 {
+                    return rc;
+                }
             }
-        }
-        0
-    }) }
+            0
+        })
+    }
 }
 
 #[cfg(test)]
@@ -2733,7 +2906,8 @@ mod tests {
         assert_ne!(a, b, "observation ids must not repeat");
         assert_eq!(a.len(), 16, "OTLP span ids are 8 bytes = 16 hex chars");
         assert!(
-            a.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            a.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "id {a} must be lowercase hex"
         );
         assert_ne!(a, "0000000000000000");
@@ -2757,7 +2931,10 @@ mod tests {
             iso_to_epoch_ms("2024-02-29T12:34:56.789Z"),
             Some(1_709_210_096_789)
         );
-        assert_eq!(epoch_ms_to_iso(1_709_210_096_789), "2024-02-29T12:34:56.789Z");
+        assert_eq!(
+            epoch_ms_to_iso(1_709_210_096_789),
+            "2024-02-29T12:34:56.789Z"
+        );
         assert_eq!(iso_to_epoch_ms("not-a-timestamp"), None);
         assert_eq!(iso_to_epoch_ms("2024-13-01T00:00:00.000Z"), None);
         let now = now_epoch_ms();
@@ -2783,7 +2960,10 @@ mod tests {
         let span = span_to_otlp(&root, true, None);
         assert_eq!(span["traceId"], json!(trace));
         assert_eq!(span["spanId"], json!(root_id));
-        assert!(span.get("parentSpanId").is_none(), "a root span has no parent");
+        assert!(
+            span.get("parentSpanId").is_none(),
+            "a root span has no parent"
+        );
         assert_eq!(
             span["startTimeUnixNano"],
             json!((root.start_ms * 1_000_000).to_string())
@@ -2872,7 +3052,9 @@ mod tests {
             load_config().is_some(),
             "set LANGFUSE_BASE_URL/PUBLIC_KEY/SECRET_KEY first"
         );
-        let tag = |s: &str| StablePluginEvent::data(EventTag::BeforeAgentStart, StbString::from_string(s.into()));
+        let tag = |s: &str| {
+            StablePluginEvent::data(EventTag::BeforeAgentStart, StbString::from_string(s.into()))
+        };
         let _ = tag; // keep the closure type explicit above
 
         // Fresh state, and make sure we are treated as a top-level run.
@@ -2918,12 +3100,18 @@ mod tests {
             "usage": { "input": 7, "output": 3, "totalTokens": 10 },
         });
         on_message_end(
-            StablePluginEvent::message(EventTag::MessageEnd, StbString::from_string(msg.to_string())),
+            StablePluginEvent::message(
+                EventTag::MessageEnd,
+                StbString::from_string(msg.to_string()),
+            ),
             std::ptr::null_mut(),
         );
 
         // 4) The turn settles: finalize + export over OTLP.
-        on_agent_settled(StablePluginEvent::empty(EventTag::AgentSettled), std::ptr::null_mut());
+        on_agent_settled(
+            StablePluginEvent::empty(EventTag::AgentSettled),
+            std::ptr::null_mut(),
+        );
         assert!(
             tracer().spans.lock().unwrap().is_empty(),
             "a successful export must drain the span store"
@@ -3068,7 +3256,10 @@ mod tests {
         assert_eq!(details.get("output").unwrap(), &json!(40)); // 50 - 10 reasoning
         assert_eq!(details.get("output_reasoning_tokens").unwrap(), &json!(10));
         assert_eq!(details.get("cache_read_input_tokens").unwrap(), &json!(20));
-        assert_eq!(details.get("cache_creation_input_tokens").unwrap(), &json!(10));
+        assert_eq!(
+            details.get("cache_creation_input_tokens").unwrap(),
+            &json!(10)
+        );
     }
 
     #[test]

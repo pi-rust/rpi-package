@@ -349,8 +349,7 @@ impl Recording {
             let frac = src_pos - idx as f64;
 
             if idx + 1 < mono.len() {
-                let interpolated =
-                    (1.0 - frac) * mono[idx] as f64 + frac * mono[idx + 1] as f64;
+                let interpolated = (1.0 - frac) * mono[idx] as f64 + frac * mono[idx + 1] as f64;
                 out.push(interpolated as i16);
             } else if idx < mono.len() {
                 out.push(mono[idx]);
@@ -559,25 +558,25 @@ pub fn record_until_with_level(
                 None,
             )
         }
-        cpal::SampleFormat::F32 => {
-            device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let i16_data: Vec<i16> = data
-                        .iter()
-                        .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-                        .collect();
-                    feed(&i16_data);
-                },
-                err_fn,
-                None,
-            )
-        }
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            &config.into(),
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let i16_data: Vec<i16> = data
+                    .iter()
+                    .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+                    .collect();
+                feed(&i16_data);
+            },
+            err_fn,
+            None,
+        ),
         fmt => return Err(format!("Unsupported sample format: {fmt:?}")),
     };
 
     let stream = stream.map_err(|e| format!("Build input stream error: {e}"))?;
-    stream.play().map_err(|e| format!("Play stream error: {e}"))?;
+    stream
+        .play()
+        .map_err(|e| format!("Play stream error: {e}"))?;
 
     let started = Instant::now();
     loop {
@@ -689,6 +688,19 @@ fn save_config(key: &str, value: &str) -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 
+/// Remove a persisted setting while preserving the other voice settings.
+fn clear_config(key: &str) -> Result<(), String> {
+    let Some(path) = config_path() else {
+        return Ok(());
+    };
+    let mut config = load_config();
+    if !config.is_object() || config.get(key).is_none() {
+        return Ok(());
+    }
+    config.as_object_mut().unwrap().remove(key);
+    std::fs::write(&path, config.to_string()).map_err(|e| e.to_string())
+}
+
 /// The configured input-device selector: the environment variable wins (for a
 /// one-off test), otherwise the persisted setting.
 fn input_device_pref() -> Option<String> {
@@ -714,9 +726,10 @@ pub fn set_input_device_pref(selector: &str) -> Result<String, String> {
         return Err("empty selector".to_string());
     }
     let names = list_input_devices();
-    let matched = names
-        .iter()
-        .find(|name| name.to_ascii_lowercase().contains(&selector.to_ascii_lowercase()));
+    let matched = names.iter().find(|name| {
+        name.to_ascii_lowercase()
+            .contains(&selector.to_ascii_lowercase())
+    });
     let Some(matched) = matched else {
         return Err(format!(
             "no input device matches '{selector}'. Known: {}",
@@ -734,9 +747,7 @@ pub fn set_input_device_pref(selector: &str) -> Result<String, String> {
 /// Every capture endpoint's name, in enumeration order.
 pub fn list_input_devices() -> Vec<String> {
     match cpal::default_host().input_devices() {
-        Ok(devices) => devices
-            .filter_map(|device| device.name().ok())
-            .collect(),
+        Ok(devices) => devices.filter_map(|device| device.name().ok()).collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -764,26 +775,38 @@ pub fn configured_device_pref() -> Option<String> {
 ///
 /// Returns the device and its name, so callers can report which one was used.
 fn select_input_device(host: &cpal::Host) -> Result<(cpal::Device, String), String> {
-    let wanted = input_device_pref().map(|value| value.to_ascii_lowercase());
+    let configured_from_env = std::env::var("RPI_VOICE_INPUT_DEVICE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let wanted = configured_from_env
+        .clone()
+        .or_else(|| {
+            load_config()
+                .get("input_device")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .filter(|value| !value.is_empty())
+        });
+    let wanted_lower = wanted.as_ref().map(|value| value.to_ascii_lowercase());
 
-    if let Some(wanted) = wanted {
+    if let Some(wanted_lower) = wanted_lower {
         if let Ok(devices) = host.input_devices() {
             for device in devices {
                 let name = device.name().unwrap_or_default();
-                if name.to_ascii_lowercase().contains(&wanted) {
+                if name.to_ascii_lowercase().contains(&wanted_lower) {
                     return Ok((device, name));
                 }
             }
         }
-        // Not fatal, but must not be silent: a selector that quietly does
-        // nothing costs an hour of "why is it still the wrong microphone".
-        let fallback = default_input_device(host)?;
-        eprintln!(
-            "[rpi-voice] input device selector '{wanted}' matched no device; \
-             using '{}' instead",
-            fallback.1
-        );
-        return Ok(fallback);
+        // A persisted device may disappear after Bluetooth reconnects or a
+        // Windows device rename. Clear only persisted selectors, not an
+        // explicit environment override, so the next capture uses the system
+        // default without repeating this warning on every PTT press.
+        if configured_from_env.is_none() {
+            let _ = clear_config("input_device");
+        }
+        return default_input_device(host);
     }
 
     default_input_device(host)
@@ -820,7 +843,6 @@ mod tests {
     /// regression in settings precedence.
     static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-
     /// Manual diagnostic for "voice input hears nothing".
     ///
     /// Run it and **speak while it records**:
@@ -840,9 +862,17 @@ mod tests {
             for device in devices {
                 let name = device.name().unwrap_or_else(|_| "<unnamed>".to_string());
                 let cfg = device.default_input_config().map(|c| {
-                    format!("{}Hz {}ch {:?}", c.sample_rate().0, c.channels(), c.sample_format())
+                    format!(
+                        "{}Hz {}ch {:?}",
+                        c.sample_rate().0,
+                        c.channels(),
+                        c.sample_format()
+                    )
                 });
-                println!("  - {name}  [{}]", cfg.unwrap_or_else(|e| format!("no config: {e}")));
+                println!(
+                    "  - {name}  [{}]",
+                    cfg.unwrap_or_else(|e| format!("no config: {e}"))
+                );
             }
         }
         match host.default_input_device() {
@@ -867,10 +897,14 @@ mod tests {
         println!("--- recording 4s: SPEAK NOW ---");
         let recording = record_until_with_level(stop, params, None).expect("recording");
         let rms = {
-            let sum_sq: f64 = recording.samples.iter().map(|s| {
-                let f = *s as f64;
-                f * f
-            }).sum();
+            let sum_sq: f64 = recording
+                .samples
+                .iter()
+                .map(|s| {
+                    let f = *s as f64;
+                    f * f
+                })
+                .sum();
             if recording.samples.is_empty() {
                 0.0
             } else {
@@ -884,11 +918,7 @@ mod tests {
             recording.channels,
             recording.duration_secs()
         );
-        println!(
-            "rms={:.2} (of {})",
-            rms,
-            i16::MAX
-        );
+        println!("rms={:.2} (of {})", rms, i16::MAX);
         report_capture(&recording, "default");
         if recording.peak_level == 0.0 {
             println!("VERDICT: the device delivered pure digital silence (muted / wrong device).");
@@ -1146,7 +1176,10 @@ mod tests {
         std::env::remove_var("RPI_VOICE_INPUT_GAIN");
         assert!(set_input_gain_pref("nonsense").is_err());
         assert!(set_input_gain_pref("0.5").is_err());
-        assert_eq!(set_input_gain_pref("auto").unwrap(), "auto (normalise each recording for STT)");
+        assert_eq!(
+            set_input_gain_pref("auto").unwrap(),
+            "auto (normalise each recording for STT)"
+        );
         assert_eq!(input_gain_pref(), GainPref::Auto);
         set_input_gain_pref("12").unwrap();
         assert_eq!(input_gain_pref(), GainPref::Fixed(12.0));

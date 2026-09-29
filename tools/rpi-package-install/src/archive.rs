@@ -30,8 +30,7 @@ pub fn extract(archive: &Path, dest: &Path) -> Result<()> {
     if !archive.is_file() {
         bail!("archive not found: {}", archive.display());
     }
-    std::fs::create_dir_all(dest)
-        .with_context(|| format!("cannot create {}", dest.display()))?;
+    std::fs::create_dir_all(dest).with_context(|| format!("cannot create {}", dest.display()))?;
     if platform::is_zip(archive) {
         extract_zip(archive, dest)
     } else {
@@ -70,8 +69,7 @@ fn create_zip(stage: &Path, name: &str, out: &Path) -> Result<()> {
 }
 
 fn extract_zip(archive: &Path, dest: &Path) -> Result<()> {
-    let file =
-        File::open(archive).with_context(|| format!("cannot open {}", archive.display()))?;
+    let file = File::open(archive).with_context(|| format!("cannot open {}", archive.display()))?;
     let mut zip = zip::ZipArchive::new(file)
         .with_context(|| format!("{} is not a valid zip archive", archive.display()))?;
     // `enclosed_name` inside the zip crate rejects entries that would escape
@@ -97,8 +95,7 @@ fn create_tar_gz(stage: &Path, name: &str, out: &Path) -> Result<()> {
 }
 
 fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<()> {
-    let file =
-        File::open(archive).with_context(|| format!("cannot open {}", archive.display()))?;
+    let file = File::open(archive).with_context(|| format!("cannot open {}", archive.display()))?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
     tar.unpack(dest)
         .with_context(|| format!("cannot extract {}", archive.display()))?;
@@ -203,7 +200,10 @@ mod tests {
             .file_names()
             .map(str::to_string)
             .collect();
-        assert!(names.contains(&"stage/nested/b.txt".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"stage/nested/b.txt".to_string()),
+            "{names:?}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

@@ -1,6 +1,6 @@
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, FreeStringFn, PluginApi, StableToolSchema, StbString, StbStringRef,
-    StepHandle, StepResult, ToolPartialCb,
+    register_entrypoint_unified, FreeStringFn, PluginApi, StableToolSchema, StbString,
+    StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;
@@ -270,11 +270,12 @@ extern "C" fn free_string(s: StbString) {
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
-    unsafe { register_entrypoint_unified(api, |api| {
-        let Some(register) = api.register_tool else {
-            return 1;
-        };
-        let schemas = [
+    unsafe {
+        register_entrypoint_unified(api, |api| {
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
+            let schemas = [
             (
                 "firecrawl_search",
                 "Search the public web with Firecrawl. Returns titles, URLs, descriptions, and optionally full page content as Markdown. Set content=true to fetch page content (costs extra credits).",
@@ -286,25 +287,26 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
                 r#"{"type":"object","properties":{"url":{"type":"string"},"maxChars":{"type":"integer","minimum":256,"maximum":50000}},"required":["url"]}"#,
             ),
         ];
-        for (name, desc, params) in schemas {
-            let schema = Box::new(StableToolSchema {
-                name: StbString::from_string(name.into()),
-                description: StbString::from_string(desc.into()),
-                parameters: StbString::from_string(params.into()),
-            });
-            let execute = if name == "firecrawl_search" {
-                execute_search
-            } else {
-                execute_scrape
-            };
-            let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
-            drop(schema);
-            if rc != 0 {
-                return rc;
+            for (name, desc, params) in schemas {
+                let schema = Box::new(StableToolSchema {
+                    name: StbString::from_string(name.into()),
+                    description: StbString::from_string(desc.into()),
+                    parameters: StbString::from_string(params.into()),
+                });
+                let execute = if name == "firecrawl_search" {
+                    execute_search
+                } else {
+                    execute_scrape
+                };
+                let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
+                drop(schema);
+                if rc != 0 {
+                    return rc;
+                }
             }
-        }
-        0
-    }) }
+            0
+        })
+    }
 }
 
 #[cfg(test)]

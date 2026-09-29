@@ -136,22 +136,24 @@ extern "C" fn free_string(s: StbString) {
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
-    unsafe { register_entrypoint_unified(api, |api| {
-        let Some(register) = api.register_tool else {
-            return 1;
-        };
-        let schema=Box::new(rpi_plugin_sdk::StableToolSchema{name:StbString::from_string("token_count".into()),description:StbString::from_string("Estimate token usage for text.".into()),parameters:StbString::from_string(r#"{"type":"object","properties":{"text":{"type":"string"},"outputTokens":{"type":"integer"}},"required":["text"]}"#.into())});
-        let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
-        drop(schema);
-        if rc != 0 {
-            return rc;
-        }
-        if let Some(register_renderer) = api.register_message_renderer {
-            let name = StbStringRef::from_str("token-usage");
-            let _ = register_renderer(name, render_usage, free_string, std::ptr::null_mut());
-        }
-        0
-    }) }
+    unsafe {
+        register_entrypoint_unified(api, |api| {
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
+            let schema=Box::new(rpi_plugin_sdk::StableToolSchema{name:StbString::from_string("token_count".into()),description:StbString::from_string("Estimate token usage for text.".into()),parameters:StbString::from_string(r#"{"type":"object","properties":{"text":{"type":"string"},"outputTokens":{"type":"integer"}},"required":["text"]}"#.into())});
+            let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
+            drop(schema);
+            if rc != 0 {
+                return rc;
+            }
+            if let Some(register_renderer) = api.register_message_renderer {
+                let name = StbStringRef::from_str("token-usage");
+                let _ = register_renderer(name, render_usage, free_string, std::ptr::null_mut());
+            }
+            0
+        })
+    }
 }
 
 #[cfg(test)]

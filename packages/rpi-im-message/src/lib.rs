@@ -6,9 +6,9 @@ use feishu_sdk::event::{
 use feishu_sdk::ws::{StreamClient, StreamConfig};
 use feishu_sdk::Client;
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, EventTag, FreeStringFn, PluginApi, RuntimeActionFn, RuntimeActionId,
-    StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
-    ToolPartialCb,
+    register_entrypoint_unified, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
+    RuntimeActionId, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
+    StepResult, ToolPartialCb,
 };
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
@@ -1361,11 +1361,12 @@ extern "C" fn free_string(value: StbString) {
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
-    unsafe { register_entrypoint_unified(api, |api| {
-        let Some(register_tool) = api.register_tool else {
-            return 1;
-        };
-        let schema = Box::new(StableToolSchema {
+    unsafe {
+        register_entrypoint_unified(api, |api| {
+            let Some(register_tool) = api.register_tool else {
+                return 1;
+            };
+            let schema = Box::new(StableToolSchema {
             name: StbString::from_string("im_message_server".into()),
             description: StbString::from_string(
                 "Start and manage a Feishu/Lark SDK long-connection messaging server.".into(),
@@ -1374,41 +1375,44 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
                 r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","status","list","receive","send","stop"]},"profile":{"type":"string"},"serverId":{"type":"string"},"conversationId":{"type":"string"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":300},"content":{"type":"object","description":"Message content: {type:text|markdown|card,...}"}}}"#.into(),
             ),
         });
-        let result = register_tool(&*schema, execute, poll, cancel, destroy, free_string);
-        drop(schema);
-        if let Some(register_flag) = api.register_flag {
-            let _ = register_flag(
-                StbStringRef::from_str(SERVER_FLAG),
-                StbStringRef::from_str(
-                    "Start the Feishu/Lark message server without opening the TUI",
-                ),
-            );
-            let _ = register_flag(
-                StbStringRef::from_str(PROFILE_FLAG),
-                StbStringRef::from_str("Select the rpi-im-message profile for headless startup"),
-            );
-            let context = Box::new(StartupContext {
-                runtime_action: api.runtime_action,
-                free_string: api.free_string,
-                host_user_data: api.user_data,
-            });
-            let _ = HOST_RUNTIME.set(*context);
-            let context = Box::leak(context);
-            if let Ok(value) = cli_flag_value(context, SERVER_FLAG) {
-                if cli_flag_enabled(&value) {
-                    auto_start_from_cli(context);
+            let result = register_tool(&*schema, execute, poll, cancel, destroy, free_string);
+            drop(schema);
+            if let Some(register_flag) = api.register_flag {
+                let _ = register_flag(
+                    StbStringRef::from_str(SERVER_FLAG),
+                    StbStringRef::from_str(
+                        "Start the Feishu/Lark message server without opening the TUI",
+                    ),
+                );
+                let _ = register_flag(
+                    StbStringRef::from_str(PROFILE_FLAG),
+                    StbStringRef::from_str(
+                        "Select the rpi-im-message profile for headless startup",
+                    ),
+                );
+                let context = Box::new(StartupContext {
+                    runtime_action: api.runtime_action,
+                    free_string: api.free_string,
+                    host_user_data: api.user_data,
+                });
+                let _ = HOST_RUNTIME.set(*context);
+                let context = Box::leak(context);
+                if let Ok(value) = cli_flag_value(context, SERVER_FLAG) {
+                    if cli_flag_enabled(&value) {
+                        auto_start_from_cli(context);
+                    }
                 }
             }
-        }
-        if let Some(register_event) = api.register_event_handler {
-            let _ = register_event(
-                EventTag::SessionShutdown,
-                on_session_shutdown,
-                std::ptr::null_mut(),
-            );
-        }
-        result
-    }) }
+            if let Some(register_event) = api.register_event_handler {
+                let _ = register_event(
+                    EventTag::SessionShutdown,
+                    on_session_shutdown,
+                    std::ptr::null_mut(),
+                );
+            }
+            result
+        })
+    }
 }
 
 #[cfg(test)]

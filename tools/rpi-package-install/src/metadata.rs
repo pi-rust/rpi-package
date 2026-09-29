@@ -191,7 +191,10 @@ mod tests {
             package: "rpi-langfuse".into(),
             artifact: "rpi_langfuse".into(),
         };
-        assert_eq!(ext.file_name(), format!("rpi_langfuse.{}", super::super::platform::dylib_extension()));
+        assert_eq!(
+            ext.file_name(),
+            format!("rpi_langfuse.{}", super::super::platform::dylib_extension())
+        );
     }
 
     #[test]

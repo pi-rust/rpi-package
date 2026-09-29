@@ -53,7 +53,7 @@ voice is layered on top.
 | `RPI_STT_API_KEY` | — | STT key; takes precedence over `OPENAI_API_KEY` |
 | `RPI_STT_API_BASE` | `https://api.openai.com/v1` | OpenAI-compatible STT base URL |
 | `RPI_STT_MODEL` | `whisper-1` | STT model name (API backend) |
-| `RPI_STT_ENGINE` | `auto` | `auto` \| `local` (embedded SenseVoice) \| `api` |
+| `RPI_STT_ENGINE` | `local` | `local` \| `auto` \| `api`; local SenseVoice is the default |
 | `RPI_STT_MODEL_DIR` | `~/.rpi/agent/models/sense-voice` | Embedded model dir (`model.int8.onnx` + `tokens.txt`) |
 | `RPI_VOICE_STT_LANG` | auto | ISO-639-1 language hint for STT (e.g. `zh`) |
 | `RPI_VOICE_RECORD_MS` | `20000` | Hard cap on a single recording |
@@ -72,18 +72,23 @@ voice is layered on top.
 
 ### STT backends
 
-STT is **OpenAI-compatible by default**, but the extension can embed a fully
-offline engine. Pick with `RPI_STT_ENGINE`:
+STT uses the embedded SenseVoice model locally by default. On the first voice
+input, missing model files are downloaded automatically to
+`~/.rpi/agent/models/sense-voice/` (or
+`RPI_CODING_AGENT_DIR/models/sense-voice/`). Use `/voice model download` to
+pre-fetch the model before recording.
+
+Select another backend with `RPI_STT_ENGINE`:
 
 | `RPI_STT_ENGINE` | Behaviour |
 | --- | --- |
-| `auto` (default) | Use embedded SenseVoice if built in and the model is present; otherwise fall back to the API |
-| `local` | Force the embedded engine (error if unavailable) |
+| `local` (default) | Use the embedded engine and download missing model files automatically |
+| `auto` | Use local SenseVoice when available; fall back to the API if unavailable |
 | `api` | Force the OpenAI-compatible endpoint |
 
 #### Embedded offline model — SenseVoice (recommended)
 
-When built with `--features local-stt`, voice input runs entirely on-device via
+The default build includes the embedded engine and runs entirely on-device via
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) + **SenseVoice** (中文/英/日/韩/粤,
 auto language detection, punctuation). No key, no server, no network, no runtime
 DLL (the native libs are linked statically).

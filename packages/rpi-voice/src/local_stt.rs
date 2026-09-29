@@ -36,7 +36,10 @@ pub fn models_dir() -> PathBuf {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".rpi").join("agent").join("models")
+    PathBuf::from(home)
+        .join(".rpi")
+        .join("agent")
+        .join("models")
 }
 
 /// Directory holding the SenseVoice files.
@@ -61,7 +64,8 @@ pub fn tokens_path() -> PathBuf {
 /// Returns the directory once both files are present.
 pub fn ensure_model<F: Fn(&str)>(progress: F) -> Result<PathBuf, String> {
     let dir = model_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create model dir {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create model dir {}: {e}", dir.display()))?;
 
     for file in [MODEL_FILE, TOKENS_FILE] {
         let dest = dir.join(file);

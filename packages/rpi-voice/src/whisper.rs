@@ -99,7 +99,10 @@ impl WhisperProvider {
             form = form.text("language", lang.to_string());
         }
 
-        let url = format!("{}/audio/transcriptions", self.api_base.trim_end_matches('/'));
+        let url = format!(
+            "{}/audio/transcriptions",
+            self.api_base.trim_end_matches('/')
+        );
 
         let mut request = self.client.post(&url).multipart(form);
         if let Some(key) = &self.api_key {

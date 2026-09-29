@@ -561,24 +561,26 @@ fn tool_specs() -> Vec<ToolSpec> {
 
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
-    unsafe { register_entrypoint_unified(api, |api| {
-        let Some(register) = api.register_tool else {
-            return 1;
-        };
-        for spec in tool_specs() {
-            let schema = Box::new(rpi_plugin_sdk::StableToolSchema {
-                name: StbString::from_string(spec.name.into()),
-                description: StbString::from_string(spec.description.into()),
-                parameters: StbString::from_string(spec.parameters),
-            });
-            let rc = register(&*schema, spec.execute, poll, cancel, destroy, free_string);
-            drop(schema);
-            if rc != 0 {
-                return rc;
+    unsafe {
+        register_entrypoint_unified(api, |api| {
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
+            for spec in tool_specs() {
+                let schema = Box::new(rpi_plugin_sdk::StableToolSchema {
+                    name: StbString::from_string(spec.name.into()),
+                    description: StbString::from_string(spec.description.into()),
+                    parameters: StbString::from_string(spec.parameters),
+                });
+                let rc = register(&*schema, spec.execute, poll, cancel, destroy, free_string);
+                drop(schema);
+                if rc != 0 {
+                    return rc;
+                }
             }
-        }
-        0
-    }) }
+            0
+        })
+    }
 }
 
 #[cfg(test)]

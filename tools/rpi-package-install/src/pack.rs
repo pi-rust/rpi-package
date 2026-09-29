@@ -87,7 +87,11 @@ pub fn run(opts: &Options) -> Result<Outcome> {
         .to_string();
     crate::archive::create(&stage_dir, &stage_name, &archive)?;
 
-    println!("staged {} extension(s) -> {}", installed.len(), stage_dir.display());
+    println!(
+        "staged {} extension(s) -> {}",
+        installed.len(),
+        stage_dir.display()
+    );
     if let Some(name) = installer {
         println!("bundled installer        -> {name}");
     }
@@ -193,7 +197,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let nested = base.join("rpi-packages-linux-x86_64");
         std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(nested.join(format!("a.{}", platform::dylib_extension())), b"lib").unwrap();
+        std::fs::write(
+            nested.join(format!("a.{}", platform::dylib_extension())),
+            b"lib",
+        )
+        .unwrap();
 
         let found = source_dir_inside(&base).unwrap();
         assert_eq!(found, nested);

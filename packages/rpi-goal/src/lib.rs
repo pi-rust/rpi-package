@@ -1,6 +1,6 @@
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, FreeStringFn, PluginApi, StableToolSchema, StbString, StbStringRef,
-    StepHandle, StepResult, ToolPartialCb,
+    register_entrypoint_unified, FreeStringFn, PluginApi, StableToolSchema, StbString,
+    StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;
@@ -206,15 +206,17 @@ extern "C" fn free_string(s: StbString) {
 }
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
-    unsafe { register_entrypoint_unified(api, |api| {
-        let Some(register) = api.register_tool else {
-            return 1;
-        };
-        let schema=Box::new(StableToolSchema{name:StbString::from_string("goal".into()),description:StbString::from_string("Track persistent project goals and progress.".into()),parameters:StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["add","list","update","complete","remove"]},"id":{"type":"integer"},"title":{"type":"string"},"notes":{"type":"string"},"status":{"type":"string","enum":["active","paused","complete"]},"cwd":{"type":"string"}},"required":["action"]}"#.into())});
-        let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
-        drop(schema);
-        rc
-    }) }
+    unsafe {
+        register_entrypoint_unified(api, |api| {
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
+            let schema=Box::new(StableToolSchema{name:StbString::from_string("goal".into()),description:StbString::from_string("Track persistent project goals and progress.".into()),parameters:StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["add","list","update","complete","remove"]},"id":{"type":"integer"},"title":{"type":"string"},"notes":{"type":"string"},"status":{"type":"string","enum":["active","paused","complete"]},"cwd":{"type":"string"}},"required":["action"]}"#.into())});
+            let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
+            drop(schema);
+            rc
+        })
+    }
 }
 #[cfg(test)]
 mod tests {
