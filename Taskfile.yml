@@ -56,24 +56,17 @@ tasks:
     cmds:
       - task: test
       - cargo publish --dry-run --allow-dirty -p rpi-mcp-adapter
-      - cargo publish --dry-run --allow-dirty -p rpi-web-access
       - cargo publish --dry-run --allow-dirty -p rpi-subagents
-      - cargo publish --dry-run --allow-dirty -p rpi-background-tasks
       - cargo publish --dry-run --allow-dirty -p rpi-lens
       - cargo publish --dry-run --allow-dirty -p rpi-todo
+      - cargo publish --dry-run --allow-dirty -p rpi-goal
       - cargo publish --dry-run --allow-dirty -p rpi-plan-mode
       - cargo publish --dry-run --allow-dirty -p rpi-codegraph
-      - cargo publish --dry-run --allow-dirty -p rpi-memory
-      - cargo publish --dry-run --allow-dirty -p rpi-token-usage
       - cargo publish --dry-run --allow-dirty -p rpi-ask-user
       - cargo publish --dry-run --allow-dirty -p rpi-permissions
-      - cargo publish --dry-run --allow-dirty -p rpi-simplify
-      - cargo publish --dry-run --allow-dirty -p rpi-search
-      - cargo publish --dry-run --allow-dirty -p rpi-goal
       - cargo publish --dry-run --allow-dirty -p rpi-langfuse
       - cargo publish --dry-run --allow-dirty -p rpi-websearch
       - cargo publish --dry-run --allow-dirty -p rpi-webfetch
-      - cargo publish --dry-run --allow-dirty -p rpi-firecrawl
       - cargo publish --dry-run --allow-dirty -p rpi-im-message
       - cargo publish --dry-run --allow-dirty -p rpi-server
       - cargo publish --dry-run --allow-dirty -p rpi-voice
@@ -83,24 +76,17 @@ tasks:
     cmds:
       - task: test
       - cargo publish --allow-dirty -p rpi-mcp-adapter
-      - cargo publish --allow-dirty -p rpi-web-access
       - cargo publish --allow-dirty -p rpi-subagents
-      - cargo publish --allow-dirty -p rpi-background-tasks
       - cargo publish --allow-dirty -p rpi-lens
       - cargo publish --allow-dirty -p rpi-todo
+      - cargo publish --allow-dirty -p rpi-goal
       - cargo publish --allow-dirty -p rpi-plan-mode
       - cargo publish --allow-dirty -p rpi-codegraph
-      - cargo publish --allow-dirty -p rpi-memory
-      - cargo publish --allow-dirty -p rpi-token-usage
       - cargo publish --allow-dirty -p rpi-ask-user
       - cargo publish --allow-dirty -p rpi-permissions
-      - cargo publish --allow-dirty -p rpi-simplify
-      - cargo publish --allow-dirty -p rpi-search
-      - cargo publish --allow-dirty -p rpi-goal
       - cargo publish --allow-dirty -p rpi-langfuse
       - cargo publish --allow-dirty -p rpi-websearch
       - cargo publish --allow-dirty -p rpi-webfetch
-      - cargo publish --allow-dirty -p rpi-firecrawl
       - cargo publish --allow-dirty -p rpi-im-message
       - cargo publish --allow-dirty -p rpi-server
       - cargo publish --allow-dirty -p rpi-voice
@@ -112,12 +98,8 @@ tasks:
       - cargo publish --allow-dirty -p rpi-ask-user
       - cargo publish --allow-dirty -p rpi-plan-mode
       - cargo publish --allow-dirty -p rpi-permissions
-      - cargo publish --allow-dirty -p rpi-simplify
-      - cargo publish --allow-dirty -p rpi-search
-      - cargo publish --allow-dirty -p rpi-goal
       - cargo publish --allow-dirty -p rpi-websearch
       - cargo publish --allow-dirty -p rpi-webfetch
-      - cargo publish --allow-dirty -p rpi-firecrawl
       - cargo publish --allow-dirty -p rpi-im-message
 
   publish-todo:

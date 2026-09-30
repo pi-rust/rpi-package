@@ -25,51 +25,26 @@ mod tests {
             .map(|tool| tool.tool.name.as_str())
             .collect();
         let expected = BTreeSet::from([
-            "background_task",
             "code_lens",
             "delegate_task",
             "mcp_request",
-            "web_fetch",
             "codegraph",
-            "memory",
             "todo",
+            "goal",
             "plan_mode_start",
             "plan_mode_complete",
-            "token_count",
             "ask_user",
             "permissions",
-            "simplify",
-            "search",
-            "goal",
             "websearch",
             "webfetch",
-            "firecrawl_search",
-            "firecrawl_scrape",
             "im_message_server",
         ]);
         assert_eq!(names, expected);
         assert_eq!(
             session.loaded_paths().len(),
-            19,
-            "all nineteen cdylibs should load"
+            12,
+            "all twelve cdylibs should load"
         );
-        assert_eq!(
-            snapshot.renderers().len(),
-            1,
-            "token renderer should register"
-        );
-        let renderer = &snapshot.renderers()[0];
-        let input = r#"{"usage":{"input":1200,"output":300,"totalTokens":1500}}"#;
-        let mut rendered = StbString::empty();
-        let rc = (renderer.render_fn)(
-            StbStringRef::from_str(input),
-            &mut rendered as *mut StbString,
-            renderer.user_data,
-        );
-        assert_eq!(rc, 0, "token renderer should accept usage payload");
-        assert!(rendered.to_string_lossy().contains("1.2k"));
-        rendered.free_with(Some(renderer.plugin_free_string));
-
         let tool = snapshot
             .tools()
             .iter()

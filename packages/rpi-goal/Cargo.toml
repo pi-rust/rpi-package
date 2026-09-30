@@ -6,9 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Persistent project goal tracking tool for the rpi Rust agent"
+description = "Codex-style goal mode for the rpi Rust agent: a persistent, context-injected goal the model keeps advancing turn over turn"
 readme = "README.md"
-keywords = ["rpi", "goal", "planning", "plugin"]
+keywords = ["rpi", "goal", "objective", "autonomous", "plugin"]
 categories = ["development-tools"]
 
 [lib]
@@ -16,4 +16,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rpi-plugin-sdk = { workspace = true }
+serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }

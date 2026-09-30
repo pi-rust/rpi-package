@@ -5,26 +5,24 @@ Rust-native extension packages for the `rpi` agent, built against the stable
 
 The selection was taken from the Pi package catalog on 2026-09-09. Pi does not
 publish star ratings in the catalog, so monthly downloads are used as the
-objective popularity signal. These five cover the highest-download extensions
+objective popularity signal. These three cover the highest-download extensions
 that map cleanly onto the current Rust SDK:
 
 | Rust package | Inspired by | Catalog downloads/month | Registered tool |
 | --- | --- | ---: | --- |
 | `rpi-mcp-adapter` | `pi-mcp-adapter` | 761,442 | `mcp_request` |
-| `rpi-web-access` | `pi-web-access` | 414,994 | `web_fetch` |
 | `rpi-subagents` | `pi-subagents` | 362,483 | `delegate_task` |
-| `rpi-background-tasks` | `pi-background-tasks` | 107,663 | `background_task` |
 | `rpi-lens` | `pi-lens` | 65,476 | `code_lens` |
 
 These are independent Rust implementations, not ports of upstream source code.
 
 The workspace also includes local-first workflow packages: `rpi-todo`
-(`todo`), `rpi-plan-mode` (`/plan`, `plan_mode_start`, `plan_mode_complete`),
-`rpi-codegraph` (`codegraph`), `rpi-memory` (`memory`),
-`rpi-token-usage` (`token_count` plus a `token-usage` renderer),
-`rpi-ask-user`, `rpi-permissions`, `rpi-simplify`, `rpi-search`, `rpi-goal`,
-`rpi-websearch`, `rpi-webfetch`, and `rpi-firecrawl` (`firecrawl_search` +
-`firecrawl_scrape`), plus `rpi-im-message` (`im_message_server`), plus
+(`todo`), `rpi-goal` (`goal`, a Codex-style persistent, context-injected
+objective per project), `rpi-plan-mode` (`/plan`, `plan_mode_start`,
+`plan_mode_complete`),
+`rpi-codegraph` (`codegraph`),
+`rpi-ask-user`, `rpi-permissions`,
+`rpi-websearch`, `rpi-webfetch`, plus `rpi-im-message` (`im_message_server`), plus
 `rpi-voice`, which adds `/voice` dictation and spoken replies to the running
 TUI. Its STT is OpenAI-compatible by default; built with `--features local-stt`
 it embeds sherpa-onnx + SenseVoice and runs entirely offline (see
@@ -53,7 +51,7 @@ into the `rpi` host:
 
 ```powershell
 rpi install rpi-todo
-rpi install rpi-memory --version 0.1.1
+rpi install rpi-todo --version 0.2.0
 ```
 
 `rpi-im-message` can run the Feishu/Lark long-connection server headlessly,

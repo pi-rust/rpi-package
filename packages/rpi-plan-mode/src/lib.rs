@@ -215,7 +215,7 @@ fn start_plan(raw: &Value) -> Result<String, String> {
             "## Plan Mode\n\n**Status:** 🟡 Planning\n\n{}\n\n---\n\n_The model must inspect the repository without editing files, then submit the complete plan with `plan_mode_complete`._",
             request.map(|value| format!("### Request\n\n> {value}" )).unwrap_or_else(|| "_No request supplied._".to_string())
         )}],
-        "details": {"kind": "plan", "active": true}
+        "details": {"kind": "plan", "active": true, "markdown": true}
     }).to_string())
 }
 
