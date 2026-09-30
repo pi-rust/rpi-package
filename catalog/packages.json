@@ -1,7 +1,7 @@
 [
   {
     "name": "rpi-mcp-adapter",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "mcp_request",
     "inspiredBy": "pi-mcp-adapter",
@@ -10,7 +10,7 @@
   },
   {
     "name": "rpi-subagents",
-    "version": "0.1.1",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "delegate_task",
     "inspiredBy": "pi-subagents",
@@ -19,7 +19,7 @@
   },
   {
     "name": "rpi-lens",
-    "version": "0.1.1",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "code_lens",
     "inspiredBy": "pi-lens",
@@ -28,7 +28,7 @@
   },
   {
     "name": "rpi-todo",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "type": "extension",
     "tool": "todo",
     "inspiredBy": "Pi todo extensions",
@@ -37,7 +37,7 @@
   },
   {
     "name": "rpi-goal",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "goal",
     "inspiredBy": "Codex goal mode",
@@ -46,7 +46,7 @@
   },
   {
     "name": "rpi-plan-mode",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "plan_mode_start + plan_mode_complete",
     "inspiredBy": "pi-plan-mode",
@@ -55,7 +55,7 @@
   },
   {
     "name": "rpi-codegraph",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "type": "extension",
     "tool": "codegraph",
     "inspiredBy": "code graph extensions",
@@ -64,7 +64,7 @@
   },
   {
     "name": "rpi-ask-user",
-    "version": "0.1.2",
+    "version": "0.1.5",
     "type": "extension",
     "tool": "ask_user",
     "inspiredBy": "@juicesharp/rpiv-ask-user-question",
@@ -73,7 +73,7 @@
   },
   {
     "name": "rpi-permissions",
-    "version": "0.1.2",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "permissions",
     "inspiredBy": "@gotgenes/pi-permission-system",
@@ -82,7 +82,7 @@
   },
   {
     "name": "rpi-websearch",
-    "version": "0.1.2",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "websearch",
     "inspiredBy": "web search extensions",
@@ -91,7 +91,7 @@
   },
   {
     "name": "rpi-webfetch",
-    "version": "0.1.2",
+    "version": "0.1.4",
     "type": "extension",
     "tool": "webfetch",
     "inspiredBy": "web access extensions",
@@ -100,7 +100,7 @@
   },
   {
     "name": "rpi-im-message",
-    "version": "0.1.6",
+    "version": "0.1.8",
     "type": "extension",
     "tool": "im_message_server",
     "inspiredBy": "Hermes Feishu/Lark channels",
@@ -109,7 +109,7 @@
   },
   {
     "name": "rpi-langfuse",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "type": "extension",
     "tool": "langfuse_trace + langfuse_score + langfuse_prompt",
     "inspiredBy": "Langfuse open-source LLM observability platform",
@@ -118,7 +118,7 @@
   },
   {
     "name": "rpi-voice",
-    "version": "0.2.0",
+    "version": "0.2.2",
     "type": "extension",
     "tool": "/voice command + push-to-talk shortcut",
     "inspiredBy": "hands-free voice assistants, made local",
