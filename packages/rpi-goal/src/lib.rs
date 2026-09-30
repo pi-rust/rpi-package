@@ -1,5 +1,5 @@
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
+    register_entrypoint, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
     RuntimeActionId, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
     StepResult, ToolPartialCb,
 };
@@ -237,8 +237,9 @@ fn update_goal(params: &Value) -> Result<String, String> {
     updated.updated_at = now_ms();
     goals.active = Some(updated.clone());
     write_goals(&goals)?;
-    // Force the next TurnEnd to inject the new status (fingerprint changed).
-    remember_injected(None);
+    // Always append a fresh entry so the host projector sees the new status.
+    let _ = append_goal_custom_entry(&updated);
+    remember_injected(Some(fingerprint(&updated)));
     Ok(json!({
         "content": [{"type": "text", "text": format!(
             "## 🎯 Goal updated\n\n**{}**  ({})\n\n{}",
@@ -258,7 +259,10 @@ fn set_status(status: &str) -> Result<String, String> {
     updated.updated_at = now_ms();
     goals.active = Some(updated.clone());
     write_goals(&goals)?;
-    remember_injected(None);
+    // Always append a fresh entry so the host projector sees the new status
+    // (it projects only the latest `goal` entry).
+    let _ = append_goal_custom_entry(&updated);
+    remember_injected(Some(fingerprint(&updated)));
     Ok(json!({
         "content": [{"type": "text", "text": format!(
             "## 🎯 Goal {}\n\n**{}**",
@@ -278,7 +282,9 @@ fn complete_goal() -> Result<String, String> {
     goals.archived.push(done.clone());
     goals.active = None;
     write_goals(&goals)?;
-    remember_injected(None);
+    // Append a `complete` entry so the host projector stops injecting.
+    let _ = append_goal_custom_entry(&done);
+    remember_injected(Some(fingerprint(&done)));
     Ok(json!({
         "content": [{"type": "text", "text": format!(
             "## ✅ Goal complete\n\n**{}**  \n\nArchived. The goal is no longer injected into context.",
@@ -462,7 +468,7 @@ extern "C" fn on_turn_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
-        register_entrypoint_unified(api, |api| {
+        register_entrypoint(api, |api| {
             let _ = RUNTIME.set(Runtime {
                 action: api.runtime_action,
                 free_string: api.free_string,

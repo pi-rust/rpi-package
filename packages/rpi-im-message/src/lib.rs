@@ -6,7 +6,7 @@ use feishu_sdk::event::{
 use feishu_sdk::ws::{StreamClient, StreamConfig};
 use feishu_sdk::Client;
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
+    register_entrypoint, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
     RuntimeActionId, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
     StepResult, ToolPartialCb,
 };
@@ -1362,7 +1362,7 @@ extern "C" fn free_string(value: StbString) {
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
-        register_entrypoint_unified(api, |api| {
+        register_entrypoint(api, |api| {
             let Some(register_tool) = api.register_tool else {
                 return 1;
             };

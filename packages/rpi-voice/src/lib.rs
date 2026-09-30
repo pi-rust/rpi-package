@@ -120,7 +120,7 @@ mod recorder;
 mod whisper;
 
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
+    register_entrypoint, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
     RuntimeActionId, StablePluginEvent, StbString, StbStringRef,
 };
 use serde_json::{json, Value};
@@ -2173,7 +2173,7 @@ fn set_output(out: *mut StbString, value: Value) {
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
-        register_entrypoint_unified(api, |api| {
+        register_entrypoint(api, |api| {
             let ctx = RuntimeContext {
                 runtime_action: api.runtime_action,
                 free_string: api.free_string,

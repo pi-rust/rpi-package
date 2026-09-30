@@ -1,5 +1,5 @@
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, FreeStringFn, PluginApi, RuntimeActionId, StableToolSchema,
+    register_entrypoint, FreeStringFn, PluginApi, RuntimeActionId, StableToolSchema,
     StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
@@ -389,7 +389,7 @@ extern "C" fn plan_command(args_json: StbStringRef, out: *mut StbString, _: *mut
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
-        register_entrypoint_unified(api, |api| {
+        register_entrypoint(api, |api| {
             let Some(register) = api.register_tool else {
                 return 1;
             };

@@ -4,7 +4,7 @@
 //! Uses OpenTelemetry-style observation hierarchy with Langfuse HTTP ingestion API
 
 use rpi_plugin_sdk::{
-    register_entrypoint_unified, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
+    register_entrypoint, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
     RuntimeActionFn, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
     StepResult, ToolPartialCb,
 };
@@ -2761,7 +2761,7 @@ extern "C" fn free_string(s: StbString) {
 #[no_mangle]
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
-        register_entrypoint_unified(api, |api| {
+        register_entrypoint(api, |api| {
             // Capture the host's action trampoline before anything else can run:
             // event handlers and the flush path both publish status through it.
             let _ = HOST_RUNTIME.set(HostRuntime {
