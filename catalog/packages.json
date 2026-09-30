@@ -37,7 +37,7 @@
   },
   {
     "name": "rpi-goal",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "type": "extension",
     "tool": "goal",
     "inspiredBy": "Codex goal mode",

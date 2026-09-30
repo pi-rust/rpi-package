@@ -11,8 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 const GOAL_FILE: &str = ".rpi/goals.json";
-/// The custom-entry type the host's `CustomEntryContextMessageProjector` will
-/// project into the model context (host wiring lands separately in pi-rust).
+/// The custom-message type stored in the generic AgentMessage payload.
 const GOAL_CUSTOM_TYPE: &str = "goal";
 const MAX_TITLE_CHARS: usize = 500;
 const MAX_NOTES_CHARS: usize = 20_000;
@@ -63,22 +62,39 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     }
 }
 
-/// Append a **custom entry** (`customType: "goal"`) carrying the current goal
-/// state. It does NOT drive a new run, so there is no feedback loop. Once the
-/// host registers a `CustomEntryContextMessageProjector` for `"goal"`, this
-/// entry is projected into the next turn's model context.
-fn append_goal_custom_entry(goal: &Goal) -> Result<(), String> {
-    let data = json!({
-        "title": goal.title,
-        "status": goal.status,
-        "notes": goal.notes,
-        "startedAt": goal.started_at,
-        "updatedAt": goal.updated_at,
+/// Append a generic custom message to the session transcript. The host stores
+/// it as an ordinary message entry and the generic context builder forwards it
+/// to the model; no goal-specific host projector is required.
+fn append_goal_custom_message(goal: &Goal) -> Result<(), String> {
+    let tag = match goal.status.as_str() {
+        "paused" => "⏸️ Paused goal",
+        "complete" => "✅ Goal completed",
+        _ => "🎯 Active goal",
+    };
+    let notes = goal.notes.trim();
+    let text = if notes.is_empty() {
+        format!("{tag}: {}.", goal.title)
+    } else {
+        format!("{tag}: {} — {}.", goal.title, notes)
+    };
+    let message = json!({
+        "kind": "custom",
+        "role": "custom",
+        "content": [{"type": "text", "text": text}],
+        "data": {
+            "customType": GOAL_CUSTOM_TYPE,
+            "display": true,
+            "details": {
+                "title": goal.title,
+                "status": goal.status,
+                "notes": goal.notes,
+                "startedAt": goal.started_at,
+                "updatedAt": goal.updated_at,
+            }
+        },
+        "timestamp": goal.updated_at,
     });
-    call_runtime(
-        RuntimeActionId::AppendEntry,
-        json!({"customType": GOAL_CUSTOM_TYPE, "data": data}),
-    )?;
+    call_runtime(RuntimeActionId::AppendEntry, json!({"message": message}))?;
     Ok(())
 }
 
@@ -195,7 +211,7 @@ fn start_goal(params: &Value) -> Result<String, String> {
     // Inject immediately so the goal is visible even before the next TurnEnd.
     let fp = fingerprint(&goal);
     if should_inject(Some(&fp)) {
-        let _ = append_goal_custom_entry(&goal);
+        let _ = append_goal_custom_message(&goal);
         remember_injected(Some(fp));
     }
     Ok(json!({
@@ -237,8 +253,8 @@ fn update_goal(params: &Value) -> Result<String, String> {
     updated.updated_at = now_ms();
     goals.active = Some(updated.clone());
     write_goals(&goals)?;
-    // Always append a fresh entry so the host projector sees the new status.
-    let _ = append_goal_custom_entry(&updated);
+    // Always append a fresh message so the model sees the new status.
+    let _ = append_goal_custom_message(&updated);
     remember_injected(Some(fingerprint(&updated)));
     Ok(json!({
         "content": [{"type": "text", "text": format!(
@@ -259,9 +275,8 @@ fn set_status(status: &str) -> Result<String, String> {
     updated.updated_at = now_ms();
     goals.active = Some(updated.clone());
     write_goals(&goals)?;
-    // Always append a fresh entry so the host projector sees the new status
-    // (it projects only the latest `goal` entry).
-    let _ = append_goal_custom_entry(&updated);
+    // Always append a fresh message so the model sees the new status.
+    let _ = append_goal_custom_message(&updated);
     remember_injected(Some(fingerprint(&updated)));
     Ok(json!({
         "content": [{"type": "text", "text": format!(
@@ -282,8 +297,8 @@ fn complete_goal() -> Result<String, String> {
     goals.archived.push(done.clone());
     goals.active = None;
     write_goals(&goals)?;
-    // Append a `complete` entry so the host projector stops injecting.
-    let _ = append_goal_custom_entry(&done);
+    // Append a completion message so the model sees that the goal is finished.
+    let _ = append_goal_custom_message(&done);
     remember_injected(Some(fingerprint(&done)));
     Ok(json!({
         "content": [{"type": "text", "text": format!(
@@ -431,7 +446,7 @@ extern "C" fn free_string(value: StbString) {
 }
 
 // ---------------------------------------------------------------------------
-// TurnEnd handler — append the active goal as a custom entry
+// TurnEnd handler — append the active goal as a custom message
 // ---------------------------------------------------------------------------
 
 extern "C" fn on_turn_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
@@ -450,7 +465,7 @@ extern "C" fn on_turn_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
     if !should_inject(Some(&fp)) {
         return 0;
     }
-    match append_goal_custom_entry(&goal) {
+    match append_goal_custom_message(&goal) {
         Ok(_) => {
             remember_injected(Some(fp));
         }
