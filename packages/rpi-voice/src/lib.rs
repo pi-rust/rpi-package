@@ -337,6 +337,11 @@ fn stop_playback() -> bool {
 /// Currently recording voice input
 static RECORDING: AtomicBool = AtomicBool::new(false);
 
+/// Whether the user selected hands-free mode for this session. This is separate
+/// from AUTO_TALK_ENABLED: typing can pause the current listener while keeping
+/// the long-press resume entry available.
+static AUTO_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
+
 /// Push-to-talk mode (`/voice ptt`). While on, the host routes the claimed key
 /// (`ptt_key()`) to [`on_input_key`] instead of the editor when the input box is
 /// empty, so holding the key records and releasing it sends.
@@ -485,6 +490,11 @@ fn tts_sender() -> &'static mpsc::Sender<String> {
             .spawn(move || {
                 for text in rx {
                     if !AUTO_TTS_ENABLED.load(Ordering::Relaxed) {
+                        // Keep continuous voice input alive even when the user
+                        // has muted speech for the session.
+                        if let Some(runtime) = RUNTIME_CTX.get().copied() {
+                            maybe_auto_listen(runtime);
+                        }
                         continue;
                     }
                     TTS_PLAYING.store(true, Ordering::Relaxed);
@@ -582,7 +592,7 @@ extern "C" fn on_message_end(event: StablePluginEvent, _user_data: *mut c_void) 
 extern "C" fn on_input_key(event: StablePluginEvent, _user_data: *mut c_void) -> i32 {
     const CONTINUE: i32 = rpi_plugin_sdk::EVENT_HANDLER_CONTINUE;
 
-    if !PTT_ENABLED.load(Ordering::Relaxed) {
+    if !PTT_ENABLED.load(Ordering::Relaxed) && !AUTO_MODE_ENABLED.load(Ordering::Relaxed) {
         return CONTINUE;
     }
     // Payload lives in the `data` union arm for Input events.
@@ -647,9 +657,7 @@ fn handle_ptt_key(raw: &str, wanted: &str) -> i32 {
     const CONTINUE: i32 = rpi_plugin_sdk::EVENT_HANDLER_CONTINUE;
     const CLAIMED: i32 = rpi_plugin_sdk::EVENT_HANDLER_CLAIMED;
 
-    // Mode off ⇒ the key belongs to the editor (this is what keeps a
-    // registered-but-disabled shortcut from stealing the space bar).
-    if !PTT_ENABLED.load(Ordering::Relaxed) {
+    if !PTT_ENABLED.load(Ordering::Relaxed) && !AUTO_MODE_ENABLED.load(Ordering::Relaxed) {
         return CONTINUE;
     }
     let Ok(payload) = serde_json::from_str::<Value>(raw) else {
@@ -789,7 +797,11 @@ fn start_ptt_recording(token: u64, runtime: RuntimeContext) {
         return;
     }
     // The hold threshold was reached: the user is about to speak, so cut off
-    // whatever the assistant is still reading aloud (barge-in).
+    // whatever the assistant is still reading aloud (barge-in). A long press
+    // also resumes a paused Auto session.
+    if AUTO_MODE_ENABLED.load(Ordering::Relaxed) {
+        AUTO_TALK_ENABLED.store(true, Ordering::Relaxed);
+    }
     stop_playback();
     let stop = Arc::new(AtomicBool::new(false));
     {
@@ -840,7 +852,7 @@ fn start_ptt_recording(token: u64, runtime: RuntimeContext) {
             let send = ptt_finish(token);
 
             match result {
-                Ok(rec) if send => match finish_recording(&runtime, rec) {
+                Ok(rec) if send => match finish_recording(&runtime, rec, false) {
                     Ok(()) => set_status_unless_pressed(&runtime, "voice: idle"),
                     Err(e) => {
                         eprintln!("[rpi-voice] PTT error: {e}");
@@ -1172,7 +1184,7 @@ fn auto_talk_turn(runtime: &RuntimeContext, stop: Arc<AtomicBool>) {
             "auto turn: recording (no_speech_ms={:?}, silence_ms={}, max_ms={})",
             params.no_speech_ms, params.silence_ms, params.max_ms
         ));
-        match record_and_send_until(runtime, params, stop.clone(), ListenHint::Silence) {
+        match record_and_send_until(runtime, params, stop.clone(), ListenHint::Silence, true) {
             Ok(()) => {
                 debug_log("auto turn: delivered a transcription");
                 AUTO_TALK_EMPTY.store(0, Ordering::Relaxed);
@@ -1203,7 +1215,7 @@ fn auto_talk_turn(runtime: &RuntimeContext, stop: Arc<AtomicBool>) {
                 if empties >= max {
                     AUTO_TALK_ENABLED.store(false, Ordering::Relaxed);
                     runtime.set_status(&format!(
-                        "voice: 💤 heard nothing {empties}× (peak {peak:.3}, {secs:.1}s) — continuous mode stopped"
+                        "voice: 💤 heard nothing {empties}× (peak {peak:.3}, {secs:.1}s) — continuous mode stopped; use `/voice auto` to resume"
                     ));
                     break;
                 }
@@ -1450,6 +1462,7 @@ extern "C" fn voice_command(
     match verb {
         "off" => {
             AUTO_TTS_ENABLED.store(false, Ordering::Relaxed);
+            AUTO_MODE_ENABLED.store(false, Ordering::Relaxed);
             // Turning Auto-TTS off must also stop hands-free mode. Otherwise a
             // running continuous loop can call `enable_auto_talk` on its next
             // turn and silently turn Auto-TTS back on.
@@ -1483,6 +1496,7 @@ extern "C" fn voice_command(
                 }
             };
             if !enable {
+                AUTO_MODE_ENABLED.store(false, Ordering::Relaxed);
                 AUTO_TALK_ENABLED.store(false, Ordering::Relaxed);
                 // Abort the in-flight listen (and any speech) right away.
                 let stop = AUTO_TALK_STOP.lock().unwrap().take();
@@ -1503,20 +1517,23 @@ extern "C" fn voice_command(
                 );
                 return 1;
             };
+            AUTO_MODE_ENABLED.store(true, Ordering::Relaxed);
             let note = enable_auto_talk(ctx);
             set_output(out, json!({"kind": "message", "text": note}));
             return 0;
         }
         "stop" | "shush" => {
-            // Manual barge-in, for when the user wants quiet without touching
-            // the keyboard (a phone call, say).
+            // A manual stop is an explicit session-level mute, not just a
+            // one-frame player interruption. Do not let the next assistant
+            // message or continuous-mode callback turn speech back on.
+            AUTO_TTS_ENABLED.store(false, Ordering::Relaxed);
             let stopped = stop_playback();
             set_output(
                 out,
                 json!({"kind": "message", "text": if stopped {
-                    "🤫 Stopped playback"
+                    "🤫 Playback stopped; Auto-TTS muted for this session (use `/voice on` to resume)"
                 } else {
-                    "🔈 Nothing is playing"
+                    "🔈 No playback; Auto-TTS muted for this session (use `/voice on` to resume)"
                 }}),
             );
             return 0;
@@ -1819,7 +1836,7 @@ extern "C" fn voice_command(
 fn record_and_send(runtime: &RuntimeContext, params: recorder::RecordParams) -> Result<(), String> {
     // Recording auto-stops on silence; the stop flag lets it be cut short.
     let stop = Arc::new(AtomicBool::new(false));
-    record_and_send_until(runtime, params, stop, ListenHint::Silence)
+    record_and_send_until(runtime, params, stop, ListenHint::Silence, false)
 }
 
 /// Like [`record_and_send`], but with a caller-owned stop flag — the hands-free
@@ -1828,13 +1845,12 @@ fn record_and_send(runtime: &RuntimeContext, params: recorder::RecordParams) -> 
 ///
 /// Every recording path goes through here so they all show the same live level
 /// meter while the mic is open: push-to-talk, one-shot `/voice`, and hands-free
-/// turns. A still bar is the user's cue that the microphone is not hearing them,
-/// which is the most useful thing to see when voice input misbehaves.
 fn record_and_send_until(
     runtime: &RuntimeContext,
     params: recorder::RecordParams,
     stop: Arc<AtomicBool>,
     hint: ListenHint,
+    auto_mode: bool,
 ) -> Result<(), String> {
     let meter = recorder::LevelMeter::new();
     // Tell the user how long they have to *start* talking; `None` for
@@ -1856,7 +1872,7 @@ fn record_and_send_until(
         animation.stop();
     }
 
-    finish_recording(runtime, recorded?)
+    finish_recording(runtime, recorded?, auto_mode)
 }
 
 /// The error to report when a recording produced no usable speech.
@@ -1888,6 +1904,7 @@ fn no_speech_error(recording: &recorder::Recording) -> String {
 fn finish_recording(
     runtime: &RuntimeContext,
     recording: recorder::Recording,
+    auto_mode: bool,
 ) -> Result<(), String> {
     // Publish the capture diagnostics first: every exit below (too short, no
     // speech, a failed request) is otherwise indistinguishable to the user from
@@ -1924,7 +1941,11 @@ fn finish_recording(
         return Err(no_speech_error(&recording));
     }
 
-    match output_mode() {
+    match if auto_mode {
+        OutputMode::Draft
+    } else {
+        output_mode()
+    } {
         OutputMode::Send => {
             runtime.set_status(&format!("voice: ➡ {}", truncate(&text, 40)));
             runtime.action(RuntimeActionId::SendUserMessage, json!({ "text": text }))?;
@@ -2440,8 +2461,7 @@ mod tests {
     }
 
     /// A hands-free turn bounds how long it waits for the user to *start*
-    /// talking; without it a silent room would hold the mic for the full 20s
-    /// `max_ms` on every turn.
+    /// talking; without it a silent room would hold the mic for the full cap.
     #[test]
     fn auto_turn_waits_for_speech_then_gives_up() {
         let previous = std::env::var("RPI_VOICE_NO_SPEECH_MS").ok();
@@ -2449,9 +2469,9 @@ mod tests {
         std::env::remove_var("RPI_VOICE_NO_SPEECH_MS");
         std::env::remove_var("RPI_VOICE_WARMUP_MS");
         let params = recorder::RecordParams::for_auto_turn();
-        assert_eq!(params.no_speech_ms, None);
+        assert_eq!(params.no_speech_ms, Some(10_000));
         assert_eq!(params.max_ms, 60_000);
-        assert_eq!(params.warmup_ms, 4_000);
+        assert_eq!(params.warmup_ms, 800);
         // Silence auto-stop after real speech is unchanged.
         assert!(params.silence_ms > 0);
 

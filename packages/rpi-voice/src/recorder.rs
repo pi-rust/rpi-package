@@ -183,8 +183,16 @@ impl RecordParams {
             // make a Bluetooth wake-up or a thoughtful pause look like failure.
             p.max_ms = 60_000;
         }
+        if std::env::var("RPI_VOICE_NO_SPEECH_MS").is_err() {
+            // Do not wait forever when the VAD never arms (for example when a
+            // Bluetooth device emits a wake-up burst). The user can override
+            // this with RPI_VOICE_NO_SPEECH_MS.
+            p.no_speech_ms = Some(10_000);
+        }
         if std::env::var("RPI_VOICE_WARMUP_MS").is_err() {
-            p.warmup_ms = 4_000;
+            // Keep Bluetooth wake-up protection short enough that the first
+            // spoken words are not mistaken for warm-up noise.
+            p.warmup_ms = 800;
         }
         p
     }
@@ -779,15 +787,13 @@ fn select_input_device(host: &cpal::Host) -> Result<(cpal::Device, String), Stri
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let wanted = configured_from_env
-        .clone()
-        .or_else(|| {
-            load_config()
-                .get("input_device")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .filter(|value| !value.is_empty())
-        });
+    let wanted = configured_from_env.clone().or_else(|| {
+        load_config()
+            .get("input_device")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .filter(|value| !value.is_empty())
+    });
     let wanted_lower = wanted.as_ref().map(|value| value.to_ascii_lowercase());
 
     if let Some(wanted_lower) = wanted_lower {
