@@ -6,9 +6,9 @@ use feishu_sdk::event::{
 use feishu_sdk::ws::{StreamClient, StreamConfig};
 use feishu_sdk::Client;
 use rpi_plugin_sdk::{
-    register_entrypoint, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
-    RuntimeActionId, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
-    StepResult, ToolPartialCb,
+    register_entrypoint, EventTag, FreeStringFn, PluginApi, RuntimeActionFn, RuntimeActionId,
+    StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
+    ToolPartialCb,
 };
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};

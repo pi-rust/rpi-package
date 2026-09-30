@@ -1,6 +1,6 @@
 use rpi_plugin_sdk::{
-    register_entrypoint, FreeStringFn, PluginApi, RuntimeActionId, StableToolSchema,
-    StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
+    register_entrypoint, FreeStringFn, PluginApi, RuntimeActionId, StableToolSchema, StbString,
+    StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;

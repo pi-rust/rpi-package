@@ -4,9 +4,9 @@
 //! Uses OpenTelemetry-style observation hierarchy with Langfuse HTTP ingestion API
 
 use rpi_plugin_sdk::{
-    register_entrypoint, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
-    RuntimeActionFn, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
-    StepResult, ToolPartialCb,
+    register_entrypoint, EventHandlerFn, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
+    StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
+    ToolPartialCb,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};

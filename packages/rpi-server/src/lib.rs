@@ -2,9 +2,9 @@ mod server;
 mod transport;
 
 use rpi_plugin_sdk::{
-    register_entrypoint, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
-    RuntimeActionId, StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle,
-    StepResult, ToolPartialCb,
+    register_entrypoint, EventTag, FreeStringFn, PluginApi, RuntimeActionFn, RuntimeActionId,
+    StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
+    ToolPartialCb,
 };
 use serde_json::{json, Value};
 use server::{generate_token, launch_args, run_server, TcpServerHandle};

@@ -120,8 +120,8 @@ mod recorder;
 mod whisper;
 
 use rpi_plugin_sdk::{
-    register_entrypoint, EventTag, FreeStringFn, PluginApi, RuntimeActionFn,
-    RuntimeActionId, StablePluginEvent, StbString, StbStringRef,
+    register_entrypoint, EventTag, FreeStringFn, PluginApi, RuntimeActionFn, RuntimeActionId,
+    StablePluginEvent, StbString, StbStringRef,
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;

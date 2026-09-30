@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rpi_plugin_sdk::{
-    register_entrypoint, FreeStringFn, PluginApi, StbString, StbStringRef, StepHandle,
-    StepResult, ToolPartialCb, HOST_CONTEXT_KEY,
+    register_entrypoint, FreeStringFn, PluginApi, StbString, StbStringRef, StepHandle, StepResult,
+    ToolPartialCb, HOST_CONTEXT_KEY,
 };
 use serde_json::{json, Value};
 

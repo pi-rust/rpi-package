@@ -19,8 +19,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rpi_plugin_sdk::{
-    register_entrypoint, FreeStringFn, PluginApi, RuntimeActionFn, StableToolSchema,
-    StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
+    register_entrypoint, FreeStringFn, PluginApi, RuntimeActionFn, StableToolSchema, StbString,
+    StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
 
