@@ -1115,6 +1115,11 @@ struct TraceContext {
     /// `langfuse.version` (the extension version, matching the Langfuse SDKs).
     version: Option<String>,
     tags: Vec<String>,
+    /// Trace-level metadata (`langfuse.trace.metadata.*`), taken from the turn
+    /// **root's** metadata only. A child's metadata (`tool_name`, `stop_reason`,
+    /// `assistant_index`…) describes that observation, not the trace — relabelling
+    /// it as trace metadata is what Langfuse then shows as trace-level facts.
+    metadata: Map<String, Value>,
 }
 
 /// One in-flight observation.
@@ -1334,9 +1339,11 @@ fn span_to_otlp(rec: &SpanRecord) -> Value {
     // Trace-level attributes go on EVERY span, root included: Langfuse only
     // aggregates/filters sessionId, userId, tags, version and trace name from
     // span attributes, and older Langfuse versions read the root span's
-    // *observation* metadata for the trace metadata.
+    // *observation* metadata for the trace metadata. The values are the same on
+    // every span — they come from the turn root, never from this span's own
+    // metadata.
     let ctx = &rec.trace_context;
-    for (k, v) in &rec.metadata {
+    for (k, v) in &ctx.metadata {
         attrs.push(attr_json(&format!("langfuse.trace.metadata.{k}"), v));
     }
     if !ctx.name.is_empty() {
@@ -1755,13 +1762,19 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn trace_context(name: &str, session_id: Option<String>, user_id: Option<String>) -> TraceContext {
+fn trace_context(
+    name: &str,
+    session_id: Option<String>,
+    user_id: Option<String>,
+    metadata: Map<String, Value>,
+) -> TraceContext {
     TraceContext {
         name: name.to_string(),
         session_id,
         user_id,
         version: Some(EXTENSION_VERSION.to_string()),
         tags: BASE_TAGS.iter().map(|t| (*t).to_string()).collect(),
+        metadata,
     }
 }
 
@@ -1928,10 +1941,14 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
 
     // The turn's trace context, built before the root span so the root carries
     // it from the start (and stored on the turn state so every child inherits).
+    // Its metadata is this root's metadata — the only span whose metadata
+    // describes the trace rather than one step of it — so children cannot
+    // relabel their own fields as trace-level facts.
     let ctx = trace_context(
         TRACE_NAME,
         Some(session_id.clone()),
         load_config().and_then(|cfg| cfg.user_id),
+        metadata.clone(),
     );
     // The parent is captured here, not looked up at export time: the env vars
     // that carry it are process-global, and `finalize_root` withdraws them when
@@ -3278,8 +3295,17 @@ mod tests {
             Some(metadata),
         );
         root.end_ms = Some(root.start_ms + 5);
-        root.trace_context =
-            trace_context(TRACE_NAME, Some("sess-1".into()), Some("user-1".into()));
+        // The root's own metadata *is* the trace metadata (that is the contract
+        // `on_before_agent_start` relies on), so it must be mirrored here for
+        // the older Langfuse versions that read trace metadata off the root.
+        let mut trace_meta = Map::new();
+        trace_meta.insert("session_id".into(), json!("sess-1"));
+        root.trace_context = trace_context(
+            TRACE_NAME,
+            Some("sess-1".into()),
+            Some("user-1".into()),
+            trace_meta,
+        );
         let span = span_to_otlp(&root);
         assert_eq!(span["traceId"], json!(trace));
         assert_eq!(span["spanId"], json!(root_id));
@@ -3365,9 +3391,16 @@ mod tests {
 
         // A child that inherits the turn's trace context must re-state the
         // trace-level attributes: Langfuse only filters/aggregates by
-        // sessionId/userId/tags when they are present on *every* span.
+        // sessionId/userId/tags when they are present on *every* span. It must
+        // also report the *root's* trace metadata, not its own: a child's
+        // `tool_name`/`stop_reason` describes that observation only.
         let mut child = child.clone();
-        child.trace_context = trace_context(TRACE_NAME, Some("sess-1".into()), None);
+        let mut trace_meta = Map::new();
+        trace_meta.insert("source".into(), json!("pi"));
+        child.trace_context = trace_context(TRACE_NAME, Some("sess-1".into()), None, trace_meta);
+        child
+            .metadata
+            .insert("stop_reason".into(), json!("toolUse"));
         let span = span_to_otlp(&child);
         let attrs = span["attributes"].as_array().unwrap();
         let attr = |key: &str| {
@@ -3383,6 +3416,22 @@ mod tests {
         assert_eq!(
             attr("langfuse.session.id")["value"]["stringValue"],
             json!("sess-1")
+        );
+        // The root's trace metadata is present…
+        assert_eq!(
+            attr("langfuse.trace.metadata.source")["value"]["stringValue"],
+            json!("pi")
+        );
+        // …and this child's own metadata is NOT relabelled as trace-level.
+        assert!(
+            !attrs
+                .iter()
+                .any(|a| a["key"] == json!("langfuse.trace.metadata.stop_reason")),
+            "child metadata must not become trace metadata: {attrs:?}"
+        );
+        assert_eq!(
+            attr("langfuse.observation.metadata.stop_reason")["value"]["stringValue"],
+            json!("toolUse")
         );
 
         // No parent recorded and no inherited parent: span is exported parentless.
@@ -3883,6 +3932,7 @@ mod tests {
             TRACE_NAME,
             Some("rpi-langfuse-live-test".into()),
             Some("rpi-langfuse-live-test-user".into()),
+            Map::new(),
         );
         root.trace_context = ctx.clone();
         let mut gen = SpanRecord::new(
