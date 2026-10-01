@@ -20,7 +20,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // Constants
 // ---------------------------------------------------------------------------
 
-const EXTENSION_NAME: &str = "@langfuse/pi-observability-plugin";
+/// The plugin's own identity, used for the OTLP `telemetry.sdk.name`, the
+/// `x-langfuse-sdk-name` header and `metadata.extension`. It is this package's
+/// name — an extension reports *itself* here, not the host, and not the
+/// TypeScript plugin this one was originally ported from.
+const EXTENSION_NAME: &str = "rpi-langfuse";
 /// Single source of truth for the version reported to Langfuse (`service.version`,
 /// `telemetry.sdk.version`, `langfuse.version`): the package version. The literal
 /// had drifted from `Cargo.toml` (0.2.0 vs 0.2.3), so every observation showed a
@@ -28,13 +32,81 @@ const EXTENSION_NAME: &str = "@langfuse/pi-observability-plugin";
 const EXTENSION_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_OBSERVATION_NAME: &str = "Conversational Turn";
 const SUBAGENT_ROOT_OBSERVATION_NAME: &str = "Subagent Turn";
-const TRACE_NAME: &str = "Pi Turn";
+/// The trace name when the host has not told us its identity. At runtime the
+/// name is *derived* from the host (`{host} Turn`), so a rename does not leave
+/// stale brands in the data; this fallback only covers a host that predates the
+/// `host` payload field.
+const FALLBACK_TRACE_NAME: &str = "Conversational Turn";
 const GENERATION_PREFIX: &str = "LLM Call";
 const TOOL_PREFIX: &str = "Tool:";
 const COMPACTION_OBSERVATION_NAME: &str = "Compaction";
 const BRANCH_SUMMARY_OBSERVATION_NAME: &str = "Branch Summary";
 const TOOL_USAGE_OBSERVATION_NAME: &str = "Tool LLM Usage";
-const BASE_TAGS: &[&str] = &["pi"];
+/// The base tag added to every trace, when the host identity is unknown. At
+/// runtime the tag is the host's own name, so it matches what the rest of the
+/// deployment calls itself.
+const FALLBACK_TAG: &str = "rpi";
+
+/// Host identity reported by the host in the `BeforeAgentStart` payload
+/// (`{"name":"rpi","version":"0.3.10"}`).
+///
+/// Read per turn because the payload is the only channel that describes the
+/// process *actually* running; the compile-time constants above can only ever
+/// describe the host this extension was built against.
+#[derive(Clone, Debug)]
+struct HostIdentity {
+    name: String,
+    version: Option<String>,
+}
+
+static HOST_IDENTITY: Mutex<Option<HostIdentity>> = Mutex::new(None);
+
+fn host_identity() -> Option<HostIdentity> {
+    HOST_IDENTITY.lock().unwrap().clone()
+}
+
+/// Remember the host identity from a `BeforeAgentStart` payload. Ignored when
+/// the host sent nothing (an older build), so the caller keeps the fallback.
+fn remember_host_identity(payload: &Value) {
+    let host = payload.get("host");
+    let name = host
+        .and_then(|h| h.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let Some(name) = name else {
+        return;
+    };
+    let version = host
+        .and_then(|h| h.get("version"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    *HOST_IDENTITY.lock().unwrap() = Some(HostIdentity {
+        name: name.to_string(),
+        version,
+    });
+}
+
+/// The host's name, or [`FALLBACK_TAG`] when it never introduced itself.
+fn host_name() -> String {
+    host_identity()
+        .map(|host| host.name)
+        .unwrap_or_else(|| FALLBACK_TAG.to_string())
+}
+
+/// Name for this turn's Langfuse trace: `"{host} Turn"`.
+fn trace_name() -> String {
+    match host_identity() {
+        Some(host) => format!("{} Turn", host.name),
+        None => FALLBACK_TRACE_NAME.to_string(),
+    }
+}
+
+/// Tags for this trace — the host's own name, so the tag agrees with the
+/// `service.name` resource attribute.
+fn base_tags() -> Vec<String> {
+    vec![host_name()]
+}
 
 const DEFAULT_BASE_URL: &str = "https://cloud.langfuse.com";
 /// Langfuse v4 native OpenTelemetry ingestion. Langfuse v4 `events_only`
@@ -1393,8 +1465,16 @@ fn flush_otlp(spans: Vec<Value>) -> Result<(), String> {
         "resourceSpans": [{
             "resource": {
                 "attributes": [
-                    attr_str("service.name", "rpi"),
-                    attr_str("service.version", EXTENSION_VERSION),
+                    attr_str("service.name", &host_name()),
+                    // `service.version` is the *host's* version, the one thing
+                    // in this resource that is not the plugin's own: the SDK
+                    // version is reported separately below and in the scope.
+                    attr_str(
+                        "service.version",
+                        &host_identity()
+                            .and_then(|host| host.version)
+                            .unwrap_or_else(|| EXTENSION_VERSION.to_string()),
+                    ),
                     attr_str("telemetry.sdk.name", SDK_NAME),
                     attr_str("telemetry.sdk.language", "rust"),
                     attr_str("telemetry.sdk.version", EXTENSION_VERSION),
@@ -1649,7 +1729,7 @@ fn obs_id() -> String {
 
 fn trace_metadata() -> Map<String, Value> {
     let mut m = Map::new();
-    m.insert("source".into(), json!("pi"));
+    m.insert("source".into(), json!(host_name()));
     m.insert("extension".into(), json!(EXTENSION_NAME));
     m.insert("extension_version".into(), json!(EXTENSION_VERSION));
     if let Ok(cwd) = std::env::current_dir() {
@@ -1710,6 +1790,7 @@ fn session_id_from_tool_args() -> Option<String> {
 #[cfg(test)]
 fn reset_session_id_latch() {
     *SESSION_ID_FROM_TOOL_ARGS.lock().unwrap() = None;
+    *HOST_IDENTITY.lock().unwrap() = None;
 }
 
 /// The host's `__rpi` envelope key (plugin tool args). Mirrors the SDK's
@@ -1773,7 +1854,7 @@ fn trace_context(
         session_id,
         user_id,
         version: Some(EXTENSION_VERSION.to_string()),
-        tags: BASE_TAGS.iter().map(|t| (*t).to_string()).collect(),
+        tags: base_tags(),
         metadata,
     }
 }
@@ -1898,6 +1979,10 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
         format!("{}\n{}", prompt, image_descs.join("\n"))
     };
 
+    // Who we are embedded in. Recorded before anything is labelled, so this
+    // turn's trace name, tags and `service.name` all come from the host.
+    remember_host_identity(&data);
+
     // Channel 2: the host puts the real session id right here, next to the
     // prompt, so the turn's very first span already carries it.
     let payload_session_id = data
@@ -1945,7 +2030,7 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
     // describes the trace rather than one step of it — so children cannot
     // relabel their own fields as trace-level facts.
     let ctx = trace_context(
-        TRACE_NAME,
+        &trace_name(),
         Some(session_id.clone()),
         load_config().and_then(|cfg| cfg.user_id),
         metadata.clone(),
@@ -3202,6 +3287,54 @@ mod tests {
         assert_ne!(trace_id(), t);
     }
 
+    /// The host identifies itself in the `BeforeAgentStart` payload, and every
+    /// brand the plugin stamps on its data is *derived* from it: the trace name
+    /// is `"{host} Turn"`, the tag and `metadata.source` are the host name.
+    /// Without that channel (an older host) the plugin falls back to its own
+    /// constants instead of reporting nothing.
+    #[test]
+    fn labels_are_derived_from_the_host_identity() {
+        let _turn_guard = turn_test_lock();
+
+        // No host channel yet: the fallback labels, never a blank name.
+        *HOST_IDENTITY.lock().unwrap() = None;
+        assert_eq!(trace_name(), FALLBACK_TRACE_NAME);
+        assert_eq!(base_tags(), vec![FALLBACK_TAG.to_string()]);
+
+        // The host introduces itself → every label follows it.
+        remember_host_identity(&json!({
+            "prompt": "hi",
+            "host": { "name": "rpi", "version": "9.9.9" },
+        }));
+        assert_eq!(trace_name(), "rpi Turn");
+        assert_eq!(base_tags(), vec!["rpi".to_string()]);
+        assert_eq!(host_name(), "rpi");
+        assert_eq!(
+            host_identity().and_then(|h| h.version).as_deref(),
+            Some("9.9.9")
+        );
+        assert_eq!(
+            trace_metadata().get("source"),
+            Some(&json!("rpi")),
+            "metadata.source must name the host, not a hardcoded brand"
+        );
+
+        // A host that renames itself must move every label with it — this is the
+        // whole point of taking the brand from the host.
+        remember_host_identity(&json!({ "host": { "name": "newname" } }));
+        assert_eq!(trace_name(), "newname Turn");
+        assert_eq!(base_tags(), vec!["newname".to_string()]);
+
+        // A payload without `host` (or with a blank name) must not clobber the
+        // last known identity, and must never produce an empty label.
+        remember_host_identity(&json!({ "host": { "name": "   " } }));
+        remember_host_identity(&json!({ "prompt": "hi" }));
+        assert_eq!(trace_name(), "newname Turn");
+        assert!(base_tags().iter().all(|tag| !tag.trim().is_empty()));
+
+        *HOST_IDENTITY.lock().unwrap() = None;
+    }
+
     /// The host's three channels resolve in precedence order: the real id from
     /// a tool call, then the `BeforeAgentStart` payload, then the env var. The
     /// old code used a literal `"default"` for every session, which is what this
@@ -3301,7 +3434,7 @@ mod tests {
         let mut trace_meta = Map::new();
         trace_meta.insert("session_id".into(), json!("sess-1"));
         root.trace_context = trace_context(
-            TRACE_NAME,
+            &trace_name(),
             Some("sess-1".into()),
             Some("user-1".into()),
             trace_meta,
@@ -3326,7 +3459,7 @@ mod tests {
         };
         assert_eq!(
             attr("langfuse.trace.name")["value"]["stringValue"],
-            json!(TRACE_NAME)
+            json!(trace_name())
         );
         assert_eq!(
             attr("langfuse.session.id")["value"]["stringValue"],
@@ -3338,7 +3471,8 @@ mod tests {
         );
         assert_eq!(
             attr("langfuse.trace.tags")["value"]["stringValue"],
-            json!(r#"["pi"]"#)
+            json!(r#"["rpi"]"#),
+            "the tag is the host's name (fallback when the host is unknown)"
         );
         assert_eq!(
             attr("langfuse.version")["value"]["stringValue"],
@@ -3397,7 +3531,7 @@ mod tests {
         let mut child = child.clone();
         let mut trace_meta = Map::new();
         trace_meta.insert("source".into(), json!("pi"));
-        child.trace_context = trace_context(TRACE_NAME, Some("sess-1".into()), None, trace_meta);
+        child.trace_context = trace_context(&trace_name(), Some("sess-1".into()), None, trace_meta);
         child
             .metadata
             .insert("stop_reason".into(), json!("toolUse"));
@@ -3411,7 +3545,7 @@ mod tests {
         };
         assert_eq!(
             attr("langfuse.trace.name")["value"]["stringValue"],
-            json!(TRACE_NAME)
+            json!(trace_name())
         );
         assert_eq!(
             attr("langfuse.session.id")["value"]["stringValue"],
@@ -3572,7 +3706,7 @@ mod tests {
             truncate_chars(&text, 400)
         );
         assert!(
-            text.contains(TRACE_NAME),
+            text.contains(&trace_name()),
             "trace-level context (langfuse.trace.name) missing: {}",
             truncate_chars(&text, 400)
         );
@@ -3863,7 +3997,7 @@ mod tests {
             let span = span_to_otlp(rec);
             assert_eq!(
                 string_attr(&span, "langfuse.trace.name").as_deref(),
-                Some(TRACE_NAME),
+                Some(trace_name().as_str()),
                 "trace name must be on every span (was root-only before the fix): {span}"
             );
             assert_eq!(
@@ -3929,7 +4063,7 @@ mod tests {
         );
         root.end_ms = Some(now_epoch_ms());
         let ctx = trace_context(
-            TRACE_NAME,
+            &trace_name(),
             Some("rpi-langfuse-live-test".into()),
             Some("rpi-langfuse-live-test-user".into()),
             Map::new(),

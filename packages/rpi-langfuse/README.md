@@ -32,6 +32,11 @@ Langfuse 集成插件，为 rpi 提供 LLM 可观测性追踪。
 - **id 必须是 OTLP 格式**：trace id = 32 位十六进制，span id = 16 位十六进制（旧版的 `obs-xxxx` 会被拒）。
 - **子代理嵌套**：`LANGFUSE_PI_PARENT_TRACE_ID` / `LANGFUSE_PI_PARENT_SPAN_ID` 现在直接作为
   OTLP 的 traceId / parentSpanId 使用，所以子代理会正确挂在触发它的那一轮下面。
+- **trace 名称 / tag / source 全部由宿主派生**：宿主在 `BeforeAgentStart` payload 里带
+  `host: {name, version}`，插件据此生成 trace name（`"{host} Turn"` → `rpi Turn`）、
+  trace tag（`["rpi"]`）、`langfuse.trace.metadata.source` 和 OTLP 的 `service.name`。
+  改名只需要改宿主一处，插件不会留下过期的品牌名；老宿主（没有 `host` 字段）退回内置常量。
+  `service.version` 是**宿主**版本，`telemetry.sdk.version` 才是插件版本。
 - **trace 级属性下发到每一个 span**：`langfuse.trace.name` / `langfuse.session.id` /
   `langfuse.user.id` / `langfuse.trace.tags` / `langfuse.version` 不只写在根 span 上，
   而是写在该 trace 的**所有** span 上。Langfuse 官方文档明确要求这样（OTEL →
@@ -43,6 +48,9 @@ Langfuse 集成插件，为 rpi 提供 LLM 可观测性追踪。
   一轮结束（助手消息不含 tool call）时才收尾根 span 并整体导出。
 - **根 span 判定**：`parentSpanId` 为空且没有继承的父 span 才算根；子代理自己的
   `Subagent Turn` 会挂在父轮根 span 上，不再被误当成第二个 trace 根。
+- **trace metadata 只在根 span 播种一次**：`langfuse.trace.metadata.*` 取自轮次根 span 的
+  metadata，因此每个 span 上报的是同一套；子 span 自己的字段（`tool_name`、`stop_reason`
+  等）只出现在 `langfuse.observation.metadata.*`，不会被当成 trace 级事实。
 - **v4 读接口**：`langfuse_trace` 用 `/api/public/v2/observations?traceId=...`（旧的 `/api/public/traces` 已 404），
   `langfuse_score` 的 list 用 `/api/public/v3/scores`（旧 `/api/public/scores`、`/v2/scores` 已 404）。
   `langfuse_trace.update` 在 v4 不可用（会返回明确报错）。
