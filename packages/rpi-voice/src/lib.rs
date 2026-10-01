@@ -116,6 +116,7 @@ mod edge_tts;
 #[cfg(feature = "local-stt")]
 mod local_stt;
 mod player;
+mod spoken_style;
 mod recorder;
 mod whisper;
 
@@ -2381,6 +2382,18 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
                 if rc != 0 {
                     eprintln!("[rpi-voice] Failed to register /voice command: {rc}");
                 }
+            }
+
+            // Spoken-style prompt: while replies are being read aloud, ask the
+            // model to write for the ear. Registered only when the host offers
+            // the slot; a host without it simply never gets the style, which is
+            // the behaviour it had before this existed.
+            if spoken_style::register(api) {
+                debug_log("spoken style: registered before_agent_start transformer");
+            } else {
+                debug_log(
+                    "spoken style: host has no before_agent_start slot —                      spoken replies get no style section",
+                );
             }
 
             // Claim the push-to-talk key so the host routes it to this plugin
