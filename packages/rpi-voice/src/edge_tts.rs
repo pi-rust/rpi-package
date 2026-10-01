@@ -4,6 +4,9 @@
 //! Returns MP3 audio bytes (audio-24khz-48kbitrate-mono-mp3).
 
 use futures_util::{SinkExt, StreamExt};
+use std::sync::OnceLock;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -20,34 +23,108 @@ const OUTPUT_FORMAT: &str = "audio-24khz-48kbitrate-mono-mp3";
 const WIN_EPOCH_SECS: f64 = 11_644_473_600.0;
 
 // ---------------------------------------------------------------------------
+// Connection reuse
+// ---------------------------------------------------------------------------
+
+/// A process-wide TLS connector.
+///
+/// The handshake dominates time-to-first-audio (measured: ~0.7-1.6 s against
+/// this endpoint, versus ~0.13 s to synthesize). The connector owns the TLS
+/// session cache, so building it once lets every later utterance reuse a
+/// session instead of negotiating from scratch. `native-tls` (schannel on
+/// Windows) keeps that cache internally.
+fn tls_connector() -> Option<tokio_tungstenite::Connector> {
+    static CONNECTOR: OnceLock<Option<tokio_tungstenite::Connector>> = OnceLock::new();
+    CONNECTOR
+        .get_or_init(|| {
+            // `native-tls` is a transitive dependency of the `native-tls`
+            // feature; naming it here needs it as a direct dep, so it is
+            // declared in Cargo.toml rather than reached through tokio-tungstenite.
+            let connector = native_tls::TlsConnector::new().ok()?;
+            Some(tokio_tungstenite::Connector::NativeTls(connector))
+        })
+        .clone()
+}
+
+/// Report once, at INFO-ish level through the voice debug log, whether the
+/// connector cache is live — the difference between a ~1.3 s and a ~0.2 s
+/// time-to-first-audio, so it is worth being able to see.
+fn debug_connector_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        crate::debug_log(&format!(
+            "edge tts: cached TLS connector = {}",
+            tls_connector().is_some()
+        ));
+    });
+}
+
+/// Whether a cached TLS connector is actually in play (diagnostics/tests).
+#[allow(dead_code)] // kept for diagnostics; exercised by the connector probe
+pub fn has_cached_tls_connector() -> bool {
+    tls_connector().is_some()
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Synthesize text to speech. Returns MP3 audio bytes.
+/// Why a streaming synthesis stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+    /// The server finished the utterance normally (`Path:turn.end`).
+    Complete,
+    /// The caller's `should_stop` returned true; playback was abandoned.
+    Cancelled,
+}
+
+/// Synthesize and hand each MP3 chunk to `on_chunk` **as it arrives**.
 ///
-/// This is a synchronous wrapper — creates a tokio runtime internally.
-pub fn synthesize(
+/// This is the same request as [`synthesize`], except the audio never has to be
+/// buffered whole: the caller can start decoding (and playing) the first chunk
+/// while the rest is still in flight, and can abandon the utterance mid-stream
+/// via `should_stop` — which is checked on every chunk and every poll, so a
+/// barge-in during *synthesis* (not just during playback) takes effect.
+///
+/// `on_chunk` runs on the calling thread inside the runtime; it must not block
+/// indefinitely, because it also gates reading the next chunk off the socket.
+///
+/// Returns how the stream ended, plus the total bytes handed to `on_chunk`. A
+/// stream that produced no audio at all is an error, matching [`synthesize`].
+pub fn synthesize_stream(
     text: &str,
     voice: &str,
     rate: &str,
     pitch: &str,
     volume: &str,
-) -> Result<Vec<u8>, String> {
+    should_stop: &dyn Fn() -> bool,
+    mut on_chunk: impl FnMut(&[u8]),
+) -> Result<(StreamEnd, usize), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Tokio runtime error: {e}"))?;
-    rt.block_on(synthesize_async(text, voice, rate, pitch, volume))
+    rt.block_on(synthesize_stream_async(
+        text,
+        voice,
+        rate,
+        pitch,
+        volume,
+        should_stop,
+        &mut on_chunk,
+    ))
 }
 
 // ---------------------------------------------------------------------------
 // Async implementation
 // ---------------------------------------------------------------------------
 
-async fn synthesize_async(
+async fn synthesize_stream_async(
     text: &str,
     voice: &str,
     rate: &str,
     pitch: &str,
     volume: &str,
-) -> Result<Vec<u8>, String> {
+    should_stop: &dyn Fn() -> bool,
+    on_chunk: &mut dyn FnMut(&[u8]),
+) -> Result<(StreamEnd, usize), String> {
     let drm_token = generate_sec_ms_gec();
     let muid = generate_muid();
     let conn_id = uuid::Uuid::new_v4().simple();
@@ -62,9 +139,6 @@ async fn synthesize_async(
     // Build from the URI so tungstenite generates the handshake headers
     // (Sec-WebSocket-Key/Version, Host, Connection/Upgrade). Hand-building a
     // `http::Request` skips that and the server rejects the upgrade.
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::http::HeaderValue;
-
     let mut request = ws_url
         .as_str()
         .into_client_request()
@@ -93,9 +167,17 @@ async fn synthesize_async(
         );
     }
 
-    let (mut ws, _) = connect_async(request)
-        .await
-        .map_err(|e| format!("WebSocket connect failed: {e}"))?;
+    // `connect_async_tls_with_config` with a cached connector: the TLS session
+    // cache is what makes a repeat utterance cheap.
+    let (mut ws, _) = if let Some(connector) = tls_connector() {
+        tokio_tungstenite::connect_async_tls_with_config(request, None, true, Some(connector))
+            .await
+            .map_err(|e| format!("WebSocket connect failed: {e}"))?
+    } else {
+        connect_async(request)
+            .await
+            .map_err(|e| format!("WebSocket connect failed: {e}"))?
+    };
 
     // Send speech.config — text frames are `headers + "\r\n\r\n" + body`
     // (the `--` delimiter belongs to binary audio frames only).
@@ -127,17 +209,37 @@ async fn synthesize_async(
         .await
         .map_err(|e| format!("Send SSML error: {e}"))?;
 
-    // Collect audio chunks
-    let mut audio_data = Vec::new();
+    debug_connector_once();
 
-    while let Some(msg) = ws.next().await {
+    // Stream the audio out. Each binary frame carries a big-endian u16 header
+    // length, then that header, then the payload; only `Path:audio` frames carry
+    // MP3. The stop check is deliberately inside the loop *and* used to race the
+    // socket read below, so a barge-in aborts the network fetch itself instead of
+    // waiting for the utterance to finish arriving.
+    let mut total = 0usize;
+    let mut ended = StreamEnd::Complete;
+    loop {
+        if should_stop() {
+            ended = StreamEnd::Cancelled;
+            break;
+        }
+
+        let next = tokio::time::timeout(std::time::Duration::from_millis(100), ws.next()).await;
+        let msg = match next {
+            // Poll interval elapsed with nothing to read: re-check the stop flag.
+            Err(_elapsed) => continue,
+            Ok(None) => break,
+            Ok(Some(Ok(msg))) => msg,
+            Ok(Some(Err(e))) => return Err(format!("WebSocket error: {e}")),
+        };
+
         match msg {
-            Ok(Message::Text(text)) => {
+            Message::Text(text) => {
                 if text.contains("Path:turn.end") {
                     break;
                 }
             }
-            Ok(Message::Binary(data)) => {
+            Message::Binary(data) => {
                 if data.len() < 2 {
                     continue;
                 }
@@ -152,21 +254,22 @@ async fn synthesize_async(
                 if header_str.contains("Path:audio") {
                     let audio_start = 2 + header_len;
                     if audio_start < data.len() {
-                        audio_data.extend_from_slice(&data[audio_start..]);
+                        let chunk = &data[audio_start..];
+                        on_chunk(chunk);
+                        total += chunk.len();
                     }
                 }
             }
-            Ok(Message::Close(_)) => break,
-            Err(e) => return Err(format!("WebSocket error: {e}")),
+            Message::Close(_) => break,
             _ => {}
         }
     }
 
-    if audio_data.is_empty() {
+    if total == 0 {
         return Err("No audio data received from Edge TTS".into());
     }
 
-    Ok(audio_data)
+    Ok((ended, total))
 }
 
 // ---------------------------------------------------------------------------

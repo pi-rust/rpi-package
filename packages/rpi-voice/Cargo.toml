@@ -1,6 +1,6 @@
 [package]
 name = "rpi-voice"
-version = "0.2.2"
+version = "0.3.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,6 +26,9 @@ serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+# Named directly so the cached connector below can be built once and reused;
+# tokio-tungstenite's `native-tls` feature already pulls in the same version.
+native-tls = "0.2"
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
@@ -41,3 +44,9 @@ hound = "3.5"        # WAV encoding
 # Edge TTS returns MP3 — the `mp3` feature (symphonia, pure Rust) is required
 # or `Decoder::new` rejects the data with "Unrecognized format".
 rodio = { version = "0.19", default-features = false, features = ["wav", "mp3"] }
+# Used directly by the streaming player (player.rs). rodio's own `Decoder`
+# needs `Read + Seek`, which a socket stream is not; symphonia's packet API
+# decodes frame-by-frame from a feed, so the first MP3 chunk can play while the
+# rest of the utterance is still arriving. Same major version rodio uses, so the
+# two share one copy.
+symphonia = { version = "0.5", default-features = false, features = ["mp3"] }

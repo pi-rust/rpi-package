@@ -145,6 +145,58 @@ fn download<F: Fn(&str)>(url: &str, dest: &std::path::Path, progress: &F) -> Res
     Ok(())
 }
 
+/// A process-wide recognizer, loaded once and reused.
+///
+/// Loading is by far the expensive part — measured on the int8 model: **5.5 s
+/// to load, 0.03 s to transcribe**. Doing it at transcription time means every
+/// first utterance eats that 5.5 s *after* the user stops talking, which is
+/// exactly the wrong moment. So the load starts in the background as soon as
+/// voice is switched on, and transcription waits here for it.
+static ENGINE: std::sync::OnceLock<std::sync::Mutex<Result<SenseVoice, String>>> =
+    std::sync::OnceLock::new();
+
+/// Load the recognizer now, in this thread, and cache it.
+///
+/// Idempotent and cheap after the first call. Returns the load error (as a
+/// string) if the model is missing, so callers can fall back to the API.
+pub fn preload() -> Result<(), String> {
+    let slot = ENGINE.get_or_init(|| std::sync::Mutex::new(SenseVoice::load()));
+    match &*slot.lock().unwrap() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+/// Get the shared recognizer, loading it if `preload` has not run yet.
+pub fn engine() -> Result<std::sync::MutexGuard<'static, Result<SenseVoice, String>>, String> {
+    preload()?;
+    Ok(ENGINE.get().expect("just initialised").lock().unwrap())
+}
+
+/// Start loading the recognizer on a background thread, unless it already is
+/// (or has been) loaded. Never blocks; errors surface at [`engine`] time.
+///
+/// Call this when voice is switched on so that the ~5.5 s load overlaps with
+/// the user talking instead of following it.
+pub fn preload_in_background() {
+    if ENGINE.get().is_some() {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("rpi-voice-stt-load".to_string())
+        .spawn(|| {
+            if let Err(e) = preload() {
+                eprintln!("[rpi-voice] STT preload failed: {e}");
+            }
+        })
+        .ok();
+}
+
+/// Whether a recognizer is loaded and ready to transcribe right now.
+pub fn is_ready() -> bool {
+    matches!(ENGINE.get(), Some(slot) if slot.lock().unwrap().is_ok())
+}
+
 /// Loaded SenseVoice recognizer.
 pub struct SenseVoice {
     inner: SenseVoiceRecognizer,

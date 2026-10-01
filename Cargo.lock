@@ -2034,11 +2034,12 @@ dependencies = [
 
 [[package]]
 name = "rpi-voice"
-version = "0.2.2"
+version = "0.3.1"
 dependencies = [
  "cpal",
  "futures-util",
  "hound",
+ "native-tls",
  "reqwest 0.12.28",
  "rodio",
  "rpi-plugin-sdk",
@@ -2046,6 +2047,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sherpa-rs",
+ "symphonia",
  "tokio",
  "tokio-tungstenite 0.24.0",
  "uuid",

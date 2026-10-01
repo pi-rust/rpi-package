@@ -184,6 +184,13 @@ static AUTO_TTS_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Currently playing TTS (to avoid overlapping playback / drive status)
 static TTS_PLAYING: AtomicBool = AtomicBool::new(false);
 
+/// Why the last utterance failed to play, if it did.
+///
+/// Playback failures used to go to `eprintln!`, which is invisible inside the
+/// TUI's alternate screen — the user saw "no sound" and nothing else. Keeping
+/// the message here lets `/voice status` explain the silence.
+static LAST_TTS_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
 /// Loudness of the audio currently being played, as `f32` bits (see
 /// [`player::play_mp3`]). `0` whenever nothing is playing. Drives the
 /// music-style equalizer animation next to `voice:` in the footer.
@@ -479,6 +486,20 @@ fn stt_engine_pref() -> String {
         .unwrap_or_else(|| "local".to_string())
 }
 
+/// Start loading the local STT model in the background.
+///
+/// Called whenever voice is switched on (or the user starts talking) so the
+/// ~5.5 s model load overlaps with the user speaking rather than following it.
+/// No-op when the local engine is not compiled in or an API engine is pinned.
+fn preload_stt_model() {
+    #[cfg(feature = "local-stt")]
+    {
+        if stt_engine_pref() != "api" {
+            local_stt::preload_in_background();
+        }
+    }
+}
+
 /// Single TTS worker queue — replies enqueue here instead of racing threads.
 static TTS_TX: OnceLock<mpsc::Sender<String>> = OnceLock::new();
 
@@ -498,8 +519,18 @@ fn tts_sender() -> &'static mpsc::Sender<String> {
                         continue;
                     }
                     TTS_PLAYING.store(true, Ordering::Relaxed);
-                    if let Err(e) = synthesize_and_play(&text) {
+                    let outcome = synthesize_and_play(&text);
+                    if let Err(e) = outcome {
+                        // Silence is the symptom the user actually sees, so say
+                        // why: stderr is hidden behind the TUI's alternate screen.
                         eprintln!("[rpi-voice] TTS error: {e}");
+                        debug_log(&format!("tts error: {e}"));
+                        *LAST_TTS_ERROR.lock().unwrap() = Some(e.clone());
+                        if let Some(runtime) = RUNTIME_CTX.get().copied() {
+                            runtime.set_status(&format!("voice: ⚠ speech failed — {e}"));
+                        }
+                    } else {
+                        *LAST_TTS_ERROR.lock().unwrap() = None;
                     }
                     TTS_PLAYING.store(false, Ordering::Relaxed);
                     // Hands-free mode: the reply has been spoken, so the user's
@@ -802,6 +833,7 @@ fn start_ptt_recording(token: u64, runtime: RuntimeContext) {
     if AUTO_MODE_ENABLED.load(Ordering::Relaxed) {
         AUTO_TALK_ENABLED.store(true, Ordering::Relaxed);
     }
+    preload_stt_model();
     stop_playback();
     let stop = Arc::new(AtomicBool::new(false));
     {
@@ -1267,6 +1299,7 @@ fn enable_auto_talk(runtime: RuntimeContext) -> String {
     // The loop is closed by *playback finishing*, so muted replies would leave
     // it stalled with the mic shut. Say so, since silently unmuting is rude.
     let was_muted = !AUTO_TTS_ENABLED.swap(true, Ordering::Relaxed);
+    preload_stt_model();
     AUTO_TALK_ENABLED.store(true, Ordering::Relaxed);
     AUTO_TALK_EMPTY.store(0, Ordering::Relaxed);
     stop_playback();
@@ -1410,17 +1443,49 @@ fn sanitize_for_speech(text: &str) -> String {
 }
 
 /// Synthesize text to speech and play it (blocking).
+///
+/// Streaming: the MP3 is decoded and played **as it arrives**, so the first word
+/// is heard after the first packet rather than after the whole utterance. The
+/// stop handle is published *before* the request is sent, so a barge-in now
+/// aborts the synthesis itself — previously the flag only existed after
+/// `synthesize` had already buffered everything, which made an interrupt during
+/// the network fetch a no-op.
 fn synthesize_and_play(text: &str) -> Result<(), String> {
     let voice = current_voice();
-    let mp3_data = edge_tts::synthesize(text, &voice, "+0%", "+0Hz", "+0%")?;
     let stop = Arc::new(AtomicBool::new(false));
-    // Publish the stop handle so a keystroke can cut this utterance short
-    // (publishing after synthesis, not before: the network fetch is not
-    // something the user can "interrupt" meaningfully, and leaving a stale
-    // handle around would let a later barge-in flag a dead utterance).
+    // Published up front so a keystroke can cut the utterance short from the
+    // very first byte. A stale handle would let a later barge-in flag a dead
+    // utterance, so every exit path clears it (below).
     *PLAYBACK_STOP.lock().unwrap() = Some(stop.clone());
     let animation = start_playing_animation();
-    let result = player::play_mp3(&mp3_data, stop.clone(), &PLAYBACK_LEVEL);
+
+    let stop_for_stream = stop.clone();
+    // The producer thread takes ownership, so hand it an owned copy of the text
+    // instead of borrowing the caller's `&str`.
+    let text = text.to_string();
+    let result = player::play_mp3_stream(
+        move |sink: &mut dyn FnMut(&[u8]) -> Result<(), String>| {
+            let (end, bytes) = edge_tts::synthesize_stream(
+                &text,
+                &voice,
+                "+0%",
+                "+0Hz",
+                "+0%",
+                &|| stop_for_stream.load(Ordering::Relaxed),
+                |chunk| {
+                    // A closed consumer means playback already stopped.
+                    let _ = sink(chunk);
+                },
+            )?;
+            debug_log(&format!(
+                "tts stream {end:?}: {bytes} bytes delivered to the player"
+            ));
+            Ok(())
+        },
+        stop.clone(),
+        &PLAYBACK_LEVEL,
+    );
+
     if let Some(animation) = animation {
         animation.stop();
     }
@@ -1433,7 +1498,8 @@ fn synthesize_and_play(text: &str) -> Result<(), String> {
         }
     }
     PLAYBACK_LEVEL.store(0f32.to_bits(), Ordering::Relaxed);
-    result
+    // `Ok(false)` is "the user cancelled", which is not a failure to report.
+    result.map(|_played_to_end| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -1518,6 +1584,7 @@ extern "C" fn voice_command(
                 return 1;
             };
             AUTO_MODE_ENABLED.store(true, Ordering::Relaxed);
+            preload_stt_model();
             let note = enable_auto_talk(ctx);
             set_output(out, json!({"kind": "message", "text": note}));
             return 0;
@@ -1580,6 +1647,7 @@ extern "C" fn voice_command(
                 return 0;
             }
             PTT_ENABLED.store(true, Ordering::Relaxed);
+            preload_stt_model();
             set_output(
                 out,
                 json!({"kind": "message", "text": format!(
@@ -1744,6 +1812,57 @@ extern "C" fn voice_command(
                     })
                     .ok();
                 return 0;
+            }
+            if rest == "load" {
+                #[cfg(not(feature = "local-stt"))]
+                {
+                    set_output(
+                        out,
+                        json!({"kind": "message", "text":
+                            "❌ local STT not compiled in (rebuild with --features local-stt)"}),
+                    );
+                    return 1;
+                }
+                #[cfg(feature = "local-stt")]
+                {
+                    if local_stt::is_ready() {
+                        set_output(
+                            out,
+                            json!({"kind": "message", "text":
+                                "🧠 STT model already loaded — transcriptions are instant"}),
+                        );
+                        return 0;
+                    }
+                    let Some(ctx) = RUNTIME_CTX.get().copied() else {
+                        set_output(
+                            out,
+                            json!({"kind": "message", "text": "❌ Runtime context not available"}),
+                        );
+                        return 1;
+                    };
+                    set_output(
+                        out,
+                        json!({"kind": "message", "text":
+                            "🧠 Loading the STT model now… (~5 s, one time)
+  speak once it says ready — /voice status shows the state"}),
+                    );
+                    std::thread::Builder::new()
+                        .name("rpi-voice-stt-load".to_string())
+                        .spawn(move || {
+                            local_stt::preload_in_background();
+                            // Wait for the actual result so the status line can
+                            // report success or the load error.
+                            match local_stt::preload() {
+                                Ok(()) => ctx.set_status("voice: 🧠 model ready"),
+                                Err(e) => {
+                                    eprintln!("[rpi-voice] STT load error: {e}");
+                                    ctx.set_status(&format!("voice: ⚠ {e}"));
+                                }
+                            }
+                        })
+                        .ok();
+                    return 0;
+                }
             }
             set_output(out, json!({"kind": "message", "text": model_info()}));
             return 0;
@@ -1984,8 +2103,14 @@ fn transcribe(
         if pref != "api" {
             match stt_prepare_model(runtime) {
                 Ok(_dir) => {
-                    runtime.set_status("voice: 🧠 loading model…");
-                    let mut engine = local_stt::SenseVoice::load()?;
+                    // Usually already loaded (voice-on preloads it), so this is
+                    // a lock, not a 5.5 s load. Only the very first utterance in
+                    // a session where the preload lost the race still waits.
+                    if !local_stt::is_ready() {
+                        runtime.set_status("voice: 🧠 loading model…");
+                    }
+                    let mut engine = local_stt::engine()?;
+                    let engine = engine.as_mut().map_err(|e| e.clone())?;
                     runtime.set_status("voice: 🧠 transcribing…");
                     return engine.transcribe(&recording.to_f32_16k_mono());
                 }
@@ -2039,9 +2164,16 @@ fn model_info() -> String {
         } else {
             String::new()
         };
+        #[cfg(feature = "local-stt")]
+        let loaded = if local_stt::is_ready() {
+            " ✓ loaded in memory"
+        } else {
+            " (not loaded yet)"
+        };
         lines.push(format!(
-            "  local model: SenseVoice{}\n    dir: {}\n    {}",
+            "  local model: SenseVoice{}{}\n    dir: {}\n    {}",
             size,
+            loaded,
             dir.display(),
             if present {
                 "✓ ready"
@@ -2070,7 +2202,7 @@ fn status_text() -> String {
     let playing = TTS_PLAYING.load(Ordering::Relaxed);
     let recording = RECORDING.load(Ordering::Relaxed);
     let ptt = PTT_ENABLED.load(Ordering::Relaxed);
-    format!(
+    let mut lines = format!(
         "🎤 rpi-voice\n  Auto-TTS: {}\n  Voice: {}\n  Push-to-talk: {}\n  Continuous: {}\n  Output: {}\n  Input device: {}\n  Input level: {}\n  Last capture: {}\n  Playing: {}\n  Recording: {}\n  STT: {}",
         if enabled { "enabled" } else { "disabled" },
         current_voice(),
@@ -2111,7 +2243,12 @@ fn status_text() -> String {
         if playing { "yes" } else { "no" },
         if recording { "yes" } else { "no" },
         stt_summary()
-    )
+    );
+    lines.push_str(&format!("\n  Output device: {}", player::active_output_device()));
+    if let Some(err) = LAST_TTS_ERROR.lock().unwrap().as_ref() {
+        lines.push_str(&format!("\n  Last speech: ⚠ {err}"));
+    }
+    lines
 }
 
 /// One-line summary of which STT backend `/voice` will use.
@@ -2153,7 +2290,7 @@ fn stt_summary() -> String {
 }
 
 fn help_text() -> String {
-    "🎤 /voice — usage\n  /voice                record mic → transcribe → input box\n  /voice auto [on|off]  continuous conversation: reply, then listen again — no\n                        buttons (typing pauses it)\n  /voice ptt [on|off]   push-to-talk: hold the key, release to deliver\n  /voice input [name]   list capture devices, or pin one (persisted)\n  /voice gain [auto|n]  input level: auto-normalise (default) or a fixed gain\n  /voice stop           stop speaking (typing/pressing also does this)\n  /voice output [draft|send]\n                        where a transcription goes (default: draft)\n  /voice on|off         toggle auto-TTS of replies\n  /voice status         show current state\n  /voice set <name>     set the TTS voice for this session\n  /voice model          show STT engine + local model\n  /voice model download pre-fetch the local model\n  /voice help           show this help"
+    "🎤 /voice — usage\n  /voice                record mic → transcribe → input box\n  /voice auto [on|off]  continuous conversation: reply, then listen again — no\n                        buttons (typing pauses it)\n  /voice ptt [on|off]   push-to-talk: hold the key, release to deliver\n  /voice input [name]   list capture devices, or pin one (persisted)\n  /voice gain [auto|n]  input level: auto-normalise (default) or a fixed gain\n  /voice stop           stop speaking (typing/pressing also does this)\n  /voice output [draft|send]\n                        where a transcription goes (default: draft)\n  /voice on|off         toggle auto-TTS of replies (also preloads the STT model)\n  /voice status         show current state, incl. output device + last error\n  /voice set <name>     set the TTS voice for this session\n  /voice model          show STT engine + local model\n  /voice model load     load the STT model now (~5 s) instead of on first use\n  /voice model download pre-fetch the local model\n  /voice help           show this help\n\nSpeech (TTS) is off by default and does NOT follow `/voice` — turn it on with\n`/voice on` or `RPI_VOICE_AUTO_TTS=on`. If replies are silent, `/voice status`\nnow names the output device and the last playback error."
         .to_string()
 }
 
@@ -2216,7 +2353,7 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             if let Some(register_command) = api.register_command {
                 let name = StbStringRef::from_str("voice");
                 let description = StbStringRef::from_str(
-                    "Voice mode: record & transcribe (default), or auto|ptt|input|gain|stop|on|off|status|set <voice>|model|output|help",
+                    "Voice mode: record & transcribe (default), or auto|ptt|input|gain|stop|on|off|status|set <voice>|model [load|download]|output|help",
                 );
                 let rc = register_command(name, description, voice_command);
                 if rc != 0 {
@@ -2600,27 +2737,48 @@ mod tests {
         if std::env::var("RPI_VOICE_TEST_TTS").is_err() {
             return;
         }
-        let mp3 = crate::edge_tts::synthesize(
+        // Streaming path: record when the first chunk lands, since that is the
+        // number the whole change exists to improve.
+        let t0 = std::time::Instant::now();
+        let mut first_at = None;
+        let mut chunks = 0usize;
+        let mut total = 0usize;
+        let (end, bytes) = crate::edge_tts::synthesize_stream(
             "你好，这是语音合成测试。",
             "zh-CN-XiaoxiaoNeural",
             "+0%",
             "+0Hz",
             "+0%",
+            &|| false,
+            |chunk| {
+                if first_at.is_none() {
+                    first_at = Some(t0.elapsed());
+                }
+                chunks += 1;
+                total += chunk.len();
+            },
         )
-        .expect("edge tts synthesize");
-        eprintln!("tts mp3 bytes: {}", mp3.len());
-        assert!(mp3.len() > 2_000, "suspiciously small mp3: {}", mp3.len());
-
-        // The rodio `mp3` feature must be enabled, otherwise `Decoder::new`
-        // rejects this exact payload with "Unrecognized format".
-        let cursor = std::io::Cursor::new(mp3);
-        let decoder = rodio::Decoder::new(cursor).expect("decode edge tts mp3");
-        use rodio::Source;
-        assert_eq!(decoder.sample_rate(), 24_000);
+        .expect("edge tts synthesize_stream");
+        let done = t0.elapsed();
+        eprintln!(
+            "tts stream: first={:?} done={:?} chunks={chunks} bytes={total} (reported {bytes}) end={end:?}",
+            first_at.unwrap_or_default(),
+            done
+        );
+        assert_eq!(end, crate::edge_tts::StreamEnd::Complete);
+        assert_eq!(total, bytes);
+        assert!(total > 2_000, "suspiciously small mp3: {total}");
+        assert!(
+            first_at.unwrap() < done,
+            "streaming must deliver audio before the utterance completes"
+        );
     }
 
-    /// Guards against silently dropping the rodio `mp3` feature: a hand-built
-    /// 1-frame MPEG-1 Layer III stream must decode rather than be rejected.
+    /// Guards the streaming decoder's codec: a hand-built 1-frame MPEG-1 Layer
+    /// III stream must probe and decode rather than be rejected. (The player no
+    /// longer uses rodio's `Decoder` — it decodes through symphonia directly so
+    /// the first chunk can play before the utterance ends — but the codec must
+    /// stay registered either way.)
     #[test]
     fn rodio_decodes_mp3() {
         // 0xFF 0xFB = MPEG-1 Layer III, 128 kbps, 44.1 kHz, no padding.
@@ -2656,6 +2814,16 @@ mod tests {
         ptt_reset();
         PTT_ENABLED.store(false, Ordering::Relaxed);
         out
+    }
+
+    #[test]
+    fn auto_tts_is_off_until_explicitly_enabled() {
+        // The whole "/voice but no reading" confusion: recording and speech are
+        // separate switches, and speech must stay off unless asked for.
+        with_ptt_state(|| {
+            AUTO_TTS_ENABLED.store(false, Ordering::Relaxed);
+            assert!(!AUTO_TTS_ENABLED.load(Ordering::Relaxed));
+        });
     }
 
     #[test]
