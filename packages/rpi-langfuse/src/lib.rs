@@ -114,7 +114,11 @@ const DEFAULT_BASE_URL: &str = "https://cloud.langfuse.com";
 /// `POST /api/public/ingestion` (only `score-create`/`sdk-log` survive), so all
 /// trace/span/generation data goes here.
 const OTEL_PATH: &str = "/api/public/otel/v1/traces";
-const SDK_NAME: &str = "rpi-langfuse";
+/// The name this plugin reports as its SDK identity (`telemetry.sdk.name`, the
+/// `x-langfuse-sdk-name` header, the OTLP scope). Aliases [`EXTENSION_NAME`]:
+/// they are the same identity, and two literals would let the OTLP resource
+/// disagree with the trace metadata after a rename.
+const SDK_NAME: &str = EXTENSION_NAME;
 const MAX_STRING_LENGTH: usize = 12000;
 const MAX_TOOL_PAYLOAD_LENGTH: usize = 24000;
 const FLUSH_TIMEOUT_MS: u64 = 3000;
@@ -124,6 +128,16 @@ const SECRET_REDACTION_MARK: &str = "[redacted-langfuse-secret]";
 const LANGFUSE_KEY_PATTERN: &str = r"\b[sp]k-lf-[\w-]+\b";
 const DATA_URI_PATTERN: &str = r"data:[^;,]{0,100};base64,[A-Za-z0-9+/]+=*";
 
+/// Subagent-nesting channel: the turn a nested `rpi` should attach to.
+///
+/// A launcher sets these on the child process it starts, and this plugin reads
+/// them to nest the child's spans under the turn that spawned it. They are
+/// deliberately **not** a general "who is my parent" signal — the host excludes
+/// them from a spawned shell's environment (`rpi_tools::HOST_PRIVATE_ENV`), so a
+/// plain `rpi` started from inside `bash` opens its own trace instead of
+/// adopting an ancestor's. Renaming any of these requires updating that list;
+/// `rpi-cli`'s `plugin_private_env_matches_the_langfuse_contract` fails if the
+/// two drift apart.
 const ENV_PARENT_TRACE_ID: &str = "LANGFUSE_PI_PARENT_TRACE_ID";
 const ENV_PARENT_SPAN_ID: &str = "LANGFUSE_PI_PARENT_SPAN_ID";
 const ENV_PARENT_SESSION_ID: &str = "LANGFUSE_PI_PARENT_SESSION_ID";
