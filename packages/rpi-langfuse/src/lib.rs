@@ -21,7 +21,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // ---------------------------------------------------------------------------
 
 const EXTENSION_NAME: &str = "@langfuse/pi-observability-plugin";
-const EXTENSION_VERSION: &str = "0.2.0";
+/// Single source of truth for the version reported to Langfuse (`service.version`,
+/// `telemetry.sdk.version`, `langfuse.version`): the package version. The literal
+/// had drifted from `Cargo.toml` (0.2.0 vs 0.2.3), so every observation showed a
+/// stale `version`.
+const EXTENSION_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_OBSERVATION_NAME: &str = "Conversational Turn";
 const SUBAGENT_ROOT_OBSERVATION_NAME: &str = "Subagent Turn";
 const TRACE_NAME: &str = "Pi Turn";
@@ -1071,7 +1075,8 @@ struct OpenTool {
 struct PromptState {
     root_obs_id: String,
     trace_id: String,
-    turn_number: u32,
+    /// Trace-level attributes for the current run (shared with every span).
+    trace_context: TraceContext,
     generation_count: u32,
     open_generation: Option<OpenGeneration>,
     open_tools: HashMap<String, OpenTool>,
@@ -1081,7 +1086,6 @@ struct PromptState {
     user_text: String,
     turn_images: Vec<Value>,
     system_prompt: Option<String>,
-    session_id: String,
 }
 
 static PROMPT_STATE: OnceLock<Mutex<Option<PromptState>>> = OnceLock::new();
@@ -1093,6 +1097,25 @@ fn prompt_state() -> &'static Mutex<Option<PromptState>> {
 // ---------------------------------------------------------------------------
 // Span store
 // ---------------------------------------------------------------------------
+
+/// Trace-level context (Langfuse calls these the trace-level attributes).
+///
+/// Langfuse only lets you filter/aggregate by `sessionId`, `userId`, tags,
+/// `version`/`release` and the trace name when they are attached to **every**
+/// span of the trace — its own docs say so explicitly
+/// (OpenTelemetry → "Propagating Trace Attributes to All Spans"). The Langfuse
+/// SDKs do this via `propagate_attributes`/baggage; a plain OTLP producer has to
+/// copy the values onto each span, which is what this struct is for.
+#[derive(Clone, Default)]
+struct TraceContext {
+    /// The Langfuse **trace** name (`langfuse.trace.name`).
+    name: String,
+    session_id: Option<String>,
+    user_id: Option<String>,
+    /// `langfuse.version` (the extension version, matching the Langfuse SDKs).
+    version: Option<String>,
+    tags: Vec<String>,
+}
 
 /// One in-flight observation.
 ///
@@ -1108,6 +1131,9 @@ struct SpanRecord {
     /// OTLP trace id (32 lowercase hex).
     trace_id: String,
     parent_id: Option<String>,
+    /// Trace-level context, forwarded to the exporter so every span of a trace
+    /// carries it (Langfuse needs it on each span to filter by session/user).
+    trace_context: TraceContext,
     name: String,
     /// "span" | "generation"
     obs_type: String,
@@ -1139,6 +1165,7 @@ impl SpanRecord {
             id,
             trace_id,
             parent_id,
+            trace_context: TraceContext::default(),
             name,
             obs_type,
             start_ms: now_epoch_ms(),
@@ -1251,7 +1278,7 @@ fn put_unix_nanos(span: &mut Map<String, Value>, key: &str, ms: u128) {
     span.insert(key.into(), json!((ms * 1_000_000).to_string()));
 }
 
-fn span_to_otlp(rec: &SpanRecord, is_root: bool, inherited_parent: Option<&str>) -> Value {
+fn span_to_otlp(rec: &SpanRecord) -> Value {
     let mut attrs = vec![attr_str("langfuse.observation.type", &rec.obs_type)];
     if let Some(ref input) = rec.input {
         attrs.push(attr_json("langfuse.observation.input", input));
@@ -1301,31 +1328,39 @@ fn span_to_otlp(rec: &SpanRecord, is_root: bool, inherited_parent: Option<&str>)
         attrs.push(attr_str("langfuse.observation.status_message", status));
     }
     for (k, v) in &rec.metadata {
-        // The root span carries trace-level fields; children carry observation
-        // metadata. Langfuse reads both per span.
-        let key = if is_root {
-            format!("langfuse.trace.metadata.{k}")
-        } else {
-            format!("langfuse.observation.metadata.{k}")
-        };
+        let key = format!("langfuse.observation.metadata.{k}");
         attrs.push(attr_json(&key, v));
     }
-    if is_root {
-        attrs.push(attr_str("langfuse.trace.name", TRACE_NAME));
-        attrs.push(attr_tags("langfuse.trace.tags", BASE_TAGS));
-        if let Some(Value::String(session)) = rec.metadata.get("session_id") {
-            attrs.push(attr_str("langfuse.session.id", session));
-        }
+    // Trace-level attributes go on EVERY span, root included: Langfuse only
+    // aggregates/filters sessionId, userId, tags, version and trace name from
+    // span attributes, and older Langfuse versions read the root span's
+    // *observation* metadata for the trace metadata.
+    let ctx = &rec.trace_context;
+    for (k, v) in &rec.metadata {
+        attrs.push(attr_json(&format!("langfuse.trace.metadata.{k}"), v));
+    }
+    if !ctx.name.is_empty() {
+        attrs.push(attr_str("langfuse.trace.name", &ctx.name));
+    }
+    if let Some(ref session) = ctx.session_id {
+        attrs.push(attr_str("langfuse.session.id", session));
+    }
+    if let Some(ref user) = ctx.user_id {
+        attrs.push(attr_str("langfuse.user.id", user));
+    }
+    if let Some(ref version) = ctx.version {
+        attrs.push(attr_str("langfuse.version", version));
+    }
+    if !ctx.tags.is_empty() {
+        let tags: Vec<&str> = ctx.tags.iter().map(String::as_str).collect();
+        attrs.push(attr_tags("langfuse.trace.tags", &tags));
     }
 
     let mut span = Map::new();
     span.insert("traceId".into(), json!(rec.trace_id));
     span.insert("spanId".into(), json!(rec.id));
-    match rec.parent_id.as_deref().or(inherited_parent) {
-        Some(parent) => {
-            span.insert("parentSpanId".into(), json!(parent));
-        }
-        None => {}
+    if let Some(parent) = rec.parent_id.as_deref() {
+        span.insert("parentSpanId".into(), json!(parent));
     }
     span.insert("name".into(), json!(rec.name));
     span.insert("kind".into(), json!(1)); // SPAN_KIND_INTERNAL
@@ -1391,20 +1426,34 @@ fn flush_otlp(spans: Vec<Value>) -> Result<(), String> {
 /// Export every buffered observation that has been ended, and drop it from the
 /// store once the export succeeded (so a retry cannot duplicate work, and a
 /// failed export keeps the data for the next flush).
+///
+/// **The trace root is deliberately exported last.** Langfuse freezes a trace's
+/// header (name, session, tags…) when its root arrives, and drops a later
+/// duplicate root rather than merging it. A mid-run flush can therefore only
+/// leak a root if it is sent *before* the turn has filled it in — which happens
+/// when the host emits no user-message event and the prompt (with the session
+/// id) is still unknown. Ordering the batch root-last buys the last possible
+/// moment inside one OTLP request: every other span is in flight first, and the
+/// root carries whatever is known by then.
 fn flush_ended_spans(include_open: bool) -> Result<usize, String> {
-    let inherited_parent = std::env::var(ENV_PARENT_SPAN_ID).ok();
     let mut spans = Vec::new();
     {
         let state = tracer();
         let store = state.spans.lock().unwrap();
-        for rec in store.iter() {
-            if rec.end_ms.is_some() || include_open {
-                spans.push(span_to_otlp(
-                    rec,
-                    rec.parent_id.is_none(),
-                    inherited_parent.as_deref(),
-                ));
-            }
+        // The parent is whatever the record carries: a subagent's root already
+        // points at the parent turn's root span (bound at creation), so it
+        // hangs off that turn instead of becoming a second trace root — Langfuse
+        // renders only one root per trace. The trace-level attributes are on the
+        // record too, so the serializer needs no root flag.
+        let ended: Vec<&SpanRecord> = store
+            .iter()
+            .filter(|rec| rec.end_ms.is_some() || include_open)
+            .collect();
+        for rec in ended.iter().filter(|rec| rec.parent_id.is_some()) {
+            spans.push(span_to_otlp(rec));
+        }
+        for rec in ended.iter().filter(|rec| rec.parent_id.is_none()) {
+            spans.push(span_to_otlp(rec));
         }
     }
     if spans.is_empty() {
@@ -1602,6 +1651,127 @@ fn trace_metadata() -> Map<String, Value> {
     m
 }
 
+/// Session identity to report as the Langfuse `sessionId`.
+///
+/// The host names the session on three channels. The **freshest** one wins,
+/// because staleness is what actually differs between them:
+///
+/// 1. `sessionId` in the `BeforeAgentStart` payload — recomputed by the host on
+///    every turn, so it tracks a session switch and cannot be inherited from a
+///    parent process's environment.
+/// 2. `__rpi.sessionId` — injected by the host into every **plugin tool call's**
+///    arguments (the model cannot see or forge it). Also fresh: overwritten on
+///    every tool call.
+/// 3. `RPI_SESSION_ID` (env) — written by the host once, and *the environment is
+///    inherited by child processes*: an `rpi` that spawns another `rpi` leaks it.
+///    Consulted last of the three, for a host that sets the variable but has no
+///    payload field.
+///
+/// The last resort is the process identity: one `rpi` process is one Langfuse
+/// session, which is honest but coarse.
+fn current_session_id(payload_session_id: Option<&str>) -> String {
+    session_id_from(
+        payload_session_id.map(str::to_string),
+        session_id_from_tool_args(),
+        non_empty_env("RPI_SESSION_ID"),
+    )
+}
+
+/// Pure resolution, so the precedence is testable without touching the
+/// process-global latch (see the unit tests).
+fn session_id_from(
+    from_payload: Option<String>,
+    from_tool_args: Option<String>,
+    from_env: Option<String>,
+) -> String {
+    from_payload
+        .or(from_tool_args)
+        .or(from_env)
+        .unwrap_or_else(|| format!("pid:{}", process_id()))
+}
+
+/// Latest `__rpi.sessionId` from a plugin tool call. Written on the tool-call
+/// path (see [`remember_session_id`]), read when a trace context is built. The
+/// last sample wins, so a session switch inside one process self-heals.
+static SESSION_ID_FROM_TOOL_ARGS: Mutex<Option<String>> = Mutex::new(None);
+
+fn session_id_from_tool_args() -> Option<String> {
+    SESSION_ID_FROM_TOOL_ARGS.lock().unwrap().clone()
+}
+
+/// Clear the latch between tests (the value is process-global on purpose).
+#[cfg(test)]
+fn reset_session_id_latch() {
+    *SESSION_ID_FROM_TOOL_ARGS.lock().unwrap() = None;
+}
+
+/// The host's `__rpi` envelope key (plugin tool args). Mirrors the SDK's
+/// documented reservation: the host overwrites any model-supplied value.
+const HOST_TOOL_CONTEXT_KEY: &str = "__rpi";
+
+/// Latch the host's real session id off a plugin-tool argument object.
+///
+/// Must be called with the args exactly as the host delivered them — **before**
+/// any merge/mutation — so a model cannot forge it, and before
+/// [`redact_langfuse_keys`] rewrites payloads for export.
+fn remember_session_id(tool_args: &Value) {
+    let Some(session_id) = tool_args
+        .get(HOST_TOOL_CONTEXT_KEY)
+        .and_then(|ctx| ctx.get("sessionId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    let mut latch = SESSION_ID_FROM_TOOL_ARGS.lock().unwrap();
+    if latch.as_deref() != Some(session_id) {
+        debug_log(&format!("session id from tool args: {session_id}"));
+        *latch = Some(session_id.to_string());
+    }
+}
+
+/// Drop the host's `__rpi` envelope before exporting tool arguments: it is the
+/// host's routing metadata (`cwd` + `sessionId`), not input the model chose, and
+/// the session id already travels as `langfuse.session.id`.
+fn strip_host_tool_context(mut args: Value) -> Value {
+    if let Some(obj) = args.as_object_mut() {
+        obj.remove(HOST_TOOL_CONTEXT_KEY);
+    }
+    args
+}
+
+fn process_id() -> String {
+    static PROCESS_ID: OnceLock<String> = OnceLock::new();
+    PROCESS_ID
+        .get_or_init(|| std::process::id().to_string())
+        .clone()
+}
+
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn trace_context(name: &str, session_id: Option<String>, user_id: Option<String>) -> TraceContext {
+    TraceContext {
+        name: name.to_string(),
+        session_id,
+        user_id,
+        version: Some(EXTENSION_VERSION.to_string()),
+        tags: BASE_TAGS.iter().map(|t| (*t).to_string()).collect(),
+    }
+}
+
+/// Buffer a new observation.
+///
+/// `trace_context` is passed **in**, never looked up: every caller on the
+/// turn path already holds the `prompt_state` lock (it owns the open
+/// generation/tool maps), and re-locking it here is a self-deadlock on a
+/// non-reentrant `Mutex`. Passing the context also makes the inheritance
+/// explicit: an observation is only trace-scoped because its caller said so.
 fn start_observation(
     name: &str,
     obs_type: &str,
@@ -1609,9 +1779,10 @@ fn start_observation(
     parent_obs_id: Option<&str>,
     input: Option<Value>,
     metadata: Option<Map<String, Value>>,
+    trace_context: Option<&TraceContext>,
 ) -> String {
     let id = obs_id();
-    let record = SpanRecord::new(
+    let mut record = SpanRecord::new(
         id.clone(),
         trace_id.to_string(),
         parent_obs_id.map(String::from),
@@ -1620,6 +1791,9 @@ fn start_observation(
         input,
         metadata,
     );
+    if let Some(ctx) = trace_context {
+        record.trace_context = ctx.clone();
+    }
     tracer().spans.lock().unwrap().push(record);
     id
 }
@@ -1630,6 +1804,29 @@ fn update_observation(obs_id_param: &str, updates: Value) {
     match store.iter_mut().find(|rec| rec.id == obs_id_param) {
         Some(rec) => apply_span_update(rec, &updates),
         None => debug_log(&format!("update for unknown observation {obs_id_param}")),
+    }
+}
+
+/// Overwrite the trace context of one buffered record, plus every sibling on
+/// the same trace that has not been exported yet (the root and any observation
+/// created before the id was known). Export happens at turn end, so this lands
+/// before anything is sent.
+fn update_trace_context(obs_id_param: &str, trace_id: &str, ctx: &TraceContext) {
+    let state = tracer();
+    let mut store = state.spans.lock().unwrap();
+    let mut found = false;
+    for rec in store.iter_mut() {
+        if rec.trace_id == trace_id {
+            rec.trace_context = ctx.clone();
+        }
+        if rec.id == obs_id_param {
+            found = true;
+        }
+    }
+    if !found {
+        debug_log(&format!(
+            "trace context update for unknown observation {obs_id_param}"
+        ));
     }
 }
 
@@ -1688,7 +1885,14 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
         format!("{}\n{}", prompt, image_descs.join("\n"))
     };
 
-    let session_id = std::env::var("RPI_SESSION_ID").unwrap_or_else(|_| "default".to_string());
+    // Channel 2: the host puts the real session id right here, next to the
+    // prompt, so the turn's very first span already carries it.
+    let payload_session_id = data
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let session_id = current_session_id(payload_session_id);
     let turn_number = resolve_turn_number(&session_id, prompt);
 
     let is_subagent = std::env::var(ENV_PARENT_TRACE_ID).is_ok();
@@ -1722,13 +1926,31 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
         }
     }
 
+    // The turn's trace context, built before the root span so the root carries
+    // it from the start (and stored on the turn state so every child inherits).
+    let ctx = trace_context(
+        TRACE_NAME,
+        Some(session_id.clone()),
+        load_config().and_then(|cfg| cfg.user_id),
+    );
+    // The parent is captured here, not looked up at export time: the env vars
+    // that carry it are process-global, and `finalize_root` withdraws them when
+    // the turn closes — which happens *before* the spans are flushed. Reading
+    // them at flush time is how a subagent's root used to lose its parent and
+    // surface as a second, orphaned trace.
+    let subagent_parent = if is_subagent {
+        non_empty_env(ENV_PARENT_SPAN_ID)
+    } else {
+        None
+    };
     let root_obs_id = start_observation(
         root_name,
         "span",
         &trace_id_val,
-        None,
+        subagent_parent.as_deref(),
         Some(json!({ "role": "user", "content": user_text })),
         Some(metadata),
+        Some(&ctx),
     );
 
     // Publish parent context for subagents
@@ -1742,7 +1964,7 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
     let state = PromptState {
         root_obs_id,
         trace_id: trace_id_val,
-        turn_number,
+        trace_context: ctx,
         generation_count: 0,
         open_generation: None,
         open_tools: HashMap::new(),
@@ -1752,7 +1974,6 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
         user_text,
         turn_images: images,
         system_prompt: None,
-        session_id,
     };
 
     *prompt_state().lock().unwrap() = Some(state);
@@ -1764,7 +1985,7 @@ extern "C" fn on_before_agent_start(event: StablePluginEvent, _: *mut c_void) ->
     0
 }
 
-fn resolve_turn_number(session_id: &str, prompt: &str) -> u32 {
+fn resolve_turn_number(session_id: &str, _prompt: &str) -> u32 {
     // Simple implementation: use turn number from state or default to 1
     static TURN_COUNTER: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
     let counter = TURN_COUNTER.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1873,6 +2094,7 @@ extern "C" fn on_before_provider_request(event: StablePluginEvent, _: *mut c_voi
         Some(&state.root_obs_id),
         input,
         Some(metadata),
+        Some(&state.trace_context),
     );
 
     if let Some(params) = model_params {
@@ -2078,13 +2300,26 @@ extern "C" fn on_tool_execution_start(event: StablePluginEvent, _: *mut c_void) 
     let tool_name = unsafe { event.payload.tool_call.tool_name.to_string_lossy() };
     let params = unsafe { event.payload.tool_call.params.to_string_lossy() };
 
+    let input: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
+    // Read the host's `__rpi.sessionId` off the *raw* args: this is the only
+    // channel that carries the real session id, and it must be captured before
+    // the payload is redacted for export.
+    remember_session_id(&input);
+    let redacted_input = strip_host_tool_context(redact_langfuse_keys(&input));
+
     let mut state_guard = prompt_state().lock().unwrap();
     let Some(state) = state_guard.as_mut() else {
         return 0;
     };
 
-    let input: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
-    let redacted_input = redact_langfuse_keys(&input);
+    // A turn that built its root span from the `pid:<n>` fallback upgrades to
+    // the true id as soon as the first tool call reveals it, because Langfuse
+    // groups a session by the id on the observations it holds.
+    let session_id = current_session_id(None);
+    if state.trace_context.session_id.as_deref() != Some(session_id.as_str()) {
+        state.trace_context.session_id = Some(session_id.clone());
+        update_trace_context(&state.root_obs_id, &state.trace_id, &state.trace_context);
+    }
 
     let mut metadata = Map::new();
     metadata.insert("tool_name".into(), json!(tool_name));
@@ -2097,6 +2332,7 @@ extern "C" fn on_tool_execution_start(event: StablePluginEvent, _: *mut c_void) 
         Some(&state.root_obs_id),
         Some(redacted_input),
         Some(metadata),
+        Some(&state.trace_context),
     );
 
     state.open_tools.insert(
@@ -2157,6 +2393,7 @@ extern "C" fn on_tool_execution_end(event: StablePluginEvent, _: *mut c_void) ->
                 Some(&tool.obs_id),
                 None,
                 Some(metadata),
+                Some(&state.trace_context),
             );
 
             let mut updates = Map::new();
@@ -2248,6 +2485,7 @@ extern "C" fn on_session_compact(event: StablePluginEvent, _: *mut c_void) -> i3
             None,
             None,
             Some(metadata),
+            None,
         );
 
         let mut updates = Map::new();
@@ -2310,6 +2548,7 @@ extern "C" fn on_session_tree(event: StablePluginEvent, _: *mut c_void) -> i32 {
         None,
         None,
         Some(metadata),
+        None,
     );
 
     let mut updates = Map::new();
@@ -2842,6 +3081,28 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
 mod tests {
     use super::*;
 
+    /// Serializes the tests that drive the real event handlers.
+    ///
+    /// The plugin's turn state (`PROMPT_STATE`) and span store (`TRACER`) are
+    /// process-global — deliberately, since a plugin is loaded once per process.
+    /// Two tests that both press the turn path would therefore stomp on each
+    /// other's state. Unlike the handler-fan-out tests elsewhere, the turn path
+    /// is *not* idempotent, so it cannot simply be re-run: hold this for the
+    /// whole body of any test that dispatches a turn.
+    static TURN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Take [`TURN_TEST_LOCK`], surviving a poisoned lock.
+    ///
+    /// The guarded state is process-global and reset at both ends of every
+    /// guarded test, so a panic in one of them cannot leave the others with
+    /// inconsistent state — and a `PoisonError` would otherwise turn one real
+    /// failure into three confusing ones.
+    fn turn_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TURN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// The status footer is driven through the host's `SetStatus` runtime
     /// action. Capture what the plugin actually sends.
     static CAPTURED_STATUS: Mutex<Option<String>> = Mutex::new(None);
@@ -2924,6 +3185,66 @@ mod tests {
         assert_ne!(trace_id(), t);
     }
 
+    /// The host's three channels resolve in precedence order: the real id from
+    /// a tool call, then the `BeforeAgentStart` payload, then the env var. The
+    /// old code used a literal `"default"` for every session, which is what this
+    /// guards against — as well as the process-identity last resort.
+    #[test]
+    fn session_id_precedence_and_pid_fallback() {
+        let pid = format!("pid:{}", std::process::id());
+        let tool = Some("from-tool".to_string());
+        let payload = Some("from-payload".to_string());
+        let env = Some("from-env".to_string());
+
+        // Nothing known yet: an honest process-scoped identity, never "default".
+        assert_eq!(session_id_from(None, None, None), pid);
+        assert_eq!(session_id_from(None, None, None), pid, "stable per process");
+        assert_ne!(pid, "default");
+        assert!(!session_id_from(None, None, None).trim().is_empty());
+
+        // Every channel alone is enough…
+        assert_eq!(session_id_from(None, tool.clone(), None), "from-tool");
+        assert_eq!(session_id_from(payload.clone(), None, None), "from-payload");
+        assert_eq!(session_id_from(None, None, env.clone()), "from-env");
+        // …and the freshest wins when more than one is present. In particular a
+        // stale, inherited `RPI_SESSION_ID` must never outrank a fresh payload.
+        assert_eq!(
+            session_id_from(payload.clone(), tool.clone(), env.clone()),
+            "from-payload"
+        );
+        assert_eq!(session_id_from(None, tool, env), "from-tool");
+    }
+
+    /// The host hands the real session id to plugin tools as `__rpi.sessionId`.
+    /// That value must win over the pid fallback, and must never be exported as
+    /// tool input.
+    #[test]
+    fn host_tool_context_provides_the_real_session_id() {
+        let _turn_guard = turn_test_lock();
+        reset_session_id_latch();
+        let args = json!({
+            "action": "list",
+            "__rpi": { "cwd": "/tmp/project", "sessionId": "01adb026-session" },
+        });
+        remember_session_id(&args);
+        assert_eq!(
+            session_id_from_tool_args().as_deref(),
+            Some("01adb026-session")
+        );
+
+        let stripped = strip_host_tool_context(redact_langfuse_keys(&args));
+        assert_eq!(stripped, json!({ "action": "list" }));
+
+        // Blank / absent ids must not latch (nor panic).
+        remember_session_id(&json!({ "action": "list" }));
+        remember_session_id(&json!({ "__rpi": { "sessionId": "  " } }));
+        assert_eq!(
+            session_id_from_tool_args().as_deref(),
+            Some("01adb026-session"),
+            "the first real id wins; later blanks are ignored"
+        );
+    }
+
     #[test]
     fn iso_and_epoch_millis_round_trip() {
         assert_eq!(iso_to_epoch_ms("1970-01-01T00:00:00.000Z"), Some(0));
@@ -2957,7 +3278,9 @@ mod tests {
             Some(metadata),
         );
         root.end_ms = Some(root.start_ms + 5);
-        let span = span_to_otlp(&root, true, None);
+        root.trace_context =
+            trace_context(TRACE_NAME, Some("sess-1".into()), Some("user-1".into()));
+        let span = span_to_otlp(&root);
         assert_eq!(span["traceId"], json!(trace));
         assert_eq!(span["spanId"], json!(root_id));
         assert!(
@@ -2983,9 +3306,30 @@ mod tests {
             attr("langfuse.session.id")["value"]["stringValue"],
             json!("sess-1")
         );
+        assert_eq!(
+            attr("langfuse.user.id")["value"]["stringValue"],
+            json!("user-1")
+        );
+        assert_eq!(
+            attr("langfuse.trace.tags")["value"]["stringValue"],
+            json!(r#"["pi"]"#)
+        );
+        assert_eq!(
+            attr("langfuse.version")["value"]["stringValue"],
+            json!(EXTENSION_VERSION)
+        );
+        assert_eq!(
+            attr("langfuse.trace.metadata.session_id")["value"]["stringValue"],
+            json!("sess-1")
+        );
+        assert_eq!(
+            attr("langfuse.observation.metadata.session_id")["value"]["stringValue"],
+            json!("sess-1")
+        );
 
-        // A child generation: ints must be OTLP/JSON strings, and a missing
-        // parent falls back to the inherited (subagent) span when provided.
+        // A child generation: ints must be OTLP/JSON strings. The parent always
+        // comes from the record — never from the process-global env, which the
+        // turn teardown clears before the flush reads it.
         let child_id = obs_id();
         let mut child = SpanRecord::new(
             child_id.clone(),
@@ -3001,7 +3345,7 @@ mod tests {
         usage.insert("input".into(), json!(11));
         child.usage_details = Some(usage);
         child.end_ms = Some(child.start_ms + 3);
-        let span = span_to_otlp(&child, false, Some("ffffffffffffffff"));
+        let span = span_to_otlp(&child);
         assert_eq!(span["parentSpanId"], json!(root_id));
         let attrs = span["attributes"].as_array().unwrap();
         let attr = |key: &str| {
@@ -3019,10 +3363,32 @@ mod tests {
             json!("11")
         );
 
+        // A child that inherits the turn's trace context must re-state the
+        // trace-level attributes: Langfuse only filters/aggregates by
+        // sessionId/userId/tags when they are present on *every* span.
+        let mut child = child.clone();
+        child.trace_context = trace_context(TRACE_NAME, Some("sess-1".into()), None);
+        let span = span_to_otlp(&child);
+        let attrs = span["attributes"].as_array().unwrap();
+        let attr = |key: &str| {
+            attrs
+                .iter()
+                .find(|a| a["key"] == json!(key))
+                .unwrap_or_else(|| panic!("missing attribute {key}"))
+        };
+        assert_eq!(
+            attr("langfuse.trace.name")["value"]["stringValue"],
+            json!(TRACE_NAME)
+        );
+        assert_eq!(
+            attr("langfuse.session.id")["value"]["stringValue"],
+            json!("sess-1")
+        );
+
         // No parent recorded and no inherited parent: span is exported parentless.
         let mut orphan = child.clone();
         orphan.parent_id = None;
-        let span = span_to_otlp(&orphan, false, None);
+        let span = span_to_otlp(&orphan);
         assert!(span.get("parentSpanId").is_none());
     }
 
@@ -3048,6 +3414,7 @@ mod tests {
     #[test]
     #[ignore = "live network test"]
     fn live_plugin_event_flow() {
+        let _turn_guard = turn_test_lock();
         assert!(
             load_config().is_some(),
             "set LANGFUSE_BASE_URL/PUBLIC_KEY/SECRET_KEY first"
@@ -3126,7 +3493,9 @@ mod tests {
             let v = api_request(
                 &client,
                 "GET",
-                &format!("/api/public/v2/observations?traceId={trace}&limit=50"),
+                &format!(
+                    "/api/public/v2/observations?traceId={trace}&limit=50&fields=core,basic,usage,trace_context,metadata"
+                ),
                 None,
             )
             .expect("read back");
@@ -3153,6 +3522,340 @@ mod tests {
             "generation observation name missing: {}",
             truncate_chars(&text, 400)
         );
+        assert!(
+            text.contains(TRACE_NAME),
+            "trace-level context (langfuse.trace.name) missing: {}",
+            truncate_chars(&text, 400)
+        );
+        assert!(
+            !text.contains("\"sessionId\":\"default\""),
+            "sessionId must not fall back to the literal 'default': {}",
+            truncate_chars(&text, 400)
+        );
+    }
+
+    /// Every observation-starting handler runs with the `prompt_state` lock
+    /// held (it owns the open generation/tool maps). If the span buffering
+    /// re-acquires that lock, the whole turn deadlocks — which is why this test
+    /// drives the handlers on a worker thread with a hard timeout: a regression
+    /// fails the test instead of hanging the suite.
+    #[test]
+    fn turn_handlers_do_not_deadlock_on_the_state_lock() {
+        let _turn_guard = turn_test_lock();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            reset_session_id_latch();
+            *prompt_state().lock().unwrap() = None;
+            tracer().spans.lock().unwrap().clear();
+            std::env::remove_var(ENV_PARENT_TRACE_ID);
+            std::env::remove_var(ENV_PARENT_SPAN_ID);
+
+            let start = json!({ "prompt": "deadlock probe", "sessionId": "s1" });
+            on_before_agent_start(
+                StablePluginEvent::data(
+                    EventTag::BeforeAgentStart,
+                    StbString::from_string(start.to_string()),
+                ),
+                std::ptr::null_mut(),
+            );
+            on_before_provider_request(
+                StablePluginEvent::data(
+                    EventTag::BeforeProviderRequest,
+                    StbString::from_string(json!({ "model": "m" }).to_string()),
+                ),
+                std::ptr::null_mut(),
+            );
+            on_tool_execution_start(
+                StablePluginEvent::tool_call(
+                    EventTag::ToolExecutionStart,
+                    StbString::from_string("c".into()),
+                    StbString::from_string("bash".into()),
+                    StbString::from_string(json!({ "command": "ls" }).to_string()),
+                ),
+                std::ptr::null_mut(),
+            );
+            on_tool_execution_end(
+                StablePluginEvent::tool_result(
+                    EventTag::ToolExecutionEnd,
+                    StbString::from_string("c".into()),
+                    StbString::from_string("bash".into()),
+                    StbString::from_string(json!({ "content": "ok" }).to_string()),
+                    false,
+                ),
+                std::ptr::null_mut(),
+            );
+            let _ = tx.send(tracer().spans.lock().unwrap().len());
+        });
+
+        let count = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("turn handlers deadlocked (state lock re-entered?)");
+        assert!(count >= 3, "root + generation + tool expected, got {count}");
+        worker.join().unwrap();
+
+        *prompt_state().lock().unwrap() = None;
+        tracer().spans.lock().unwrap().clear();
+        reset_session_id_latch();
+    }
+
+    /// A subagent's root span must keep its parent.
+    ///
+    /// The parent used to be read from the process env at *export* time, but the
+    /// turn teardown withdraws those variables when the turn closes — which is
+    /// before the flush. The subagent root was therefore exported parentless and
+    /// showed up as a second, separate trace.
+    #[test]
+    fn subagent_root_keeps_its_parent_after_turn_teardown() {
+        let _turn_guard = turn_test_lock();
+        reset_session_id_latch();
+        *prompt_state().lock().unwrap() = None;
+        tracer().spans.lock().unwrap().clear();
+
+        let parent_trace = "a".repeat(32);
+        let parent_span = "b".repeat(16);
+        std::env::set_var(ENV_PARENT_TRACE_ID, &parent_trace);
+        std::env::set_var(ENV_PARENT_SPAN_ID, &parent_span);
+        std::env::set_var(ENV_PARENT_DEPTH, "1");
+
+        on_before_agent_start(
+            StablePluginEvent::data(
+                EventTag::BeforeAgentStart,
+                StbString::from_string(
+                    json!({ "prompt": "sub", "sessionId": "parent-session" }).to_string(),
+                ),
+            ),
+            std::ptr::null_mut(),
+        );
+
+        let root_id = {
+            let st = tracer();
+            let store = st.spans.lock().unwrap();
+            assert_eq!(store.len(), 1);
+            assert_eq!(store[0].name, SUBAGENT_ROOT_OBSERVATION_NAME);
+            assert_eq!(store[0].trace_id, parent_trace, "reuses the parent trace");
+            store[0].id.clone()
+        };
+
+        // Close the turn (this withdraws the inherited-parent env vars) and only
+        // then export — exactly the order the plugin runs in.
+        let state = prompt_state().lock().unwrap().take().expect("turn open");
+        finalize_root(&state, false);
+        assert!(
+            std::env::var(ENV_PARENT_SPAN_ID).is_err(),
+            "teardown must withdraw the parent env (the old bug's trigger)"
+        );
+
+        let st = tracer();
+        let store = st.spans.lock().unwrap();
+        let rec = store.iter().find(|r| r.id == root_id).expect("root kept");
+        let span = span_to_otlp(rec);
+        assert_eq!(
+            span["parentSpanId"],
+            json!(parent_span),
+            "the subagent root must stay attached to the turn that spawned it: {span}"
+        );
+
+        drop(store);
+        tracer().spans.lock().unwrap().clear();
+        reset_session_id_latch();
+    }
+
+    /// A host that learns the session id *after* the trace started (an upgraded
+    /// host's first turn, or a session switch) must have the trace corrected —
+    /// the root included, since it is created before any tool call.
+    #[test]
+    fn a_late_session_id_upgrades_the_whole_buffered_trace() {
+        let _turn_guard = turn_test_lock();
+        reset_session_id_latch();
+        *prompt_state().lock().unwrap() = None;
+        tracer().spans.lock().unwrap().clear();
+        std::env::remove_var(ENV_PARENT_TRACE_ID);
+        std::env::remove_var(ENV_PARENT_SPAN_ID);
+
+        // Turn opens with no id anywhere → the pid fallback, as an old host does.
+        on_before_agent_start(
+            StablePluginEvent::data(
+                EventTag::BeforeAgentStart,
+                StbString::from_string(json!({ "prompt": "hi" }).to_string()),
+            ),
+            std::ptr::null_mut(),
+        );
+        let trace = std::env::var(ENV_PARENT_TRACE_ID).expect("trace published");
+        let before = tracer()
+            .spans
+            .lock()
+            .unwrap()
+            .first()
+            .and_then(|r| r.trace_context.session_id.clone())
+            .expect("session is always set");
+        assert!(
+            before.starts_with("pid:"),
+            "expected fallback, got {before}"
+        );
+
+        // The real id shows up on the tool-call path.
+        on_tool_execution_start(
+            StablePluginEvent::tool_call(
+                EventTag::ToolExecutionStart,
+                StbString::from_string("c1".into()),
+                StbString::from_string("bash".into()),
+                StbString::from_string(
+                    json!({ "__rpi": { "sessionId": "real-session" } }).to_string(),
+                ),
+            ),
+            std::ptr::null_mut(),
+        );
+
+        // Every buffered span of that trace — the earlier root included — must
+        // carry the real id by the time the turn exports.
+        let tracer_state = tracer();
+        let store = tracer_state.spans.lock().unwrap();
+        assert!(!store.is_empty());
+        for rec in store.iter() {
+            assert_eq!(rec.trace_id, trace);
+            assert_eq!(
+                rec.trace_context.session_id.as_deref(),
+                Some("real-session"),
+                "{} was not upgraded",
+                rec.name
+            );
+        }
+
+        drop(store);
+        *prompt_state().lock().unwrap() = None;
+        tracer().spans.lock().unwrap().clear();
+        reset_session_id_latch();
+    }
+
+    /// Drives the real handlers end-to-end (no network) and asserts what would
+    /// be exported. This is the regression test for the two bugs a live trace
+    /// could not show: the session id must be the host's, and the trace-level
+    /// attributes must be on *every* span, not just the root.
+    #[test]
+    fn event_flow_exports_session_and_trace_context_on_every_span() {
+        let _turn_guard = turn_test_lock();
+        reset_session_id_latch();
+        *prompt_state().lock().unwrap() = None;
+        tracer().spans.lock().unwrap().clear();
+        std::env::remove_var(ENV_PARENT_TRACE_ID);
+        std::env::remove_var(ENV_PARENT_SPAN_ID);
+        std::env::remove_var(ENV_PARENT_DEPTH);
+
+        // 1) The host's BeforeAgentStart payload now carries the session id.
+        let start = json!({
+            "prompt": "hello",
+            "imageCount": 0,
+            "sessionId": "01adb026-session",
+        });
+        assert_eq!(
+            on_before_agent_start(
+                StablePluginEvent::data(
+                    EventTag::BeforeAgentStart,
+                    StbString::from_string(start.to_string()),
+                ),
+                std::ptr::null_mut(),
+            ),
+            0
+        );
+
+        // 2) A generation, then a tool call (the path that also carries `__rpi`).
+        let req = json!({ "model": "test-model", "maxTokens": 8 });
+        on_before_provider_request(
+            StablePluginEvent::data(
+                EventTag::BeforeProviderRequest,
+                StbString::from_string(req.to_string()),
+            ),
+            std::ptr::null_mut(),
+        );
+        on_tool_execution_start(
+            StablePluginEvent::tool_call(
+                EventTag::ToolExecutionStart,
+                StbString::from_string("call-1".into()),
+                StbString::from_string("bash".into()),
+                StbString::from_string(
+                    json!({
+                        "command": "ls",
+                        "__rpi": { "cwd": "/tmp", "sessionId": "01adb026-session" },
+                    })
+                    .to_string(),
+                ),
+            ),
+            std::ptr::null_mut(),
+        );
+        on_tool_execution_end(
+            StablePluginEvent::tool_result(
+                EventTag::ToolExecutionEnd,
+                StbString::from_string("call-1".into()),
+                StbString::from_string("bash".into()),
+                StbString::from_string(json!({ "content": "ok" }).to_string()),
+                false,
+            ),
+            std::ptr::null_mut(),
+        );
+
+        // 3) Inspect every buffered span the way the exporter would see it.
+        let state = tracer();
+        let store = state.spans.lock().unwrap();
+        assert!(
+            store.len() >= 3,
+            "root + generation + tool: {}",
+            store.len()
+        );
+        let string_attr = |span: &Value, key: &str| -> Option<String> {
+            span["attributes"]
+                .as_array()?
+                .iter()
+                .find(|a| a["key"] == json!(key))
+                .and_then(|a| a["value"]["stringValue"].as_str())
+                .map(str::to_string)
+        };
+        let mut root_seen = false;
+        for rec in store.iter() {
+            let span = span_to_otlp(rec);
+            assert_eq!(
+                string_attr(&span, "langfuse.trace.name").as_deref(),
+                Some(TRACE_NAME),
+                "trace name must be on every span (was root-only before the fix): {span}"
+            );
+            assert_eq!(
+                string_attr(&span, "langfuse.session.id").as_deref(),
+                Some("01adb026-session"),
+                "every span must carry the host's session id: {span}"
+            );
+            assert_eq!(
+                string_attr(&span, "langfuse.version").as_deref(),
+                Some(EXTENSION_VERSION),
+            );
+            assert_eq!(rec.trace_id.len(), 32, "OTLP trace id shape");
+
+            if rec.parent_id.is_none() {
+                root_seen = true;
+                assert_eq!(rec.name, ROOT_OBSERVATION_NAME);
+                assert_eq!(
+                    string_attr(&span, "langfuse.observation.metadata.session_id").as_deref(),
+                    Some("01adb026-session"),
+                );
+            } else {
+                // The tool's `__rpi` envelope is host routing metadata, never
+                // model input: it must not leak into the exported tool args.
+                if let Some(input) = string_attr(&span, "langfuse.observation.input") {
+                    assert!(
+                        !input.contains("__rpi"),
+                        "host tool context leaked into tool input: {input}"
+                    );
+                }
+            }
+        }
+        assert!(
+            root_seen,
+            "the turn must have produced exactly one root span"
+        );
+
+        // Leave the shared state as we found it for other tests.
+        drop(store);
+        *prompt_state().lock().unwrap() = None;
+        tracer().spans.lock().unwrap().clear();
+        reset_session_id_latch();
     }
 
     #[test]
@@ -3176,6 +3879,12 @@ mod tests {
             Some(metadata),
         );
         root.end_ms = Some(now_epoch_ms());
+        let ctx = trace_context(
+            TRACE_NAME,
+            Some("rpi-langfuse-live-test".into()),
+            Some("rpi-langfuse-live-test-user".into()),
+        );
+        root.trace_context = ctx.clone();
         let mut gen = SpanRecord::new(
             obs_id(),
             trace.clone(),
@@ -3185,13 +3894,10 @@ mod tests {
             Some(json!({ "role": "user", "content": "hi" })),
             None,
         );
+        gen.trace_context = ctx;
         gen.model = Some("rpi-live-test".into());
         gen.end_ms = Some(now_epoch_ms());
-        flush_otlp(vec![
-            span_to_otlp(&root, true, None),
-            span_to_otlp(&gen, false, None),
-        ])
-        .expect("otlp flush must succeed");
+        flush_otlp(vec![span_to_otlp(&root), span_to_otlp(&gen)]).expect("otlp flush must succeed");
         eprintln!("flushed trace {trace}");
 
         // Read back through Observations API v2 (v4 has no trace getter).
@@ -3201,7 +3907,9 @@ mod tests {
             let v = api_request(
                 &client,
                 "GET",
-                &format!("/api/public/v2/observations?traceId={trace}"),
+                &format!(
+                    "/api/public/v2/observations?traceId={trace}&fields=core,basic,usage,trace_context,metadata"
+                ),
                 None,
             )
             .expect("read back");

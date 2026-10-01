@@ -109,7 +109,7 @@
   },
   {
     "name": "rpi-langfuse",
-    "version": "0.2.3",
+    "version": "0.3.0",
     "type": "extension",
     "tool": "langfuse_trace + langfuse_score + langfuse_prompt",
     "inspiredBy": "Langfuse open-source LLM observability platform",
