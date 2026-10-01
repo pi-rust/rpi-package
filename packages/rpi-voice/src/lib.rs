@@ -126,7 +126,7 @@ use rpi_plugin_sdk::{
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
@@ -200,6 +200,17 @@ static PLAYBACK_LEVEL: AtomicU32 = AtomicU32::new(0);
 /// Stop flag of the utterance currently on the speakers, so *any* thread can
 /// cut it short — this is the handle barge-in pulls. `None` when silent.
 static PLAYBACK_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+/// Bumped by every barge-in, so a queued utterance can tell it was superseded.
+///
+/// The TTS worker speaks one queued reply at a time, and a reply that arrives
+/// while another is being read is *queued*, not dropped. Cutting off only the
+/// utterance on the speakers would therefore leave the queue intact and the
+/// worker would start the next one a moment later — reading aloud into the very
+/// microphone the user just opened. Stamping each job with the generation it was
+/// queued in, and skipping jobs from an older one, is what makes a barge-in
+/// actually reach the queue.
+static PLAYBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Hands-free ("continuous conversation") mode: once a reply finishes playing,
 /// the mic reopens on its own, so the user never touches a key.
@@ -327,10 +338,19 @@ fn pause_auto_talk(reason: &str) -> bool {
     true
 }
 
-/// Interrupt whatever is being spoken. Safe to call from any thread and when
-/// nothing is playing. Returns `true` when there was something to stop, which
-/// the caller uses to decide whether to report it.
+/// Interrupt whatever is being spoken **and** discard anything still queued.
+/// Safe to call from any thread and when nothing is playing.
+///
+/// Returns `true` when there was something to stop, which the caller uses to
+/// decide whether to report it.
+///
+/// Draining the queue is the point: a reply that arrived while another was
+/// playing sits in the channel, and stopping only the audible utterance would
+/// let the worker start the queued one seconds later — audibly ignoring the
+/// interrupt. The generation bump is what tells the worker those jobs are stale
+/// (see [`PLAYBACK_GENERATION`]); the playing utterance stops via its own flag.
 fn stop_playback() -> bool {
+    PLAYBACK_GENERATION.fetch_add(1, Ordering::Relaxed);
     let flag = PLAYBACK_STOP.lock().unwrap().take();
     match flag {
         Some(flag) => {
@@ -502,21 +522,47 @@ fn preload_stt_model() {
 }
 
 /// Single TTS worker queue — replies enqueue here instead of racing threads.
-static TTS_TX: OnceLock<mpsc::Sender<String>> = OnceLock::new();
+/// A queued utterance: the text, and the playback generation it was queued in.
+///
+/// Carrying the generation lets the worker drop replies a barge-in arrived
+/// after — see [`PLAYBACK_GENERATION`].
+struct SpeechJob {
+    text: String,
+    generation: u64,
+}
 
-fn tts_sender() -> &'static mpsc::Sender<String> {
+static TTS_TX: OnceLock<mpsc::Sender<SpeechJob>> = OnceLock::new();
+
+fn tts_sender() -> &'static mpsc::Sender<SpeechJob> {
     TTS_TX.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<String>();
+        let (tx, rx) = mpsc::channel::<SpeechJob>();
         std::thread::Builder::new()
             .name("rpi-voice-tts".to_string())
             .spawn(move || {
-                for text in rx {
+                for job in rx {
+                    // A barge-in since this was queued means the user is talking,
+                    // or already said something else. Speaking it now would talk
+                    // over them (and into the open microphone).
+                    let job_generation = job.generation;
+                    if job_generation != PLAYBACK_GENERATION.load(Ordering::Relaxed) {
+                        debug_log("tts job dropped: superseded by a barge-in");
+                        continue;
+                    }
+                    let text = job.text;
                     if !AUTO_TTS_ENABLED.load(Ordering::Relaxed) {
-                        // Keep continuous voice input alive even when the user
-                        // has muted speech for the session.
+                        // Muted: nothing to speak, but hands-free mode still runs
+                        // on the *voice* switch alone, so keep the loop alive.
+                        // Reopen only when nothing was muted *for* this job
+                        // (`maybe_auto_listen` checks the mode itself).
                         if let Some(runtime) = RUNTIME_CTX.get().copied() {
                             maybe_auto_listen(runtime);
                         }
+                        continue;
+                    }
+                    // Mic first: if the user is talking, this reply is stale —
+                    // speaking it would be read back as their own words.
+                    if mic_owns_the_floor() {
+                        debug_log("tts job dropped: the microphone owns the floor");
                         continue;
                     }
                     TTS_PLAYING.store(true, Ordering::Relaxed);
@@ -534,9 +580,16 @@ fn tts_sender() -> &'static mpsc::Sender<String> {
                         *LAST_TTS_ERROR.lock().unwrap() = None;
                     }
                     TTS_PLAYING.store(false, Ordering::Relaxed);
-                    // Hands-free mode: the reply has been spoken, so the user's
-                    // turn is over — hand the floor back by reopening the mic.
-                    if let Some(runtime) = RUNTIME_CTX.get().copied() {
+                    // Reopen the mic only if nothing interrupted this utterance.
+                    // A barge-in (a keystroke, or the user taking the key to
+                    // talk) bumps the generation and already owns the floor: PTT
+                    // opens the mic itself, and typing pauses hands-free mode. A
+                    // reopen here would fight either of those, which is the
+                    // "interrupt did not take" symptom.
+                    let superseded = job_generation != PLAYBACK_GENERATION.load(Ordering::Relaxed);
+                    if superseded {
+                        debug_log("auto-listen skipped: a barge-in took the floor");
+                    } else if let Some(runtime) = RUNTIME_CTX.get().copied() {
                         maybe_auto_listen(runtime);
                     }
                 }
@@ -592,8 +645,13 @@ extern "C" fn on_message_end(event: StablePluginEvent, _user_data: *mut c_void) 
         return 0;
     }
 
-    // Queue (never drop) — the worker speaks one reply at a time.
-    if tts_sender().send(text).is_err() {
+    // Queue (never drop) — the worker speaks one reply at a time. Stamp it with
+    // the current generation so a barge-in arriving first discards it.
+    let job = SpeechJob {
+        text,
+        generation: PLAYBACK_GENERATION.load(Ordering::Relaxed),
+    };
+    if tts_sender().send(job).is_err() {
         eprintln!("[rpi-voice] TTS worker unavailable");
     }
 
@@ -1454,6 +1512,27 @@ fn sanitize_for_speech(text: &str) -> String {
     }
 
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether the microphone currently owns the floor, so speaking would talk over
+/// the user (or be transcribed back as the assistant's own voice).
+///
+/// This is the invariant the whole loop depends on: the mic and the speakers
+/// must never be open at once. The hands-free loop enforces it in the other
+/// direction (it reopens the mic only once playback has *finished*), but nothing
+/// stopped the reverse — a reply queued before the user started talking would
+/// begin playing into an open microphone, and the recogniser would receive the
+/// assistant reading its own previous answer.
+///
+/// Checked immediately before playback rather than at enqueue time, because a
+/// keystroke or a held key during synthesis is exactly the case that matters.
+fn mic_owns_the_floor() -> bool {
+    if RECORDING.load(Ordering::Relaxed) {
+        return true;
+    }
+    // A push-to-talk press that has not reached its hold threshold yet has not
+    // set `RECORDING`; the hold owns the key either way, so treat it as talking.
+    PTT.lock().unwrap().pressed_at.is_some()
 }
 
 /// Synthesize text to speech and play it (blocking).
@@ -2695,6 +2774,86 @@ mod tests {
         // Handle consumed ⇒ never flag a later, unrelated utterance.
         assert!(!stop_playback());
         *PLAYBACK_STOP.lock().unwrap() = None;
+    }
+
+    /// A barge-in must discard replies that are still *queued*, not just the one
+    /// already on the speakers.
+    ///
+    /// Regression: only the playing utterance was stoppable, so a reply that had
+    /// queued up behind it began playing a moment later — the interrupt looked
+    /// ignored, and in hands-free mode the microphone was already open, so the
+    /// assistant transcribed its own voice.
+    #[test]
+    fn a_barge_in_supersedes_queued_utterances() {
+        let _guard = PLAYBACK_TEST_LOCK.lock().unwrap();
+        let before = PLAYBACK_GENERATION.load(Ordering::Relaxed);
+        // Reported "nothing playing" is fine — the queue still has to go.
+        let _ = stop_playback();
+        let after = PLAYBACK_GENERATION.load(Ordering::Relaxed);
+        assert_eq!(
+            after,
+            before + 1,
+            "every barge-in must bump the generation, even when silent"
+        );
+    }
+
+    /// An utterance queued before a barge-in must not be spoken afterwards,
+    /// while one queued after it must be.
+    #[test]
+    fn only_jobs_from_the_current_generation_are_speakable() {
+        let _guard = PLAYBACK_TEST_LOCK.lock().unwrap();
+        let queued_at = PLAYBACK_GENERATION.load(Ordering::Relaxed);
+        let stale = SpeechJob {
+            text: "queued first".to_string(),
+            generation: queued_at,
+        };
+        let _ = stop_playback(); // the user interrupts
+        let fresh = SpeechJob {
+            text: "said after the interrupt".to_string(),
+            generation: PLAYBACK_GENERATION.load(Ordering::Relaxed),
+        };
+
+        let current = PLAYBACK_GENERATION.load(Ordering::Relaxed);
+        assert_ne!(
+            stale.generation, current,
+            "the queued reply must be recognisable as superseded"
+        );
+        assert_eq!(
+            fresh.generation, current,
+            "a reply queued after the barge-in must still be spoken"
+        );
+    }
+
+    /// Speaking while the microphone is open would feed the assistant's own
+    /// voice into the recogniser.
+    /// Speaking while the microphone is open would feed the assistant's own
+    /// voice into the recogniser.
+    #[test]
+    fn the_microphone_owns_the_floor_while_recording() {
+        // `with_ptt_state` is the shared lock for the process-global PTT state;
+        // it resets on both sides, so this cannot leak into the other PTT tests
+        // (which is exactly what happened when this test managed its own lock).
+        with_ptt_state(|| {
+            RECORDING.store(false, Ordering::Relaxed);
+            assert!(!mic_owns_the_floor(), "idle: the floor is free");
+
+            RECORDING.store(true, Ordering::Relaxed);
+            assert!(
+                mic_owns_the_floor(),
+                "an open microphone must block playback"
+            );
+            RECORDING.store(false, Ordering::Relaxed);
+
+            // A held key that has not reached the threshold yet still owns the
+            // floor — `RECORDING` is not set until the hold elapses, but the key
+            // is already claimed, so it must disable the editor too.
+            PTT.lock().unwrap().pressed_at = Some(std::time::Instant::now());
+            assert!(
+                mic_owns_the_floor(),
+                "a held push-to-talk key must block playback"
+            );
+        });
+        assert!(!mic_owns_the_floor(), "state must be clean after the guard");
     }
 
     /// A transcription lands in the editor as an auto-sending draft by default;
