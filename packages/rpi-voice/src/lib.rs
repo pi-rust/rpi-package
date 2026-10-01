@@ -1293,12 +1293,25 @@ fn auto_talk_turn(runtime: &RuntimeContext, stop: Arc<AtomicBool>) {
     RECORDING.store(false, Ordering::Relaxed);
 }
 
+/// Turn on speech for replies, returning whether it had been muted.
+///
+/// `/voice auto` and `/voice ptt` are both spoken *conversations*: the user
+/// talks and expects to hear the answer, so a muted session looks broken —
+/// you speak, a reply arrives, nothing is said. Both modes enable it here and
+/// mention it, because silently unmuting is rude.
+///
+/// One helper is the point: `/voice ptt` originally forgot this call and was
+/// silent, while `/voice auto` worked.
+fn enable_auto_tts() -> bool {
+    !AUTO_TTS_ENABLED.swap(true, Ordering::Relaxed)
+}
+
 /// Enable hands-free mode and listen immediately, so `/voice auto` starts the
 /// conversation rather than waiting for a reply that may never come.
 fn enable_auto_talk(runtime: RuntimeContext) -> String {
     // The loop is closed by *playback finishing*, so muted replies would leave
     // it stalled with the mic shut. Say so, since silently unmuting is rude.
-    let was_muted = !AUTO_TTS_ENABLED.swap(true, Ordering::Relaxed);
+    let was_muted = enable_auto_tts();
     preload_stt_model();
     AUTO_TALK_ENABLED.store(true, Ordering::Relaxed);
     AUTO_TALK_EMPTY.store(0, Ordering::Relaxed);
@@ -1647,11 +1660,14 @@ extern "C" fn voice_command(
                 return 0;
             }
             PTT_ENABLED.store(true, Ordering::Relaxed);
+            // Push-to-talk is a spoken conversation, so replies must be read
+            // aloud — without this the mode is silent.
+            let was_muted = enable_auto_tts();
             preload_stt_model();
             set_output(
                 out,
                 json!({"kind": "message", "text": format!(
-                    "🎤 Push-to-talk ON\n  key: hold `{}` for {}s, release → {}\n  (only while the input box is empty; `/voice ptt off` to exit)",
+                    "🎤 Push-to-talk ON\n  key: hold `{}` for {}s, release → {}\n  (only while the input box is empty; `/voice ptt off` to exit){}",
                     ptt_key(),
                     ptt_hold_ms() as f64 / 1000.0,
                     match output_mode() {
@@ -1662,6 +1678,12 @@ extern "C" fn voice_command(
                             "input box, auto-send in {}s",
                             draft_auto_send_ms() as f64 / 1000.0
                         ),
+                    },
+                    if was_muted {
+                        "
+  🔊 Auto-TTS was off — turned it back on so replies are spoken"
+                    } else {
+                        ""
                     }
                 )}),
             );
@@ -2814,6 +2836,32 @@ mod tests {
         ptt_reset();
         PTT_ENABLED.store(false, Ordering::Relaxed);
         out
+    }
+
+    /// Drive `/voice` the way the host does: args in, output out.
+    fn run_voice_command(args: &str) -> (i32, String) {
+        let args_json = serde_json::json!({"args": args}).to_string();
+        let mut out = StbString::empty();
+        let rc = voice_command(StbStringRef::from_str(&args_json), &mut out, std::ptr::null_mut());
+        (rc, unsafe { out.to_string_lossy() })
+    }
+
+    #[test]
+    fn ptt_turns_speech_on_not_just_recording() {
+        // The reported bug: `/voice ptt on` recorded and transcribed, but the
+        // reply was never spoken, so the mode looked broken. PTT is a spoken
+        // conversation, so enabling it must enable speech.
+        with_ptt_state(|| {
+            AUTO_TTS_ENABLED.store(false, Ordering::Relaxed);
+            let (rc, text) = run_voice_command("ptt on");
+            assert_eq!(rc, 0);
+            assert!(
+                AUTO_TTS_ENABLED.load(Ordering::Relaxed),
+                "/voice ptt on must enable auto-TTS; output was: {text}"
+            );
+            // The user has to be told, since the switch is otherwise invisible.
+            assert!(text.contains("Auto-TTS was off"), "output was: {text}");
+        });
     }
 
     #[test]
