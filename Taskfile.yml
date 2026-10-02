@@ -107,3 +107,9 @@ tasks:
     cmds:
       - cargo test -p rpi-todo
       - cargo publish --allow-dirty -p rpi-todo
+
+  publish-voice:
+    desc: Publish rpi-voice only
+    cmds:
+      - cargo test -p rpi-voice
+      - cargo publish --allow-dirty -p rpi-voice

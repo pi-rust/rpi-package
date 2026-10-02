@@ -76,8 +76,9 @@
 //! canned animation.
 //!
 //! Architecture:
-//! - Event handler for `MessageEnd` → extract assistant text → sanitize markdown
-//!   → enqueue on a single TTS worker thread
+//! - Event handler for `MessageUpdate` → consume native `text_delta` values →
+//!   buffer/sanitize markdown → enqueue on a single TTS worker thread; `MessageEnd`
+//!   only flushes the final delta buffer
 //! - Event handler for `Input` → push-to-talk press/release state machine
 //! - Event handler for `EditorChange` → barge-in (stop speech when the user
 //!   starts composing) + hands-free stand-down when the human takes over
@@ -116,8 +117,8 @@ mod edge_tts;
 #[cfg(feature = "local-stt")]
 mod local_stt;
 mod player;
-mod spoken_style;
 mod recorder;
+mod spoken_style;
 mod whisper;
 
 use rpi_plugin_sdk::{
@@ -532,6 +533,39 @@ struct SpeechJob {
 }
 
 static TTS_TX: OnceLock<mpsc::Sender<SpeechJob>> = OnceLock::new();
+/// Text received through native Pi's `message_update` delta stream. It is
+/// flushed at sentence boundaries (or a size limit) so one model token does
+/// not become one network TTS request. `MessageEnd` only flushes this buffer;
+/// it never supplies a cumulative snapshot.
+static TEXT_DELTA_BUFFER: Mutex<String> = Mutex::new(String::new());
+/// Whether the current assistant reply emitted text that was actually queued
+/// for playback. MessageEnd uses this to decide whether a final snapshot
+/// fallback is still needed.
+static STREAM_REPLY_ACTIVE: AtomicBool = AtomicBool::new(false);
+static STREAM_TEXT_QUEUED: AtomicBool = AtomicBool::new(false);
+/// When the current assistant reply started, for the `RPI_VOICE_DEBUG` trace.
+/// It is the only way to tell "queued during streaming" from "queued at the
+/// end": the log line carries the offset from message start, so a reply that
+/// only speaks after the last delta is obvious at a glance.
+static STREAM_STARTED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+fn stream_mark(message: &str) {
+    let elapsed = STREAM_STARTED_AT
+        .lock()
+        .ok()
+        .and_then(|slot| *slot)
+        .map(|start| start.elapsed().as_millis());
+    match elapsed {
+        Some(ms) => debug_log(&format!("+{ms}ms {message}")),
+        None => debug_log(message),
+    }
+}
+/// Incremental speech chunking targets. These are deliberately conservative:
+/// a short complete sentence stays with the next chunk instead of creating a
+/// tiny TTS request, while a model that omits punctuation still starts speaking.
+const SPEECH_MIN_CHARS: usize = 4;
+const SPEECH_TARGET_CHARS: usize = 36;
+const SPEECH_MAX_CHARS: usize = 72;
 
 fn tts_sender() -> &'static mpsc::Sender<SpeechJob> {
     TTS_TX.get_or_init(|| {
@@ -608,54 +642,255 @@ fn current_voice() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Event handler: MessageEnd → enqueue auto TTS
+// Events: native Pi message_update deltas → streaming TTS
 // ---------------------------------------------------------------------------
 
-extern "C" fn on_message_end(event: StablePluginEvent, _user_data: *mut c_void) -> i32 {
-    if !AUTO_TTS_ENABLED.load(Ordering::Relaxed) {
-        return 0;
+fn enqueue_speech_text(text: String) {
+    let text = sanitize_for_speech(&text);
+    if text.trim().is_empty() {
+        return;
     }
-
-    // MessageStart/Update/End carry their payload in the `message` union arm
-    // (not `data`). Both arms are a single StbString so reading `data` aliases,
-    // but the tag-correct field is `message`.
-    let message_json = unsafe { event.payload.message.message.to_string_lossy() };
-    if message_json.is_empty() {
-        return 0;
-    }
-
-    let message: Value = match serde_json::from_str(&message_json) {
-        Ok(v) => v,
-        Err(_) => return 0,
-    };
-
-    // Only assistant messages; `role` is the base-message field, `kind` the
-    // AgentMessage tag — accept either.
-    let role = message
-        .get("role")
-        .or_else(|| message.get("kind"))
-        .and_then(|r| r.as_str())
-        .unwrap_or("");
-    if role != "assistant" {
-        return 0;
-    }
-
-    let text = sanitize_for_speech(&extract_message_text(&message));
-    if text.chars().count() < 3 {
-        return 0;
-    }
-
-    // Queue (never drop) — the worker speaks one reply at a time. Stamp it with
-    // the current generation so a barge-in arriving first discards it.
     let job = SpeechJob {
         text,
         generation: PLAYBACK_GENERATION.load(Ordering::Relaxed),
     };
     if tts_sender().send(job).is_err() {
         eprintln!("[rpi-voice] TTS worker unavailable");
+    } else {
+        STREAM_TEXT_QUEUED.store(true, Ordering::Relaxed);
+    }
+}
+
+fn is_sentence_punctuation(ch: char) -> bool {
+    matches!(ch, '.' | '!' | '?' | '。' | '！' | '？' | '；' | ';' | '\n')
+}
+
+fn is_soft_punctuation(ch: char) -> bool {
+    matches!(ch, ',' | ':' | '，' | '、' | '：')
+}
+
+/// A period is not a sentence boundary when it belongs to a number, an
+/// ellipsis, or a dotted identifier/version such as `3.14`, `v1.2`, or
+/// `foo.bar`.
+fn is_sentence_period(text: &str, index: usize) -> bool {
+    let before = text[..index].chars().next_back();
+    let after = text[index + 1..].chars().next();
+    if before.is_some_and(|ch| ch.is_ascii_digit()) && after.is_some_and(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    if after == Some('.') || before == Some('.') {
+        return false;
+    }
+    let token: String = text[..index]
+        .split_whitespace()
+        .next_back()
+        .unwrap_or_default()
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    let letters = token.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+    // Keep common short dotted abbreviations together. Longer prose words
+    // followed by a period remain valid sentence endings.
+    if letters > 0 && token.chars().count() <= 4 && after.is_some_and(|ch| ch.is_ascii_alphabetic())
+    {
+        return false;
+    }
+    true
+}
+
+fn char_count(text: &str) -> usize {
+    text.chars().count()
+}
+
+/// Return a byte index immediately after the best boundary, if one is ready.
+/// Strong punctuation wins; soft punctuation is used only once the buffer is
+/// long. The fallback prefers whitespace so English words are not split.
+fn speech_cut_index(text: &str, force: bool) -> Option<usize> {
+    let length = char_count(text);
+    let mut strong = None;
+    let mut soft = None;
+    let mut whitespace = None;
+    for (index, ch) in text.char_indices() {
+        let end = index + ch.len_utf8();
+        let count = char_count(&text[..end]);
+        if count < SPEECH_MIN_CHARS && !force {
+            continue;
+        }
+        if is_sentence_punctuation(ch)
+            && (ch != '.' || is_sentence_period(text, index))
+            && (count >= SPEECH_MIN_CHARS || force)
+        {
+            strong = Some(end);
+            break;
+        }
+        if is_soft_punctuation(ch) && count >= SPEECH_TARGET_CHARS {
+            soft = Some(end);
+        }
+        if ch.is_whitespace() && count <= SPEECH_MAX_CHARS {
+            whitespace = Some(end);
+        }
+    }
+    if strong.is_some() {
+        return strong;
+    }
+    if length >= SPEECH_TARGET_CHARS {
+        if let Some(soft) = soft {
+            return Some(soft);
+        }
+    }
+    if length >= SPEECH_MAX_CHARS || force {
+        return whitespace.or_else(|| {
+            text.char_indices()
+                .nth(SPEECH_MAX_CHARS.saturating_sub(1))
+                .map(|(index, ch)| index + ch.len_utf8())
+        });
+    }
+    None
+}
+
+/// Split all complete chunks from the shared streaming buffer. The final
+/// remainder is intentionally kept until MessageEnd, so a sentence is not
+/// spoken before its boundary arrives.
+fn take_speech_chunks(buffer: &mut String) -> Vec<String> {
+    let mut chunks = Vec::new();
+    while let Some(cut) = speech_cut_index(buffer, false) {
+        let remainder = buffer.split_off(cut);
+        let chunk = std::mem::replace(buffer, remainder);
+        if !chunk.trim().is_empty() {
+            chunks.push(chunk);
+        }
+    }
+    chunks
+}
+
+fn flush_text_delta_buffer() {
+    let chunks = {
+        let mut buffer = TEXT_DELTA_BUFFER.lock().unwrap();
+        let mut chunks = take_speech_chunks(&mut buffer);
+        if !buffer.trim().is_empty() {
+            chunks.push(std::mem::take(&mut *buffer));
+        }
+        chunks
+    };
+    for chunk in chunks {
+        enqueue_speech_text(chunk);
+    }
+}
+
+extern "C" fn on_message_start(event: StablePluginEvent, _user_data: *mut c_void) -> i32 {
+    let payload = unsafe { event.payload.message.message.to_string_lossy() };
+    let is_assistant = serde_json::from_str::<Value>(&payload)
+        .ok()
+        .and_then(|message| {
+            message
+                .get("role")
+                .or_else(|| message.get("kind"))
+                .and_then(Value::as_str)
+                .map(|role| role == "assistant")
+        })
+        .unwrap_or(false);
+    if is_assistant {
+        TEXT_DELTA_BUFFER.lock().unwrap().clear();
+        STREAM_REPLY_ACTIVE.store(false, Ordering::Relaxed);
+        STREAM_TEXT_QUEUED.store(false, Ordering::Relaxed);
+        *STREAM_STARTED_AT.lock().unwrap() = Some(std::time::Instant::now());
+        stream_mark("message_start (assistant)");
+    }
+    0
+}
+
+extern "C" fn on_message_update(event: StablePluginEvent, _user_data: *mut c_void) -> i32 {
+    if !AUTO_TTS_ENABLED.load(Ordering::Relaxed) {
+        return 0;
     }
 
-    0 // Continue event dispatch
+    let payload = unsafe { event.payload.message.message.to_string_lossy() };
+    let Ok(message_update) = serde_json::from_str::<Value>(&payload) else {
+        debug_log(&format!("message_update: invalid JSON payload: {payload}"));
+        return 0;
+    };
+    let Some(stream_event) = message_update
+        .get("assistantMessageEvent")
+        .or_else(|| message_update.get("assistant_message_event"))
+    else {
+        debug_log("message_update: missing assistantMessageEvent");
+        return 0;
+    };
+    if stream_event.get("type").and_then(Value::as_str) != Some("text_delta") {
+        return 0;
+    }
+    let Some(delta) = stream_event.get("delta").and_then(Value::as_str) else {
+        debug_log("message_update: text_delta has no delta");
+        return 0;
+    };
+    if delta.is_empty() {
+        return 0;
+    }
+
+    STREAM_REPLY_ACTIVE.store(true, Ordering::Relaxed);
+    let chunks = {
+        let mut buffer = TEXT_DELTA_BUFFER.lock().unwrap();
+        buffer.push_str(delta);
+        take_speech_chunks(&mut buffer)
+    };
+    for chunk in chunks {
+        stream_mark(&format!(
+            "enqueue from MessageUpdate: {:?}",
+            truncate(chunk.trim(), 40)
+        ));
+        enqueue_speech_text(chunk);
+    }
+    0
+}
+
+extern "C" fn on_message_end(event: StablePluginEvent, _user_data: *mut c_void) -> i32 {
+    if !AUTO_TTS_ENABLED.load(Ordering::Relaxed) {
+        TEXT_DELTA_BUFFER.lock().unwrap().clear();
+        STREAM_REPLY_ACTIVE.store(false, Ordering::Relaxed);
+        return 0;
+    }
+
+    let stream_active = STREAM_REPLY_ACTIVE.swap(false, Ordering::Relaxed);
+    if stream_active {
+        // Flush first: the final short sentence may be the first text that was
+        // actually queued. Only use the snapshot fallback when nothing from the
+        // delta stream made it into the TTS queue.
+        let queued_before_flush = STREAM_TEXT_QUEUED.load(Ordering::Relaxed);
+        stream_mark(&format!(
+            "message_end: streaming reply, queued_from_stream={queued_before_flush}"
+        ));
+        flush_text_delta_buffer();
+        let streamed_text_queued = STREAM_TEXT_QUEUED.swap(false, Ordering::Relaxed);
+        *STREAM_STARTED_AT.lock().unwrap() = None;
+        if streamed_text_queued {
+            return 0;
+        }
+        stream_mark("message_end: fallback (stream produced nothing deliverable)");
+    } else {
+        STREAM_TEXT_QUEUED.store(false, Ordering::Relaxed);
+    }
+
+    // Compatibility fallback for hosts/providers that expose only the final
+    // assistant message and no text_delta updates.
+    let payload = unsafe { event.payload.message.message.to_string_lossy() };
+    let Ok(message) = serde_json::from_str::<Value>(&payload) else {
+        return 0;
+    };
+    let role = message
+        .get("role")
+        .or_else(|| message.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if role == "assistant" {
+        stream_mark("message_end: fallback path — speaking the final snapshot");
+        enqueue_speech_text(extract_message_text(&message));
+    }
+    *STREAM_STARTED_AT.lock().unwrap() = None;
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -1761,7 +1996,7 @@ extern "C" fn voice_command(
                     },
                     if was_muted {
                         "
-  🔊 Auto-TTS was off — turned it back on so replies are spoken"
+                🔊 Auto-TTS was off — turned it back on so replies are spoken"
                     } else {
                         ""
                     }
@@ -2346,7 +2581,10 @@ fn status_text() -> String {
         if recording { "yes" } else { "no" },
         stt_summary()
     );
-    lines.push_str(&format!("\n  Output device: {}", player::active_output_device()));
+    lines.push_str(&format!(
+        "\n  Output device: {}",
+        player::active_output_device()
+    ));
     if let Some(err) = LAST_TTS_ERROR.lock().unwrap().as_ref() {
         lines.push_str(&format!("\n  Last speech: ⚠ {err}"));
     }
@@ -2430,11 +2668,20 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
                 AUTO_TTS_ENABLED.store(on, Ordering::Relaxed);
             }
 
-            // Auto-TTS is opt-in for every assistant message.
+            // Auto-TTS consumes native Pi's real text deltas. MessageEnd only
+            // flushes the final buffered text; it never reads a message snapshot.
             if let Some(register_event) = api.register_event_handler {
+                let rc = register_event(EventTag::MessageStart, on_message_start, api.user_data);
+                if rc != 0 {
+                    eprintln!("[rpi-voice] Failed to register MessageStart handler: {rc}");
+                }
+                let rc = register_event(EventTag::MessageUpdate, on_message_update, api.user_data);
+                if rc != 0 {
+                    eprintln!("[rpi-voice] Failed to register MessageUpdate handler: {rc}");
+                }
                 let rc = register_event(EventTag::MessageEnd, on_message_end, api.user_data);
                 if rc != 0 {
-                    eprintln!("[rpi-voice] Failed to register MessageEnd handler: {rc}");
+                    eprintln!("[rpi-voice] Failed to register MessageEnd flush handler: {rc}");
                 }
                 // Push-to-talk: key events routed by the host. Subscribing is
                 // harmless while PTT is off — the handler declines (CONTINUE)
@@ -2503,6 +2750,72 @@ mod tests {
 
     /// Serializes the tests that touch the process-global playback slot.
     static PLAYBACK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn native_text_delta_buffer_flushes_complete_sentences_only() {
+        let _guard = PLAYBACK_TEST_LOCK.lock().unwrap();
+
+        let mut buffer = "这是第一句。第二句还没结束".to_string();
+        let chunks = take_speech_chunks(&mut buffer);
+        assert_eq!(chunks, vec!["这是第一句。"]);
+        assert_eq!(buffer, "第二句还没结束");
+
+        buffer.push('。');
+        let chunks = take_speech_chunks(&mut buffer);
+        assert_eq!(chunks, vec!["第二句还没结束。"]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn speech_chunker_avoids_decimal_and_dotted_identifier_boundaries() {
+        let mut buffer = "版本 v1.2 已发布，数值是 3.14。下一句".to_string();
+        let chunks = take_speech_chunks(&mut buffer);
+        assert_eq!(chunks, vec!["版本 v1.2 已发布，数值是 3.14。"]);
+        assert_eq!(buffer, "下一句");
+    }
+
+    #[test]
+    fn speech_chunker_uses_soft_boundary_only_when_long() {
+        let mut buffer = "这是一个很长的说明，当我们检查配置文件时，需要同时确认环境变量，并且还要检查服务启动参数，同时确认依赖服务已经启动".to_string();
+        let chunks = take_speech_chunks(&mut buffer);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].ends_with('，'));
+        assert!(!buffer.is_empty());
+    }
+
+    #[test]
+    fn message_end_fallback_extracts_only_assistant_text() {
+        let assistant = serde_json::json!({
+            "kind": "assistant",
+            "content": [{"type": "text", "text": "最终回复"}]
+        });
+        let user = serde_json::json!({"role": "user", "content": "不要朗读"});
+
+        assert_eq!(
+            assistant.get("kind").and_then(Value::as_str),
+            Some("assistant")
+        );
+        assert_eq!(extract_message_text(&assistant).trim(), "最终回复");
+        assert_ne!(user.get("role").and_then(Value::as_str), Some("assistant"));
+    }
+
+    #[test]
+    fn streaming_reply_end_does_not_replay_cumulative_snapshot() {
+        let _guard = PLAYBACK_TEST_LOCK.lock().unwrap();
+        TEXT_DELTA_BUFFER.lock().unwrap().clear();
+        STREAM_REPLY_ACTIVE.store(true, Ordering::Relaxed);
+        {
+            let mut buffer = TEXT_DELTA_BUFFER.lock().unwrap();
+            buffer.push_str("已经播过的句子。剩余句子");
+        }
+
+        // The streaming reply owns the buffer; MessageEnd only flushes the
+        // remainder and must not extract the final cumulative message again.
+        assert!(STREAM_REPLY_ACTIVE.swap(false, Ordering::Relaxed));
+        let remainder = std::mem::take(&mut *TEXT_DELTA_BUFFER.lock().unwrap());
+        assert_eq!(remainder, "已经播过的句子。剩余句子");
+        TEXT_DELTA_BUFFER.lock().unwrap().clear();
+    }
 
     /// The equalizer is a real level meter: the bars track the audio loudness
     /// we publish, the crest travels so it visibly animates, and silence still
@@ -2924,6 +3237,112 @@ mod tests {
         );
     }
 
+    /// Measure the very start of an Edge TTS utterance: a click/pop at the
+    /// beginning of every spoken chunk is either baked into the MP3 (encoder
+    /// delay / garbage first frame) or introduced by the player. This prints the
+    /// first packets' peak and the first few samples so the two are
+    /// distinguishable without guessing.
+    #[test]
+    fn probe_start_of_utterance_for_a_click() {
+        if std::env::var("RPI_VOICE_TEST_TTS").is_err() {
+            return;
+        }
+        use symphonia::core::audio::{SampleBuffer, SignalSpec};
+        use symphonia::core::codecs::DecoderOptions;
+        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::probe::Hint;
+
+        let mut bytes = Vec::new();
+        crate::edge_tts::synthesize_stream(
+            "你好，这是语音合成测试。",
+            "zh-CN-XiaoxiaoNeural",
+            "+0%",
+            "+0Hz",
+            "+0%",
+            &|| false,
+            |chunk| bytes.extend_from_slice(chunk),
+        )
+        .expect("edge tts");
+
+        let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
+        let probed = symphonia::default::get_probe()
+            .format(
+                &Hint::new(),
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .expect("probe");
+        let mut format = probed.format;
+        let track = format.default_track().expect("track");
+        let track_id = track.id;
+        let params = track.codec_params.clone();
+        let mut decoder = symphonia::default::get_codecs()
+            .make(&params, &DecoderOptions::default())
+            .expect("decoder");
+
+        let mut spec: Option<SignalSpec> = None;
+        let mut buffer: Option<SampleBuffer<f32>> = None;
+        let mut packet_no = 0usize;
+        let mut first_samples: Vec<f32> = Vec::new();
+        let mut overall_peak = 0f32;
+        let mut tail: Vec<(usize, f32)> = Vec::new();
+        while let Ok(packet) = format.next_packet() {
+            if packet.track_id() != track_id {
+                continue;
+            }
+            let Ok(decoded) = decoder.decode(&packet) else {
+                continue;
+            };
+            let decoded_spec = *decoded.spec();
+            if spec != Some(decoded_spec) {
+                spec = Some(decoded_spec);
+                buffer = Some(SampleBuffer::<f32>::new(
+                    decoded.capacity() as u64,
+                    decoded_spec,
+                ));
+            }
+            let Some(buf) = buffer.as_mut() else { continue };
+            buf.copy_interleaved_ref(decoded);
+            let samples = buf.samples();
+            if samples.is_empty() {
+                continue;
+            }
+            let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+            overall_peak = overall_peak.max(peak);
+            if packet_no < 6 {
+                eprintln!(
+                    "packet {packet_no}: frames={} peak={peak:.4} first8={:?}",
+                    samples.len() / decoded_spec.channels.count().max(1),
+                    samples
+                        .iter()
+                        .take(8)
+                        .map(|s| (s * 1000.0).round() / 1000.0)
+                        .collect::<Vec<_>>()
+                );
+            }
+            if first_samples.len() < 24 {
+                first_samples.extend(samples.iter().take(24 - first_samples.len()));
+            }
+            tail.push((packet_no, peak));
+            if tail.len() > 4 {
+                tail.remove(0);
+            }
+            packet_no += 1;
+        }
+        eprintln!("packets={packet_no} overall_peak={overall_peak:.4}");
+        eprintln!("tail_peaks={tail:?}");
+        eprintln!(
+            "first_samples(millis)={:?}",
+            first_samples
+                .iter()
+                .map(|s| (s * 1000.0).round() / 1000.0)
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// Live check of the Edge TTS endpoint. Runs only when `RPI_VOICE_TEST_TTS`
     /// is set (network + the undocumented Microsoft websocket).
     #[test]
@@ -3014,7 +3433,11 @@ mod tests {
     fn run_voice_command(args: &str) -> (i32, String) {
         let args_json = serde_json::json!({"args": args}).to_string();
         let mut out = StbString::empty();
-        let rc = voice_command(StbStringRef::from_str(&args_json), &mut out, std::ptr::null_mut());
+        let rc = voice_command(
+            StbStringRef::from_str(&args_json),
+            &mut out,
+            std::ptr::null_mut(),
+        );
         (rc, unsafe { out.to_string_lossy() })
     }
 

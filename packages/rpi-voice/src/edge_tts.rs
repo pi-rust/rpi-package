@@ -4,11 +4,11 @@
 //! Returns MP3 audio bytes (audio-24khz-48kbitrate-mono-mp3).
 
 use futures_util::{SinkExt, StreamExt};
+use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
-use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 // ---------------------------------------------------------------------------

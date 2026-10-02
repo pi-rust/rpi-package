@@ -6,7 +6,8 @@
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use rodio::buffer::SamplesBuffer;
-use rodio::{OutputStream, Sink};
+use rodio::{OutputStream, OutputStreamHandle, Sink};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -55,6 +56,57 @@ mod tests {
         assert_eq!(f32::from_bits(level_bits(&[])), 0.0);
     }
 
+    /// A fade must never introduce a step: the first frame is silent and the
+    /// ramp is monotonic, which is what removes the click at a chunk's start.
+    #[test]
+    fn fade_in_starts_at_silence_and_rises_monotonically() {
+        let mut samples = vec![1.0f32; FADE_FRAMES * 2];
+        apply_fade(&mut samples, 2, true, false);
+        assert_eq!(samples[0], 0.0, "first frame must be silent");
+        assert_eq!(samples[1], 0.0, "both channels must start silent");
+        let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
+        assert!(
+            left.windows(2).all(|w| w[0] <= w[1]),
+            "the ramp must not dip"
+        );
+        // The last frame is untouched: a fade-in must not attenuate the body.
+        assert_eq!(*left.last().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn fade_out_ends_at_silence() {
+        let mut samples = vec![1.0f32; FADE_FRAMES * 2];
+        apply_fade(&mut samples, 2, false, true);
+        assert_eq!(*samples.last().unwrap(), 0.0, "last frame must be silent");
+        assert_eq!(samples[0], 1.0, "a fade-out must not touch the start");
+        let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
+        assert!(
+            left.windows(2).all(|w| w[0] >= w[1]),
+            "the ramp must fall monotonically"
+        );
+    }
+
+    /// A buffer shorter than the ramp must still fade fully, not panic or leave
+    /// a non-zero edge — a very short TTS chunk is exactly when a click is most
+    /// audible.
+    #[test]
+    fn a_short_buffer_fades_across_its_whole_length() {
+        let mut samples = vec![1.0f32; 10];
+        apply_fade(&mut samples, 1, true, true);
+        assert_eq!(samples[0], 0.0);
+        assert_eq!(*samples.last().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn fade_of_an_empty_or_channelless_buffer_is_a_noop() {
+        let mut empty: Vec<f32> = Vec::new();
+        apply_fade(&mut empty, 2, true, true);
+        assert!(empty.is_empty());
+        let mut samples = vec![1.0f32; 8];
+        apply_fade(&mut samples, 0, true, true);
+        assert!(samples.iter().all(|s| *s == 1.0));
+    }
+
     #[test]
     fn the_meter_releases_levels_over_time_not_all_at_once() {
         // The meter must show each value for as long as its audio sounds.
@@ -83,7 +135,11 @@ mod tests {
             elapsed < Duration::from_secs(2),
             "meter took {elapsed:?} for 300 ms of audio — it is over-sleeping"
         );
-        assert_eq!(level.load(Ordering::Relaxed), 0, "meter must clear the level");
+        assert_eq!(
+            level.load(Ordering::Relaxed),
+            0,
+            "meter must clear the level"
+        );
     }
 
     #[test]
@@ -223,6 +279,110 @@ impl MediaSource for ChunkSource {
 /// buffers far ahead on its own, so feeding it eagerly is both simpler and
 /// correct.
 ///
+/// Frames of fade-in/fade-out applied at each utterance's edges, per channel.
+/// Edge TTS pads both ends with digital silence, so this is not hiding encoder
+/// noise — it removes the step discontinuity where the device starts delivering
+/// a non-zero waveform, which is what an abrupt start sounds like.
+const FADE_FRAMES: usize = 240;
+
+/// The audio device, opened once per process and kept alive.
+///
+/// Reopening the output stream for every spoken sentence is what made each
+/// chunk begin with a click: the device is started from a stopped state while
+/// the first samples are already non-silent. Keeping one stream open and only
+/// creating a fresh [`Sink`] per utterance keeps the device running, so the
+/// transition into speech is continuous.
+struct PlaybackSession {
+    /// Held only to keep the device open; dropping it ends playback.
+    _stream: OutputStream,
+    handle: OutputStreamHandle,
+    /// Device name the stream was opened on, so a changed
+    /// `RPI_VOICE_OUTPUT_DEVICE` re-opens rather than silently keeping the old one.
+    device: String,
+}
+
+thread_local! {
+    /// One session per thread. The TTS worker owns playback, so this is the
+    /// device for the whole process without needing `OutputStream: Send`.
+    static SESSION: RefCell<Option<PlaybackSession>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with the process's persistent output stream, opening it on first use
+/// (or re-opening it when the configured device changed).
+fn with_session<T>(
+    device: &cpal::Device,
+    f: impl FnOnce(&OutputStreamHandle) -> T,
+) -> Result<T, String> {
+    let name = device.name().unwrap_or_default();
+    SESSION.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let stale = slot.as_ref().is_some_and(|s| s.device != name);
+        if slot.is_none() || stale {
+            let (stream, handle) = OutputStream::try_from_device(device)
+                .map_err(|e| format!("Audio output error on `{name}`: {e}"))?;
+            *slot = Some(PlaybackSession {
+                _stream: stream,
+                handle,
+                device: name,
+            });
+        }
+        let session = slot.as_ref().expect("session just created");
+        Ok(f(&session.handle))
+    })
+}
+
+/// Apply a linear fade to one interleaved buffer in place.
+///
+/// `fade_in` ramps the first [`FADE_FRAMES`] frames up from silence; `fade_out`
+/// ramps the last ones down. Both are applied per channel so a stereo buffer
+/// keeps its channels aligned.
+fn apply_fade(samples: &mut [f32], channels: usize, fade_in: bool, fade_out: bool) {
+    if channels == 0 || samples.is_empty() {
+        return;
+    }
+    let frames = samples.len() / channels;
+    if frames == 0 {
+        return;
+    }
+    let mut ramp_in = if fade_in { FADE_FRAMES.min(frames) } else { 0 };
+    let mut ramp_out = if fade_out { FADE_FRAMES.min(frames) } else { 0 };
+    // A chunk shorter than two full ramps must not let them overlap: the fade-in
+    // would still be attenuating when the fade-out begins, so the loudest part
+    // of a short utterance would be pulled down and the edges would not reach
+    // silence. Split the available frames instead.
+    if ramp_in + ramp_out > frames {
+        ramp_in = ramp_in.min(frames / 2);
+        ramp_out = frames - ramp_in;
+    }
+    // `frame / (ramp - 1)` spans exactly 0..=1, so the ramp ends at full scale
+    // instead of stopping one step short. A single-frame ramp is silent.
+    if fade_in {
+        for frame in 0..ramp_in {
+            let gain = if ramp_in <= 1 {
+                0.0
+            } else {
+                frame as f32 / (ramp_in - 1) as f32
+            };
+            for channel in 0..channels {
+                samples[frame * channels + channel] *= gain;
+            }
+        }
+    }
+    if fade_out {
+        for frame in 0..ramp_out {
+            let gain = if ramp_out <= 1 {
+                0.0
+            } else {
+                (ramp_out - 1 - frame) as f32 / (ramp_out - 1) as f32
+            };
+            let index = (frames - ramp_out + frame) * channels;
+            for channel in 0..channels {
+                samples[index + channel] *= gain;
+            }
+        }
+    }
+}
+
 /// Resolve the output device to play through.
 ///
 /// `RPI_VOICE_OUTPUT_DEVICE` takes a case-insensitive substring of the device
@@ -332,9 +492,10 @@ fn decode_and_play(
     level: &AtomicU32,
 ) -> Result<bool, String> {
     let device = output_device().map_err(|e| format!("Audio output error: {e}"))?;
-    let (_stream, stream_handle) = OutputStream::try_from_device(&device)
-        .map_err(|e| format!("Audio output error on `{}`: {e}", device.name().unwrap_or_default()))?;
-    let sink = Sink::try_new(&stream_handle).map_err(|e| format!("Sink error: {e}"))?;
+    // The stream is opened once and kept for the process; only the queue is
+    // per-utterance. See [`PlaybackSession`] for why reopening it per sentence
+    // produced an audible click at the start of every chunk.
+    let sink = with_session(&device, Sink::try_new)?.map_err(|e| format!("Sink error: {e}"))?;
 
     // The meter runs on its own thread: decoding queues levels, and the meter
     // releases each one only once its audio has had time to play. Decoupling
@@ -367,6 +528,10 @@ fn decode_and_play(
     let mut spec: Option<SignalSpec> = None;
     let mut buffer: Option<SampleBuffer<f32>> = None;
     let mut cancelled = false;
+    // One packet is held back so the *last* one can fade out: until the next
+    // packet arrives there is no way to know which packet ends the utterance.
+    let mut pending: Option<(Vec<f32>, usize, u32)> = None;
+    let mut is_first = true;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -393,7 +558,10 @@ fn decode_and_play(
         if spec != Some(decoded_spec) {
             spec = Some(decoded_spec);
             // Capacity in frames; `copy_interleaved_ref` grows within it.
-            buffer = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, decoded_spec));
+            buffer = Some(SampleBuffer::<f32>::new(
+                decoded.capacity() as u64,
+                decoded_spec,
+            ));
         }
         let Some(buf) = buffer.as_mut() else {
             continue;
@@ -408,18 +576,32 @@ fn decode_and_play(
             continue;
         }
 
-        // Feed the sink immediately. rodio buffers far ahead of the device, so
+        // Feed the sink eagerly. rodio buffers far ahead of the device, so
         // there is nothing to gain by pacing this — and pacing it (as an
         // earlier version did) runs slower than real time and stutters.
         let frames = samples.len() / channels;
         let rate = decoded_spec.rate.max(1);
-        sink.append(SamplesBuffer::new(
-            channels as u16,
-            decoded_spec.rate,
-            samples.to_vec(),
-        ));
         let packet_us = (frames as u64 * 1_000_000) / rate as u64;
+
+        // The held-back packet is now known not to be the last one.
+        if let Some((held, held_channels, held_rate)) = pending.take() {
+            let mut pcm = held;
+            apply_fade(&mut pcm, held_channels, is_first, false);
+            is_first = false;
+            sink.append(SamplesBuffer::new(held_channels as u16, held_rate, pcm));
+        }
+        pending = Some((samples.to_vec(), channels, decoded_spec.rate));
         let _ = level_tx.send((level_bits(samples), packet_us));
+    }
+
+    // Flush the packet held back for the fade-out. A cancelled utterance drops
+    // it instead: the tail is not going to be heard anyway.
+    if !cancelled && !stop.load(Ordering::Relaxed) {
+        if let Some((held, held_channels, held_rate)) = pending.take() {
+            let mut pcm = held;
+            apply_fade(&mut pcm, held_channels, is_first, true);
+            sink.append(SamplesBuffer::new(held_channels as u16, held_rate, pcm));
+        }
     }
 
     // Let the meter release anything still queued.
@@ -482,11 +664,7 @@ fn spawn_level_meter(
 /// duration its audio occupies — tracking "what is audible now" rather than
 /// "what has been decoded". Exits when `rx` closes or `stop` is set, and
 /// always leaves the level at zero.
-fn run_level_meter(
-    rx: Receiver<(u32, u64)>,
-    level: &AtomicU32,
-    stop: &AtomicBool,
-) {
+fn run_level_meter(rx: Receiver<(u32, u64)>, level: &AtomicU32, stop: &AtomicBool) {
     let started = Instant::now();
     let mut due = Duration::ZERO;
     while let Ok((bits, packet_us)) = rx.recv() {
