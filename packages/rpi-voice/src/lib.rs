@@ -543,6 +543,10 @@ static TEXT_DELTA_BUFFER: Mutex<String> = Mutex::new(String::new());
 /// fallback is still needed.
 static STREAM_REPLY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static STREAM_TEXT_QUEUED: AtomicBool = AtomicBool::new(false);
+/// Last cumulative assistant text received through hosts that send the full
+/// partial assistant message on every MessageUpdate. We diff snapshots so the
+/// same text is never sent to TTS twice.
+static STREAM_TEXT_SNAPSHOT: Mutex<String> = Mutex::new(String::new());
 /// When the current assistant reply started, for the `RPI_VOICE_DEBUG` trace.
 /// It is the only way to tell "queued during streaming" from "queued at the
 /// end": the log line carries the offset from message start, so a reply that
@@ -602,13 +606,14 @@ fn tts_sender() -> &'static mpsc::Sender<SpeechJob> {
                     TTS_PLAYING.store(true, Ordering::Relaxed);
                     let outcome = synthesize_and_play(&text);
                     if let Err(e) = outcome {
-                        // Silence is the symptom the user actually sees, so say
-                        // why: stderr is hidden behind the TUI's alternate screen.
-                        eprintln!("[rpi-voice] TTS error: {e}");
+                        // Do not write TTS errors to stderr: the interactive host
+                        // can route plugin stderr into the prompt editor. Keep
+                        // the detailed error in the opt-in debug log and expose
+                        // only a short status-line message to the user.
                         debug_log(&format!("tts error: {e}"));
                         *LAST_TTS_ERROR.lock().unwrap() = Some(e.clone());
                         if let Some(runtime) = RUNTIME_CTX.get().copied() {
-                            runtime.set_status(&format!("voice: ⚠ speech failed — {e}"));
+                            runtime.set_status("voice: ⚠ speech failed — check TTS connection");
                         }
                     } else {
                         *LAST_TTS_ERROR.lock().unwrap() = None;
@@ -655,7 +660,7 @@ fn enqueue_speech_text(text: String) {
         generation: PLAYBACK_GENERATION.load(Ordering::Relaxed),
     };
     if tts_sender().send(job).is_err() {
-        eprintln!("[rpi-voice] TTS worker unavailable");
+        debug_log("TTS worker unavailable");
     } else {
         STREAM_TEXT_QUEUED.store(true, Ordering::Relaxed);
     }
@@ -795,12 +800,33 @@ extern "C" fn on_message_start(event: StablePluginEvent, _user_data: *mut c_void
         .unwrap_or(false);
     if is_assistant {
         TEXT_DELTA_BUFFER.lock().unwrap().clear();
+        STREAM_TEXT_SNAPSHOT.lock().unwrap().clear();
         STREAM_REPLY_ACTIVE.store(false, Ordering::Relaxed);
         STREAM_TEXT_QUEUED.store(false, Ordering::Relaxed);
         *STREAM_STARTED_AT.lock().unwrap() = Some(std::time::Instant::now());
         stream_mark("message_start (assistant)");
     }
     0
+}
+
+fn stream_event_from_payload(message_update: &Value) -> Option<&Value> {
+    message_update
+        .get("assistantMessageEvent")
+        .or_else(|| message_update.get("assistant_message_event"))
+        // rpi-extensions emits the assistant message event itself as the
+        // payload. Keep the nested forms above for older hosts/adapters.
+        .or_else(|| {
+            message_update
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|kind| {
+                    matches!(
+                        *kind,
+                        "text_delta" | "text_start" | "text_end" | "thinking_delta"
+                    )
+                })
+                .map(|_| message_update)
+        })
 }
 
 extern "C" fn on_message_update(event: StablePluginEvent, _user_data: *mut c_void) -> i32 {
@@ -813,18 +839,41 @@ extern "C" fn on_message_update(event: StablePluginEvent, _user_data: *mut c_voi
         debug_log(&format!("message_update: invalid JSON payload: {payload}"));
         return 0;
     };
-    let Some(stream_event) = message_update
-        .get("assistantMessageEvent")
-        .or_else(|| message_update.get("assistant_message_event"))
-    else {
-        debug_log("message_update: missing assistantMessageEvent");
-        return 0;
-    };
-    if stream_event.get("type").and_then(Value::as_str) != Some("text_delta") {
-        return 0;
-    }
-    let Some(delta) = stream_event.get("delta").and_then(Value::as_str) else {
-        debug_log("message_update: text_delta has no delta");
+
+    let delta = if let Some(stream_event) = stream_event_from_payload(&message_update) {
+        if stream_event.get("type").and_then(Value::as_str) != Some("text_delta") {
+            return 0;
+        }
+        let Some(delta) = stream_event.get("delta").and_then(Value::as_str) else {
+            debug_log("message_update: text_delta has no delta");
+            return 0;
+        };
+        delta.to_string()
+    } else if message_update
+        .get("role")
+        .or_else(|| message_update.get("kind"))
+        .and_then(Value::as_str)
+        == Some("assistant")
+    {
+        // Some providers send the entire growing assistant message on every
+        // update. Diff snapshots and only pass the newly appended suffix on.
+        let snapshot = extract_message_text(&message_update).trim_end().to_string();
+        let mut previous = STREAM_TEXT_SNAPSHOT.lock().unwrap();
+        let delta = if snapshot.starts_with(previous.as_str()) {
+            snapshot[previous.len()..].to_string()
+        } else if previous.is_empty() {
+            snapshot.clone()
+        } else {
+            debug_log("message_update: cumulative snapshot rewrote prior text");
+            String::new()
+        };
+        *previous = snapshot;
+        delta
+    } else {
+        debug_log(&format!(
+            "message_update: unrecognized payload: {}",
+            truncate(&payload, 1000)
+        ));
         return 0;
     };
     if delta.is_empty() {
@@ -834,7 +883,7 @@ extern "C" fn on_message_update(event: StablePluginEvent, _user_data: *mut c_voi
     STREAM_REPLY_ACTIVE.store(true, Ordering::Relaxed);
     let chunks = {
         let mut buffer = TEXT_DELTA_BUFFER.lock().unwrap();
-        buffer.push_str(delta);
+        buffer.push_str(&delta);
         take_speech_chunks(&mut buffer)
     };
     for chunk in chunks {
@@ -864,6 +913,7 @@ extern "C" fn on_message_end(event: StablePluginEvent, _user_data: *mut c_void) 
             "message_end: streaming reply, queued_from_stream={queued_before_flush}"
         ));
         flush_text_delta_buffer();
+        STREAM_TEXT_SNAPSHOT.lock().unwrap().clear();
         let streamed_text_queued = STREAM_TEXT_QUEUED.swap(false, Ordering::Relaxed);
         *STREAM_STARTED_AT.lock().unwrap() = None;
         if streamed_text_queued {
@@ -2750,6 +2800,63 @@ mod tests {
 
     /// Serializes the tests that touch the process-global playback slot.
     static PLAYBACK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn cumulative_assistant_snapshots_produce_only_the_new_suffix() {
+        let first = serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "第一句。第二"}]
+        });
+        let second = serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "第一句。第二句。"}]
+        });
+        let first_text = extract_message_text(&first).trim_end().to_string();
+        let second_text = extract_message_text(&second).trim_end().to_string();
+        assert_eq!(first_text, "第一句。第二");
+        assert_eq!(second_text, "第一句。第二句。");
+        assert!(second_text.starts_with(&first_text));
+        assert_eq!(&second_text[first_text.len()..], "句。");
+    }
+
+    #[test]
+    fn cumulative_snapshot_text_is_extracted_from_assistant_content() {
+        let payload = serde_json::json!({
+            "kind": "assistant",
+            "content": [{"type": "text", "text": "累积文本"}]
+        });
+        assert_eq!(extract_message_text(&payload).trim(), "累积文本");
+    }
+
+    #[test]
+    fn message_update_accepts_top_level_text_delta_payload() {
+        let payload = serde_json::json!({
+            "type": "text_delta",
+            "contentIndex": 0,
+            "delta": "实时输出。"
+        });
+        let event = stream_event_from_payload(&payload).expect("top-level event");
+        assert_eq!(event["type"], "text_delta");
+        assert_eq!(event["delta"], "实时输出。");
+    }
+
+    #[test]
+    fn message_update_keeps_legacy_nested_payload_compatibility() {
+        let payload = serde_json::json!({
+            "assistantMessageEvent": {
+                "type": "text_delta",
+                "delta": "旧格式。"
+            }
+        });
+        let event = stream_event_from_payload(&payload).expect("nested event");
+        assert_eq!(event["delta"], "旧格式。");
+    }
+
+    #[test]
+    fn message_update_rejects_unrelated_top_level_payload() {
+        let payload = serde_json::json!({"type": "tool_call", "delta": "不要朗读"});
+        assert!(stream_event_from_payload(&payload).is_none());
+    }
 
     #[test]
     fn native_text_delta_buffer_flushes_complete_sentences_only() {

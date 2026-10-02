@@ -118,7 +118,7 @@
   },
   {
     "name": "rpi-voice",
-    "version": "0.3.5",
+    "version": "0.3.6",
     "type": "extension",
     "tool": "/voice command + push-to-talk shortcut",
     "inspiredBy": "hands-free voice assistants, made local",
