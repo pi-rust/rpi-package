@@ -1,16 +1,16 @@
 use rpi_plugin_sdk::{
-    register_entrypoint, FreeStringFn, PluginApi, RuntimeActionId, StableToolSchema, StbString,
-    StbStringRef, StepHandle, StepResult, ToolPartialCb,
+    register_entrypoint, EventHandlerFn, EventTag, FreeStringFn, PluginApi, RuntimeActionId,
+    StablePluginEvent, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
+    ToolPartialCb,
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 const MAX_PLAN_CHARS: usize = 50_000;
 const PLAN_TOOL: &str = "plan_mode_complete";
 const START_TOOL: &str = "plan_mode_start";
+const PLAN_ENTRY: &str = "plan-mode";
 
 #[derive(Clone, Copy)]
 struct Runtime {
@@ -90,6 +90,41 @@ fn set_tools(tools: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn persist_state(active: bool, plan: Option<&str>) {
+    let _ = call_runtime(
+        RuntimeActionId::AppendEntry,
+        json!({"customType": PLAN_ENTRY, "data": {"active": active, "plan": plan}}),
+    );
+}
+
+fn restore_state() {
+    let Ok(value) = call_runtime(RuntimeActionId::GetSessionBranch, json!({})) else {
+        return;
+    };
+    let mut restored = None;
+    if let Some(entries) = value.get("entries").and_then(Value::as_array) {
+        for entry in entries {
+            if entry.get("type").and_then(Value::as_str) == Some("custom")
+                && entry.get("customType").and_then(Value::as_str) == Some(PLAN_ENTRY)
+            {
+                restored = entry.get("data").cloned();
+            }
+        }
+    }
+    if let Some(data) = restored {
+        let mut guard = state().lock().unwrap_or_else(|p| p.into_inner());
+        guard.active = data.get("active").and_then(Value::as_bool).unwrap_or(false);
+        guard.plan = data.get("plan").and_then(Value::as_str).map(str::to_owned);
+    }
+}
+
+extern "C" fn handle_event(event: StablePluginEvent, _: *mut c_void) -> i32 {
+    if matches!(event.tag, EventTag::SessionStart | EventTag::SessionTree) {
+        restore_state();
+    }
+    0
+}
+
 fn planning_tools() -> Vec<String> {
     vec![
         "read".to_string(),
@@ -99,34 +134,88 @@ fn planning_tools() -> Vec<String> {
     ]
 }
 
-fn plan_path() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".rpi")
-        .join("PLAN.md")
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanItem {
+    number: usize,
+    text: String,
+    completed: bool,
 }
 
-fn save_plan(plan: &str) -> Result<PathBuf, String> {
-    let path = plan_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create plan directory: {e}"))?;
+fn parse_plan_items(plan: &str) -> Vec<PlanItem> {
+    let mut items: Vec<PlanItem> = Vec::new();
+    let mut done = std::collections::HashSet::new();
+    for line in plan.lines() {
+        let line = line.trim();
+        if let Some(index) = line
+            .strip_prefix("[DONE:")
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            if let Ok(index) = index.trim().parse::<usize>() {
+                done.insert(index);
+            }
+        }
     }
-    let tmp = path.with_file_name(format!("PLAN.md.tmp-{}", std::process::id()));
-    fs::write(&tmp, format!("# Implementation Plan\n\n{plan}\n"))
-        .map_err(|e| format!("write plan: {e}"))?;
-    if let Err(error) = fs::rename(&tmp, &path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("commit plan: {error}"));
+    for line in plan.lines() {
+        let line = line.trim();
+        if line.starts_with("[DONE:") {
+            continue;
+        }
+
+        let mut candidate = line;
+        let checked = if let Some(value) = candidate.strip_prefix("- [x] ") {
+            candidate = value;
+            true
+        } else if let Some(value) = candidate.strip_prefix("- [X] ") {
+            candidate = value;
+            true
+        } else if let Some(value) = candidate.strip_prefix("- [ ] ") {
+            candidate = value;
+            false
+        } else {
+            false
+        };
+        let Some((number, text)) = candidate.split_once('.') else {
+            continue;
+        };
+        let Ok(number) = number.trim().parse::<usize>() else {
+            continue;
+        };
+        let text = text.trim();
+        if !text.is_empty() {
+            let completed = checked || done.contains(&number);
+            if let Some(existing) = items.iter_mut().find(|item| item.number == number) {
+                existing.completed |= completed;
+            } else {
+                items.push(PlanItem {
+                    number,
+                    text: text.to_string(),
+                    completed,
+                });
+            }
+        }
     }
-    Ok(path)
+    items
 }
 
-fn saved_plan() -> Option<String> {
-    fs::read_to_string(plan_path()).ok().and_then(|text| {
-        text.strip_prefix("# Implementation Plan\n\n")
-            .map(|plan| plan.trim().to_string())
-            .filter(|plan| !plan.is_empty())
-    })
+fn plan_outline(plan: &str) -> String {
+    let items = parse_plan_items(plan);
+    if items.is_empty() {
+        return "(Plan saved; use `/plan show` to view the full plan.)".to_string();
+    }
+    let total = items.len();
+    let completed = items.iter().filter(|item| item.completed).count();
+    let mut lines = vec![format!("Progress: {completed}/{total} complete")];
+    for item in items.iter().take(12) {
+        let marker = if item.completed { '✓' } else { '○' };
+        lines.push(format!("{marker} {}. {}", item.number, item.text));
+    }
+    if total > 12 {
+        lines.push("... (use `/plan show` to view the remaining steps)".to_string());
+    }
+    lines.join(
+        "
+",
+    )
 }
 
 fn markdown_plan(plan: Option<&str>, active: bool) -> String {
@@ -145,9 +234,7 @@ fn markdown_plan(plan: Option<&str>, active: bool) -> String {
         Some(plan) if !plan.trim().is_empty() => plan.trim().to_string(),
         _ => "_No completed plan yet._".to_string(),
     };
-    format!(
-        "## Plan Mode\n\n**Status:** {status}\n\n### Implementation plan\n\n{body}\n\n---\n\n_{hint}_"
-    )
+    format!("## Plan\n\n**{status}**\n\n{body}\n\n> {hint}")
 }
 
 fn activate() -> Result<bool, String> {
@@ -162,6 +249,8 @@ fn activate() -> Result<bool, String> {
     guard.previous_tools = Some(previous);
     guard.active = true;
     guard.plan = None;
+    drop(guard);
+    persist_state(true, None);
     Ok(true)
 }
 
@@ -176,6 +265,9 @@ fn deactivate() -> Result<bool, String> {
         set_tools(&previous)?;
     }
     guard.active = false;
+    let plan = guard.plan.clone();
+    drop(guard);
+    persist_state(false, plan.as_deref());
     Ok(true)
 }
 
@@ -183,18 +275,13 @@ fn plan_status() -> String {
     let guard = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let saved = saved_plan();
-    let stored = guard.plan.as_deref().or(saved.as_deref());
-    let path = plan_path();
-    let location = if path.exists() {
-        format!("Saved plan: `{}`", path.display())
-    } else {
-        "Saved plan: _none_".to_string()
-    };
     format!(
-        "{}\n\n{}\n\n{}",
-        markdown_plan(stored, guard.active),
-        location,
+        "{}
+
+Stored in the current session.
+
+{}",
+        markdown_plan(guard.plan.as_deref(), guard.active),
         if guard.active {
             "Next: continue inspecting the repository, then call `plan_mode_complete`."
         } else {
@@ -210,13 +297,16 @@ fn start_plan(raw: &Value) -> Result<String, String> {
         .map(str::trim)
         .filter(|request| !request.is_empty());
     activate()?;
+    let message = request
+        .map(|value| format!("Plan mode started for: {value}"))
+        .unwrap_or_else(|| {
+            "Plan mode started. Inspect the repository, then call `plan_mode_complete`.".to_string()
+        });
     Ok(json!({
-        "content": [{"type": "text", "text": format!(
-            "## Plan Mode\n\n**Status:** 🟡 Planning\n\n{}\n\n---\n\n_The model must inspect the repository without editing files, then submit the complete plan with `plan_mode_complete`._",
-            request.map(|value| format!("### Request\n\n> {value}" )).unwrap_or_else(|| "_No request supplied._".to_string())
-        )}],
-        "details": {"kind": "plan", "active": true, "markdown": true}
-    }).to_string())
+        "content": [{"type": "text", "text": message}],
+        "details": {"kind": "plan", "active": true}
+    })
+    .to_string())
 }
 
 fn complete_plan(raw: &Value) -> Result<String, String> {
@@ -237,7 +327,6 @@ fn complete_plan(raw: &Value) -> Result<String, String> {
             return Err("plan_mode_complete is only available while plan mode is active".into());
         }
     }
-    let path = save_plan(plan)?;
     {
         let mut guard = state()
             .lock()
@@ -246,8 +335,15 @@ fn complete_plan(raw: &Value) -> Result<String, String> {
     }
     deactivate()?;
     Ok(json!({
-        "content": [{"type": "text", "text": format!("{}\n\n**Saved to:** `{}`\n\n**Next:** Plan Mode is complete; normal tool access has been restored.", markdown_plan(Some(plan), false), path.display())}],
-        "details": {"kind": "plan", "plan": plan, "path": path, "active": false, "markdown": true}
+        "content": [{"type": "text", "text": format!(
+            "Plan complete.
+
+{}
+
+Normal tool access restored.",
+            plan_outline(plan)
+        )}],
+        "details": {"kind": "plan", "plan": plan, "active": false}
     })
     .to_string())
 }
@@ -351,14 +447,15 @@ extern "C" fn plan_command(args_json: StbStringRef, out: *mut StbString, _: *mut
         },
         "show" | "status" | "" => plan_status(),
         "finalize" => {
-            let path = plan_path();
-            if path.exists() {
-                format!(
-                    "Plan saved at `{}`. Use `/plan show` to review it.",
-                    path.display()
-                )
+            if state()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .plan
+                .is_some()
+            {
+                "Plan is stored in the current session. Use `/plan show` to review it.".to_string()
             } else {
-                "No saved plan yet. Complete plan mode with `plan_mode_complete` first.".to_string()
+                "No plan yet. Complete plan mode with `plan_mode_complete` first.".to_string()
             }
         }
         "exit" | "off" => match deactivate() {
@@ -390,6 +487,15 @@ extern "C" fn plan_command(args_json: StbStringRef, out: *mut StbString, _: *mut
 pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
         register_entrypoint(api, |api| {
+            if let Some(register_event) = api.register_event_handler {
+                for tag in [EventTag::SessionStart, EventTag::SessionTree] {
+                    if register_event(tag, handle_event as EventHandlerFn, std::ptr::null_mut())
+                        != 0
+                    {
+                        return 1;
+                    }
+                }
+            }
             let Some(register) = api.register_tool else {
                 return 1;
             };
@@ -449,5 +555,45 @@ mod tests {
     #[test]
     fn rejects_empty_plan() {
         assert!(complete_plan(&json!({"plan": ""})).is_err());
+    }
+
+    #[test]
+    fn extracts_numbered_outline_without_markdown() {
+        let outline = plan_outline("## Plan\n\n1. Add the parser\n2. Update the UI\n\nDetails");
+        assert_eq!(
+            outline,
+            "Progress: 0/2 complete
+○ 1. Add the parser
+○ 2. Update the UI"
+        );
+    }
+
+    #[test]
+    fn marks_done_steps_from_tags_and_checkboxes() {
+        let items = parse_plan_items(
+            "1. First
+2. Second
+[DONE:1]
+- [x] 2. Second",
+        );
+        assert_eq!(items[0].completed, true);
+        assert_eq!(items[1].completed, true);
+        assert!(plan_outline(
+            "1. First
+2. Second
+[DONE:1]"
+        )
+        .contains("Progress: 1/2 complete"));
+    }
+
+    #[test]
+    fn limits_long_outline() {
+        let plan = (1..=13)
+            .map(|index| format!("{index}. Step {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let outline = plan_outline(&plan);
+        assert!(outline.contains("... (use `/plan show` to view the remaining steps)"));
+        assert_eq!(outline.lines().count(), 14);
     }
 }

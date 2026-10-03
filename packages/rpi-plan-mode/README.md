@@ -9,7 +9,7 @@ CodeX-like planning mode for the rpi Rust agent.
 /plan start            # enter planning mode
 /plan <request>        # enter planning mode and submit a planning request
 /plan show             # show the current or last saved plan
-/plan finalize         # show the saved plan path
+/plan finalize         # confirm the session plan
 /plan exit             # leave planning mode
 ```
 
@@ -24,12 +24,16 @@ exploration plus `plan_mode_complete`.
 }
 ```
 
-The `plan_mode_complete` tool stores the latest plan in the current project's
-`.rpi/PLAN.md`, returns it as Markdown, and restores the tool set that was active
-before planning started. A new `/plan start` replaces the in-memory plan; the
-last saved plan remains available through `/plan show`.
+The `plan_mode_complete` tool stores the latest plan in a `plan-mode` session
+entry, returns a compact plain-text outline, and restores the tool set that was
+active before planning started. The current session branch is the source of
+truth, so fork, tree navigation, and resume restore the matching plan state.
 
-This is intentionally the first Rust implementation of the upstream
-`pi-plan-mode` workflow. It keeps the important safety boundary and explicit
-completion tool while leaving the richer selector/settings UI to a later
-iteration.
+Numbered steps are shown with progress markers. The extension understands
+`[DONE:1]` markers and checkbox forms such as `- [x] 2. Run tests`, matching
+Pi's plan-mode progress convention. A new `/plan start` replaces the in-memory plan; the
+the current branch plan remains available through `/plan show`.
+
+This follows the upstream `pi-plan-mode` state model: planning state is
+owned by the extension and persisted in session entries, while the host owns
+the session lifecycle and UI.
