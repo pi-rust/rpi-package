@@ -343,7 +343,7 @@ fn complete_plan(raw: &Value) -> Result<String, String> {
 Normal tool access restored.",
             plan_outline(plan)
         )}],
-        "details": {"kind": "plan", "plan": plan, "active": false}
+        "details": {"kind": "plan", "plan": plan, "active": false, "markdown": true}
     })
     .to_string())
 }
