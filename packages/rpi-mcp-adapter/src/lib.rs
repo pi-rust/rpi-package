@@ -18,6 +18,35 @@ pub use jsonrpc::{
 use serde_json::Value;
 pub use transport::{http_request, StdioTransport};
 
+fn mcp_call(params: &Value) -> Result<String, String> {
+    let url = validate_public_url(&string_param(params, "url")?)?;
+    let tool = string_param(params, "tool")?;
+    if tool.trim().is_empty() || tool.len() > 200 {
+        return Err("MCP tool must contain 1-200 characters".into());
+    }
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Default::default()));
+    let timeout = params
+        .get("timeoutSeconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(15);
+    let request = tools_call_request(1, &tool, arguments);
+    let response = http_request(
+        &McpServerConfig::Http(HttpServer {
+            url: url.to_string(),
+            headers: Default::default(),
+            enabled: true,
+            timeout,
+            exposure: Exposure::Direct,
+        }),
+        &request,
+        timeout,
+    )?;
+    parse_tools_call(response)
+}
+
 fn mcp_request(params: &Value) -> Result<String, String> {
     let url = validate_public_url(&string_param(params, "url")?)?;
     let method = string_param(params, "method")?;
@@ -62,12 +91,27 @@ fn mcp_request(params: &Value) -> Result<String, String> {
     Ok(json.to_string())
 }
 
-export_single_tool_plugin!(
+export_two_tool_plugin!(
     mcp_request,
     "mcp_request",
     "Send a bounded JSON-RPC 2.0 request to an HTTP MCP server.",
-    r#"{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string"},"params":{},"id":{},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["url","method"]}"#
+    r#"{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string"},"params":{},"id":{},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["url","method"]}"#,
+    mcp_call,
+    "mcp_call",
+    "Call a named tool on an HTTP MCP server through a stable dispatcher.",
+    r#"{"type":"object","properties":{"url":{"type":"string"},"tool":{"type":"string"},"arguments":{"type":"object"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["url","tool"]}"#
 );
+
+#[cfg(test)]
+mod dispatcher_tests {
+    use super::*;
+
+    #[test]
+    fn dispatcher_requires_tool_name() {
+        let error = mcp_call(&serde_json::json!({"url":"https://example.com/mcp"})).unwrap_err();
+        assert!(error.contains("tool"));
+    }
+}
 
 #[cfg(test)]
 mod tests {

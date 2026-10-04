@@ -24,9 +24,16 @@ The host remains MCP-agnostic. The existing `mcp_request` tool accepts `url`,
 
 The current RPI ABI registers tools during extension registration and does not
 provide runtime tool registration. Therefore dynamic Pi-style
-`mcp__server__tool` registration is not claimed yet. The next adapter layer will
-use a stable per-server dispatcher or require a future generic runtime-tool API;
-it will not add MCP-specific behavior to the host.
+`mcp__server__tool` registration is not claimed. This package now exposes a
+stable `mcp_call` dispatcher:
+
+```json
+{"url":"https://example.com/mcp","tool":"read_file","arguments":{}}
+```
+
+The dispatcher sends an MCP `tools/call` request without adding MCP-specific
+behavior to the host. A future adapter layer can add per-server dispatchers or
+use a future generic runtime-tool API.
 
 Resources, prompts, sampling, elicitation, MCP OAuth, and dynamic
 `tools/list_changed` registry updates remain follow-up work in this package.

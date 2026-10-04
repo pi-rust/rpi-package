@@ -212,3 +212,93 @@ macro_rules! export_single_tool_plugin {
         }
     };
 }
+
+#[macro_export]
+macro_rules! export_two_tool_plugin {
+    ($first:path, $first_name:literal, $first_description:literal, $first_parameters:literal,
+     $second:path, $second_name:literal, $second_description:literal, $second_parameters:literal) => {
+        extern "C" fn first_execute(
+            _: rpi_plugin_sdk::StbStringRef,
+            params: rpi_plugin_sdk::StbString,
+            free: Option<rpi_plugin_sdk::FreeStringFn>,
+        ) -> rpi_plugin_sdk::StepHandle {
+            $crate::kit::execute(params, free, $first)
+        }
+        extern "C" fn first_poll(
+            handle: rpi_plugin_sdk::StepHandle,
+            callback: Option<rpi_plugin_sdk::ToolPartialCb>,
+            user_data: *mut std::ffi::c_void,
+        ) -> rpi_plugin_sdk::StepResult {
+            unsafe { $crate::kit::poll(handle, callback, user_data) }
+        }
+        extern "C" fn first_cancel(handle: rpi_plugin_sdk::StepHandle) {
+            unsafe { $crate::kit::cancel(handle) }
+        }
+        extern "C" fn first_destroy(handle: rpi_plugin_sdk::StepHandle) {
+            unsafe { $crate::kit::destroy(handle) }
+        }
+        extern "C" fn second_execute(
+            _: rpi_plugin_sdk::StbStringRef,
+            params: rpi_plugin_sdk::StbString,
+            free: Option<rpi_plugin_sdk::FreeStringFn>,
+        ) -> rpi_plugin_sdk::StepHandle {
+            $crate::kit::execute(params, free, $second)
+        }
+        extern "C" fn second_poll(
+            handle: rpi_plugin_sdk::StepHandle,
+            callback: Option<rpi_plugin_sdk::ToolPartialCb>,
+            user_data: *mut std::ffi::c_void,
+        ) -> rpi_plugin_sdk::StepResult {
+            unsafe { $crate::kit::poll(handle, callback, user_data) }
+        }
+        extern "C" fn second_cancel(handle: rpi_plugin_sdk::StepHandle) {
+            unsafe { $crate::kit::cancel(handle) }
+        }
+        extern "C" fn second_destroy(handle: rpi_plugin_sdk::StepHandle) {
+            unsafe { $crate::kit::destroy(handle) }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn rpi_plugin_register(api: *const rpi_plugin_sdk::PluginApi) -> i32 {
+            unsafe {
+                rpi_plugin_sdk::register_entrypoint(api, |api| {
+                    let Some(register) = api.register_tool else {
+                        return 1;
+                    };
+                    let first_schema = Box::new($crate::kit::schema(
+                        $first_name,
+                        $first_description,
+                        $first_parameters,
+                    ));
+                    let first_rc = register(
+                        &*first_schema,
+                        first_execute,
+                        first_poll,
+                        first_cancel,
+                        first_destroy,
+                        $crate::kit::plugin_free_string,
+                    );
+                    drop(first_schema);
+                    if first_rc != 0 {
+                        return first_rc;
+                    }
+                    let second_schema = Box::new($crate::kit::schema(
+                        $second_name,
+                        $second_description,
+                        $second_parameters,
+                    ));
+                    let second_rc = register(
+                        &*second_schema,
+                        second_execute,
+                        second_poll,
+                        second_cancel,
+                        second_destroy,
+                        $crate::kit::plugin_free_string,
+                    );
+                    drop(second_schema);
+                    second_rc
+                })
+            }
+        }
+    };
+}
