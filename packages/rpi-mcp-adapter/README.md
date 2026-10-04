@@ -54,3 +54,7 @@ dispatchers or use a future generic runtime-tool API.
 
 Resources, prompts, sampling, elicitation, MCP OAuth, and dynamic
 `tools/list_changed` registry updates remain follow-up work in this package.
+
+The package includes a small `fake_mcp_server` binary and an integration test
+that exercises the stdio lifecycle end to end, including initialization,
+`tools/list`, `tools/call`, unknown-tool handling, and child-process cleanup.
