@@ -16,7 +16,7 @@ pub use connection::{
 pub use jsonrpc::{
     call_result_text, tool_list, ErrorObject, Notification, Request, Response, Tool,
 };
-pub use runtime::call_from_config;
+pub use runtime::{call_from_config, discover_from_config, DiscoveredServer};
 use serde_json::Value;
 pub use transport::{http_request, StdioTransport};
 

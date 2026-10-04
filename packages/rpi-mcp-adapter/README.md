@@ -47,8 +47,10 @@ config/server pair:
 For configured servers it performs `initialize`, sends
 `notifications/initialized`, calls `tools/list`, verifies the requested tool,
 and then performs `tools/call`. Both configured HTTP and stdio servers are
-supported. A future adapter layer can add per-server dispatchers or use a
-future generic runtime-tool API.
+supported. The package also exposes `discover_from_config`, which returns the
+server info and discovered tool schemas for status/list integrations without
+adding MCP behavior to the host. A future adapter layer can add per-server
+dispatchers or use a future generic runtime-tool API.
 
 Resources, prompts, sampling, elicitation, MCP OAuth, and dynamic
 `tools/list_changed` registry updates remain follow-up work in this package.
