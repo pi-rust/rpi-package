@@ -6,6 +6,10 @@ runtime and exposes JSON actions through one rpi tool:
 
 `start`, `status`, `list`, `receive`, `send`, and `stop`.
 
+The `send` action accepts `content.type` of `text`, `markdown`, or `card`.
+`markdown` is rendered through a CardKit 2.0 card and preserves the original
+Markdown instead of degrading it into plain text or rich-text tags.
+
 Configuration is loaded from `RPI_IM_CONFIG`, project `.rpi/im.json`, or the
 global `~/.rpi/agent/im.json` (in that order). Each profile may provide either
 `appSecret` directly or `appSecretEnv` with the name of an environment variable;
@@ -54,7 +58,18 @@ over long connection, and grant the required message permissions.
 
 When `autoReply` is enabled, incoming text messages are passed to the active
 rpi Agent through the ABI v2 runtime bridge. The generated final text is sent
-back to the same Feishu conversation. It defaults to `false`; without it,
+back to the same Feishu conversation as a **CardKit 2.0 card**: the raw
+Markdown goes into the card's `markdown` element and Feishu renders headings,
+bold/italic, strikethrough, lists, code blocks, tables and links natively.
+This follows the Hermes (`hermes-lark-streaming`) channel strategy. A light
+pre-pass demotes headings to the levels Feishu renders, escapes stray `*` that
+Feishu would mis-pair as emphasis, drops image refs that are not `img_` keys and
+splits very long replies across several cards.
+
+Auto replies use a Feishu/Lark channel system prompt: the model returns only the
+user-facing text, without JSON/API envelopes or a `post`/card envelope. The
+same channel rules are applied to the ABI runtime path and to the headless
+`rpi --print` fallback. It defaults to `false`; without it,
 messages remain available through the `receive` action only. In headless mode,
 when the host has not built an Agent harness yet, the extension falls back to a
 bounded `rpi --print --no-extensions` child process so automatic replies still

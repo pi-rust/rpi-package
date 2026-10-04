@@ -113,3 +113,9 @@ tasks:
     cmds:
       - cargo test -p rpi-voice
       - cargo publish --allow-dirty -p rpi-voice
+
+  publish-im-message:
+    desc: Publish rpi-im-message with CardKit 2.0 Markdown rendering
+    cmds:
+      - cargo test -p rpi-im-message
+      - cargo publish --allow-dirty -p rpi-im-message
