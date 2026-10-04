@@ -4,6 +4,7 @@ mod config;
 mod connection;
 mod jsonrpc;
 mod kit;
+mod runtime;
 mod transport;
 
 use crate::kit::{http_client, string_param, validate_public_url};
@@ -15,10 +16,22 @@ pub use connection::{
 pub use jsonrpc::{
     call_result_text, tool_list, ErrorObject, Notification, Request, Response, Tool,
 };
+pub use runtime::call_from_config;
 use serde_json::Value;
 pub use transport::{http_request, StdioTransport};
 
 fn mcp_call(params: &Value) -> Result<String, String> {
+    if let (Some(config_path), Some(server_name)) = (
+        params.get("configPath").and_then(Value::as_str),
+        params.get("server").and_then(Value::as_str),
+    ) {
+        let tool = string_param(params, "tool")?;
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Default::default()));
+        return call_from_config(config_path, server_name, &tool, arguments);
+    }
     let url = validate_public_url(&string_param(params, "url")?)?;
     let tool = string_param(params, "tool")?;
     if tool.trim().is_empty() || tool.len() > 200 {
@@ -99,7 +112,7 @@ export_two_tool_plugin!(
     mcp_call,
     "mcp_call",
     "Call a named tool on an HTTP MCP server through a stable dispatcher.",
-    r#"{"type":"object","properties":{"url":{"type":"string"},"tool":{"type":"string"},"arguments":{"type":"object"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["url","tool"]}"#
+    r#"{"type":"object","properties":{"url":{"type":"string"},"configPath":{"type":"string"},"server":{"type":"string"},"tool":{"type":"string"},"arguments":{"type":"object"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["tool"]}"#
 );
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 //! package tool ABI is synchronous. A future connection manager can run these
 //! primitives on a dedicated worker without changing the host ABI.
 
-use crate::jsonrpc::{Request, Response};
+use crate::jsonrpc::{Notification, Request, Response};
 use crate::kit::{http_client, validate_public_url};
 use crate::McpServerConfig;
 use std::collections::BTreeMap;
@@ -49,6 +49,16 @@ impl StdioTransport {
             stdin,
             stdout: BufReader::new(stdout),
         })
+    }
+
+    pub fn notify(&mut self, notification: &Notification) -> Result<(), String> {
+        let line = serde_json::to_string(notification)
+            .map_err(|error| format!("encode MCP notification: {error}"))?;
+        writeln!(self.stdin, "{line}")
+            .map_err(|error| format!("write MCP notification: {error}"))?;
+        self.stdin
+            .flush()
+            .map_err(|error| format!("flush MCP notification: {error}"))
     }
 
     pub fn request(&mut self, request: &Request) -> Result<Response, String> {

@@ -32,8 +32,23 @@ stable `mcp_call` dispatcher:
 ```
 
 The dispatcher sends an MCP `tools/call` request without adding MCP-specific
-behavior to the host. A future adapter layer can add per-server dispatchers or
-use a future generic runtime-tool API.
+behavior to the host. It accepts either a direct HTTP endpoint or a Pi-style
+config/server pair:
+
+```json
+{
+  "configPath": "mcp.json",
+  "server": "filesystem",
+  "tool": "read_file",
+  "arguments": {"path": "README.md"}
+}
+```
+
+For configured servers it performs `initialize`, sends
+`notifications/initialized`, calls `tools/list`, verifies the requested tool,
+and then performs `tools/call`. Both configured HTTP and stdio servers are
+supported. A future adapter layer can add per-server dispatchers or use a
+future generic runtime-tool API.
 
 Resources, prompts, sampling, elicitation, MCP OAuth, and dynamic
 `tools/list_changed` registry updates remain follow-up work in this package.
