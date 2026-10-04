@@ -1,9 +1,22 @@
 use std::io::Read;
 
+mod config;
+mod connection;
+mod jsonrpc;
 mod kit;
+mod transport;
 
 use crate::kit::{http_client, string_param, validate_public_url};
+pub use config::{Exposure, HttpServer, McpConfig, McpServerConfig, StdioServer};
+pub use connection::{
+    initialize_request, initialized_notification, parse_initialize, parse_tools_call,
+    parse_tools_list, tools_call_request, tools_list_request, ServerInfo, PROTOCOL_VERSION,
+};
+pub use jsonrpc::{
+    call_result_text, tool_list, ErrorObject, Notification, Request, Response, Tool,
+};
 use serde_json::Value;
+pub use transport::{http_request, StdioTransport};
 
 fn mcp_request(params: &Value) -> Result<String, String> {
     let url = validate_public_url(&string_param(params, "url")?)?;
