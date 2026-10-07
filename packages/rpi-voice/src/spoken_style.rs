@@ -119,7 +119,7 @@ extern "C" fn on_before_agent_start(
     let enabled = super::AUTO_TTS_ENABLED.load(Ordering::Relaxed);
 
     // Nothing to say, and the cheapest exit — most turns in a typed session.
-    if !enabled {
+    if !enabled && !super::pet::enabled() {
         write_out(out, json!({}));
         return 0;
     }
@@ -139,7 +139,9 @@ extern "C" fn on_before_agent_start(
         .and_then(Value::as_str)
         .unwrap_or_default();
 
-    match prompt_for_turn(base, enabled) {
+    let spoken = prompt_for_turn(base, enabled);
+    let next = super::pet::prompt(spoken.as_deref().unwrap_or(base)).or(spoken);
+    match next {
         Some(next) => {
             super::debug_log(&format!(
                 "spoken style: appended {} chars (prompt {} -> {})",

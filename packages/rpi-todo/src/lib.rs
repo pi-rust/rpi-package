@@ -32,6 +32,7 @@ struct Todo {
     id: u64,
     text: String,
     done: bool,
+    in_progress: bool,
 }
 
 fn state() -> &'static Mutex<TodoState> {
@@ -41,7 +42,8 @@ fn state() -> &'static Mutex<TodoState> {
 fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     let runtime = *RUNTIME.get().ok_or("todo runtime is unavailable")?;
     let mut out = StbString::empty();
-    let input = StbStringRef::from_str(&args.to_string());
+    let input_json = args.to_string();
+    let input = StbStringRef::from_str(&input_json);
     let rc = (runtime.action)(id.into(), input, &mut out, runtime.user_data);
     let text = out.to_string_lossy();
     (runtime.free_string)(out);
@@ -69,7 +71,11 @@ fn parse_todos(value: &Value) -> Option<TodoState> {
         result.push(Todo {
             id,
             text,
-            done: item.get("done").and_then(Value::as_bool).unwrap_or(false),
+            done: item
+                .get("done")
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| item.get("status").and_then(Value::as_str) == Some("completed")),
+            in_progress: item.get("status").and_then(Value::as_str) == Some("in_progress"),
         });
         next_id = next_id.max(id.saturating_add(1));
     }
@@ -80,7 +86,7 @@ fn parse_todos(value: &Value) -> Option<TodoState> {
 }
 
 fn state_json(state: &TodoState) -> Value {
-    json!({"todos": state.todos.iter().map(|todo| json!({"id":todo.id,"text":todo.text,"done":todo.done})).collect::<Vec<_>>(), "nextId": state.next_id})
+    json!({"todos": state.todos.iter().map(|todo| json!({"id":todo.id,"text":todo.text,"done":todo.done,"status":if todo.done {"completed"} else if todo.in_progress {"in_progress"} else {"pending"}})).collect::<Vec<_>>(), "nextId": state.next_id})
 }
 
 fn restore_from_branch() {
@@ -134,7 +140,13 @@ fn render(state: &TodoState, include_done: bool) -> String {
     for todo in state.todos.iter().filter(|todo| include_done || !todo.done) {
         lines.push(format!(
             "[{}] #{}: {}",
-            if todo.done { "x" } else { " " },
+            if todo.done {
+                "✓"
+            } else if todo.in_progress {
+                "•"
+            } else {
+                " "
+            },
             todo.id,
             todo.text
         ));
@@ -188,15 +200,11 @@ fn todo(params: &Value) -> Result<String, String> {
                 id: guard.next_id.max(1),
                 text: text.to_string(),
                 done: false,
+                in_progress: false,
             };
             guard.next_id = todo.id.saturating_add(1);
             guard.todos.push(todo.clone());
-            Ok(result(
-                action,
-                &guard,
-                format!("Added todo #{}: {}", todo.id, todo.text),
-                None,
-            ))
+            Ok(result(action, &guard, render(&guard, true), None))
         }
         "toggle" => {
             let id = params
@@ -212,29 +220,36 @@ fn todo(params: &Value) -> Result<String, String> {
                 ));
             };
             guard.todos[index].done = !guard.todos[index].done;
-            let done = guard.todos[index].done;
-            Ok(result(
-                action,
-                &guard,
-                format!(
-                    "Todo #{id} {}",
-                    if done { "completed" } else { "uncompleted" }
-                ),
-                None,
-            ))
+            guard.todos[index].in_progress = false;
+            Ok(result(action, &guard, render(&guard, true), None))
+        }
+        "update" => {
+            let id = params
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or("id required for update")?;
+            let status = params
+                .get("status")
+                .and_then(Value::as_str)
+                .ok_or("status required for update")?;
+            if !matches!(status, "pending" | "in_progress" | "completed") {
+                return Err("status must be pending, in_progress, or completed".into());
+            }
+            let item = guard
+                .todos
+                .iter_mut()
+                .find(|todo| todo.id == id)
+                .ok_or_else(|| format!("Todo #{id} not found"))?;
+            item.done = status == "completed";
+            item.in_progress = status == "in_progress";
+            Ok(result(action, &guard, render(&guard, true), None))
         }
         "clear" => {
-            let count = guard.todos.len();
             guard.todos.clear();
             guard.next_id = 1;
-            Ok(result(
-                action,
-                &guard,
-                format!("Cleared {count} todos"),
-                None,
-            ))
+            Ok(result(action, &guard, render(&guard, true), None))
         }
-        _ => Err("action must be one of: list, add, toggle, clear".into()),
+        _ => Err("action must be one of: list, add, update, toggle, clear".into()),
     }
 }
 
@@ -311,7 +326,9 @@ extern "C" fn command(args: StbStringRef, out: *mut StbString, _: *mut c_void) -
 }
 
 #[no_mangle]
-pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
+/// # Safety
+/// The host must provide a valid ABI-compatible API for the duration of registration.
+pub unsafe extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
         register_entrypoint(api, |api| {
             let _ = RUNTIME.set(Runtime {
@@ -344,8 +361,8 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
             };
             let schema = Box::new(StableToolSchema {
             name: StbString::from_string(TOOL.into()),
-            description: StbString::from_string("Manage a session todo list. Actions: list, add (text), toggle (id), clear".into()),
-            parameters: StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","add","toggle","clear"]},"text":{"type":"string"},"id":{"type":"integer"},"includeDone":{"type":"boolean"}},"required":["action"]}"#.into()),
+            description: StbString::from_string("Manage one session task list. Actions: list, add (text), update (id, status: pending/in_progress/completed), toggle (id), clear. Mark the task you are working on in_progress and completed when finished.".into()),
+            parameters: StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","add","update","toggle","clear"]},"text":{"type":"string"},"id":{"type":"integer"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"includeDone":{"type":"boolean"}},"required":["action"]}"#.into()),
         });
             let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
             drop(schema);
@@ -367,5 +384,21 @@ mod tests {
     #[test]
     fn rejects_unknown_action() {
         assert!(todo(&json!({"action":"remove"})).is_err());
+    }
+    #[test]
+    fn renders_and_restores_all_task_states() {
+        let state = parse_todos(&json!({"todos":[
+            {"id":1,"text":"Pending task","done":false},
+            {"id":2,"text":"Working task","status":"in_progress"},
+            {"id":3,"text":"Finished task","status":"completed"}
+        ]}))
+        .unwrap();
+        let text = render(&state, true);
+        assert!(text.contains("1/3 completed"));
+        assert!(text.contains("[ ] #1: Pending task"));
+        assert!(text.contains("[•] #2: Working task"));
+        assert!(text.contains("[✓] #3: Finished task"));
+        assert_eq!(state_json(&state)["todos"][2]["done"], true);
+        assert_eq!(state_json(&state)["todos"][1]["status"], "in_progress");
     }
 }

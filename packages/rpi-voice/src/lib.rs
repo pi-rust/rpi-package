@@ -117,6 +117,7 @@ mod edge_tts;
 #[cfg(feature = "local-stt")]
 mod local_stt;
 mod player;
+mod pet;
 mod recorder;
 mod spoken_style;
 mod whisper;
@@ -173,6 +174,7 @@ impl RuntimeContext {
             RuntimeActionId::SetStatus,
             json!({"key": "voice", "value": value}),
         );
+        pet::voice_status(value);
     }
 }
 
@@ -604,6 +606,7 @@ fn tts_sender() -> &'static mpsc::Sender<SpeechJob> {
                         continue;
                     }
                     TTS_PLAYING.store(true, Ordering::Relaxed);
+                    pet::caption(&text, "pet");
                     let outcome = synthesize_and_play(&text);
                     if let Err(e) = outcome {
                         // Do not write TTS errors to stderr: the interactive host
@@ -809,6 +812,19 @@ extern "C" fn on_message_start(event: StablePluginEvent, _user_data: *mut c_void
     0
 }
 
+/// Keep the accepted snapshot at its high-water mark. A transient rollback or
+/// rewrite must not make text already delivered to speech look new again.
+fn cumulative_speech_delta(previous: &mut String, snapshot: String) -> String {
+    if snapshot.starts_with(previous.as_str()) {
+        let suffix = snapshot[previous.len()..].to_string();
+        *previous = snapshot;
+        suffix
+    } else {
+        debug_log("message_update: ignored rewritten cumulative snapshot");
+        String::new()
+    }
+}
+
 fn stream_event_from_payload(message_update: &Value) -> Option<&Value> {
     message_update
         .get("assistantMessageEvent")
@@ -859,16 +875,7 @@ extern "C" fn on_message_update(event: StablePluginEvent, _user_data: *mut c_voi
         // update. Diff snapshots and only pass the newly appended suffix on.
         let snapshot = extract_message_text(&message_update).trim_end().to_string();
         let mut previous = STREAM_TEXT_SNAPSHOT.lock().unwrap();
-        let delta = if snapshot.starts_with(previous.as_str()) {
-            snapshot[previous.len()..].to_string()
-        } else if previous.is_empty() {
-            snapshot.clone()
-        } else {
-            debug_log("message_update: cumulative snapshot rewrote prior text");
-            String::new()
-        };
-        *previous = snapshot;
-        delta
+        cumulative_speech_delta(&mut previous, snapshot)
     } else {
         debug_log(&format!(
             "message_update: unrecognized payload: {}",
@@ -897,6 +904,12 @@ extern "C" fn on_message_update(event: StablePluginEvent, _user_data: *mut c_voi
 }
 
 extern "C" fn on_message_end(event: StablePluginEvent, _user_data: *mut c_void) -> i32 {
+    if pet::enabled() {
+        let payload = unsafe { event.payload.message.message.to_string_lossy() };
+        if let Ok(message) = serde_json::from_str::<Value>(&payload) {
+            pet::message_end(&message);
+        }
+    }
     if !AUTO_TTS_ENABLED.load(Ordering::Relaxed) {
         TEXT_DELTA_BUFFER.lock().unwrap().clear();
         STREAM_REPLY_ACTIVE.store(false, Ordering::Relaxed);
@@ -1228,7 +1241,7 @@ fn start_ptt_recording(token: u64, runtime: RuntimeContext) {
             let send = ptt_finish(token);
 
             match result {
-                Ok(rec) if send => match finish_recording(&runtime, rec, false) {
+                Ok(rec) if send => match finish_recording(&runtime, rec, false, None) {
                     Ok(()) => set_status_unless_pressed(&runtime, "voice: idle"),
                     Err(e) => {
                         eprintln!("[rpi-voice] PTT error: {e}");
@@ -2371,14 +2384,14 @@ fn record_and_send_until(
     // could not be spawned.
     runtime.set_status(&listening_status(0.0, 0, hint, window, params.warmup_ms));
 
-    let recorded = recorder::record_until_with_level(stop, params, Some(meter));
+    let recorded = recorder::record_until_with_level(stop.clone(), params, Some(meter));
     // Stop the animation before publishing any follow-up status ("transcribing…"),
     // so the two writers cannot fight over the status line.
     if let Some(animation) = animation {
         animation.stop();
     }
 
-    finish_recording(runtime, recorded?, auto_mode)
+    finish_recording(runtime, recorded?, auto_mode, Some(&stop))
 }
 
 /// The error to report when a recording produced no usable speech.
@@ -2411,7 +2424,11 @@ fn finish_recording(
     runtime: &RuntimeContext,
     recording: recorder::Recording,
     auto_mode: bool,
+    stop: Option<&AtomicBool>,
 ) -> Result<(), String> {
+    if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+        return Err("recording cancelled".into());
+    }
     // Publish the capture diagnostics first: every exit below (too short, no
     // speech, a failed request) is otherwise indistinguishable to the user from
     // "the mic is not working".
@@ -2442,11 +2459,16 @@ fn finish_recording(
         .ok()
         .filter(|s| !s.trim().is_empty());
     let text = transcribe(runtime, &recording, language.as_deref())?;
+    // A pause while STT was running must not inject an utterance afterwards.
+    if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+        return Err("recording cancelled".into());
+    }
 
     if text.is_empty() {
         return Err(no_speech_error(&recording));
     }
 
+    pet::caption(&text, "user");
     match if auto_mode {
         OutputMode::Draft
     } else {
@@ -2707,6 +2729,10 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
                 user_data: api.user_data,
             };
             let _ = RUNTIME_CTX.set(ctx);
+            let rc = pet::register(api);
+            if rc != 0 {
+                return rc;
+            }
 
             // Auto-TTS is opt-in. Set `RPI_VOICE_AUTO_TTS=on` to enable it
             // for the whole session, or use `/voice on` interactively.
@@ -2826,6 +2852,57 @@ mod tests {
             "content": [{"type": "text", "text": "累积文本"}]
         });
         assert_eq!(extract_message_text(&payload).trim(), "累积文本");
+    }
+
+    #[test]
+    fn cumulative_speech_ignores_duplicate_snapshots() {
+        let mut previous = String::new();
+        assert_eq!(
+            cumulative_speech_delta(&mut previous, "我的中国".into()),
+            "我的中国"
+        );
+        assert_eq!(
+            cumulative_speech_delta(&mut previous, "我的中国".into()),
+            ""
+        );
+    }
+
+    #[test]
+    fn cumulative_speech_preserves_position_across_rollbacks_and_rewrites() {
+        let mut previous = String::new();
+        assert_eq!(
+            cumulative_speech_delta(&mut previous, "我的中国".into()),
+            "我的中国"
+        );
+        for snapshot in ["我的", "", "其他文本", "我的中国"] {
+            assert_eq!(cumulative_speech_delta(&mut previous, snapshot.into()), "");
+            assert_eq!(previous, "我的中国");
+        }
+        assert_eq!(
+            cumulative_speech_delta(&mut previous, "我的中国很好".into()),
+            "很好"
+        );
+    }
+
+    #[test]
+    fn cumulative_speech_preserves_one_hundred_repeated_words() {
+        let mut previous = String::new();
+        let mut buffer = String::new();
+        let mut chunks = Vec::new();
+        for count in 1..=100 {
+            let snapshot = "中国".repeat(count);
+            let delta = cumulative_speech_delta(&mut previous, snapshot.clone());
+            assert_eq!(delta, "中国");
+            buffer.push_str(&delta);
+            chunks.extend(take_speech_chunks(&mut buffer));
+            assert_eq!(cumulative_speech_delta(&mut previous, snapshot), "");
+        }
+        chunks.push(buffer);
+        let spoken: String = chunks
+            .iter()
+            .map(|chunk| sanitize_for_speech(chunk))
+            .collect();
+        assert_eq!(spoken, "中国".repeat(100));
     }
 
     #[test]

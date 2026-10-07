@@ -1,6 +1,6 @@
 [package]
 name = "rpi-plan-mode"
-version.workspace = true
+version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,5 +15,5 @@ categories = ["development-tools"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rpi-plugin-sdk = { workspace = true }
+rpi-plugin-sdk = { version = "0.3.16", path = "../../../pi-rust/crates/rpi-plugin-sdk" }
 serde_json = { workspace = true }

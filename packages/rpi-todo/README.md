@@ -5,7 +5,7 @@ Pi-compatible session todo extension for the rpi Rust agent.
 The `todo` tool manages the current conversation's todo list:
 
 ```text
-todo: list | add | toggle | clear
+todo: list | add | update | toggle | clear
 ```
 
 State is stored in each tool result's `details` and reconstructed by replaying
@@ -22,6 +22,8 @@ model:
 ```json
 {"action":"add","text":"Run the tests"}
 {"action":"list","includeDone":true}
+{"action":"update","id":1,"status":"in_progress"}
+{"action":"update","id":1,"status":"completed"}
 {"action":"toggle","id":1}
 {"action":"clear"}
 ```
@@ -31,7 +33,7 @@ The result details contain the complete state:
 ```json
 {
   "todos": [
-    {"id": 1, "text": "Run the tests", "done": false}
+    {"id": 1, "text": "Run the tests", "done": false, "status": "pending"}
   ],
   "nextId": 2,
   "action": "add"
@@ -41,6 +43,12 @@ The result details contain the complete state:
 `/todos` shows the current session branch. The extension intentionally does
 not provide project scope, tags, file migration, or an external backlog: those
 are outside Pi's todo semantics.
+
+The interactive RPI UI groups successful todo updates into one task list.
+Pending tasks use `[ ]`, the active task uses `[•]`, and completed tasks use
+`[✓]` with dimmed, struck-through text. Each mutation returns the whole list;
+older session snapshots with only `done` remain supported. This presentation
+requires the matching updated RPI host; other clients receive a plain checklist.
 
 ## Build
 

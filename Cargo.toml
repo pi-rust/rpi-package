@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "packages/rpi-run-stats",
     "packages/rpi-mcp-adapter",
     "packages/rpi-subagents",
     "packages/rpi-lens",

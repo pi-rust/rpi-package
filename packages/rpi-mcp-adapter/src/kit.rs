@@ -1,25 +1,23 @@
-//! Package-local ABI lifecycle helpers.
-#![allow(dead_code)]
-//!
-//! This file is intentionally vendored so the crate can be published and built
-//! independently before any other package in this workspace exists on crates.io.
-
-use std::ffi::c_void;
-use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
+//! Nonblocking tool ABI bridge. Workers are cancelled and joined before destroy.
+use crate::control::Control;
 use rpi_plugin_sdk::{FreeStringFn, StbString, StepHandle, StepResult, ToolPartialCb};
-use serde_json::Value;
-use url::Url;
+use serde_json::{json, Value};
+use std::ffi::c_void;
+use std::sync::{
+    mpsc::{self, Receiver},
+    Mutex,
+};
+use std::thread::JoinHandle;
 
-pub type Builder = fn(&Value) -> Result<String, String>;
-
-struct Drive {
-    params: Value,
-    builder: Builder,
-    cancelled: AtomicBool,
+pub type Builder = fn(&Value, &Control) -> Result<Value, String>;
+struct State {
+    receiver: Receiver<Result<Value, String>>,
+    worker: Option<JoinHandle<()>>,
     completed: bool,
+}
+struct Drive {
+    control: Control,
+    state: Mutex<State>,
 }
 
 pub fn execute(
@@ -29,71 +27,96 @@ pub fn execute(
 ) -> StepHandle {
     let text = params.to_string_lossy();
     params.free_with(free_params);
-    let params = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let control = Control::default();
+    let worker_control = control.clone();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            worker_control.check()?;
+            let params: Value = serde_json::from_str(&text)
+                .map_err(|e| format!("invalid MCP tool parameters: {e}"))?;
+            if !params.is_object() {
+                return Err("MCP tool parameters must be an object".into());
+            }
+            builder(&params, &worker_control)
+        }))
+        .unwrap_or_else(|_| Err("MCP worker panicked".into()));
+        let _ = sender.send(result);
+    });
     Box::into_raw(Box::new(Drive {
-        params,
-        builder,
-        cancelled: AtomicBool::new(false),
-        completed: false,
+        control,
+        state: Mutex::new(State {
+            receiver,
+            worker: Some(worker),
+            completed: false,
+        }),
     })) as StepHandle
 }
 
 pub unsafe fn poll(handle: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void) -> StepResult {
     if handle.is_null() {
-        return StepResult::err(StbString::from_string("null package handle".into()));
+        return StepResult::err(StbString::from_string("null MCP tool handle".into()));
     }
-    let drive = unsafe { &mut *(handle as *mut Drive) };
-    if drive.cancelled.load(Ordering::SeqCst) {
-        return StepResult::err(StbString::from_string("package tool cancelled".into()));
-    }
-    if drive.completed {
+    let drive = unsafe { &*(handle as *const Drive) };
+    let mut state = match drive.state.lock() {
+        Ok(state) => state,
+        Err(_) => return StepResult::err(StbString::from_string("MCP tool state poisoned".into())),
+    };
+    if state.completed {
         return StepResult::err(StbString::from_string(
-            "package tool polled after completion".into(),
+            "MCP tool polled after completion".into(),
         ));
     }
-    drive.completed = true;
-    match (drive.builder)(&drive.params) {
-        Ok(text) => StepResult::done(StbString::from_string(tool_result(&text))),
-        Err(message) => StepResult::err(StbString::from_string(message)),
+    match state.receiver.try_recv() {
+        Ok(result) => {
+            state.completed = true;
+            // The worker only has sender destruction left; joining belongs in destroy,
+            // not poll, whose ABI contract is nonblocking.
+            match result {
+                Ok(value) => StepResult::done(StbString::from_string(value.to_string())),
+                Err(error) => StepResult::err(StbString::from_string(error)),
+            }
+        }
+        Err(mpsc::TryRecvError::Empty) => StepResult::pending(StbString::empty()),
+        Err(mpsc::TryRecvError::Disconnected) => {
+            state.completed = true;
+            StepResult::err(StbString::from_string("MCP worker disconnected".into()))
+        }
     }
 }
-
 pub unsafe fn cancel(handle: StepHandle) {
     if !handle.is_null() {
-        unsafe { &*(handle as *mut Drive) }
-            .cancelled
-            .store(true, Ordering::SeqCst);
+        unsafe { &*(handle as *const Drive) }.control.cancel();
     }
 }
-
 pub unsafe fn destroy(handle: StepHandle) {
     if !handle.is_null() {
-        unsafe { drop(Box::from_raw(handle as *mut Drive)) };
+        let drive = unsafe { Box::from_raw(handle as *mut Drive) };
+        drive.control.cancel();
+        if let Ok(mut state) = drive.state.lock() {
+            if let Some(worker) = state.worker.take() {
+                let _ = worker.join();
+            }
+        };
     }
 }
-
-fn tool_result(text: &str) -> String {
-    serde_json::json!({"content": [{"type": "text", "text": text}]}).to_string()
+pub fn text_result(text: impl Into<String>) -> Value {
+    json!({"content":[{"type":"text","text":text.into()}]})
 }
-
 pub fn schema(name: &str, description: &str, parameters: &str) -> rpi_plugin_sdk::StableToolSchema {
     rpi_plugin_sdk::StableToolSchema {
-        name: StbString::from_string(name.to_string()),
-        description: StbString::from_string(description.to_string()),
-        parameters: StbString::from_string(parameters.to_string()),
+        name: StbString::from_string(name.into()),
+        description: StbString::from_string(description.into()),
+        parameters: StbString::from_string(parameters.into()),
     }
 }
-
 pub extern "C" fn plugin_free_string(s: StbString) {
-    if s.is_empty() || s.ptr.is_null() {
-        return;
-    }
-    unsafe {
-        let slice = std::slice::from_raw_parts(s.ptr as *const u8, s.len);
-        let _ = Box::from_raw(slice as *const [u8] as *mut [u8]);
+    if !s.is_empty() && !s.ptr.is_null() {
+        unsafe {
+            let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(s.ptr as *mut u8, s.len));
+        }
     }
 }
-
 pub fn string_param(params: &Value, name: &str) -> Result<String, String> {
     params
         .get(name)
@@ -102,203 +125,43 @@ pub fn string_param(params: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing string parameter `{name}`"))
 }
 
-pub fn optional_string(params: &Value, name: &str, default: &str) -> String {
-    params
-        .get(name)
-        .and_then(Value::as_str)
-        .unwrap_or(default)
-        .to_string()
-}
-
-pub fn validate_public_url(input: &str) -> Result<Url, String> {
-    let url = Url::parse(input).map_err(|err| format!("invalid URL: {err}"))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("only http and https URLs are allowed".into());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    #[test]
+    fn poll_is_nonblocking_and_cancel_joins_worker() {
+        fn wait(_: &Value, control: &Control) -> Result<Value, String> {
+            loop {
+                control.check()?;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let handle = execute(
+            StbString::from_string("{}".into()),
+            Some(plugin_free_string),
+            wait,
+        );
+        let start = Instant::now();
+        let result = unsafe { poll(handle, None, std::ptr::null_mut()) };
+        assert_eq!(result.tag, rpi_plugin_sdk::StepResultTag::Pending);
+        assert!(start.elapsed() < Duration::from_millis(100));
+        unsafe {
+            cancel(handle);
+        }
+        loop {
+            let result = unsafe { poll(handle, None, std::ptr::null_mut()) };
+            if result.tag == rpi_plugin_sdk::StepResultTag::Err {
+                let error = unsafe { result.err_payload().message };
+                assert!(error.to_string_lossy().contains("cancelled"));
+                plugin_free_string(error);
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        unsafe {
+            destroy(handle);
+        }
     }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("URLs with embedded credentials are not allowed".into());
-    }
-    let host = url
-        .host_str()
-        .ok_or_else(|| "URL has no host".to_string())?;
-    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
-        return Err("local hosts are not allowed".into());
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        let blocked = match ip {
-            IpAddr::V4(v4) => {
-                v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
-            }
-            IpAddr::V6(v6) => {
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_unique_local()
-                    || v6.is_unicast_link_local()
-            }
-        };
-        if blocked {
-            return Err(
-                "private, loopback, link-local, and unspecified IPs are not allowed".into(),
-            );
-        }
-    }
-    Ok(url)
-}
-
-pub fn http_client(timeout_secs: u64) -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs.clamp(1, 30)))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 5 {
-                return attempt.stop();
-            }
-            match validate_public_url(attempt.url().as_str()) {
-                Ok(_) => attempt.follow(),
-                Err(message) => attempt.error(message),
-            }
-        }))
-        .user_agent("rpi-mcp-adapter/0.1")
-        .build()
-        .map_err(|err| format!("failed to create HTTP client: {err}"))
-}
-
-#[macro_export]
-macro_rules! export_single_tool_plugin {
-    ($builder:path, $name:literal, $description:literal, $parameters:literal) => {
-        extern "C" fn package_execute(
-            _: rpi_plugin_sdk::StbStringRef,
-            params: rpi_plugin_sdk::StbString,
-            free: Option<rpi_plugin_sdk::FreeStringFn>,
-        ) -> rpi_plugin_sdk::StepHandle {
-            $crate::kit::execute(params, free, $builder)
-        }
-
-        extern "C" fn package_poll(
-            handle: rpi_plugin_sdk::StepHandle,
-            callback: Option<rpi_plugin_sdk::ToolPartialCb>,
-            user_data: *mut std::ffi::c_void,
-        ) -> rpi_plugin_sdk::StepResult {
-            unsafe { $crate::kit::poll(handle, callback, user_data) }
-        }
-
-        extern "C" fn package_cancel(handle: rpi_plugin_sdk::StepHandle) {
-            unsafe { $crate::kit::cancel(handle) }
-        }
-
-        extern "C" fn package_destroy(handle: rpi_plugin_sdk::StepHandle) {
-            unsafe { $crate::kit::destroy(handle) }
-        }
-
-        #[no_mangle]
-        pub extern "C" fn rpi_plugin_register(api: *const rpi_plugin_sdk::PluginApi) -> i32 {
-            unsafe {
-                rpi_plugin_sdk::register_entrypoint(api, |api| {
-                    let Some(register) = api.register_tool else {
-                        return 1;
-                    };
-                    let schema = Box::new($crate::kit::schema($name, $description, $parameters));
-                    let rc = register(
-                        &*schema,
-                        package_execute,
-                        package_poll,
-                        package_cancel,
-                        package_destroy,
-                        $crate::kit::plugin_free_string,
-                    );
-                    drop(schema);
-                    rc
-                })
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! export_two_tool_plugin {
-    ($first:path, $first_name:literal, $first_description:literal, $first_parameters:literal,
-     $second:path, $second_name:literal, $second_description:literal, $second_parameters:literal) => {
-        extern "C" fn first_execute(
-            _: rpi_plugin_sdk::StbStringRef,
-            params: rpi_plugin_sdk::StbString,
-            free: Option<rpi_plugin_sdk::FreeStringFn>,
-        ) -> rpi_plugin_sdk::StepHandle {
-            $crate::kit::execute(params, free, $first)
-        }
-        extern "C" fn first_poll(
-            handle: rpi_plugin_sdk::StepHandle,
-            callback: Option<rpi_plugin_sdk::ToolPartialCb>,
-            user_data: *mut std::ffi::c_void,
-        ) -> rpi_plugin_sdk::StepResult {
-            unsafe { $crate::kit::poll(handle, callback, user_data) }
-        }
-        extern "C" fn first_cancel(handle: rpi_plugin_sdk::StepHandle) {
-            unsafe { $crate::kit::cancel(handle) }
-        }
-        extern "C" fn first_destroy(handle: rpi_plugin_sdk::StepHandle) {
-            unsafe { $crate::kit::destroy(handle) }
-        }
-        extern "C" fn second_execute(
-            _: rpi_plugin_sdk::StbStringRef,
-            params: rpi_plugin_sdk::StbString,
-            free: Option<rpi_plugin_sdk::FreeStringFn>,
-        ) -> rpi_plugin_sdk::StepHandle {
-            $crate::kit::execute(params, free, $second)
-        }
-        extern "C" fn second_poll(
-            handle: rpi_plugin_sdk::StepHandle,
-            callback: Option<rpi_plugin_sdk::ToolPartialCb>,
-            user_data: *mut std::ffi::c_void,
-        ) -> rpi_plugin_sdk::StepResult {
-            unsafe { $crate::kit::poll(handle, callback, user_data) }
-        }
-        extern "C" fn second_cancel(handle: rpi_plugin_sdk::StepHandle) {
-            unsafe { $crate::kit::cancel(handle) }
-        }
-        extern "C" fn second_destroy(handle: rpi_plugin_sdk::StepHandle) {
-            unsafe { $crate::kit::destroy(handle) }
-        }
-
-        #[no_mangle]
-        pub extern "C" fn rpi_plugin_register(api: *const rpi_plugin_sdk::PluginApi) -> i32 {
-            unsafe {
-                rpi_plugin_sdk::register_entrypoint(api, |api| {
-                    let Some(register) = api.register_tool else {
-                        return 1;
-                    };
-                    let first_schema = Box::new($crate::kit::schema(
-                        $first_name,
-                        $first_description,
-                        $first_parameters,
-                    ));
-                    let first_rc = register(
-                        &*first_schema,
-                        first_execute,
-                        first_poll,
-                        first_cancel,
-                        first_destroy,
-                        $crate::kit::plugin_free_string,
-                    );
-                    drop(first_schema);
-                    if first_rc != 0 {
-                        return first_rc;
-                    }
-                    let second_schema = Box::new($crate::kit::schema(
-                        $second_name,
-                        $second_description,
-                        $second_parameters,
-                    ));
-                    let second_rc = register(
-                        &*second_schema,
-                        second_execute,
-                        second_poll,
-                        second_cancel,
-                        second_destroy,
-                        $crate::kit::plugin_free_string,
-                    );
-                    drop(second_schema);
-                    second_rc
-                })
-            }
-        }
-    };
 }

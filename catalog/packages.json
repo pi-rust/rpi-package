@@ -1,5 +1,14 @@
 [
   {
+    "name": "rpi-run-stats",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": null,
+    "inspiredBy": "Runtime monitoring",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-run-stats"
+  },
+  {
     "name": "rpi-mcp-adapter",
     "version": "0.1.4",
     "type": "extension",

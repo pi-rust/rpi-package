@@ -1,12 +1,12 @@
 [package]
 name = "rpi-todo"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Persistent project todo tool for the rpi Rust agent"
+description = "Session task lists with progress states for the rpi Rust agent"
 readme = "README.md"
 keywords = ["rpi", "todo", "agent", "plugin"]
 categories = ["development-tools"]
@@ -15,5 +15,5 @@ categories = ["development-tools"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rpi-plugin-sdk = { workspace = true }
+rpi-plugin-sdk = { version = "0.3.16", path = "../../../pi-rust/crates/rpi-plugin-sdk" }
 serde_json = { workspace = true }

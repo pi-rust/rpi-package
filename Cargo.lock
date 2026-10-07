@@ -1967,11 +1967,14 @@ dependencies = [
 name = "rpi-mcp-adapter"
 version = "0.1.4"
 dependencies = [
+ "libc",
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
  "serde",
  "serde_json",
+ "tokio",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1995,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-plan-mode"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -2003,8 +2006,16 @@ dependencies = [
 
 [[package]]
 name = "rpi-plugin-sdk"
-version = "0.3.15"
+version = "0.3.16"
 dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "rpi-run-stats"
+version = "0.1.0"
+dependencies = [
+ "rpi-plugin-sdk",
  "serde_json",
 ]
 
@@ -2029,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-todo"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",
@@ -2053,6 +2064,7 @@ dependencies = [
  "symphonia",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "unicode-width",
  "uuid",
 ]
 
@@ -2888,6 +2900,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-width"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "untrusted"

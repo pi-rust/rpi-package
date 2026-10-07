@@ -25,14 +25,20 @@ exploration plus `plan_mode_complete`.
 ```
 
 The `plan_mode_complete` tool stores the latest plan in a `plan-mode` session
-entry, returns a compact plain-text outline, and restores the tool set that was
+entry, returns the complete Markdown plan with an outline in result details, and restores the tool set that was
 active before planning started. The current session branch is the source of
 truth, so fork, tree navigation, and resume restore the matching plan state.
 
-Numbered steps are shown with progress markers. The extension understands
+The structured outline includes progress markers. The extension understands
 `[DONE:1]` markers and checkbox forms such as `- [x] 2. Run tests`, matching
 Pi's plan-mode progress convention. A new `/plan start` replaces the in-memory plan; the
-the current branch plan remains available through `/plan show`.
+current branch plan is available through `/plan show`.
+
+The updated interactive host uses one plan panel for start, completion, `/plan`
+commands, and restored entries. It renders Markdown headings, lists, and tables
+without showing the raw tool arguments. Long plans have a 16-row preview;
+Ctrl+T expands the full plan, and `/plan show` explicitly opens it in full.
+An empty inactive plan is labelled Idle rather than Ready.
 
 This follows the upstream `pi-plan-mode` state model: planning state is
 owned by the extension and persisted in session entries, while the host owns

@@ -82,12 +82,8 @@ mod tests {
         // Keep any stray MessageEnd from synthesizing/playing audio.
         std::env::set_var("RPI_VOICE_AUTO_TTS", "off");
 
-        let session = load_session_mixed(
-            &[],
-            &[PathBuf::from(&dll)],
-            Arc::new(NullDiagnostics),
-            None,
-        );
+        let session =
+            load_session_mixed(&[], &[PathBuf::from(&dll)], Arc::new(NullDiagnostics), None);
         let snapshot = session.snapshot().expect("voice extension should register");
 
         let cmd = snapshot
@@ -136,3 +132,18 @@ mod tests {
         host_free_string(payload);
     }
 }
+
+#[cfg(test)]
+mod mcp_smoke;
+
+#[cfg(test)]
+mod todo_smoke;
+
+#[cfg(test)]
+mod plan_smoke;
+
+#[cfg(test)]
+mod pet_smoke;
+
+#[cfg(test)]
+mod stats_smoke;

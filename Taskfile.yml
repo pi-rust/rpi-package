@@ -70,6 +70,7 @@ tasks:
       - cargo publish --dry-run --allow-dirty -p rpi-im-message
       - cargo publish --dry-run --allow-dirty -p rpi-server
       - cargo publish --dry-run --allow-dirty -p rpi-voice
+      - cargo publish --dry-run --allow-dirty -p rpi-run-stats
 
   publish:
     desc: Publish all packages to crates.io
@@ -90,6 +91,7 @@ tasks:
       - cargo publish --allow-dirty -p rpi-im-message
       - cargo publish --allow-dirty -p rpi-server
       - cargo publish --allow-dirty -p rpi-voice
+      - cargo publish --allow-dirty -p rpi-run-stats
 
   publish-new:
     desc: Publish the packages added after the initial release

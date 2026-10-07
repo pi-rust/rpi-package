@@ -207,7 +207,7 @@ fn plan_outline(plan: &str) -> String {
     let mut lines = vec![format!("Progress: {completed}/{total} complete")];
     for item in items.iter().take(12) {
         let marker = if item.completed { '✓' } else { '○' };
-        lines.push(format!("{marker} {}. {}", item.number, item.text));
+        lines.push(format!("- {marker} {}. {}", item.number, item.text));
     }
     if total > 12 {
         lines.push("... (use `/plan show` to view the remaining steps)".to_string());
@@ -221,20 +221,22 @@ fn plan_outline(plan: &str) -> String {
 fn markdown_plan(plan: Option<&str>, active: bool) -> String {
     let (status, hint) = if active {
         (
-            "🟡 Planning",
+            "Planning",
             "Explore first, then call `plan_mode_complete` when the plan is ready.",
         )
-    } else {
+    } else if plan.is_some_and(|plan| !plan.trim().is_empty()) {
         (
-            "✅ Ready",
+            "Ready",
             "Use `/plan start` or `plan_mode_start` to create a new plan.",
         )
+    } else {
+        ("Idle", "Use `/plan start` to begin planning.")
     };
     let body = match plan {
         Some(plan) if !plan.trim().is_empty() => plan.trim().to_string(),
         _ => "_No completed plan yet._".to_string(),
     };
-    format!("## Plan\n\n**{status}**\n\n{body}\n\n> {hint}")
+    format!("**Plan · {status}**\n\n{body}\n\n{hint}")
 }
 
 fn activate() -> Result<bool, String> {
@@ -275,19 +277,7 @@ fn plan_status() -> String {
     let guard = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    format!(
-        "{}
-
-Stored in the current session.
-
-{}",
-        markdown_plan(guard.plan.as_deref(), guard.active),
-        if guard.active {
-            "Next: continue inspecting the repository, then call `plan_mode_complete`."
-        } else {
-            "Next: use `/plan start` or `plan_mode_start` to begin planning."
-        }
-    )
+    markdown_plan(guard.plan.as_deref(), guard.active)
 }
 
 fn start_plan(raw: &Value) -> Result<String, String> {
@@ -335,15 +325,8 @@ fn complete_plan(raw: &Value) -> Result<String, String> {
     }
     deactivate()?;
     Ok(json!({
-        "content": [{"type": "text", "text": format!(
-            "Plan complete.
-
-{}
-
-Normal tool access restored.",
-            plan_outline(plan)
-        )}],
-        "details": {"kind": "plan", "plan": plan, "active": false, "markdown": true}
+        "content": [{"type": "text", "text": markdown_plan(Some(plan), false)}],
+        "details": {"kind": "plan", "plan": plan, "outline": plan_outline(plan), "active": false, "markdown": true}
     })
     .to_string())
 }
@@ -480,11 +463,18 @@ extern "C" fn plan_command(args_json: StbStringRef, out: *mut StbString, _: *mut
             Err(error) => format!("Unable to enter plan mode: {error}"),
         },
     };
-    command_output(out, json!({"kind": "message", "text": result}))
+    let mut output = json!({"kind": "message", "text": result});
+    if !result.starts_with("Unable to") {
+        let guard = state().lock().unwrap_or_else(|p| p.into_inner());
+        output["details"] = json!({"kind":"plan","plan":guard.plan,"active":guard.active,"expanded":first == "show"});
+    }
+    command_output(out, output)
 }
 
 #[no_mangle]
-pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
+/// # Safety
+/// The host must provide a valid ABI-compatible API during registration.
+pub unsafe extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
     unsafe {
         register_entrypoint(api, |api| {
             if let Some(register_event) = api.register_event_handler {
@@ -550,6 +540,8 @@ mod tests {
     #[test]
     fn renders_empty_status() {
         assert!(markdown_plan(None, false).contains("No completed plan"));
+        assert!(markdown_plan(None, false).contains("Idle"));
+        assert!(!markdown_plan(None, false).contains("Ready"));
     }
 
     #[test]
@@ -563,8 +555,8 @@ mod tests {
         assert_eq!(
             outline,
             "Progress: 0/2 complete
-○ 1. Add the parser
-○ 2. Update the UI"
+- ○ 1. Add the parser
+- ○ 2. Update the UI"
         );
     }
 
@@ -576,8 +568,8 @@ mod tests {
 [DONE:1]
 - [x] 2. Second",
         );
-        assert_eq!(items[0].completed, true);
-        assert_eq!(items[1].completed, true);
+        assert!(items[0].completed);
+        assert!(items[1].completed);
         assert!(plan_outline(
             "1. First
 2. Second
@@ -595,5 +587,15 @@ mod tests {
         let outline = plan_outline(&plan);
         assert!(outline.contains("... (use `/plan show` to view the remaining steps)"));
         assert_eq!(outline.lines().count(), 14);
+    }
+
+    #[test]
+    fn complete_display_preserves_sections_and_non_numbered_plans() {
+        let plan =
+            "## Approach\n\n- Inspect source\n- Update UI\n\n## Tests\n\nRun the regression suite";
+        let rendered = markdown_plan(Some(plan), false);
+        assert!(rendered.contains(plan));
+        assert_eq!(rendered.matches("Ready").count(), 1);
+        assert!(!rendered.contains("Next:"));
     }
 }

@@ -10,7 +10,7 @@ that map cleanly onto the current Rust SDK:
 
 | Rust package | Inspired by | Catalog downloads/month | Registered tool |
 | --- | --- | ---: | --- |
-| `rpi-mcp-adapter` | `pi-mcp-adapter` | 761,442 | `mcp_request` |
+| `rpi-mcp-adapter` | `pi-mcp-adapter` | 761,442 | `mcp_list`, `mcp_call`, `mcp_request` |
 | `rpi-subagents` | `pi-subagents` | 362,483 | `delegate_task` |
 | `rpi-lens` | `pi-lens` | 65,476 | `code_lens` |
 
@@ -30,6 +30,13 @@ it embeds sherpa-onnx + SenseVoice and runs entirely offline (see
 either way).
 
 ## Build and install
+
+`rpi-run-stats` adds a live top-right monitoring panel: rounds, provider steps,
+output tok/s, time to first token, response time, rolling 60-second TPM,
+input/output/cache tokens, errors and USD cost. Use `/stats on`, `/stats off`
+or `/stats` to toggle it, and `/stats position top-left` to move it.
+It uses the generic declarative panel interface in the host.
+See [rpi-run-stats](packages/rpi-run-stats/README.md) for measurement definitions.
 
 ```powershell
 cargo test --workspace

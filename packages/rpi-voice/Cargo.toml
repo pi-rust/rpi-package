@@ -33,6 +33,7 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
+unicode-width = "0.2"
 
 # Embedded offline STT (optional): sherpa-onnx, statically linked, prebuilt
 # binaries auto-downloaded at build time.

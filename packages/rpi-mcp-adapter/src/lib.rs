@@ -1,138 +1,175 @@
-use std::io::Read;
-
 mod config;
 mod connection;
+mod control;
+mod http;
 mod jsonrpc;
 mod kit;
+mod process;
 mod runtime;
 mod transport;
 
-use crate::kit::{http_client, string_param, validate_public_url};
 pub use config::{Exposure, HttpServer, McpConfig, McpServerConfig, StdioServer};
 pub use connection::{
     initialize_request, initialized_notification, parse_initialize, parse_tools_call,
     parse_tools_list, tools_call_request, tools_list_request, ServerInfo, PROTOCOL_VERSION,
 };
+pub use control::Control;
 pub use jsonrpc::{
     call_result_text, tool_list, ErrorObject, Notification, Request, Response, Tool,
 };
-pub use runtime::{call_from_config, discover_from_config, DiscoveredServer};
-use serde_json::Value;
+pub use runtime::{
+    call_from_config, call_from_config_with_timeout, close_from_config, discover_from_config,
+    shutdown_connections, DiscoveredServer,
+};
+use serde_json::{json, Value};
 pub use transport::{http_request, StdioTransport};
 
-fn mcp_call(params: &Value) -> Result<String, String> {
-    if let (Some(config_path), Some(server_name)) = (
-        params.get("configPath").and_then(Value::as_str),
-        params.get("server").and_then(Value::as_str),
-    ) {
-        let tool = string_param(params, "tool")?;
-        let arguments = params
-            .get("arguments")
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Default::default()));
-        return call_from_config(config_path, server_name, &tool, arguments);
-    }
-    let url = validate_public_url(&string_param(params, "url")?)?;
-    let tool = string_param(params, "tool")?;
-    if tool.trim().is_empty() || tool.len() > 200 {
-        return Err("MCP tool must contain 1-200 characters".into());
-    }
-    let arguments = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| Value::Object(Default::default()));
-    let timeout = params
-        .get("timeoutSeconds")
-        .and_then(Value::as_u64)
-        .unwrap_or(15);
-    let request = tools_call_request(1, &tool, arguments);
-    let response = http_request(
-        &McpServerConfig::Http(HttpServer {
-            url: url.to_string(),
-            headers: Default::default(),
-            enabled: true,
-            timeout,
-            exposure: Exposure::Direct,
-        }),
-        &request,
-        timeout,
-    )?;
-    parse_tools_call(response)
+fn mcp_call(params: &Value, control: &Control) -> Result<Value, String> {
+    jsonrpc::agent_tool_result(&runtime::call(params, control)?)
 }
-
-fn mcp_request(params: &Value) -> Result<String, String> {
-    let url = validate_public_url(&string_param(params, "url")?)?;
-    let method = string_param(params, "method")?;
+fn mcp_list(params: &Value, control: &Control) -> Result<Value, String> {
+    Ok(kit::text_result(
+        runtime::list(params, control)?.to_string(),
+    ))
+}
+fn mcp_request(params: &Value, control: &Control) -> Result<Value, String> {
+    let url = kit::string_param(params, "url")?;
+    let method = kit::string_param(params, "method")?;
     if method.trim().is_empty() || method.len() > 200 {
         return Err("MCP method must contain 1-200 characters".into());
     }
-    let id = params.get("id").cloned().unwrap_or(Value::from(1));
-    let call_params = params
-        .get("params")
-        .cloned()
-        .unwrap_or_else(|| Value::Object(Default::default()));
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": call_params,
-    });
-    let timeout = params
-        .get("timeoutSeconds")
-        .and_then(Value::as_u64)
-        .unwrap_or(15);
-    let mut response = http_client(timeout)?
-        .post(url)
-        .json(&request)
-        .send()
-        .map_err(|err| format!("MCP request failed: {err}"))?;
-    let status = response.status();
-    let mut body = String::new();
-    response
-        .by_ref()
-        .take(1_048_577)
-        .read_to_string(&mut body)
-        .map_err(|err| format!("failed to read MCP response: {err}"))?;
-    if body.len() > 1_048_576 {
-        return Err("MCP response exceeded the 1 MiB limit".into());
+    let id = params.get("id").cloned().unwrap_or(json!(1));
+    if !(id.is_string() || id.is_i64() || id.is_u64()) {
+        return Err("MCP request id must be a string or integer".into());
     }
-    if !status.is_success() {
-        return Err(format!("MCP server returned {status}: {body}"));
-    }
-    let json: Value = serde_json::from_str(&body)
-        .map_err(|err| format!("MCP server returned invalid JSON: {err}"))?;
-    Ok(json.to_string())
+    let timeout = match params.get("timeoutSeconds") {
+        None => 60,
+        Some(value) => value
+            .as_u64()
+            .filter(|v| (1..=300).contains(v))
+            .ok_or("timeoutSeconds must be an integer from 1 to 300")?,
+    };
+    let server = HttpServer {
+        url,
+        headers: Default::default(),
+        enabled: true,
+        timeout,
+        exposure: Default::default(),
+    };
+    let mut transport = http::HttpTransport::new(&server)?;
+    let result = transport.raw(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params.get("params").cloned().unwrap_or(json!({}))}), control)?;
+    Ok(kit::text_result(result.to_string()))
 }
 
-export_two_tool_plugin!(
-    mcp_request,
-    "mcp_request",
-    "Send a bounded JSON-RPC 2.0 request to an HTTP MCP server.",
-    r#"{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string"},"params":{},"id":{},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["url","method"]}"#,
-    mcp_call,
-    "mcp_call",
-    "Call a named tool on an HTTP MCP server through a stable dispatcher.",
-    r#"{"type":"object","properties":{"url":{"type":"string"},"configPath":{"type":"string"},"server":{"type":"string"},"tool":{"type":"string"},"arguments":{"type":"object"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["tool"]}"#
-);
-
-#[cfg(test)]
-mod dispatcher_tests {
-    use super::*;
-
-    #[test]
-    fn dispatcher_requires_tool_name() {
-        let error = mcp_call(&serde_json::json!({"url":"https://example.com/mcp"})).unwrap_err();
-        assert!(error.contains("tool"));
+macro_rules! tool_entry {
+    ($execute:ident, $builder:ident) => {
+        extern "C" fn $execute(
+            _: rpi_plugin_sdk::StbStringRef,
+            params: rpi_plugin_sdk::StbString,
+            free: Option<rpi_plugin_sdk::FreeStringFn>,
+        ) -> rpi_plugin_sdk::StepHandle {
+            kit::execute(params, free, $builder)
+        }
+    };
+}
+tool_entry!(call_execute, mcp_call);
+tool_entry!(list_execute, mcp_list);
+tool_entry!(request_execute, mcp_request);
+extern "C" fn tool_poll(
+    handle: rpi_plugin_sdk::StepHandle,
+    callback: Option<rpi_plugin_sdk::ToolPartialCb>,
+    data: *mut std::ffi::c_void,
+) -> rpi_plugin_sdk::StepResult {
+    unsafe { kit::poll(handle, callback, data) }
+}
+extern "C" fn tool_cancel(handle: rpi_plugin_sdk::StepHandle) {
+    unsafe { kit::cancel(handle) }
+}
+extern "C" fn tool_destroy(handle: rpi_plugin_sdk::StepHandle) {
+    unsafe { kit::destroy(handle) }
+}
+extern "C" fn session_shutdown(
+    _: rpi_plugin_sdk::StablePluginEvent,
+    _: *mut std::ffi::c_void,
+) -> i32 {
+    std::panic::catch_unwind(shutdown_connections)
+        .map(|_| 0)
+        .unwrap_or(1)
+}
+/// # Safety
+/// The host must pass a valid PluginApi pointer for this ABI version.
+#[no_mangle]
+pub unsafe extern "C" fn rpi_plugin_register(api: *const rpi_plugin_sdk::PluginApi) -> i32 {
+    unsafe {
+        rpi_plugin_sdk::register_entrypoint(api, |api| {
+            let Some(register) = api.register_tool else {
+                return 1;
+            };
+            // A reload must not leave old workers or sessions owned by this DLL.
+            shutdown_connections();
+            let tools: [(&str, &str, &str, rpi_plugin_sdk::ToolExecuteFn); 3] = [
+            ("mcp_request", "Send a raw HTTP JSON-RPC request. For managed MCP sessions use mcp_call or mcp_list.",
+             r#"{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string"},"params":{},"id":{"type":["string","integer"]},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":300}},"required":["url","method"]}"#, request_execute),
+            ("mcp_call", "Call a tool using a persistent stdio or HTTP MCP connection. Use mcp_list to discover tool names and argument schemas. Supply configPath and server, or url.",
+             r#"{"type":"object","properties":{"url":{"type":"string"},"configPath":{"type":"string"},"server":{"type":"string"},"tool":{"type":"string"},"arguments":{"type":"object"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":300}},"required":["tool"],"oneOf":[{"required":["configPath","server"],"not":{"required":["url"]}},{"required":["url"],"not":{"anyOf":[{"required":["configPath"]},{"required":["server"]}]}}]}"#, call_execute),
+            ("mcp_list", "List configured MCP servers, or discover a server's tools and argument schemas. Set action=close to release a server connection. Supply configPath, configPath/server, or url.",
+             r#"{"type":"object","properties":{"url":{"type":"string"},"configPath":{"type":"string"},"server":{"type":"string"},"action":{"type":"string","enum":["list","close"]},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":300}},"oneOf":[{"required":["configPath"],"not":{"required":["url"]}},{"required":["url"],"not":{"anyOf":[{"required":["configPath"]},{"required":["server"]}]}}]}"#, list_execute),
+        ];
+            for (name, description, parameters, execute) in tools {
+                let schema = kit::schema(name, description, parameters);
+                let rc = register(
+                    &schema,
+                    execute,
+                    tool_poll,
+                    tool_cancel,
+                    tool_destroy,
+                    kit::plugin_free_string,
+                );
+                // The registrar consumes schema strings via plugin_free_string.
+                // Only the stack schema container remains ours after this call.
+                if rc != 0 {
+                    return rc;
+                }
+            }
+            // SessionShutdown is a marker without session identity: release all connections
+            // in this extension instance, including library-scope fallback connections.
+            if let Some(register) = api.register_event_handler {
+                return register(
+                    rpi_plugin_sdk::EventTag::SessionShutdown,
+                    session_shutdown,
+                    std::ptr::null_mut(),
+                );
+            }
+            0
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn rejects_private_mcp_endpoint() {
-        let value = serde_json::json!({"url":"http://127.0.0.1:3000","method":"tools/list"});
-        assert!(mcp_request(&value).unwrap_err().contains("not allowed"));
+    fn dispatcher_validates_parameters() {
+        assert!(mcp_call(
+            &json!({"url":"https://example.com/mcp"}),
+            &Control::default()
+        )
+        .unwrap_err()
+        .contains("tool"));
+        assert!(mcp_call(
+            &json!({"url":"http://localhost/mcp","tool":"x","arguments":[]}),
+            &Control::default()
+        )
+        .unwrap_err()
+        .contains("object"));
+        assert!(mcp_call(
+            &json!({"url":"http://localhost/mcp","tool":"x","timeoutSeconds":0}),
+            &Control::default()
+        )
+        .unwrap_err()
+        .contains("timeoutSeconds"));
     }
 }
+
+#[cfg(test)]
+mod http_tests;

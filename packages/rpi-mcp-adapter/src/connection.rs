@@ -6,7 +6,7 @@
 use crate::jsonrpc::{self, Request, Response, Tool};
 use serde_json::{json, Value};
 
-pub const PROTOCOL_VERSION: &str = "2024-11-05";
+pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerInfo {
@@ -41,6 +41,18 @@ pub fn parse_initialize(response: Response) -> Result<ServerInfo, String> {
         .get("protocolVersion")
         .and_then(Value::as_str)
         .ok_or_else(|| "MCP initialize response has no protocolVersion".to_string())?;
+    if !["2024-11-05", "2025-03-26", PROTOCOL_VERSION].contains(&protocol_version) {
+        return Err(format!(
+            "unsupported MCP protocol version {protocol_version:?}"
+        ));
+    }
+    if result
+        .get("capabilities")
+        .and_then(|v| v.get("tools"))
+        .is_none()
+    {
+        return Err("MCP server does not advertise the tools capability".into());
+    }
     let info = result
         .get("serverInfo")
         .ok_or_else(|| "MCP initialize response has no serverInfo".to_string())?;
@@ -77,10 +89,21 @@ pub fn tools_call_request(id: u64, name: &str, arguments: Value) -> Request {
 
 pub fn parse_tools_call(response: Response) -> Result<String, String> {
     let result = response_result(response)?;
+    check_tool_result(&result)?;
     Ok(jsonrpc::call_result_text(&result))
 }
 
-fn response_result(response: Response) -> Result<Value, String> {
+pub(crate) fn check_tool_result(result: &Value) -> Result<(), String> {
+    if result.get("isError").and_then(Value::as_bool) == Some(true) {
+        return Err(format!(
+            "MCP tool execution failed: {}",
+            jsonrpc::call_result_text(result)
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn response_result(response: Response) -> Result<Value, String> {
     if let Some(error) = response.error {
         return Err(format!(
             "MCP JSON-RPC error {}: {}",
@@ -112,7 +135,7 @@ mod tests {
             id: 1,
             result: Some(json!({
                 "protocolVersion": PROTOCOL_VERSION,
-                "serverInfo": {"name":"fake","version":"1"}
+                "serverInfo": {"name":"fake","version":"1"}, "capabilities":{"tools":{}}
             })),
             error: None,
         })
