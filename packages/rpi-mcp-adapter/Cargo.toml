@@ -1,12 +1,12 @@
 [package]
 name = "rpi-mcp-adapter"
-version.workspace = true
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "HTTP JSON-RPC MCP transport adapter for the rpi Rust agent"
+description = "Session-scoped stdio and Streamable HTTP MCP adapter for the rpi Rust agent"
 readme = "README.md"
 keywords = ["rpi", "mcp", "json-rpc", "plugin"]
 categories = ["development-tools"]
@@ -15,7 +15,7 @@ categories = ["development-tools"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rpi-plugin-sdk = { workspace = true }
+rpi-plugin-sdk = { version = "0.3.16", path = "../../../pi-rust/crates/rpi-plugin-sdk" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }

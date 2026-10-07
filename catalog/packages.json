@@ -10,9 +10,9 @@
   },
   {
     "name": "rpi-mcp-adapter",
-    "version": "0.1.4",
+    "version": "0.2.0",
     "type": "extension",
-    "tool": "mcp_request",
+    "tool": "mcp_list + mcp_call + mcp_request",
     "inspiredBy": "pi-mcp-adapter",
     "sourceDownloadsPerMonth": 761442,
     "install": "rpi install rpi-mcp-adapter"
@@ -127,7 +127,7 @@
   },
   {
     "name": "rpi-voice",
-    "version": "0.3.6",
+    "version": "0.3.7",
     "type": "extension",
     "tool": "/voice command + push-to-talk shortcut",
     "inspiredBy": "hands-free voice assistants, made local",

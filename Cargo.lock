@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-adapter"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "libc",
  "reqwest 0.12.28",
@@ -2048,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-voice"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "cpal",
  "futures-util",

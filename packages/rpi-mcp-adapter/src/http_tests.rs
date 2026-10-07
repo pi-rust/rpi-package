@@ -31,6 +31,10 @@ impl Server {
             while !stopping.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // The listener polls nonblocking; accepted sockets must
+                        // block while the request headers arrive (Windows can
+                        // inherit the listener mode on the accepted socket).
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
@@ -175,12 +179,16 @@ fn managed_flow(sse: bool) {
         second["details"]["mcpResult"]["structuredContent"]["count"],
         2
     );
-    assert!(mcp_call(
+    let error = mcp_call(
         &json!({"url":server.url,"tool":"fail"}),
-        &Control::default()
+        &Control::default(),
     )
-    .unwrap_err()
-    .contains("failed intentionally"));
+    .unwrap_err();
+    assert!(
+        error.contains("failed intentionally"),
+        "{error}; seen={:?}",
+        server.seen.lock().unwrap()
+    );
     let discovery = mcp_list(&json!({"url":server.url}), &Control::default())
         .unwrap_or_else(|e| panic!("{e}; seen={:?}", server.seen.lock().unwrap()));
     let discovery: Value =

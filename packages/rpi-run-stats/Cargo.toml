@@ -13,5 +13,5 @@ readme = "README.md"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rpi-plugin-sdk.workspace = true
+rpi-plugin-sdk = { version = "0.3.16", path = "../../../pi-rust/crates/rpi-plugin-sdk" }
 serde_json.workspace = true

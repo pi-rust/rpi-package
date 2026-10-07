@@ -50,7 +50,7 @@ struct Stats {
 impl Default for Stats {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             anchor: "top-right".into(),
             running: false,
             rounds: 0,
@@ -206,19 +206,32 @@ fn valid_anchor(anchor: &str) -> bool {
 }
 fn panel(snapshot: &Value, anchor: &str) -> Value {
     let status = if snapshot["running"] == true {
-        "运行中"
+        "ACTIVE"
     } else {
-        "就绪"
+        "IDLE"
     };
-    json!({"version":1,"anchor":anchor,"width":44,"maxHeight":9,"minScreenWidth":50,
-    "title":format!("监控 · {status}          /stats off"),"lines":[
-        format!("{} 轮  {} 步  {} tok/s",count(snapshot,"rounds"),count(snapshot,"steps"),metric(snapshot,"speed",0,"")),
-        format!("首 token {}  耗时 {}",metric(snapshot,"ttft",2,"s"),metric(snapshot,"latency",2,"s")),
-        format!("TPM {}   等待 {}",count(snapshot,"tpm"),metric(snapshot,"waiting",2,"s")),
-        format!("输入 {}  输出 {}",count(snapshot,"input"),count(snapshot,"output")),
-        format!("缓存读 {}  写 {}",count(snapshot,"cacheRead"),count(snapshot,"cacheWrite")),
-        format!("错误/中止 {}  USD {}",count(snapshot,"errors"),metric(snapshot,"cost",4,""))
+    json!({"version":1,"layout":"sidebar","anchor":anchor,"width":24,"maxHeight":11,"minScreenWidth":80,"border":false,
+    "title":format!("RUN STATS · {status}"),"lines":[
+        format!("Turns {} · Steps {}",compact(count(snapshot,"rounds")),compact(count(snapshot,"steps"))),
+        format!("TPS       {} tok/s",metric(snapshot,"speed",0,"")),
+        format!("TTFT      {} s",metric(snapshot,"ttft",2,"")),
+        format!("Latency   {} s",metric(snapshot,"latency",2,"")),
+        format!("TPM       {}",compact(count(snapshot,"tpm"))),
+        format!("In/Out    {}/{}",compact(count(snapshot,"input")),compact(count(snapshot,"output"))),
+        format!("Cache R/W {}/{}",compact(count(snapshot,"cacheRead")),compact(count(snapshot,"cacheWrite"))),
+        format!("Errors    {}",compact(count(snapshot,"errors"))),
+        format!("Cost USD  {}",metric(snapshot,"cost",4,"")),
+        format!("Elapsed   {} s",metric(snapshot,"waiting",2,""))
     ]})
+}
+fn compact(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 fn publish(stats: &mut Stats) {
     let Some(runtime) = RUNTIME.get() else {
@@ -250,10 +263,11 @@ extern "C" fn event(event: StablePluginEvent, _: *mut c_void) -> i32 {
         publish(&mut stats);
         return 0;
     }
-    let Some(runtime) = RUNTIME.get() else {
+    let Some(_runtime) = RUNTIME.get() else {
         return 0;
     };
-    // Free every owning event payload, including ignored user/tool messages.
+    // Events are borrowed during host fan-out; the host frees their payloads
+    // once all subscribers have returned (dispatch_to_handlers contract).
     let payload = match event.tag {
         EventTag::MessageUpdate | EventTag::MessageEnd => {
             Some(unsafe { event.payload.message.message })
@@ -264,7 +278,6 @@ extern "C" fn event(event: StablePluginEvent, _: *mut c_void) -> i32 {
     let value = payload
         .map(|s| {
             let parsed = serde_json::from_str(&s.to_string_lossy()).unwrap_or(Value::Null);
-            (runtime.free)(s);
             parsed
         })
         .unwrap_or(Value::Null);
@@ -272,6 +285,36 @@ extern "C" fn event(event: StablePluginEvent, _: *mut c_void) -> i32 {
     stats.update(event.tag, &value, Instant::now());
     publish(&mut stats);
     0
+}
+fn shortcut(stats: &mut Stats, value: &Value) -> i32 {
+    use rpi_plugin_sdk::{EVENT_HANDLER_CLAIMED, EVENT_HANDLER_CONTINUE};
+    if value["type"] != "key"
+        || value["key"] != "f8"
+        || ["ctrl", "alt", "shift"]
+            .iter()
+            .any(|key| value[*key].as_bool().unwrap_or(false))
+    {
+        return EVENT_HANDLER_CONTINUE;
+    }
+    match value["kind"].as_str() {
+        Some("press") => {
+            stats.enabled = !stats.enabled;
+            EVENT_HANDLER_CLAIMED
+        }
+        Some("repeat" | "release") => EVENT_HANDLER_CLAIMED,
+        _ => EVENT_HANDLER_CONTINUE,
+    }
+}
+extern "C" fn input(event: StablePluginEvent, _: *mut c_void) -> i32 {
+    let raw = unsafe { event.payload.data.data.to_string_lossy() };
+    let value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    let mut stats = state().lock().unwrap_or_else(|p| p.into_inner());
+    let enabled = stats.enabled;
+    let result = shortcut(&mut stats, &value);
+    if stats.enabled != enabled {
+        publish(&mut stats);
+    }
+    result
 }
 extern "C" fn command(args: StbStringRef, out: *mut StbString, _: *mut c_void) -> i32 {
     if out.is_null() {
@@ -345,6 +388,19 @@ pub unsafe extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
                     return 1;
                 }
             }
+            if register(EventTag::Input, input, std::ptr::null_mut()) != 0 {
+                return 1;
+            }
+            let Some(register_shortcut) = api.register_shortcut else {
+                return 1;
+            };
+            if register_shortcut(
+                StbStringRef::from_str("f8"),
+                StbStringRef::from_str("Toggle runtime monitor (F8)"),
+            ) != 0
+            {
+                return 1;
+            }
             let Some(register) = api.register_command else {
                 return 1;
             };
@@ -379,6 +435,46 @@ pub unsafe extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn f8_toggles_once_and_modified_or_unrelated_keys_are_not_claimed() {
+        use rpi_plugin_sdk::{EVENT_HANDLER_CLAIMED, EVENT_HANDLER_CONTINUE};
+        let mut stats = Stats::default();
+        for kind in ["press", "repeat", "release"] {
+            assert_eq!(
+                shortcut(&mut stats, &json!({"type":"key","key":"f8","kind":kind})),
+                EVENT_HANDLER_CLAIMED
+            );
+            assert!(stats.enabled);
+        }
+        for value in [
+            json!({"type":"key","key":"f8","kind":"press","ctrl":true}),
+            json!({"type":"key","key":"f7","kind":"press"}),
+            json!({"type":"key","key":"f8","kind":"invalid"}),
+        ] {
+            assert_eq!(shortcut(&mut stats, &value), EVENT_HANDLER_CONTINUE);
+            assert!(stats.enabled);
+        }
+        assert_eq!(
+            shortcut(&mut stats, &json!({"type":"key","key":"f8","kind":"press"})),
+            EVENT_HANDLER_CLAIMED
+        );
+        assert!(!stats.enabled);
+    }
+    #[test]
+    fn monitor_defaults_to_off_and_uses_compact_docked_metrics() {
+        let mut stats = Stats::default();
+        assert!(!stats.enabled);
+        let view = panel(&stats.snapshot(Instant::now()), "top-right");
+        assert_eq!(view["layout"], "sidebar");
+        assert_eq!(view["width"], 24);
+        assert!(view["lines"].as_array().unwrap().iter().all(|line| line
+            .as_str()
+            .unwrap()
+            .chars()
+            .count()
+            <= 24));
+        assert!(view["lines"][2].as_str().unwrap().starts_with("TTFT"));
+    }
     #[test]
     fn command_accepts_host_envelope_and_rejects_unknown_arguments() {
         for (args, enabled) in [

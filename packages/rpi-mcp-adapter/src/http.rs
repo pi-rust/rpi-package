@@ -44,7 +44,7 @@ impl HttpTransport {
             .tcp_nodelay(true)
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent("rpi-mcp-adapter/0.1")
+            .user_agent(concat!("rpi-mcp-adapter/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Self {

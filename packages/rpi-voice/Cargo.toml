@@ -1,6 +1,6 @@
 [package]
 name = "rpi-voice"
-version = "0.3.6"
+version = "0.3.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,7 +21,7 @@ local-stt = ["dep:sherpa-rs"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rpi-plugin-sdk = { workspace = true }
+rpi-plugin-sdk = { version = "0.3.16", path = "../../../pi-rust/crates/rpi-plugin-sdk" }
 serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
