@@ -13,6 +13,7 @@ use rpi_plugin_sdk::{
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
 use std::env;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::atomic::AtomicU64;
@@ -22,7 +23,10 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
 mod cardkit;
+mod progress;
+mod sessions;
 
 const EVENT_TYPE_MESSAGE: &str = "im.message.receive_v1";
 const MAX_MESSAGE_BYTES: usize = 1_048_576;
@@ -60,6 +64,91 @@ unsafe impl Sync for StartupContext {}
 
 static HOST_RUNTIME: OnceLock<StartupContext> = OnceLock::new();
 static PRINT_PROCESS_LOCK: Mutex<()> = Mutex::new(());
+static AUTO_REPLY_LOCK: Mutex<()> = Mutex::new(());
+static ACTIVE_PROGRESS: Mutex<Option<Arc<ReplyProgress>>> = Mutex::new(None);
+
+struct ReplyProgress {
+    run_id: u64,
+    conversation_id: String,
+    commands: tokio::sync::mpsc::UnboundedSender<Command>,
+    state: Mutex<progress::Progress>,
+}
+
+impl ReplyProgress {
+    fn event(&self, event: &Value) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(update) = state.event(event) {
+                let _ = self.commands.send(Command::Progress {
+                    run_id: self.run_id,
+                    conversation_id: self.conversation_id.clone(),
+                    tool_call_id: update.tool_call_id,
+                    text: update.text,
+                });
+            }
+        }
+    }
+}
+
+struct ProgressScope;
+
+impl ProgressScope {
+    fn enter(progress: Arc<ReplyProgress>) -> Self {
+        if let Ok(mut active) = ACTIVE_PROGRESS.lock() {
+            *active = Some(progress);
+        }
+        Self
+    }
+}
+
+impl Drop for ProgressScope {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_PROGRESS.lock() {
+            if let Some(progress) = active.take() {
+                if let Ok(mut state) = progress.state.lock() {
+                    for update in state.finish() {
+                        let _ = progress.commands.send(Command::Progress {
+                            run_id: progress.run_id,
+                            conversation_id: progress.conversation_id.clone(),
+                            tool_call_id: update.tool_call_id,
+                            text: update.text,
+                        });
+                    }
+                }
+                let _ = progress.commands.send(Command::ProgressDone {
+                    run_id: progress.run_id,
+                });
+            }
+        }
+    }
+}
+
+extern "C" fn on_tool_progress(event: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
+    let active = ACTIVE_PROGRESS
+        .lock()
+        .ok()
+        .and_then(|active| active.clone());
+    let Some(progress) = active else {
+        return 0;
+    };
+    let payload = unsafe {
+        match event.tag {
+            EventTag::ToolExecutionStart => {
+                let call = event.payload.tool_call;
+                json!({"type":"tool_execution_start", "toolCallId":call.tool_call_id.to_string_lossy(),
+                    "toolName":call.tool_name.to_string_lossy(),
+                    "args":serde_json::from_str::<Value>(&call.params.to_string_lossy()).unwrap_or(Value::Null)})
+            }
+            EventTag::ToolExecutionEnd => {
+                let result = event.payload.tool_result;
+                json!({"type":"tool_execution_end", "toolCallId":result.tool_call_id.to_string_lossy(),
+                    "toolName":result.tool_name.to_string_lossy(), "isError":result.is_error != 0})
+            }
+            _ => return 0,
+        }
+    };
+    progress.event(&payload);
+    0
+}
 static ACK_REACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FEISHU_PROMPT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -567,32 +656,33 @@ async fn send_reaction(
 fn invoke_print_process(
     prompt: &str,
     conversation_id: &str,
+    selected_session: Option<&str>,
     model: Option<&str>,
     timeout: Duration,
+    progress: Arc<ReplyProgress>,
 ) -> Result<Value, String> {
     let _guard = PRINT_PROCESS_LOCK
         .lock()
         .map_err(|_| "rpi print process lock is poisoned".to_string())?;
-    let session_id = conversation_session_id(conversation_id);
+    let session_id = selected_session
+        .map(str::to_owned)
+        .unwrap_or_else(|| conversation_session_id(conversation_id));
     let mut args = vec![
         "--print".to_owned(),
+        "--mode".to_owned(),
+        "json".to_owned(),
         "--no-extensions".to_owned(),
         "--timeout".to_owned(),
         timeout.as_secs().to_string(),
         "--session-id".to_owned(),
         session_id,
+        "--append-system-prompt".to_owned(),
+        FEISHU_SYSTEM_PROMPT.to_owned(),
     ];
-    if let Some(model) = model {
-        if let Some((provider, model_id)) = model.split_once('/') {
-            args.push("--provider".to_owned());
-            args.push(provider.to_owned());
-            args.push("--model".to_owned());
-            args.push(model_id.to_owned());
-        } else {
-            args.push("--model".to_owned());
-            args.push(model.to_owned());
-        }
-    }
+    args.extend(fallback_model_args(
+        model,
+        &env::args().skip(1).collect::<Vec<_>>(),
+    ));
     args.push(prompt.to_owned());
     let mut child = ProcessCommand::new("rpi")
         .args(&args)
@@ -600,46 +690,156 @@ fn invoke_print_process(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("failed to start rpi print process: {error}"))?;
-    let status = match wait_timeout::ChildExt::wait_timeout(&mut child, timeout)
-        .map_err(|error| format!("failed waiting for rpi print process: {error}"))?
-    {
-        Some(status) => status,
-        None => {
+    let stdout = child.stdout.take().ok_or("rpi stdout pipe is missing")?;
+    let mut stderr = child.stderr.take().ok_or("rpi stderr pipe is missing")?;
+    // Drain both pipes while the process runs: waiting before reading can fill
+    // a pipe and deadlock tool-heavy runs, and hides all live progress.
+    let output_reader = thread::spawn(move || {
+        read_reply_stream(BufReader::new(stdout), |event| progress.event(event))
+    });
+    let error_reader = thread::spawn(move || {
+        let mut text = String::new();
+        stderr.read_to_string(&mut text).map(|_| text)
+    });
+    let status = match wait_timeout::ChildExt::wait_timeout(&mut child, timeout) {
+        Ok(Some(status)) => Ok(status),
+        Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!(
+            Err(format!(
                 "rpi print process timed out after {} seconds",
                 timeout.as_secs()
-            ));
+            ))
+        }
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("failed waiting for rpi print process: {error}"))
         }
     };
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("failed reading rpi print process: {error}"))?;
+    let output = output_reader
+        .join()
+        .map_err(|_| "rpi stdout reader panicked")??;
+    let stderr = error_reader
+        .join()
+        .map_err(|_| "rpi stderr reader panicked")?
+        .map_err(|error| error.to_string())?;
+    let status = status?;
     if !status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if stderr.is_empty() {
-            format!("rpi print process exited with {status}")
+        return Err(if stderr.trim().is_empty() {
+            output
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("rpi print process exited with {status}"))
         } else {
-            stderr
+            stderr.trim().to_owned()
         });
     }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let text = output
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if text.is_empty() {
         return Err("rpi print process returned an empty reply".into());
     }
     Ok(json!({"status": "completed", "text": text}))
 }
 
+fn read_reply_stream(
+    reader: impl BufRead,
+    mut on_event: impl FnMut(&Value),
+) -> Result<Value, String> {
+    let mut result = json!({});
+    for line in reader.lines() {
+        let line = line.map_err(|error| format!("failed reading rpi event: {error}"))?;
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        on_event(&event);
+        match event.get("type").and_then(Value::as_str) {
+            Some("result") => {
+                result["status"] = event["outcome"].clone();
+                result["text"] = event["finalText"].clone();
+            }
+            Some("error") => {
+                result["error"] = event["error"].clone();
+            }
+            _ => {}
+        }
+    }
+    Ok(result)
+}
+
+/// Profile selection wins; otherwise inherit the server's CLI selection.
+fn fallback_model_args(model: Option<&str>, parent_args: &[String]) -> Vec<String> {
+    let mut provider = None;
+    let mut inherited_model = None;
+    let mut index = 0;
+    while index < parent_args.len() {
+        let arg = &parent_args[index];
+        if arg == "--" {
+            break;
+        }
+        for (flag, target) in [
+            ("--provider", &mut provider),
+            ("--model", &mut inherited_model),
+        ] {
+            if arg == flag {
+                index += 1;
+                *target = parent_args.get(index).cloned();
+            } else if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
+                *target = Some(value.to_owned());
+            }
+        }
+        index += 1;
+    }
+    let selected_model = model.map(str::to_owned).or(inherited_model);
+    let selected_model = selected_model.map(|model| {
+        if let Some((explicit_provider, model_id)) = model.split_once('/') {
+            provider = Some(explicit_provider.to_owned());
+            model_id.to_owned()
+        } else {
+            model
+        }
+    });
+    let mut args = Vec::new();
+    if let Some(provider) = provider {
+        args.extend(["--provider".to_owned(), provider]);
+    }
+    if let Some(model) = selected_model {
+        args.extend(["--model".to_owned(), model]);
+    }
+    args
+}
+
+fn auto_reply_content(text: &str) -> Value {
+    static MARKDOWN: OnceLock<regex::Regex> = OnceLock::new();
+    let markdown = MARKDOWN.get_or_init(|| regex::Regex::new(
+        r"(?m)(^ {0,3}(#{1,6}\s|>\s|[-+*]\s|\d+[.)]\s|```|~~~)|\*\*[^\n]+\*\*|__[^\n]+__|~~[^\n]+~~|`[^`\n]+`|!?\[[^\]\n]+\]\([^)]+\)|(^|\s)\*[^*\s\n][^*\n]*\*|\b_[^_\s\n][^_\n]*_\b|^\s*\|?.+\|.+\n\s*\|?\s*:?-{3,})"
+    ).expect("valid Markdown detection regex"));
+    json!({"type": if markdown.is_match(text) { "markdown" } else { "text" }, "text": text})
+}
+
 fn invoke_print_with_retry(
     prompt: &str,
     conversation_id: &str,
+    selected_session: Option<&str>,
     model: Option<&str>,
     timeout: Duration,
+    progress: Arc<ReplyProgress>,
 ) -> Result<Value, String> {
     let mut last_error = None;
     for attempt in 0..3 {
-        match invoke_print_process(prompt, conversation_id, model, timeout) {
+        match invoke_print_process(
+            prompt,
+            conversation_id,
+            selected_session,
+            model,
+            timeout,
+            progress.clone(),
+        ) {
             Ok(result) => return Ok(result),
             Err(error) if attempt < 2 && retryable_print_error(&error) => {
                 let delay = Duration::from_secs(2 * (attempt + 1) as u64);
@@ -747,6 +947,42 @@ impl EventHandler for MessageHandler {
                     .or_else(|| id.user_id.clone())
                     .or_else(|| id.union_id.clone())
             });
+            let session_store_path = env::current_dir()
+                .map(|cwd| cwd.join(".rpi").join("im-sessions.json"))
+                .map_err(|error| error.to_string());
+            if state.profile.auto_reply {
+                let mention_keys = message
+                    .message
+                    .mentions
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(|mention| mention.key.as_deref())
+                    .collect::<Vec<_>>();
+                let command_text = session_command_text(&text, &mention_keys);
+                let command = match &session_store_path {
+                    Ok(path) => {
+                        sessions::command(path, &state.profile.name, &chat_id, &command_text)
+                    }
+                    Err(error)
+                        if matches!(
+                            command_text.split_whitespace().next(),
+                            Some("/new" | "/sessions" | "/session")
+                        ) =>
+                    {
+                        Some(Err(error.clone()))
+                    }
+                    Err(_) => None,
+                };
+                if let Some(result) = command {
+                    let reply = result.unwrap_or_else(|error| format!("会话指令失败：{error}"));
+                    let _ = commands.send(Command::SendAsync {
+                        conversation_id: chat_id,
+                        content: json!({"type":"text", "text":reply}),
+                    });
+                    return Ok(None);
+                }
+            }
             state.push_message(json!({
                 "type": "message",
                 "provider": "feishu",
@@ -763,6 +999,18 @@ impl EventHandler for MessageHandler {
             }));
 
             if state.profile.auto_reply && !text.trim().is_empty() {
+                let selected_session = match session_store_path
+                    .and_then(|path| sessions::selected(&path, &state.profile.name, &chat_id))
+                {
+                    Ok(selected) => selected,
+                    Err(error) => {
+                        let _ = commands.send(Command::SendAsync {
+                            conversation_id: chat_id,
+                            content: json!({"type":"text", "text":format!("读取会话选择失败：{error}")}),
+                        });
+                        return Ok(None);
+                    }
+                };
                 let Some(runtime) = state.host_runtime else {
                     eprintln!("rpi-im-message: autoReply is enabled but the rpi runtime bridge is unavailable");
                     return Ok(None);
@@ -773,13 +1021,30 @@ impl EventHandler for MessageHandler {
                 let process_model = state.profile.auto_reply_model.clone();
                 let process_timeout = state.profile.auto_reply_timeout;
                 let reply_commands = commands.clone();
+                let progress = Arc::new(ReplyProgress {
+                    run_id: ACK_REACTION_COUNTER.fetch_add(1, Ordering::Relaxed),
+                    conversation_id: conversation_id.clone(),
+                    commands: commands.clone(),
+                    state: Mutex::new(progress::Progress::default()),
+                });
                 eprintln!(
                     "rpi-im-message: scheduling auto reply id={} chat={}",
                     message_id, conversation_id
                 );
                 tokio::spawn(async move {
                     let generated = tokio::task::spawn_blocking(move || {
+                        let _reply_lock = AUTO_REPLY_LOCK.lock().map_err(|_| "auto reply lock is poisoned".to_owned())?;
+                        let _progress_scope = ProgressScope::enter(progress.clone());
                         let _prompt_scope = FeishuPromptScope::enter();
+                        // Explicit IM session selection uses its own child process
+                        // even when the host has a harness, avoiding a hot-switch
+                        // of the user's interactive host session.
+                        if selected_session.is_some() {
+                            return invoke_print_with_retry(
+                                &prompt, &process_conversation_id, selected_session.as_deref(),
+                                process_model.as_deref(), process_timeout, progress,
+                            );
+                        }
                         match invoke_runtime_action(
                             &runtime,
                             RuntimeActionId::SendUserMessage,
@@ -794,8 +1059,10 @@ impl EventHandler for MessageHandler {
                                 invoke_print_with_retry(
                                     &prompt,
                                     &process_conversation_id,
+                                    None,
                                     process_model.as_deref(),
                                     process_timeout,
+                                    progress,
                                 )
                             }
                             Err(error) => Err(error),
@@ -821,10 +1088,7 @@ impl EventHandler for MessageHandler {
                                     message_id,
                                     reply_text.len()
                                 );
-                                // Hermes gives us Markdown. The raw Feishu REST API does
-                                // not render Markdown in `msg_type=text`, so the channel
-                                // adapter must send a `post` payload instead.
-                                let content = json!({"type": "markdown", "text": reply_text});
+                                let content = auto_reply_content(reply_text);
                                 if let Err(error) = reply_commands.send(Command::SendAsync {
                                     conversation_id,
                                     content,
@@ -865,7 +1129,31 @@ fn extract_message_text(message_type: &Option<String>, content: &str) -> String 
     content.to_owned()
 }
 
+fn session_command_text(text: &str, mention_keys: &[&str]) -> String {
+    let mut command = text.trim_start();
+    loop {
+        if let Some(key) = mention_keys
+            .iter()
+            .find(|key| !key.is_empty() && command.starts_with(**key))
+        {
+            command = command[key.len()..].trim_start();
+        } else {
+            break;
+        }
+    }
+    command.trim().to_owned()
+}
+
 enum Command {
+    ProgressDone {
+        run_id: u64,
+    },
+    Progress {
+        run_id: u64,
+        tool_call_id: String,
+        conversation_id: String,
+        text: String,
+    },
     React {
         message_id: String,
         reaction_label: &'static str,
@@ -974,6 +1262,7 @@ async fn run_server(
     command_sender: tokio::sync::mpsc::UnboundedSender<Command>,
     ready: mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
+    let mut progress_messages: HashMap<(u64, String), String> = HashMap::new();
     let base_url = if profile.domain == "lark" {
         LARK_BASE_URL
     } else {
@@ -1048,6 +1337,23 @@ async fn run_server(
                             message_id, reaction_label, error
                         ),
                     },
+                    Some(Command::Progress { run_id, tool_call_id, conversation_id, text }) => {
+                        let key = (run_id, tool_call_id);
+                        let result = if let Some(message_id) = progress_messages.get(&key) {
+                            update_progress_message(&client, message_id, &text).await
+                        } else {
+                            send_message(&client, &conversation_id, &json!({"type":"text", "text":text})).await
+                        };
+                        match result {
+                            Ok(response) => {
+                                if let Some(message_id) = response.pointer("/data/message_id").and_then(Value::as_str) {
+                                    progress_messages.insert(key, message_id.to_owned());
+                                }
+                            }
+                            Err(error) => eprintln!("rpi-im-message: tool progress send failed: {error}"),
+                        }
+                    }
+                    Some(Command::ProgressDone { run_id }) => { progress_messages.retain(|(id, _), _| *id != run_id); }
                     Some(Command::Send { conversation_id, content, reply }) => {
                         let result = send_message(&client, &conversation_id, &content).await;
                         let _ = reply.send(result);
@@ -1089,6 +1395,33 @@ fn startup_failure(
     Err(error)
 }
 
+async fn update_progress_message(
+    client: &Client,
+    message_id: &str,
+    text: &str,
+) -> Result<Value, String> {
+    let response = client
+        .operation("im.v1.message.update")
+        .path_param("message_id", message_id)
+        .body_json(&json!({"msg_type":"text", "content":json!({"text":text}).to_string()}))
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!(
+            "Feishu progress update returned HTTP {}: {}",
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        ));
+    }
+    let value = response.json_value().map_err(|error| error.to_string())?;
+    if value.get("code").and_then(Value::as_i64).unwrap_or(0) != 0 {
+        return Err(format!("Feishu progress update failed: {value}"));
+    }
+    Ok(value)
+}
+
 async fn send_message(
     client: &Client,
     conversation_id: &str,
@@ -1098,8 +1431,6 @@ async fn send_message(
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| "content.type is required".to_string())?;
-    // A long Markdown reply is split into several cards, so one `send` can map
-    // to more than one `im.v1.message.create` call.
     let messages: Vec<(&str, Value)> = match content_type {
         "text" => {
             let text = content
@@ -1115,13 +1446,7 @@ async fn send_message(
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| "content.text is required".to_string())?;
-            // Hermes-style: hand the raw Markdown to a CardKit 2.0 `markdown`
-            // element and let Feishu render it, instead of degrading it into
-            // `post` rich-text tags that only support a small subset.
-            cardkit::render_markdown_cards(text)
-                .into_iter()
-                .map(|card| ("interactive", card))
-                .collect()
+            vec![("post", markdown_post(text))]
         }
         "card" | "interactive" => {
             let card = content.get("card").cloned().unwrap_or_else(|| {
@@ -1163,8 +1488,15 @@ async fn send_message(
             ));
         }
         last = response.json_value().map_err(|error| error.to_string())?;
+        if last.get("code").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            return Err(format!("Feishu message API failed: {last}"));
+        }
     }
     Ok(last)
+}
+
+fn markdown_post(text: &str) -> Value {
+    json!({"zh_cn": {"title": "", "content": [[{"tag": "md", "text": text}]]}})
 }
 
 fn timeout_seconds(params: &Value) -> Result<Duration, String> {
@@ -1475,6 +1807,12 @@ pub extern "C" fn rpi_plugin_register(api: *const PluginApi) -> i32 {
         });
             let result = register_tool(&*schema, execute, poll, cancel, destroy, free_string);
             drop(schema);
+            // Headless startup parks forever, so register progress handlers first.
+            if let Some(register_event) = api.register_event_handler {
+                for tag in [EventTag::ToolExecutionStart, EventTag::ToolExecutionEnd] {
+                    let _ = register_event(tag, on_tool_progress, std::ptr::null_mut());
+                }
+            }
             if let Some(register_flag) = api.register_flag {
                 let _ = register_flag(
                     StbStringRef::from_str(SERVER_FLAG),
@@ -1521,6 +1859,126 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recognizes_session_commands_after_feishu_mentions() {
+        assert_eq!(
+            session_command_text(" @_user_1 /new ", &["@_user_1"]),
+            "/new"
+        );
+        assert_eq!(
+            session_command_text("@_user_1 @_user_2 /session old", &["@_user_1", "@_user_2"]),
+            "/session old"
+        );
+        assert_eq!(session_command_text("/sessions", &[""]), "/sessions");
+        assert_eq!(
+            session_command_text("解释 /new 指令", &[]),
+            "解释 /new 指令"
+        );
+    }
+
+    #[tokio::test]
+    async fn progress_updates_send_required_message_type_over_http() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut updates = 0;
+            while updates < 2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let mut length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header == "\r\n" || header.is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header.to_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                let response = if request_line.starts_with("PUT ") {
+                    updates += 1;
+                    request_tx.send((request_line, body.clone())).unwrap();
+                    // Emulate Feishu's rejection of the previously missing field.
+                    if body["msg_type"] == "text" {
+                        json!({"code":0,"data":{"message_id":"om_test"}})
+                    } else {
+                        json!({"code":99992402,"msg":"msg_type is required"})
+                    }
+                } else {
+                    json!({"code":0,"tenant_access_token":"test-token","expire":7200})
+                }
+                .to_string();
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+            }
+        });
+        let client = Client::new(
+            Config::builder("test-app", "test-secret")
+                .base_url(format!("http://{address}"))
+                .build(),
+        )
+        .unwrap();
+        for text in ["⏳ bash", "✅ bash\n⏳ read"] {
+            update_progress_message(&client, "om_test", text)
+                .await
+                .unwrap();
+            let (request, body) = request_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(request.starts_with("PUT /open-apis/im/v1/messages/om_test "));
+            let content: Value = serde_json::from_str(body["content"].as_str().unwrap()).unwrap();
+            assert_eq!(content["text"], text);
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn consumes_live_tool_events_and_returns_only_final_text() {
+        let stream = concat!(
+            "{\"type\":\"tool_execution_start\",\"toolCallId\":\"a\",\"toolName\":\"bash\",\"args\":{\"command\":\"pwd\"}}\n",
+            "{\"type\":\"message_update\",\"delta\":\"interim text\"}\n",
+            "{\"type\":\"tool_execution_end\",\"toolCallId\":\"a\",\"toolName\":\"bash\",\"isError\":false}\n",
+            "{\"type\":\"result\",\"outcome\":\"completed\",\"finalText\":\"最终回复\"}\n",
+        );
+        let mut progress = progress::Progress::default();
+        let mut updates = Vec::new();
+        let result = read_reply_stream(std::io::Cursor::new(stream), |event| {
+            if let Some(update) = progress.event(event) {
+                updates.push((update.tool_call_id, update.text));
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            updates,
+            [
+                ("a".to_owned(), "⏳ bash：pwd".to_owned()),
+                ("a".to_owned(), "✅ bash：pwd".to_owned())
+            ]
+        );
+        assert_eq!(result["text"], "最终回复");
+        assert_eq!(result["status"], "completed");
+    }
+
+    #[test]
+    fn preserves_stream_errors_and_missing_final_result() {
+        let result = read_reply_stream(
+            std::io::Cursor::new("{\"type\":\"error\",\"error\":\"provider rejected request\"}\n"),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(result["error"], "provider rejected request");
+        assert!(result.get("text").is_none());
+    }
+
+    #[test]
     fn extracts_text_message_content() {
         assert_eq!(
             extract_message_text(&Some("text".into()), r#"{"text":"hello"}"#),
@@ -1532,6 +1990,60 @@ mod tests {
     fn rejects_invalid_profile_provider() {
         let value = json!({"provider":"slack"});
         assert!(Profile::from_value("test", &value).is_err());
+    }
+
+    #[test]
+    fn fallback_inherits_cli_selection_and_profile_overrides_it() {
+        let parent = vec![
+            "--provider".into(),
+            "routeryo-copy".into(),
+            "--model=default-model".into(),
+            "--im-message-server".into(),
+        ];
+        assert_eq!(
+            fallback_model_args(None, &parent),
+            ["--provider", "routeryo-copy", "--model", "default-model"]
+        );
+        assert_eq!(
+            fallback_model_args(Some("other/custom"), &parent),
+            ["--provider", "other", "--model", "custom"]
+        );
+        assert_eq!(
+            fallback_model_args(Some("custom"), &parent),
+            ["--provider", "routeryo-copy", "--model", "custom"]
+        );
+        assert_eq!(
+            fallback_model_args(None, &["--provider=routeryo-copy".into()]),
+            ["--provider", "routeryo-copy"]
+        );
+        assert!(fallback_model_args(None, &["--".into(), "--provider=ignored".into()]).is_empty());
+    }
+
+    #[test]
+    fn ordinary_replies_use_text_and_formatted_replies_use_posts() {
+        for text in [
+            "你好！",
+            "第一行\n第二行",
+            "费用为 2*4000+4*3000",
+            "https://example.com",
+        ] {
+            assert_eq!(auto_reply_content(text)["type"], "text", "{text}");
+        }
+        for text in [
+            "# 标题",
+            "**加粗**",
+            "- 项目",
+            "1. 项目",
+            "`code`",
+            "```rust\nlet x = 1;\n```",
+            "[链接](https://example.com)",
+            "| A | B |\n| --- | --- |\n| 1 | 2 |",
+        ] {
+            assert_eq!(auto_reply_content(text)["type"], "markdown", "{text}");
+            let post = markdown_post(text);
+            assert_eq!(post["zh_cn"]["content"][0][0]["tag"], "md");
+            assert_eq!(post["zh_cn"]["content"][0][0]["text"], text);
+        }
     }
 
     #[test]

@@ -109,7 +109,7 @@
   },
   {
     "name": "rpi-im-message",
-    "version": "0.1.8",
+    "version": "0.1.10",
     "type": "extension",
     "tool": "im_message_server",
     "inspiredBy": "Hermes Feishu/Lark channels",

@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-im-message"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "feishu-sdk",
  "regex",
@@ -2006,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-plugin-sdk"
-version = "0.3.16"
+version = "0.3.17"
 dependencies = [
  "serde_json",
 ]

@@ -7,8 +7,9 @@ runtime and exposes JSON actions through one rpi tool:
 `start`, `status`, `list`, `receive`, `send`, and `stop`.
 
 The `send` action accepts `content.type` of `text`, `markdown`, or `card`.
-`markdown` is rendered through a CardKit 2.0 card and preserves the original
-Markdown instead of degrading it into plain text or rich-text tags.
+`text` sends an ordinary text message. `markdown` sends a rich-text `post`
+with an `md` element, preserving the original Markdown. `card` explicitly
+sends an interactive card.
 
 Configuration is loaded from `RPI_IM_CONFIG`, project `.rpi/im.json`, or the
 global `~/.rpi/agent/im.json` (in that order). Each profile may provide either
@@ -58,13 +59,18 @@ over long connection, and grant the required message permissions.
 
 When `autoReply` is enabled, incoming text messages are passed to the active
 rpi Agent through the ABI v2 runtime bridge. The generated final text is sent
-back to the same Feishu conversation as a **CardKit 2.0 card**: the raw
-Markdown goes into the card's `markdown` element and Feishu renders headings,
-bold/italic, strikethrough, lists, code blocks, tables and links natively.
-This follows the Hermes (`hermes-lark-streaming`) channel strategy. A light
-pre-pass demotes headings to the levels Feishu renders, escapes stray `*` that
-Feishu would mis-pair as emphasis, drops image refs that are not `img_` keys and
-splits very long replies across several cards.
+back to the same Feishu conversation as an ordinary `text` message for plain
+replies, or a rich-text `post` message when Markdown formatting is detected
+(headings, emphasis, lists, code, links or tables). Automatic replies do not
+use interactive cards. Markdown is passed through without rewriting headings.
+
+During automatic replies, each tool call gets its own ordinary text message.
+That message is edited when the call succeeds, fails or is interrupted. Each message
+shows the tool name, a short command/path/query preview, and running/success/
+error status. Full arguments and tool results are not posted. The host ABI
+event path and the headless JSONL child-process path both report tool progress;
+the final assistant reply is sent separately. The bot needs permission to
+edit its own messages for tool status updates.
 
 Auto replies use a Feishu/Lark channel system prompt: the model returns only the
 user-facing text, without JSON/API envelopes or a `post`/card envelope. The
@@ -77,9 +83,29 @@ work without opening the TUI. The fallback uses a stable rpi session for each
 Feishu conversation and serializes model runs, preserving conversation context
 while avoiding concurrent session writes and provider rate spikes.
 
+With `autoReply` enabled, send these commands directly to the bot (mention it
+first in groups when `mentionRequired` is enabled):
+
+| Command | Behavior |
+| --- | --- |
+| `/new` | Create and select a new session with empty context; keep the old history. |
+| `/sessions` | List the current chat's latest 20 sessions, marking the selected one. |
+| `/session` | Show the selected session ID and command help. |
+| `/session <ID>` | Switch to a full ID from `/sessions`, including the original session. |
+
+Commands are handled locally without calling the model. Selection is scoped
+to the IM profile and chat and saved in `<working-directory>/.rpi/im-sessions.json`.
+Keep the service's working directory the same when restarting to restore it.
+New session files are created by rpi on their first normal message. Switching
+affects subsequent messages; already scheduled replies retain their original
+session. Explicitly selected sessions always use the JSONL child-process path
+so the host's interactive session is unaffected.
+
 Set `autoReplyModel` to an explicit `provider/model` id when the rpi default
-model is unavailable from the headless environment. If omitted, the fallback
-uses the normal rpi model selection.
+model is unavailable from the headless environment. An explicit `provider/model`
+overrides the server CLI selection. A bare model id inherits the CLI provider.
+If omitted, the fallback inherits the server's `--provider` and `--model`;
+unspecified values use normal rpi model selection.
 
 `autoReplyTimeoutSeconds` controls both the model request timeout and the
 fallback process wait timeout. It defaults to 600 seconds (10 minutes) and

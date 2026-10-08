@@ -117,7 +117,7 @@ tasks:
       - cargo publish --allow-dirty -p rpi-voice
 
   publish-im-message:
-    desc: Publish rpi-im-message with CardKit 2.0 Markdown rendering
+    desc: Publish rpi-im-message with Feishu session commands and tool progress
     cmds:
       - cargo test -p rpi-im-message
       - cargo publish --allow-dirty -p rpi-im-message
