@@ -128,10 +128,11 @@ task install-bundle ARCHIVE=dist/rpi-packages-windows-x86_64.zip
 The optional `task smoke` maintainer check exercises the host loader and does
 require a sibling `pi-rust` checkout.
 
-## Automatic crate releases
+## Manual crate releases
 
-Every push or PR merge to `main` runs
-`.github/workflows/release-cargo.yml`. release-plz compares the workspace with
+Pushes and PR merges to `main` do not publish packages. Explicitly run
+`.github/workflows/release-cargo.yml` through the Actions UI (`workflow_dispatch`)
+on `main` when a release is approved. release-plz compares the workspace with
 crates.io, updates versions and package changelogs for unpublished changes,
 and synchronizes `catalog/packages.json`. Ordinary changes to the current
 `0.x` packages get a patch bump; conventional breaking-change commits can

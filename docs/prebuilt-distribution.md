@@ -110,7 +110,8 @@ currently built. The loader performs the final host compatibility check.
 
 ## Release automation
 
-On a push to `main`, the release workflow prepares versions and changelogs,
+Only an explicitly requested manual run on `main` starts a release; pushes and
+PR merges do not publish. The release workflow prepares versions and changelogs,
 synchronizes the catalog, runs tests and Cargo publishing preflight, and opens
 and squash-merges a PR containing the tested release metadata. It never pushes
 directly to protected `main`. The repository must allow Actions to create PRs;
@@ -126,9 +127,9 @@ When organization policy permits Actions PR creation,
 the built-in token is sufficient. Otherwise set `RELEASE_GITHUB_TOKEN` to a
 repository-scoped GitHub App token or fine-grained personal access token with
 Contents and Pull requests write permissions. This token is used for the PR
-API only; it does not bypass `main` protection. A version-PR push triggered by
-that token is skipped by the release workflow because the original run already
-publishes the merged commit. `workflow_dispatch` can always retry that commit.
+API only; it does not bypass `main` protection. Version-PR pushes do not trigger
+publication. The explicitly started run publishes the merged commit;
+`workflow_dispatch` can retry that commit when requested.
 
 The build pipeline preserves Actions artifacts for 14 days. Five-platform
 assembly verifies source commit, package identity, SDK identity and checksums
