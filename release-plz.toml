@@ -1,0 +1,12 @@
+[workspace]
+# cargo update may normalize the lockfile before versions are generated.
+allow_dirty = true
+dependencies_update = false
+semver_check = false
+release_always = true
+git_tag_name = "{{ package }}-v{{ version }}"
+git_release_name = "{{ package }} v{{ version }}"
+
+[[package]]
+name = "rpi-package-install"
+release = false
