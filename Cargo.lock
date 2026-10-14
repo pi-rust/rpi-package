@@ -1907,7 +1907,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "rpi-acp-core",
  "rpi-plugin-sdk",
@@ -2123,7 +2123,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-webui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "open",
  "reqwest 0.12.28",

@@ -166,14 +166,14 @@
   },
   {
     "name": "rpi-acp",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "type": "extension",
     "tool": "--acp (Agent Client Protocol stdio server)",
     "inspiredBy": "Zed external agents / agent-client-protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-acp",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.1.4/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.1.5/rpi-extension.json"
   },
   {
     "name": "rpi-permission-gate",
@@ -188,13 +188,13 @@
   },
   {
     "name": "rpi-webui",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "type": "extension",
     "tool": "--webui (Open WebUI launcher with ACP Pipe)",
     "inspiredBy": "Open WebUI / Agent Client Protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-webui",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-webui-v0.1.0/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-webui-v0.1.1/rpi-extension.json"
   }
 ]
