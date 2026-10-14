@@ -10,6 +10,13 @@ pub struct Config {
     pub manage: bool,
     pub open_browser: bool,
     pub log: PathBuf,
+    pub local: bool,
+    pub workspace: PathBuf,
+    pub permission: String,
+    pub permission_explicit: bool,
+    pub admin_token: Option<String>,
+    pub function_id: String,
+    pub configure: bool,
 }
 
 pub fn env_bool(name: &str, default: bool) -> bool {
@@ -22,8 +29,38 @@ pub fn env_bool(name: &str, default: bool) -> bool {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, String> {
-        let url = std::env::var("RPI_WEBUI_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    pub fn browser_url(&self) -> url::Url {
+        let mut url = self.url.clone();
+        url.query_pairs_mut()
+            .append_pair("model", &format!("{}.rpi", self.function_id));
+        url
+    }
+
+    pub fn from_options(flag: impl Fn(&str) -> Option<serde_json::Value>) -> Result<Self, String> {
+        let option = |name: &str, env: &str| -> Result<Option<String>, String> {
+            if let Some(value) = flag(name).filter(|v| !v.is_null()) {
+                return value
+                    .as_str()
+                    .map(|s| Some(s.to_owned()))
+                    .ok_or_else(|| format!("--{name} requires a value"));
+            }
+            Ok(std::env::var(env).ok())
+        };
+        let adapter = match flag("webui") {
+            Some(serde_json::Value::String(name))
+                if !matches!(name.as_str(), "" | "true" | "1") =>
+            {
+                name
+            }
+            _ => std::env::var("RPI_WEBUI_UI").unwrap_or_else(|_| "openwebui".into()),
+        };
+        if !matches!(adapter.as_str(), "openwebui" | "open-webui") {
+            return Err(format!(
+                "Unsupported WebUI adapter '{adapter}'; currently supported: openwebui"
+            ));
+        }
+        let url =
+            option("webui-url", "RPI_WEBUI_URL")?.unwrap_or_else(|| "http://127.0.0.1:8080".into());
         let url = url::Url::parse(&url).map_err(|e| e.to_string())?;
         if !matches!(url.scheme(), "http" | "https")
             || url.host_str().is_none()
@@ -39,10 +76,7 @@ impl Config {
             url::Host::Ipv4(ip) => ip.is_loopback(),
             url::Host::Ipv6(ip) => ip.is_loopback(),
         });
-        let manage = env_bool(
-            "RPI_WEBUI_MANAGE",
-            url.as_str().trim_end_matches('/') == "http://127.0.0.1:8080",
-        );
+        let manage = env_bool("RPI_WEBUI_MANAGE", local);
         if manage && !local {
             return Err("Managed Open WebUI must use a loopback URL".into());
         }
@@ -52,14 +86,64 @@ impl Config {
             Err(_) => vec![
                 "serve".into(),
                 "--host".into(),
-                "127.0.0.1".into(),
+                url.host_str().unwrap().trim_matches(['[', ']']).into(),
                 "--port".into(),
-                "8080".into(),
+                url.port_or_known_default().unwrap().to_string(),
             ],
         };
+        if manage
+            && !args.windows(2).any(|a| {
+                a[0] == "--host" && matches!(a[1].as_str(), "127.0.0.1" | "::1" | "localhost")
+            })
+        {
+            return Err("Managed single-user Open WebUI requires --host 127.0.0.1 (or another loopback host)".into());
+        }
+        if manage
+            && args.windows(2).any(|a| {
+                a[0] == "--host" && !matches!(a[1].as_str(), "127.0.0.1" | "::1" | "localhost")
+            })
+        {
+            return Err(
+                "Managed single-user Open WebUI cannot listen on a public interface".into(),
+            );
+        }
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
             .map(PathBuf::from)
             .ok_or("Cannot locate the user's home directory")?;
+        let workspace = option("webui-workspace", "RPI_WEBUI_WORKSPACE")?
+            .map(PathBuf::from)
+            .unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?);
+        let workspace = workspace
+            .canonicalize()
+            .map_err(|e| format!("Cannot open WebUI workspace: {e}"))?;
+        if !workspace.is_dir() {
+            return Err("WebUI workspace must be a directory".into());
+        }
+        // Windows verbatim paths do not compare normally in Python; retain a standard absolute path.
+        let workspace = if cfg!(windows) {
+            let text = workspace.to_string_lossy();
+            if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+                PathBuf::from(format!(r"\\{unc}"))
+            } else {
+                PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+            }
+        } else {
+            workspace
+        };
+        let permission = option("webui-permission", "RPI_WEBUI_PERMISSION")?;
+        let permission_explicit = permission.is_some();
+        let permission = permission.unwrap_or_else(|| "ask".into());
+        if !matches!(permission.as_str(), "ask" | "bypass") {
+            return Err("--webui-permission requires ask or bypass".into());
+        }
+        let function_id = if local {
+            workspace_id(&workspace)
+        } else {
+            "rpi_acp".into()
+        };
+        let admin_token = std::env::var("RPI_WEBUI_ADMIN_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
         Ok(Self {
             url,
             args,
@@ -67,8 +151,26 @@ impl Config {
             command: std::env::var("RPI_WEBUI_COMMAND").unwrap_or_else(|_| "open-webui".into()),
             open_browser: env_bool("RPI_WEBUI_OPEN_BROWSER", true),
             log: home.join(".rpi/webui/openwebui.log"),
+            local,
+            workspace,
+            permission,
+            permission_explicit,
+            configure: manage || admin_token.is_some(),
+            admin_token,
+            function_id,
         })
     }
+}
+
+fn workspace_id(path: &std::path::Path) -> String {
+    // Stable FNV-1a, independent of Rust's randomized/unspecified DefaultHasher.
+    let hash = path
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |h, b| {
+            (h ^ b as u64).wrapping_mul(0x100000001b3)
+        });
+    format!("rpi_acp_{hash:016x}")
 }
 
 /// Only stop a process this invocation created; pre-existing servers keep running.
@@ -76,10 +178,79 @@ struct OwnedChild(Option<Child>);
 impl Drop for OwnedChild {
     fn drop(&mut self) {
         if let Some(child) = &mut self.0 {
+            #[cfg(windows)]
+            if child.try_wait().is_ok_and(|status| status.is_none()) {
+                // Python console scripts and uv may own a child Python process.
+                use std::os::windows::process::CommandExt;
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                    .creation_flags(0x08000000)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
     }
+}
+
+fn server_command(config: &Config, uv: bool) -> Result<Command, String> {
+    let mut command = Command::new(if uv { "uv" } else { &config.command });
+    if uv {
+        command
+            .args([
+                "tool",
+                "run",
+                "--python",
+                "3.12",
+                "--from",
+                "open-webui==0.12.0",
+                "open-webui",
+            ])
+            .env(
+                "UV_INDEX_URL",
+                std::env::var("UV_INDEX_URL")
+                    .unwrap_or_else(|_| "https://pypi.tuna.tsinghua.edu.cn/simple".into()),
+            );
+    }
+    command
+        .args(&config.args)
+        .current_dir(config.log.parent().unwrap())
+        .env("RPI_WEBUI_CHILD", "1")
+        .env("RPI_WEBUI_AUTOSTART", "0")
+        .env("DATA_DIR", config.log.parent().unwrap().join("data"))
+        .env(
+            "CORS_ALLOW_ORIGIN",
+            config.url.origin().ascii_serialization(),
+        )
+        .env_remove("DATABASE_URL")
+        .env("WEBUI_AUTH", "false")
+        .env("ENABLE_SIGNUP", "false")
+        .env("OFFLINE_MODE", "true")
+        .env("ENABLE_OPENAI_API", "false")
+        .env("ENABLE_OLLAMA_API", "false")
+        .env("DEFAULT_MODELS", format!("{}.rpi", config.function_id))
+        .env("ENABLE_EVALUATION_ARENA_MODELS", "false")
+        .env("ENABLE_TITLE_GENERATION", "false")
+        .env("ENABLE_TAGS_GENERATION", "false")
+        .env("ENABLE_FOLLOW_UP_GENERATION", "false")
+        .env("ENABLE_AUTOCOMPLETE_GENERATION", "false")
+        .stdin(Stdio::null());
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&config.log)
+        .map_err(|e| e.to_string())?;
+    command
+        .stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
+        .stderr(Stdio::from(log));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    Ok(command)
 }
 
 pub fn run(config: Config, stop: Receiver<()>) -> Result<(), String> {
@@ -116,28 +287,19 @@ pub fn run(config: Config, stop: Receiver<()>) -> Result<(), String> {
         if let Some(parent) = config.log.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&config.log)
-            .map_err(|e| e.to_string())?;
-        let mut command = Command::new(&config.command);
-        command
-            .args(&config.args)
-            .env("RPI_WEBUI_AUTOSTART", "0")
-            .env("RPI_WEBUI_CHILD", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
-            .stderr(Stdio::from(log));
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000);
-        }
-        owned.0 = Some(command.spawn().map_err(|e| {
-            format!("Cannot start Open WebUI: {e}. Install Open WebUI or set RPI_WEBUI_COMMAND.")
-        })?);
-        let deadline = Instant::now() + Duration::from_secs(60);
+        owned.0 = Some(match server_command(&config, false)?.spawn() {
+            Ok(child) => child,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound && config.command == "open-webui" =>
+            {
+                eprintln!("[rpi-webui] Installing Open WebUI with uv (Tsinghua mirror); first launch may take several minutes.");
+                server_command(&config, true)?.spawn().map_err(|e| {
+                    format!("Cannot start Open WebUI: {e}. Install uv or put open-webui on PATH.")
+                })?
+            }
+            Err(e) => return Err(format!("Cannot start Open WebUI: {e}")),
+        });
+        let deadline = Instant::now() + Duration::from_secs(600);
         loop {
             if let Some(status) = owned
                 .0
@@ -166,8 +328,12 @@ pub fn run(config: Config, stop: Receiver<()>) -> Result<(), String> {
             }
         }
     }
+    if config.configure {
+        crate::openwebui::connect(&config, owned.0.is_some() || config.manage)?;
+    }
     if config.open_browser {
-        open::that(config.url.as_str()).map_err(|e| format!("Cannot open browser: {e}"))?;
+        open::that(config.browser_url().as_str())
+            .map_err(|e| format!("Cannot open browser: {e}"))?;
     }
     loop {
         match stop.recv_timeout(Duration::from_secs(1)) {
@@ -187,7 +353,7 @@ pub fn run(config: Config, stop: Receiver<()>) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -202,7 +368,7 @@ mod tests {
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
     }
 
-    fn config(port: u16) -> Config {
+    pub(crate) fn config(port: u16) -> Config {
         let dir =
             std::env::temp_dir().join(format!("rpi-webui-test-{}-{}", std::process::id(), port));
         Config {
@@ -212,7 +378,43 @@ mod tests {
             manage: false,
             open_browser: false,
             log: dir.join("openwebui.log"),
+            local: true,
+            workspace: std::env::current_dir().unwrap(),
+            permission: "ask".into(),
+            permission_explicit: false,
+            admin_token: None,
+            function_id: "rpi_acp_test".into(),
+            configure: false,
         }
+    }
+
+    #[test]
+    fn cli_selects_adapter_workspace_and_permissions() {
+        let cfg = Config::from_options(|name| match name {
+            "webui" => Some(serde_json::json!("openwebui")),
+            "webui-url" => Some(serde_json::json!("https://example.com")),
+            "webui-permission" => Some(serde_json::json!("bypass")),
+            "webui-workspace" => Some(serde_json::json!(std::env::current_dir().unwrap())),
+            _ => None,
+        })
+        .unwrap();
+        assert!(!cfg.manage);
+        assert!(!cfg.local);
+        assert!(cfg.permission_explicit);
+        assert_eq!(cfg.permission, "bypass");
+        assert!(cfg.browser_url().as_str().contains("model=rpi_acp.rpi"));
+        assert!(Config::from_options(
+            |name| (name == "webui").then(|| serde_json::json!("unknown-ui"))
+        )
+        .is_err());
+        assert!(Config::from_options(
+            |name| (name == "webui-permission").then(|| serde_json::json!(true))
+        )
+        .is_err());
+        assert!(Config::from_options(
+            |name| (name == "webui-permission").then(|| serde_json::json!("bad"))
+        )
+        .is_err());
     }
 
     #[test]

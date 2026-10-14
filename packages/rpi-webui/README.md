@@ -1,72 +1,68 @@
 # rpi-webui
 
-Launch Open WebUI from rpi and use the existing `rpi-acp` bridge for agent
-sessions. No custom frontend or duplicate RPC backend is included.
+Install once, then open Open WebUI connected to the current project:
 
-```text
-Open WebUI → RPI ACP Pipe → rpi-acp-bridge → rpi --mode rpc
-```
-
-## Use an existing Open WebUI server
-
-Install this extension and point the launcher at your server:
-
-```powershell
+```sh
 rpi install rpi-webui
-$env:RPI_WEBUI_URL = "https://rpi-webui.laofu.online"
-rpi --webui
+rpi --webui=openwebui
 ```
 
-For this already configured deployment, select **RPI (ACP)** after signing in.
-The agent, model credentials and workspace run on the server. This command opens
-the server's page; it does not connect your local project to a remote ACP process.
-To open the page on every interactive start, set `RPI_WEBUI_AUTOSTART=1`.
+No manual Pipe import, bridge path, Valves editing or model selection is required
+for the managed local UI. Configure rpi's default provider/model normally first.
+The extension embeds the shared ACP server; no separate ACP installation is needed.
+
+```sh
+rpi --webui=openwebui --webui-permission=bypass
+rpi --webui=openwebui --webui-workspace /path/to/project
+```
+
+`--webui` is shorthand for `--webui=openwebui`. Open WebUI is currently the only
+adapter; unsupported names fail explicitly. Other UI adapters can be added around
+the same shared ACP server.
+
+On first launch, an existing `open-webui` command is used. Otherwise
+[uv](https://docs.astral.sh/uv/getting-started/installation/) installs Open WebUI
+0.12.0 with Python 3.12 in an isolated environment. Install uv once if neither
+command is available. Downloads use the Tsinghua PyPI mirror by default; an
+existing `UV_INDEX_URL` takes precedence. First launch can take several minutes.
+
+The managed UI listens only on loopback (default `127.0.0.1:8080`), uses single-user
+mode and stores its database in `~/.rpi/webui/data`. Startup automatically
+imports/updates its own Function, fills the rpi executable and workspace, activates
+the model and opens the browser with it selected. Projects use distinct stable
+models and session mappings. Other Functions, settings and chats are preserved.
+Closing rpi stops only the UI process this invocation started.
+
+Install `rpi-ask-user` for agent question tools and `rpi-permission-gate` for gated
+tool approvals, as with normal rpi. Default `ask` retains that gate; `bypass`
+disables it for UI agent children. Ordinary questions still appear in bypass mode.
+
+## Existing or remote Open WebUI
+
+```sh
+rpi --webui=openwebui --webui-url https://rpi-webui.laofu.online
+```
+
+This opens the already configured server's RPI model. The agent, credentials and
+workspace run on that server; the command does not connect your local project.
+
+To automatically import/update the adapter on an authenticated server, provide
+its admin session/API token in `RPI_WEBUI_ADMIN_TOKEN`. Existing server-side ACP
+paths, workspace and permission mode are retained; `--webui-permission` explicitly
+changes permissions. For a new remote adapter, specify `RPI_WEBUI_ACP_COMMAND`
+and `RPI_WEBUI_REMOTE_WORKSPACE`, with optional `RPI_WEBUI_ACP_ARGS` and
+`RPI_WEBUI_REMOTE_STATE_DIR`. These paths belong on the UI server/container.
+A host executable cannot be launched through `host.docker.internal`.
+
+For an existing local Docker server, set `RPI_WEBUI_MANAGE=0` and provide an admin
+token plus container-side ACP paths. Existing authenticated servers keep their
+authentication; automatic single-user mode is only used for a managed loopback UI.
 
 Prebuilt libraries are available from the package's
-[GitHub Release](https://github.com/pi-rust/rpi-package/releases). Extract the
-archive for your exact platform and copy its library into
-`~/.rpi/agent/extensions` to install without Rust/Cargo. Hosts with the prebuilt
-installer support can download it through `rpi install`. Older hosts, including
-the original rpi 0.3.23 installer, build from Cargo when using that command.
-
-## Setup
-
-1. Install [Open WebUI](https://docs.openwebui.com/getting-started/quick-start/)
-   in a Python environment on the same machine as rpi. Its `open-webui`
-   executable must be on PATH, or set `RPI_WEBUI_COMMAND` to its absolute path.
-2. Install `rpi-webui`, `rpi-acp`, and `rpi-ask-user`. For permissions, install
-   `rpi-permission-gate` too. Configure the rpi provider/model as usual.
-3. Start `rpi --webui`. It starts `open-webui serve --host 127.0.0.1 --port 8080`
-   when needed and opens the page once available. An already running server is
-   reused. Startup does not block the TUI. The extension stops only the server
-   it started when the host session shuts down.
-4. Sign in to Open WebUI as an administrator. In **Workspace → Functions**,
-   create a Function with the contents of the generated
-   `~/.rpi/webui/rpi_acp_pipe-<package-version>.py`, save and enable it.
-   The source also ships in this crate at `openwebui/rpi_acp_pipe.py`.
-5. Set the Function's **Valves**:
-
-   | Valve | Value |
-   | --- | --- |
-   | `ACP_COMMAND` | Absolute path to `rpi-acp-bridge` / `rpi-acp-bridge.exe` |
-   | `ACP_ARGS` | `[]` |
-   | `WORKSPACE` | Absolute path to your project |
-   | `STATE_DIR` | Persistent directory, default `~/.rpi/openwebui` |
-
-   Alternatively, set `ACP_COMMAND` to `rpi` / `rpi.exe` and `ACP_ARGS` to
-   `["--acp"]`; the `rpi-acp` extension must then be installed in that host.
-6. Select **RPI (ACP)** in the model selector. Tools, credentials and model
-   selection are handled by rpi. Changing the project requires updating
-   `WORKSPACE`; different workspaces have separate session mappings.
-
-The Pipe needs Python 3.11+ and Pydantic 2, already supplied by current Open
-WebUI. It uses standard-library subprocesses and SQLite, without another ACP
-SDK. The standalone bridge is built by `cargo build --release -p rpi-acp --bin
-rpi-acp-bridge` and included in our ACP prebuilt archives. Use a bridge built
-with the negotiated question extension described in the rpi-acp README.
-
-The extension launches Open WebUI but does not install Python/Open WebUI or
-change its database. Creating/enabling the Function is a one-time setup.
+[GitHub Releases](https://github.com/pi-rust/rpi-package/releases). Extract your
+platform archive into `~/.rpi/agent/extensions` to install without Rust/Cargo.
+Hosts with prebuilt installer support can use `rpi install`; the original rpi
+0.3.23 installer still builds from Cargo.
 
 ## Questions and permissions
 
@@ -106,8 +102,12 @@ are currently text-only; image/audio requests are rejected.
 | --- | --- |
 | `RPI_WEBUI_AUTOSTART` | `0`; set to `1` to launch before every interactive TUI starts |
 | `RPI_WEBUI_URL` | `http://127.0.0.1:8080` |
-| `RPI_WEBUI_MANAGE` | `1` for the default URL, otherwise `0`; managed URLs must be loopback |
-| `RPI_WEBUI_COMMAND` | `open-webui` |
+| `RPI_WEBUI_MANAGE` | `1` for loopback URLs, otherwise `0` |
+| `RPI_WEBUI_COMMAND` | `open-webui`; uv fallback when missing |
+| `RPI_WEBUI_UI` | `openwebui`; `--webui=<adapter>` wins |
+| `RPI_WEBUI_WORKSPACE` | Current directory; CLI wins |
+| `RPI_WEBUI_PERMISSION` | `ask`; CLI wins |
+| `RPI_WEBUI_ADMIN_TOKEN` | Optional admin token for an existing server |
 | `RPI_WEBUI_ARGS` | JSON array, default `["serve","--host","127.0.0.1","--port","8080"]` |
 | `RPI_WEBUI_OPEN_BROWSER` | `1`; set to `0` for headless operation |
 
@@ -123,6 +123,6 @@ must be available there. A host executable cannot be launched through
 ## Validation
 
 ```text
-cargo test -p rpi-acp -p rpi-webui
+cargo test -p rpi-acp -p rpi-acp-core -p rpi-webui
 python -m unittest discover -s integrations/openwebui/tests -v
 ```

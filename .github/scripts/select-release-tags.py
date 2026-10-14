@@ -14,6 +14,8 @@ def select(metadata, refs, revision):
     for package in metadata["packages"]:
         if package["id"] not in metadata["workspace_members"] or package["publish"] == []:
             continue
+        if not any("cdylib" in target["crate_types"] for target in package["targets"]):
+            continue
         tag = f"{package['name']}-v{package['version']}"
         ref = f"refs/tags/{tag}"
         if refs.get(ref + "^{}", refs.get(ref)) == revision:

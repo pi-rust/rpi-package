@@ -17,6 +17,7 @@ members = [
     "packages/rpi-server",
     "packages/rpi-webui",
     "packages/rpi-acp",
+    "packages/rpi-acp-core",
     "packages/rpi-permission-gate",
     "packages/rpi-langfuse",
     "packages/rpi-voice",

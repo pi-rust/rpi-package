@@ -3,6 +3,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod launcher;
+mod openwebui;
 
 use rpi_plugin_sdk::{EventTag, PluginApi, RuntimeActionId, StbString, StbStringRef};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -11,31 +12,30 @@ static API: OnceLock<PluginApi> = OnceLock::new();
 type Worker = (mpsc::Sender<()>, std::thread::JoinHandle<()>);
 static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
 
-fn enabled_flag() -> bool {
-    let Some(api) = API.get() else {
-        return false;
-    };
+fn cli_flag(name: &str) -> Option<serde_json::Value> {
+    let api = API.get()?;
     let action = api.runtime_action;
     let mut out = StbString::empty();
     let rc = action(
         RuntimeActionId::GetCliFlag as u32,
-        StbStringRef::from_str(r#"{"name":"webui"}"#),
+        StbStringRef::from_str(&serde_json::json!({"name": name}).to_string()),
         &mut out,
         api.user_data,
     );
     let value = out.to_string_lossy();
     (api.free_string)(out);
     if rc != 0 {
-        return false;
+        return None;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&value) else {
-        return false;
+        return None;
     };
-    let flag = value.get("value").unwrap_or(&value);
-    flag == true
-        || flag
-            .as_str()
-            .is_some_and(|v| matches!(v, "true" | "1" | ""))
+    Some(value.get("value").unwrap_or(&value).clone())
+}
+
+fn enabled_flag() -> bool {
+    cli_flag("webui")
+        .is_some_and(|v| v == true || v.as_str().is_some_and(|s| !matches!(s, "false" | "0")))
 }
 
 fn start() -> Result<(), String> {
@@ -52,7 +52,7 @@ fn start() -> Result<(), String> {
     if let Some((_, thread)) = worker.take() {
         let _ = thread.join();
     }
-    let config = launcher::Config::from_env()?;
+    let config = launcher::Config::from_options(cli_flag)?;
     let (stop, receiver) = mpsc::channel();
     let thread = std::thread::spawn(move || {
         if let Err(error) = launcher::run(config, receiver) {
@@ -88,15 +88,34 @@ fn event(event, _user_data) {
 
 rpi_plugin_sdk::export_plugin!(|api| {
     let _ = API.set(*api);
+    if cli_flag("webui-acp") == Some(serde_json::Value::Bool(true)) {
+        return rpi_acp_core::register_embedded(api);
+    }
     let Some(register_flag) = api.register_flag else {
         return 1;
     };
-    if register_flag(
-        StbStringRef::from_str("webui"),
-        StbStringRef::from_str("Start Open WebUI and open its browser interface"),
-    ) != 0
-    {
-        return 1;
+    for (name, description) in [
+        (
+            "webui",
+            "Launch and connect a UI adapter (default: openwebui)",
+        ),
+        ("webui-url", "Connect to an existing Open WebUI URL"),
+        (
+            "webui-workspace",
+            "Agent workspace (default: current directory)",
+        ),
+        (
+            "webui-permission",
+            "Tool permission mode: ask (default) or bypass",
+        ),
+    ] {
+        if register_flag(
+            StbStringRef::from_str(name),
+            StbStringRef::from_str(description),
+        ) != 0
+        {
+            return 1;
+        }
     }
     let Some(register) = api.register_event_handler else {
         return 1;

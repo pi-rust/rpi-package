@@ -132,13 +132,15 @@ class PrebuiltAssetsTests(unittest.TestCase):
         tag_spec = importlib.util.spec_from_file_location("release_tags", pathlib.Path(__file__).with_name("select-release-tags.py"))
         selector = importlib.util.module_from_spec(tag_spec)
         tag_spec.loader.exec_module(selector)
-        metadata = {"workspace_members": ["demo", "old", "tool"], "packages": [
-            {"id": "demo", "name": "rpi-demo", "version": "1.2.3", "publish": None},
-            {"id": "old", "name": "rpi-old", "version": "0.1.0", "publish": None},
-            {"id": "tool", "name": "installer", "version": "0.0.0", "publish": []},
+        metadata = {"workspace_members": ["demo", "old", "tool", "core"], "packages": [
+            {"id": "demo", "name": "rpi-demo", "version": "1.2.3", "publish": None, "targets": [{"crate_types": ["cdylib"]}]},
+            {"id": "old", "name": "rpi-old", "version": "0.1.0", "publish": None, "targets": [{"crate_types": ["cdylib"]}]},
+            {"id": "tool", "name": "installer", "version": "0.0.0", "publish": [], "targets": [{"crate_types": ["bin"]}]},
+            {"id": "core", "name": "rpi-acp-core", "version": "0.1.0", "publish": None, "targets": [{"crate_types": ["lib"]}]},
         ]}
         refs = {"refs/tags/rpi-demo-v1.2.3": "tag-object", "refs/tags/rpi-demo-v1.2.3^{}": self.args.source_ref,
-                "refs/tags/rpi-old-v0.1.0": "b" * 40, "refs/tags/installer-v0.0.0": self.args.source_ref}
+                "refs/tags/rpi-old-v0.1.0": "b" * 40, "refs/tags/installer-v0.0.0": self.args.source_ref,
+                "refs/tags/rpi-acp-core-v0.1.0": self.args.source_ref}
         self.assertEqual(selector.select(metadata, refs, self.args.source_ref), [self.tag])
 
     def test_published_tag_must_point_to_the_exact_build_commit(self):

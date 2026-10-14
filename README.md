@@ -45,12 +45,11 @@ an eventual
 ([`registry/`](registry/README.md)); the bridge owns stdio itself, so it needs
 no host support and works with a stock `rpi`.
 
-`rpi-webui` (`--webui`) starts/reuses Open WebUI and opens its browser interface.
-The included RPI ACP Pipe reuses `rpi-acp` for streamed replies, tool progress,
-durable sessions, permission choices and ordinary questions (including multiple
-selections, custom input and comments). See
-[setup and configuration](packages/rpi-webui/README.md); Open WebUI and the
-one-time Function setup are required.
+`rpi-webui` (`--webui=openwebui`) starts Open WebUI and automatically connects
+its embedded ACP server to the current project. It installs the UI through uv
+when needed, imports/configures its Pipe and selects the project model.
+Use `--webui-permission=bypass` or `--webui-workspace <path>` as needed. See
+[usage and existing-server setup](packages/rpi-webui/README.md).
 
 ## Build and install
 

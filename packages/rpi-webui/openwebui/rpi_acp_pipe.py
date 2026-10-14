@@ -349,6 +349,7 @@ def tool_block(update):
 
 class Pipe:
     class Valves(BaseModel):
+        MODEL_NAME: str = "RPI (ACP)"
         ACP_COMMAND: str = Field(default="rpi-acp-bridge", description="ACP executable on the Open WebUI server")
         ACP_ARGS: str = Field(default="[]", description="JSON array of arguments; use [\"--acp\"] with rpi")
         WORKSPACE: str = Field(default="", description="Absolute working directory on the server")
@@ -362,7 +363,7 @@ class Pipe:
         self.valves = self.Valves()
 
     def pipes(self):
-        return [{"id": "rpi", "name": "RPI (ACP)"}]
+        return [{"id": "rpi", "name": self.valves.MODEL_NAME}]
 
     async def pipe(self, body: dict, __user__: dict = None, __chat_id__: str = None,
                    __event_emitter__=None, __event_call__=None, __task__: str = None):

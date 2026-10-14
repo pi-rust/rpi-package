@@ -22,6 +22,7 @@ name = "rpi-acp-bridge"
 path = "src/main.rs"
 
 [dependencies]
+rpi-acp-core = { path = "../rpi-acp-core", version = "0.1.0" }
 rpi-plugin-sdk = { version = "0.3.20", features = ["stdio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }

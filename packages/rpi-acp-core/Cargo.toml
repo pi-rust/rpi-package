@@ -1,0 +1,17 @@
+[package]
+name = "rpi-acp-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Reusable ACP agent server and stdio lifecycle for rpi extensions"
+readme = "README.md"
+
+[dependencies]
+rpi-plugin-sdk = { version = "0.3.20", features = ["stdio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "io-std", "macros", "net"] }
