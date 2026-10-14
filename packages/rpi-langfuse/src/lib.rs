@@ -3208,6 +3208,64 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    struct OfflineTurnGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        config: Option<LangfuseConfig>,
+        env: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl Drop for OfflineTurnGuard {
+        fn drop(&mut self) {
+            *config_cache().lock().unwrap() = self.config.take();
+            for (key, value) in &self.env {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    // Handler tests need tracing enabled, without local files, real credentials,
+    // or inherited parent/session identifiers from the test runner's environment.
+    fn offline_turn_guard() -> OfflineTurnGuard {
+        let lock = turn_test_lock();
+        let env = [
+            "LANGFUSE_TRACING_ENABLED",
+            ENV_PARENT_TRACE_ID,
+            ENV_PARENT_SPAN_ID,
+            ENV_PARENT_SESSION_ID,
+            ENV_PARENT_DEPTH,
+            "RPI_SESSION_ID",
+        ]
+        .into_iter()
+        .map(|key| (key, std::env::var_os(key)))
+        .collect();
+        for key in [
+            ENV_PARENT_TRACE_ID,
+            ENV_PARENT_SPAN_ID,
+            ENV_PARENT_SESSION_ID,
+            ENV_PARENT_DEPTH,
+            "RPI_SESSION_ID",
+        ] {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("LANGFUSE_TRACING_ENABLED", "true");
+        let config = config_cache().lock().unwrap().replace(LangfuseConfig {
+            public_key: "offline-test-public".into(),
+            secret_key: "offline-test-secret".into(),
+            base_url: "http://127.0.0.1:9".into(),
+            user_id: None,
+            environment: None,
+            release: None,
+        });
+        OfflineTurnGuard {
+            _lock: lock,
+            config,
+            env,
+        }
+    }
+
     /// The status footer is driven through the host's `SetStatus` runtime
     /// action. Capture what the plugin actually sends.
     static CAPTURED_STATUS: Mutex<Option<String>> = Mutex::new(None);
@@ -3266,6 +3324,7 @@ mod tests {
 
     #[test]
     fn test_config_loading() {
+        let _turn_guard = turn_test_lock();
         // This test requires environment variables to be set
         // Just verify the function doesn't panic
         let _ = load_config();
@@ -3430,6 +3489,7 @@ mod tests {
 
     #[test]
     fn otlp_spans_carry_langfuse_attributes() {
+        let _turn_guard = turn_test_lock();
         let trace = trace_id();
         let root_id = obs_id();
         let mut metadata = Map::new();
@@ -3740,7 +3800,7 @@ mod tests {
     /// fails the test instead of hanging the suite.
     #[test]
     fn turn_handlers_do_not_deadlock_on_the_state_lock() {
-        let _turn_guard = turn_test_lock();
+        let _turn_guard = offline_turn_guard();
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             reset_session_id_latch();
@@ -3805,7 +3865,7 @@ mod tests {
     /// showed up as a second, separate trace.
     #[test]
     fn subagent_root_keeps_its_parent_after_turn_teardown() {
-        let _turn_guard = turn_test_lock();
+        let _turn_guard = offline_turn_guard();
         reset_session_id_latch();
         *prompt_state().lock().unwrap() = None;
         tracer().spans.lock().unwrap().clear();
@@ -3864,7 +3924,7 @@ mod tests {
     /// the root included, since it is created before any tool call.
     #[test]
     fn a_late_session_id_upgrades_the_whole_buffered_trace() {
-        let _turn_guard = turn_test_lock();
+        let _turn_guard = offline_turn_guard();
         reset_session_id_latch();
         *prompt_state().lock().unwrap() = None;
         tracer().spans.lock().unwrap().clear();
@@ -3932,7 +3992,7 @@ mod tests {
     /// attributes must be on *every* span, not just the root.
     #[test]
     fn event_flow_exports_session_and_trace_context_on_every_span() {
-        let _turn_guard = turn_test_lock();
+        let _turn_guard = offline_turn_guard();
         reset_session_id_latch();
         *prompt_state().lock().unwrap() = None;
         tracer().spans.lock().unwrap().clear();
