@@ -10,3 +10,4 @@ git_release_name = "{{ package }} v{{ version }}"
 [[package]]
 name = "rpi-package-install"
 release = false
+publish = false
