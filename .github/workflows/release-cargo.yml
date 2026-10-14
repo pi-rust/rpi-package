@@ -1,6 +1,8 @@
 name: Version and publish crates
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,8 +16,10 @@ concurrency:
 
 jobs:
   release:
-    # Publication requires an explicit manual run on main.
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    # A PAT-backed version PR can trigger another push; this run publishes it.
+    if: >-
+      github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'chore(release): update versions and changelogs'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
