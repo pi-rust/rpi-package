@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/pi-rust/rpi-package/compare/rpi-im-message-v0.1.11...rpi-im-message-v0.1.12) - 2026-10-14
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-im-message-v0.1.10...rpi-im-message-v0.1.11) - 2026-10-14
 
 ### Added

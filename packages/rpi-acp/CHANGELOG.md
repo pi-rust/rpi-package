@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.5...rpi-acp-v0.1.6) - 2026-10-14
+
+### Other
+
+- *(acp)* consolidate ACP and use native Computer integration ([#12](https://github.com/pi-rust/rpi-package/pull/12))
+
 ## [0.1.5](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.4...rpi-acp-v0.1.5) - 2026-10-14
 
 ### Added
