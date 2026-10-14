@@ -45,6 +45,13 @@ an eventual
 ([`registry/`](registry/README.md)); the bridge owns stdio itself, so it needs
 no host support and works with a stock `rpi`.
 
+`rpi-webui` (`--webui`) starts/reuses Open WebUI and opens its browser interface.
+The included RPI ACP Pipe reuses `rpi-acp` for streamed replies, tool progress,
+durable sessions, permission choices and ordinary questions (including multiple
+selections, custom input and comments). See
+[setup and configuration](packages/rpi-webui/README.md); Open WebUI and the
+one-time Function setup are required.
+
 ## Build and install
 
 `rpi-run-stats` adds a live top-right monitoring panel: rounds, provider steps,
@@ -122,10 +129,53 @@ task install-bundle ARCHIVE=dist/rpi-packages-windows-x86_64.zip
 The optional `task smoke` maintainer check exercises the host loader and does
 require a sibling `pi-rust` checkout.
 
-For a release preflight, run `task publish-dry-run`. Real crates.io publishing
-is intentionally separate and requires `cargo login`. Since the first nine
-packages are already released, publish this batch with `task publish-new`; use
-`task publish` only for a fresh repository where none of the package names
-exist yet. Each extension is self-contained and can be published in any order.
+## Automatic crate releases
+
+Every push or PR merge to `main` runs
+`.github/workflows/release-cargo.yml`. release-plz compares the workspace with
+crates.io, updates versions and package changelogs for unpublished changes,
+and synchronizes `catalog/packages.json`. Ordinary changes to the current
+`0.x` packages get a patch bump; conventional breaking-change commits can
+increase the minor version. Packages inheriting the workspace version share
+that version. Already prepared, unpublished versions are preserved.
+Release analysis includes history after the migration to registry SDK
+dependencies; older commits requiring an external `pi-rust` checkout are
+excluded in the CI checkout so historical package comparisons can run.
+
+The workflow tests the workspace and dry-runs Cargo publishing before creating
+and merging a version PR. It respects protected `main` without directly pushing
+to it. It then publishes unpublished extension crates and creates per-package
+tags (`<package>-v<version>`) and GitHub Releases.
+The installer is excluded because it has `publish = false`. Publishing runs
+in the same workflow as the version update. Runs are serialized, and a failed
+release can be retried from the Actions UI or with `workflow_dispatch` on `main`.
+
+Configure the repository Actions secret `CARGO_REGISTRY_TOKEN` with crates.io
+publishing permission for all extension crates, including permission to create
+any names that have not been published yet. The workflow's `GITHUB_TOKEN` needs
+permission to create and merge the version PR and create tags/releases. Enable
+Actions PR creation in the repository settings. If branch rules require
+approvals or checks, the version PR must satisfy them before releasing.
+If organization policy blocks Actions PR creation, set the optional
+`RELEASE_GITHUB_TOKEN` secret with repository Contents and Pull requests write
+permissions instead.
+
+After crate publishing, `release-assets.yml` automatically builds Windows x64,
+Linux x64/ARM64, and macOS Intel/Apple Silicon binaries from the exact release
+commit. Each package Release receives individual extension archives and an
+`rpi-extension.json` manifest with download URLs, SHA-256 hashes, target triples,
+library names and SDK ABI. A separate bundle Release contains the full
+collection, installer and standalone ACP bridge. The existing
+`release-unix.yml` manual entry point now uses the same five-platform pipeline.
+
+Host developers can implement prebuilt installation using the
+[distribution protocol](docs/prebuilt-distribution.md) and its
+[JSON schema](docs/rpi-extension.schema.json). Discover the repository from
+crates.io metadata, then use the requested package's versioned Release manifest;
+packages in this repository do not all share one version.
+
+For a local release preflight, run `task publish-dry-run`. Manual crates.io
+publishing requires `cargo login` and an unpublished package version. Each
+extension is self-contained and can be published in any order.
 `task pack` also creates a directly installable platform bundle under `dist/`
 for a GitHub Release or another binary registry.

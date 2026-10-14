@@ -374,13 +374,14 @@ mod tests {
         let tmp = std::env::temp_dir().join("rpi-pkg-install-plan");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("rpi_lens.dll"), b"x").unwrap();
+        let lens_file = ext("rpi-lens").file_name();
+        std::fs::write(tmp.join(&lens_file), b"x").unwrap();
 
         let err = plan(&[ext("rpi-lens"), ext("rpi-langfuse")], &tmp, &tmp).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("rpi_langfuse"), "{msg}");
         assert!(
-            !msg.contains("rpi_lens.dll"),
+            !msg.contains(&lens_file),
             "built artifact must not be reported: {msg}"
         );
         let _ = std::fs::remove_dir_all(&tmp);

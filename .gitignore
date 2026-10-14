@@ -5,3 +5,4 @@
 .rpi/
 # 部署打包目录
 .deploy/
+__pycache__/

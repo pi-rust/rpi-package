@@ -1,0 +1,49 @@
+services:
+  rpi-webui:
+    image: ghcr.nju.edu.cn/open-webui/open-webui:v0.12.0-slim
+    container_name: rpi-webui
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ENABLE_SIGNUP: 'false'
+      ENABLE_OLLAMA_API: 'false'
+      ENABLE_OPENAI_API: 'false'
+      ENABLE_EVALUATION_ARENA_MODELS: 'false'
+      ENABLE_FOLLOW_UP_GENERATION: 'false'
+      ENABLE_AUTOCOMPLETE_GENERATION: 'false'
+      ENABLE_TAGS_GENERATION: 'false'
+      ENABLE_TITLE_GENERATION: 'false'
+      OFFLINE_MODE: 'true'
+      RAG_EMBEDDING_ENGINE: openai
+      AUDIO_STT_ENGINE: openai
+      RPI_BIN: /opt/rpi/runtime/rpi
+      RPI_CODING_AGENT_DIR: /opt/rpi/config
+      RPI_EXTENSIONS_DIR: /opt/rpi/extensions
+      RPI_OFFLINE: '1'
+      RPI_ACP_SESSION_DIR: /app/backend/data/rpi/acp-sessions
+      RPI_ACP_LOG: /app/backend/data/rpi/acp.log
+      RPI_ACP_NO_AUTO_REGISTER_ZED: '1'
+      RPI_WEBUI_CHILD: '1'
+      RPI_WEBUI_AUTOSTART: '0'
+      HOME: /app/backend/data/rpi/home
+      TZ: Asia/Shanghai
+    ports:
+      - '${WEBUI_BIND_ADDRESS:-0.0.0.0}:${WEBUI_PORT:-5231}:8080'
+    volumes:
+      - ./data:/app/backend/data
+      - ./runtime:/opt/rpi/runtime:ro
+      - ./extensions:/opt/rpi/extensions:ro
+      - ./config:/opt/rpi/config:ro
+      - ./workspace:/workspace
+    networks: [app-net]
+    mem_limit: 1800m
+    pids_limit: 256
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+networks:
+  app-net:
+    external: true

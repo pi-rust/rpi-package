@@ -15,6 +15,12 @@ tasks:
     cmds:
       - cargo test --workspace
 
+  test-webui:
+    desc: Test the ACP bridge, Open WebUI launcher, and Python Pipe (Pydantic 2 required)
+    cmds:
+      - cargo test -p rpi-acp -p rpi-webui
+      - python -m unittest discover -s integrations/openwebui/tests -v
+
   build:
     desc: Build release cdylibs for this platform
     cmds:
@@ -58,7 +64,7 @@ tasks:
       - cargo test --manifest-path tools/rpi-package-smoke/Cargo.toml -- --ignored --nocapture
 
   publish-dry-run:
-    desc: Verify all 22 extensions can be packaged for crates.io
+    desc: Verify all extensions can be packaged for crates.io
     cmds:
       - task: test
       - cargo publish --dry-run --allow-dirty -p rpi-mcp-adapter
@@ -76,6 +82,7 @@ tasks:
       - cargo publish --dry-run --allow-dirty -p rpi-im-message
       - cargo publish --dry-run --allow-dirty -p rpi-server
       - cargo publish --dry-run --allow-dirty -p rpi-acp
+      - cargo publish --dry-run --allow-dirty -p rpi-webui
       - cargo publish --dry-run --allow-dirty -p rpi-permission-gate
       - cargo publish --dry-run --allow-dirty -p rpi-voice
       - cargo publish --dry-run --allow-dirty -p rpi-run-stats
@@ -98,6 +105,7 @@ tasks:
       - cargo publish --allow-dirty -p rpi-webfetch
       - cargo publish --allow-dirty -p rpi-im-message
       - cargo publish --allow-dirty -p rpi-server
+      - cargo publish --allow-dirty -p rpi-webui
       - cargo publish --allow-dirty -p rpi-voice
       - cargo publish --allow-dirty -p rpi-run-stats
 

@@ -184,9 +184,8 @@ It prints the sha256 and a ready-to-paste `distribution.binary` stanza; see
 
 ## Capabilities and limitations
 
-* **Stable ACP v1** only. `loadSession` is not advertised, so `session/load` and
-  `session/resume` return an error. Each ACP session is a fresh child process
-  (in-memory history for the lifetime of the ACP connection).
+* **Stable ACP v1** with durable sessions. `loadSession` and session resume are
+  advertised; sessions restore native rpi history after reconnection.
 * The client-side `fs/*` and `terminal/*` methods are **not** used: rpi runs its
   own `read`/`write`/`edit`/`bash` tools in the session `cwd`. This keeps the
   agent behavior identical to the terminal.
@@ -204,12 +203,52 @@ It prints the sha256 and a ready-to-paste `distribution.binary` stanza; see
   `RPI_ACP_NO_PERMISSION_GATE=1` to opt out. Only `confirm`/`selector` dialogs
   with explicit `purpose: "permission"` and per-option `permission` decisions
   map to a permission request. Option titles are preserved in the returned
-  answer. Ordinary questions are cancelled because this adapter has no generic
-  question UI. Closure, prompt cancellation and disconnect retire pending
+  answer. Ordinary questions use the negotiated extension below; clients that
+  do not advertise it cancel questions. Closure, timeout, prompt cancellation and disconnect retire pending
   requests, including when the client never answers.
 * Prompt templates / slash commands are not advertised as
   `available_commands_update`: `--mode rpc` does not expand prompt templates
   (only the host TUI does), so a client-side command list would be misleading.
+
+## Question extension v1
+
+ACP v1 has no standard generic multi-choice question method. Both peers advertise
+`"_meta":{"pi-rust/questions":1}` in their `clientCapabilities` /
+`agentCapabilities` during `initialize`, following
+[ACP extensibility](https://agentclientprotocol.com/protocol/v1/extensibility).
+Only a client advertising integer version `1` receives custom requests.
+Permissions continue using `session/request_permission` independently.
+
+The agent sends `_rpi/request_question` with the original dialog UI, including
+question/context/options/descriptions, `allowMultiple`, `allowFreeform`,
+`allowComment`, `suggest`, and the timeout in seconds:
+
+```json
+{"jsonrpc":"2.0","id":42,"method":"_rpi/request_question","params":{
+  "sessionId":"session-uuid","requestId":"dialog-id","toolCallId":"ask-1",
+  "ui":{"kind":"selector","question":"Which languages?",
+    "options":[{"title":"Rust"},{"title":"Python"}],
+    "allowMultiple":true,"allowComment":true}
+}}
+```
+
+The client answers that JSON-RPC request with
+`{"answer":{"values":["Rust","Python"],"text":"Optional comment"}}`, or
+`{"cancelled":true}`. Input dialogs use `values:["text"]` and optionally
+`text:"text"`. Values are original labels, not option indexes. The bridge
+rejects unoffered choices unless freeform is allowed, duplicate labels,
+multiple values for single-choice dialogs and malformed answers. Unsupported
+UI kinds and invalid permission dialogs cancel without being reinterpreted.
+
+`_rpi/dialog_closed` is a notification containing `sessionId` and `requestId`.
+Clients should retire matching UI callbacks and ignore late answers. Permission
+requests carry the original request ID under
+`params._meta["pi-rust/dialog"].requestId` for the same lifecycle mapping.
+Timeouts default to 300 seconds, with per-dialog overrides bounded to 1–86400
+seconds. The original host may impose a shorter timeout.
+
+An [Open WebUI Pipe](../rpi-webui/openwebui/rpi_acp_pipe.py) implements this
+client side. See [rpi-webui setup](../rpi-webui/README.md).
 
 ## Diagnosing a failed connection
 

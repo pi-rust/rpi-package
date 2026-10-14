@@ -1,0 +1,146 @@
+name: Build cross-platform release assets
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: true
+      package_releases:
+        type: string
+        required: true
+      bundle_tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Published release tag or commit to build
+        required: true
+        type: string
+      package_releases:
+        description: JSON array of package tags to receive prebuilt assets
+        required: true
+        default: '[]'
+        type: string
+      bundle_tag:
+        description: Bundle Release tag (empty generates a tag from the commit)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  source:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+      bundle_tag: ${{ steps.source.outputs.bundle_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - id: source
+        env:
+          BUNDLE_TAG: ${{ inputs.bundle_tag }}
+        run: |
+          revision="$(git rev-parse HEAD)"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "bundle_tag=${BUNDLE_TAG:-rpi-packages-${revision:0:12}}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: source
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the exact release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libssl-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-assets-${{ matrix.target }}
+      - name: Test platform packaging
+        run: cargo test --locked -p rpi-package-install
+      - name: Build extension libraries and installer
+        run: cargo build --release --workspace --locked
+      - name: Assemble full extension bundle and ACP bridge
+        run: |
+          cargo run --release --locked -p rpi-package-install -- pack --all
+          cargo run --release --locked -p rpi-package-install -- pack-acp
+      - name: Package individual extensions and record checksums and SDK ABI
+        env:
+          TARGET: ${{ matrix.target }}
+          SOURCE_REF: ${{ needs.source.outputs.revision }}
+          BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+        run: |
+          python .github/scripts/prebuilt-assets.py build \
+            --target "$TARGET" --repository "$GITHUB_REPOSITORY" \
+            --source-ref "$SOURCE_REF" --bundle-tag "$BUNDLE_TAG" \
+            --tags "$PACKAGE_RELEASES"
+      - name: Preserve downloadable build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-${{ matrix.target }}
+          path: dist/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [source, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: prebuilt-*
+          path: dist/release-assets/
+          merge-multiple: true
+      - name: Validate all platforms and upload archives before discovery manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ needs.source.outputs.revision }}
+          BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+        run: |
+          python .github/scripts/prebuilt-assets.py publish \
+            --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
+            --bundle-tag "$BUNDLE_TAG" --tags "$PACKAGE_RELEASES"

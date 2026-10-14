@@ -151,5 +151,14 @@
     "inspiredBy": "upstream Pi permission-gate extension",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-permission-gate"
+  },
+  {
+    "name": "rpi-webui",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "--webui (Open WebUI launcher with ACP Pipe)",
+    "inspiredBy": "Open WebUI / Agent Client Protocol",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-webui"
   }
 ]

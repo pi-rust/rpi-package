@@ -212,7 +212,7 @@ impl Session {
                 biased;
                 _ = cancellation.changed(), if !cancelled => {
                     cancelled = true;
-                    dialogs.cancel_all().await;
+                    dialogs.cancel_all(writer, acp_session_id).await;
                     continue;
                 }
                 result = dialogs.tasks.join_next(), if !dialogs.tasks.is_empty() => {
@@ -291,7 +291,7 @@ impl Session {
                     }
                     if value.get("type").and_then(Value::as_str) == Some("ui_dialog_closed") {
                         if let Some(id) = value.get("requestId").and_then(Value::as_str) {
-                            dialogs.close(id).await;
+                            dialogs.close(id, writer, acp_session_id).await;
                         }
                         continue;
                     }
@@ -330,7 +330,7 @@ impl Session {
                 }
             }
         };
-        dialogs.cancel_all().await;
+        dialogs.cancel_all(writer, acp_session_id).await;
         stop_reason
     }
 
@@ -544,14 +544,25 @@ impl DialogTasks {
         self.pending.insert(id, task);
     }
 
-    async fn close(&mut self, id: &str) {
+    async fn close(&mut self, id: &str, writer: &Writer, session_id: &str) {
         if let Some(task) = self.pending.remove(id) {
             task.abort();
+            if writer.supports_questions() {
+                writer
+                    .notify(
+                        crate::questions::CLOSED_METHOD,
+                        json!({"sessionId":session_id,"requestId":id}),
+                    )
+                    .await;
+            }
         }
     }
 
-    async fn cancel_all(&mut self) {
-        self.pending.clear();
+    async fn cancel_all(&mut self, writer: &Writer, session_id: &str) {
+        let ids: Vec<_> = self.pending.keys().cloned().collect();
+        for id in ids {
+            self.close(&id, writer, session_id).await;
+        }
         self.tasks.abort_all();
         while self.tasks.join_next().await.is_some() {}
     }
@@ -584,7 +595,7 @@ fn permission_request(
         })
         .collect();
     Some((
-        json!({"sessionId": session_id,
+        json!({"sessionId": session_id, "_meta":{"pi-rust/dialog":{"requestId":event.get("requestId")}},
         "toolCall": {"toolCallId": tool_call_id, "title": title}, "options": choices}),
         options,
     ))
@@ -614,13 +625,39 @@ async fn handle_ui_dialog(
     event: &Value,
 ) {
     let request_id = event.get("requestId").and_then(Value::as_str).unwrap_or("");
+    let timeout = crate::questions::timeout(&event["ui"]);
     let response = if let Some((params, options)) = permission_request(event, session_id) {
-        let result = writer.request("session/request_permission", params).await;
+        let result = tokio::time::timeout(
+            timeout,
+            writer.request("session/request_permission", params),
+        )
+        .await
+        .unwrap_or(Value::Null);
         permission_answer(request_id, &result, &options)
+    } else if writer.supports_questions() {
+        if let Some(params) = crate::questions::request(event, session_id) {
+            let result = tokio::time::timeout(
+                timeout,
+                writer.request(crate::questions::REQUEST_METHOD, params),
+            )
+            .await
+            .unwrap_or(Value::Null);
+            crate::questions::answer(request_id, &event["ui"], &result)
+        } else {
+            json!({"type":"ui_dialog_response", "requestId":request_id, "cancelled":true})
+        }
     } else {
-        // ACP has no generic question UI in this adapter; never reinterpret its choices.
+        // Old clients have no question capability. Never relabel a question as permission.
         json!({"type":"ui_dialog_response", "requestId":request_id, "cancelled":true})
     };
+    if writer.supports_questions() {
+        writer
+            .notify(
+                crate::questions::CLOSED_METHOD,
+                json!({"sessionId":session_id,"requestId":request_id}),
+            )
+            .await;
+    }
     let _ = session.send(response).await;
 }
 
@@ -1193,6 +1230,118 @@ mod tests {
         let response = read_json(&mut commands).await;
         assert_eq!(response["requestId"], "language");
         assert_eq!(response["cancelled"], true);
+        assert_eq!(writer.pending_count(), 0);
+    }
+
+    fn question_writer(output: impl AsyncWrite + Unpin + Send + 'static) -> Arc<Writer> {
+        let writer = Arc::new(Writer::with_output(output));
+        writer
+            .negotiate_questions(&json!({"clientCapabilities":{"_meta":{"pi-rust/questions":1}}}));
+        writer
+    }
+
+    fn question_event(id: &str) -> Value {
+        json!({"type":"ui_dialog_request","requestId":id,"toolCallId":"ask-1", "ui":{
+            "kind":"selector","question":"使用哪些语言？","options":[{"title":"Rust"},{"title":"Python"}],
+            "allowMultiple":true,"allowComment":true,"timeout":30}})
+    }
+
+    #[tokio::test]
+    async fn negotiated_question_round_trip_preserves_multiple_answers_and_comment() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let (output, peer) = tokio::io::duplex(8192);
+        let writer = question_writer(output);
+        let mut replies = BufReader::new(peer).lines();
+        let task = tokio::spawn({
+            let session = session.clone();
+            let writer = writer.clone();
+            async move { handle_ui_dialog(&session, &writer, "s", &question_event("q")).await }
+        });
+        let request = read_json(&mut replies).await;
+        assert_eq!(request["method"], crate::questions::REQUEST_METHOD);
+        assert_eq!(request["params"]["ui"]["allowMultiple"], true);
+        writer
+            .resolve(
+                request["id"].as_u64().unwrap(),
+                json!({"answer":{"values":["Rust","Python"],"text":"一起用"}}),
+            )
+            .await;
+        let answer = read_json(&mut commands).await;
+        assert_eq!(
+            answer["answer"],
+            json!({"values":["Rust","Python"],"text":"一起用"})
+        );
+        assert_eq!(answer["requestId"], "q");
+        assert_eq!(
+            read_json(&mut replies).await["method"],
+            crate::questions::CLOSED_METHOD
+        );
+        task.await.unwrap();
+        assert_eq!(writer.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn question_timeout_cancels_and_releases_pending_request() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let (output, peer) = tokio::io::duplex(8192);
+        let writer = question_writer(output);
+        let mut replies = BufReader::new(peer).lines();
+        let mut event = question_event("q");
+        event["ui"]["timeout"] = json!(1);
+        let task = tokio::spawn({
+            let session = session.clone();
+            let writer = writer.clone();
+            async move { handle_ui_dialog(&session, &writer, "s", &event).await }
+        });
+        read_json(&mut replies).await;
+        assert_eq!(
+            read_json(&mut commands).await,
+            json!({"type":"ui_dialog_response","requestId":"q","cancelled":true})
+        );
+        task.await.unwrap();
+        assert_eq!(writer.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn closed_question_notifies_client_and_discards_late_reply() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let (output, peer) = tokio::io::duplex(8192);
+        let writer = question_writer(output);
+        let mut replies = BufReader::new(peer).lines();
+        let prompt = tokio::spawn({
+            let session = session.clone();
+            let writer = writer.clone();
+            async move { session.prompt(&writer, "s", &[]).await }
+        });
+        let command = read_json(&mut commands).await;
+        session.events.send(question_event("q1")).unwrap();
+        let first = read_json(&mut replies).await;
+        session
+            .events
+            .send(json!({"type":"ui_dialog_closed","requestId":"q1"}))
+            .unwrap();
+        let closed = read_json(&mut replies).await;
+        assert_eq!(closed["method"], crate::questions::CLOSED_METHOD);
+        assert_eq!(closed["params"]["requestId"], "q1");
+        session.events.send(question_event("q2")).unwrap();
+        let second = read_json(&mut replies).await;
+        let answer = json!({"answer":{"values":["Rust"]}});
+        writer
+            .resolve(first["id"].as_u64().unwrap(), answer.clone())
+            .await;
+        writer.resolve(second["id"].as_u64().unwrap(), answer).await;
+        assert_eq!(read_json(&mut commands).await["requestId"], "q2");
+        session.events.send(json!({"type":"response","id":command["id"],"status":"ok","result":{"outcome":"completed"}})).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
+                .await
+                .unwrap()
+                .unwrap(),
+            Ok("end_turn")
+        );
         assert_eq!(writer.pending_count(), 0);
     }
 

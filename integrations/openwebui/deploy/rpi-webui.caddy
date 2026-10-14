@@ -1,0 +1,13 @@
+rpi-webui.laofu.online {
+    encode gzip
+    reverse_proxy http://10.100.100.8:5231 {
+        flush_interval -1
+    }
+    tls {
+        issuer acme
+    }
+}
+
+http://rpi-webui.laofu.online {
+    redir https://{host}{uri} permanent
+}

@@ -1,0 +1,30 @@
+version: '3'
+vars:
+  SERVER: bigfish@192.168.3.41
+  SERVICE_DIR: /home/bigfish/work/rpi-webui
+  URL: https://rpi-webui.laofu.online
+tasks:
+  status:
+    desc: Show the deployed Open WebUI container
+    cmds:
+      - ssh {{.SERVER}} 'cd {{.SERVICE_DIR}} && docker compose ps'
+  health:
+    desc: Check Open WebUI health
+    cmds:
+      - curl --fail --max-time 10 {{.URL}}/health
+  logs:
+    desc: Follow Open WebUI logs
+    cmds:
+      - ssh {{.SERVER}} 'cd {{.SERVICE_DIR}} && docker compose logs --tail 50 -f'
+  restart:
+    desc: Restart Open WebUI while retaining users and conversations
+    cmds:
+      - ssh {{.SERVER}} 'cd {{.SERVICE_DIR}} && docker compose restart rpi-webui'
+  up:
+    desc: Start the existing deployment
+    cmds:
+      - ssh {{.SERVER}} 'cd {{.SERVICE_DIR}} && docker compose up -d'
+  pull:
+    desc: Pull the pinned image through the domestic mirror
+    cmds:
+      - ssh {{.SERVER}} 'cd {{.SERVICE_DIR}} && docker compose pull rpi-webui'

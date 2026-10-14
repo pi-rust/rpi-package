@@ -93,6 +93,7 @@ pub struct Writer {
     pending: std::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     closed: std::sync::atomic::AtomicBool,
     next_id: AtomicU64,
+    questions: std::sync::atomic::AtomicBool,
 }
 
 impl Writer {
@@ -102,6 +103,7 @@ impl Writer {
             pending: std::sync::Mutex::new(HashMap::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(1),
+            questions: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -167,6 +169,20 @@ impl Writer {
         pending.clear();
     }
 
+    pub(crate) fn negotiate_questions(&self, params: &Value) {
+        self.questions.store(
+            params
+                .pointer("/clientCapabilities/_meta/pi-rust~1questions")
+                .and_then(Value::as_u64)
+                == Some(1),
+            Ordering::Release,
+        );
+    }
+
+    pub(crate) fn supports_questions(&self) -> bool {
+        self.questions.load(Ordering::Acquire)
+    }
+
     #[cfg(test)]
     pub(crate) fn with_output(out: impl AsyncWrite + Unpin + Send + 'static) -> Self {
         Self {
@@ -174,6 +190,7 @@ impl Writer {
             pending: std::sync::Mutex::new(HashMap::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(1),
+            questions: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -212,6 +229,7 @@ pub fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "agentCapabilities": {
+            "_meta": {"pi-rust/questions": 1},
             "loadSession": true,
             "sessionCapabilities": {"resume": {}},
             "promptCapabilities": {
@@ -314,7 +332,10 @@ pub async fn run(
         }
 
         match (id, method.as_deref()) {
-            (Some(id), Some("initialize")) => writer.respond(&id, initialize_result()).await,
+            (Some(id), Some("initialize")) => {
+                writer.negotiate_questions(&message["params"]);
+                writer.respond(&id, initialize_result()).await;
+            }
             // No auth methods are advertised, but tolerate a stray call.
             (Some(id), Some("authenticate")) => writer.respond(&id, json!({})).await,
             (Some(id), Some("session/new")) => {
@@ -517,6 +538,23 @@ mod tests {
             true
         );
         assert_eq!(result["agentInfo"]["name"], "rpi");
+        assert_eq!(result["agentCapabilities"]["_meta"]["pi-rust/questions"], 1);
+    }
+
+    #[test]
+    fn questions_require_an_explicit_supported_version() {
+        let writer = Writer::new();
+        for params in [
+            json!({}),
+            json!({"clientCapabilities":{"_meta":{"pi-rust/questions":true}}}),
+            json!({"clientCapabilities":{"_meta":{"pi-rust/questions":2}}}),
+        ] {
+            writer.negotiate_questions(&params);
+            assert!(!writer.supports_questions());
+        }
+        writer
+            .negotiate_questions(&json!({"clientCapabilities":{"_meta":{"pi-rust/questions":1}}}));
+        assert!(writer.supports_questions());
     }
 
     #[test]

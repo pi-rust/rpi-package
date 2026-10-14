@@ -15,5 +15,5 @@ categories = ["development-tools"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rpi-plugin-sdk = { version = "0.3.16", path = "../../../pi-rust/crates/rpi-plugin-sdk" }
+rpi-plugin-sdk = { version = "0.3.16" }
 serde_json = { workspace = true }

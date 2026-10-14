@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rpi prebuilt extension manifest v1",
+  "type": "object",
+  "required": ["schema_version", "name", "version", "repository", "tag", "source_commit", "sdk", "targets"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?(\\+[A-Za-z0-9.-]+)?$" },
+    "repository": { "type": "string", "pattern": "^https://github\\.com/[^/]+/[^/]+$" },
+    "tag": { "type": "string", "minLength": 1 },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sdk": {
+      "type": "object",
+      "required": ["version", "plugin_abi"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "plugin_abi": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/distribution" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "distribution": {
+      "type": "object",
+      "required": ["url", "format", "size", "sha256", "library"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^https://github\\.com/[^/]+/[^/]+/releases/download/" },
+        "format": { "enum": ["zip", "tar.gz"] },
+        "size": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "library": {
+          "type": "object",
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.(dll|so|dylib)$" },
+            "sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,119 @@
+name: Version and publish crates
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Finish publishing before another run can prepare newer versions.
+concurrency:
+  group: release-cargo-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # A PAT-backed version PR can trigger another push; this run publishes it.
+    if: >-
+      github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'chore(release): update versions and changelogs'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      source_ref: ${{ steps.version.outputs.source_ref }}
+      package_releases: ${{ steps.tags.outputs.package_releases }}
+      bundle_tag: ${{ steps.tags.outputs.bundle_tag }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out main with release history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check publishing credentials
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
+            echo "::error::Set the CARGO_REGISTRY_TOKEN repository secret with permission to publish all package crates."
+            exit 1
+          fi
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libssl-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install release-plz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz@0.3.172
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Resolve registry dependencies
+        run: cargo update --workspace
+
+      - name: Exclude historical checkouts requiring an external SDK
+        run: python3 .github/scripts/prepare-release-history.py
+
+      - name: Generate versions and changelogs for unpublished changes
+        run: release-plz update
+
+      - name: Synchronize package catalog versions
+        run: python3 .github/scripts/sync-release-catalog.py
+
+      - name: Test workspace
+        run: cargo test --workspace --locked
+
+      - name: Test the prebuilt distribution contract
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      - name: Test Open WebUI ACP integration
+        run: |
+          python3 -m venv /tmp/rpi-webui-tests
+          /tmp/rpi-webui-tests/bin/pip install 'pydantic>=2,<3'
+          cargo build -p rpi-acp --bin rpi-acp-bridge --example fake_rpc --locked
+          export RPI_TEST_ACP_BRIDGE="$GITHUB_WORKSPACE/target/debug/rpi-acp-bridge"
+          export RPI_TEST_RPC_PEER="$GITHUB_WORKSPACE/target/debug/examples/fake_rpc"
+          /tmp/rpi-webui-tests/bin/python -m unittest discover -s integrations/openwebui/tests -v
+
+      - name: Verify crate packages before publishing
+        run: cargo publish --workspace --dry-run --allow-dirty --locked
+
+      - name: Merge tested release metadata through a version PR
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+        run: bash .github/scripts/release-version-pr.sh
+
+      # GITHUB_TOKEN commits do not trigger push workflows. Publish in this
+      # same run so the version commit cannot leave crates unpublished.
+      - name: Publish crates and create package tags and GitHub Releases
+        env:
+          GIT_TOKEN: ${{ github.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: release-plz release
+
+      - name: Select package releases from this exact commit
+        id: tags
+        run: python3 .github/scripts/select-release-tags.py
+
+  assets:
+    needs: release
+    if: needs.release.outputs.package_releases != '[]' && needs.release.outputs.package_releases != ''
+    uses: ./.github/workflows/release-assets.yml
+    with:
+      source_ref: ${{ needs.release.outputs.source_ref }}
+      package_releases: ${{ needs.release.outputs.package_releases }}
+      bundle_tag: ${{ needs.release.outputs.bundle_tag }}

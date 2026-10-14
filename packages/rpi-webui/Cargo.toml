@@ -1,0 +1,22 @@
+[package]
+name = "rpi-webui"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.85"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Launch Open WebUI for rpi with the reusable ACP integration"
+readme = "README.md"
+keywords = ["rpi", "webui", "agent", "openwebui", "plugin"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = "0.3.20"
+serde_json = { workspace = true }
+open = "5"
+url = { workspace = true }
+reqwest = { workspace = true }
+

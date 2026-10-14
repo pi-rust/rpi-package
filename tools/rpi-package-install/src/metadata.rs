@@ -119,10 +119,15 @@ fn parse(json: &serde_json::Value) -> Result<Workspace> {
                 continue;
             }
             // Cargo uses the lib target name for the artifact file stem.
-            let artifact = target["name"]
+            let target_name = target["name"]
                 .as_str()
                 .with_context(|| format!("{name}: cdylib target without a name"))?
                 .to_string();
+            let artifact = if cfg!(target_os = "windows") {
+                target_name
+            } else {
+                format!("lib{target_name}")
+            };
             extensions.push(Extension {
                 package: name.clone(),
                 artifact,
@@ -180,7 +185,11 @@ mod tests {
             ws.extensions,
             vec![Extension {
                 package: "rpi-langfuse".into(),
-                artifact: "rpi_langfuse".into(),
+                artifact: if cfg!(target_os = "windows") {
+                    "rpi_langfuse".into()
+                } else {
+                    "librpi_langfuse".into()
+                },
             }]
         );
     }

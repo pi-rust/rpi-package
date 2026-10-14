@@ -29,6 +29,7 @@
 // server the extension embeds.
 pub mod diag;
 mod history;
+mod questions;
 pub mod protocol;
 pub mod session;
 pub mod zed;

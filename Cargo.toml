@@ -15,6 +15,7 @@ members = [
     "packages/rpi-webfetch",
     "packages/rpi-im-message",
     "packages/rpi-server",
+    "packages/rpi-webui",
     "packages/rpi-acp",
     "packages/rpi-permission-gate",
     "packages/rpi-langfuse",
@@ -33,10 +34,9 @@ authors = ["BigFish <bigfish1913@gmail.com>"]
 repository = "https://github.com/pi-rust/rpi-package"
 
 [workspace.dependencies]
-# Build the packages against the LOCAL pi-rust SDK so they track the current ABI
-# (EventTag::BeforeTuiStart, the v3 declare ext block, ...). The smoke tool
-# already path-depends on the same crates.
-rpi-plugin-sdk = { version = "0.3.12", path = "../pi-rust/crates/rpi-plugin-sdk" }
+# Use the published SDK so CI and cargo publish build against the same source.
+# The optional smoke tool keeps its local pi-rust dependencies.
+rpi-plugin-sdk = { version = "0.3.12" }
 feishu-sdk = { version = "0.1.2", default-features = false, features = ["websocket"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

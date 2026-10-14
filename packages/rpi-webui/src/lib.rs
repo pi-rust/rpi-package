@@ -1,0 +1,114 @@
+//! Start an existing Open WebUI installation. Agent sessions stay in `rpi-acp`.
+#![forbid(unsafe_code)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
+mod launcher;
+
+use rpi_plugin_sdk::{EventTag, PluginApi, RuntimeActionId, StbString, StbStringRef};
+use std::sync::{mpsc, Mutex, OnceLock};
+
+static API: OnceLock<PluginApi> = OnceLock::new();
+type Worker = (mpsc::Sender<()>, std::thread::JoinHandle<()>);
+static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
+
+fn enabled_flag() -> bool {
+    let Some(api) = API.get() else {
+        return false;
+    };
+    let action = api.runtime_action;
+    let mut out = StbString::empty();
+    let rc = action(
+        RuntimeActionId::GetCliFlag as u32,
+        StbStringRef::from_str(r#"{"name":"webui"}"#),
+        &mut out,
+        api.user_data,
+    );
+    let value = out.to_string_lossy();
+    (api.free_string)(out);
+    if rc != 0 {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&value) else {
+        return false;
+    };
+    let flag = value.get("value").unwrap_or(&value);
+    flag == true
+        || flag
+            .as_str()
+            .is_some_and(|v| matches!(v, "true" | "1" | ""))
+}
+
+fn start() -> Result<(), String> {
+    if launcher::env_bool("RPI_WEBUI_CHILD", false) {
+        return Ok(());
+    }
+    let mut worker = WORKER.lock().unwrap_or_else(|p| p.into_inner());
+    if worker
+        .as_ref()
+        .is_some_and(|(_, thread)| !thread.is_finished())
+    {
+        return Ok(());
+    }
+    if let Some((_, thread)) = worker.take() {
+        let _ = thread.join();
+    }
+    let config = launcher::Config::from_env()?;
+    let (stop, receiver) = mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        if let Err(error) = launcher::run(config, receiver) {
+            eprintln!("[rpi-webui] {error}");
+        }
+    });
+    *worker = Some((stop, thread));
+    Ok(())
+}
+
+fn stop() {
+    if let Some((stop, thread)) = WORKER.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let _ = stop.send(());
+        let _ = thread.join();
+    }
+}
+
+rpi_plugin_sdk::event_handler! {
+fn event(event, _user_data) {
+    match event.tag() {
+        EventTag::SessionShutdown => stop(),
+        EventTag::SessionStart if enabled_flag() => {
+            if let Err(error) = start() { eprintln!("[rpi-webui] {error}"); }
+        },
+        EventTag::BeforeTuiStart if launcher::env_bool("RPI_WEBUI_AUTOSTART", false) => {
+            if let Err(error) = start() { eprintln!("[rpi-webui] {error}"); }
+        },
+        _ => {},
+    }
+    0
+}
+}
+
+rpi_plugin_sdk::export_plugin!(|api| {
+    let _ = API.set(*api);
+    let Some(register_flag) = api.register_flag else {
+        return 1;
+    };
+    if register_flag(
+        StbStringRef::from_str("webui"),
+        StbStringRef::from_str("Start Open WebUI and open its browser interface"),
+    ) != 0
+    {
+        return 1;
+    }
+    let Some(register) = api.register_event_handler else {
+        return 1;
+    };
+    for tag in [
+        EventTag::SessionStart,
+        EventTag::BeforeTuiStart,
+        EventTag::SessionShutdown,
+    ] {
+        if register(tag, event, std::ptr::null_mut()) != 0 {
+            return 1;
+        }
+    }
+    0
+});
