@@ -1,5 +1,6 @@
 """Offline ACP peer used by the Pipe transport tests; no models or tools run."""
 import json
+import os
 from pathlib import Path
 import sys
 import uuid
@@ -9,6 +10,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 root = Path(sys.argv[1])
 root.mkdir(parents=True, exist_ok=True)
+(root / "gate-env.json").write_text(json.dumps({key:os.environ.get(key) for key in
+    ("RPI_ACP_NO_PERMISSION_GATE", "RPI_PERMISSION_GATE")}), encoding="utf-8")
 prompt_id = None
 dialog_mode = False
 
@@ -63,6 +66,9 @@ for line in sys.stdin:
         send({"id":prompt_id, "result":{"stopReason":"cancelled"}})
     elif message.get("id") == 100 and "result" in message:
         send({"method":"_rpi/dialog_closed", "params":{"sessionId":session,"requestId":"q"}})
+        if os.environ.get("RPI_ACP_NO_PERMISSION_GATE") == "1":
+            complete(session)
+            continue
         send({"id":101, "method":"session/request_permission", "params":{"sessionId":session,
             "_meta":{"pi-rust/dialog":{"requestId":"p"}}, "toolCall":{"toolCallId":"bash", "title":"Run command?"},
             "options":[{"optionId":"allow", "name":"允许一次", "kind":"allow_once"},

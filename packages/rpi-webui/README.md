@@ -70,6 +70,12 @@ change its database. Creating/enabling the Function is a one-time setup.
 
 ## Questions and permissions
 
+In the Pipe's **Valves**, set `PERMISSION_MODE` to `bypass` to execute tools
+without the rpi permission gate. The default `ask` mode confirms each gated
+tool call. Switching modes applies to the next turn, including restored chats.
+`ask_user` questions and any other business dialogs still appear in bypass mode.
+This is an administrator setting for the Pipe and applies to its users.
+
 Text replies stream to the chat. Tool progress uses status events; completed
 tools render as escaped details blocks rather than requesting Open WebUI to
 execute the same tool again. Questions and permissions use native input

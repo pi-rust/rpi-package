@@ -97,6 +97,27 @@ class PipeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answers[100], {"cancelled":True})
         self.assertEqual(answers[101], {"outcome":{"outcome":"cancelled"}})
 
+    async def test_bypass_skips_gate_and_preserves_business_questions(self):
+        self.pipe.valves.PERMISSION_MODE = "bypass"
+        self.answers = ["1,2", "comment"]
+        with patch.dict(os.environ, {"RPI_ACP_NO_PERMISSION_GATE":"0", "RPI_PERMISSION_GATE":"1"}):
+            self.assertEqual(await self.run_pipe([{"role":"user", "content":"dialogs"}]), "完成🌊")
+        gate = json.loads((self.peer / "gate-env.json").read_text())
+        self.assertEqual(gate, {"RPI_ACP_NO_PERMISSION_GATE":"1", "RPI_PERMISSION_GATE":"0"})
+        self.assertEqual(len(self.dialogs), 2)  # question and its optional comment
+        self.assertEqual([m["result"] for m in self.log() if m.get("id") == 100],
+                         [{"answer":{"values":["Rust","Python"],"text":"comment"}}])
+        self.assertFalse(any(m.get("id") == 101 for m in self.log()))
+        # Switching back must enable approvals even if the service environment bypasses them.
+        self.pipe.valves.PERMISSION_MODE = "ask"
+        self.answers = ["1", "", "2"]
+        with patch.dict(os.environ, {"RPI_ACP_NO_PERMISSION_GATE":"1", "RPI_PERMISSION_GATE":"0"}):
+            await self.run_pipe([{"role":"user", "content":"dialogs again"}], chat="ask-chat")
+        self.assertEqual(json.loads((self.peer / "gate-env.json").read_text()),
+                         {"RPI_ACP_NO_PERMISSION_GATE":"0", "RPI_PERMISSION_GATE":"1"})
+        answers = [m["result"] for m in self.log() if m.get("id") == 101]
+        self.assertEqual(answers[-1], {"outcome":{"outcome":"selected", "optionId":"reject"}})
+
     async def test_native_cancel_false_retires_dialog_without_reopening_it(self):
         self.answers = [False, False]
         await self.run_pipe([{"role":"user", "content":"dialogs"}])

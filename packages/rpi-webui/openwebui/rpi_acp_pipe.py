@@ -4,8 +4,6 @@ author: pi-rust
 version: 0.1.0
 description: Connect Open WebUI to rpi over ACP, including questions and permissions.
 """
-from __future__ import annotations
-
 import asyncio
 from contextlib import contextmanager
 import hashlib
@@ -17,6 +15,7 @@ import sqlite3
 import subprocess
 import time
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -104,10 +103,12 @@ class StateStore:
 
 
 class AcpClient:
-    def __init__(self, command, args, cwd, event_call=None, event_emitter=None, dialog_timeout=300):
+    def __init__(self, command, args, cwd, event_call=None, event_emitter=None, dialog_timeout=300,
+                 bypass_tool_permissions=False):
         self.command, self.args, self.cwd = command, args, cwd
         self.event_call, self.event_emitter = event_call, event_emitter
         self.dialog_timeout = dialog_timeout
+        self.bypass_tool_permissions = bypass_tool_permissions
         self.proc = None
         self.pending = {}
         self.events = asyncio.Queue(maxsize=1024)
@@ -121,6 +122,10 @@ class AcpClient:
     async def start(self):
         env = os.environ.copy()
         env.update(RPI_WEBUI_CHILD="1", RPI_WEBUI_AUTOSTART="0", RPI_ACP_NO_AUTO_REGISTER_ZED="1")
+        # Configure the child gate, rather than silently answering any dialog.
+        # Explicit mode also overrides inherited deployment flags in either direction.
+        env.update(RPI_ACP_NO_PERMISSION_GATE="1" if self.bypass_tool_permissions else "0",
+                   RPI_PERMISSION_GATE="0" if self.bypass_tool_permissions else "1")
         kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
         self.proc = await asyncio.create_subprocess_exec(
             self.command, *self.args, cwd=self.cwd, env=env,
@@ -350,6 +355,8 @@ class Pipe:
         STATE_DIR: str = Field(default="~/.rpi/openwebui", description="Persistent session mapping directory")
         TURN_TIMEOUT: int = Field(default=600, ge=1, le=86400)
         DIALOG_TIMEOUT: int = Field(default=300, ge=1, le=86400)
+        PERMISSION_MODE: Literal["ask", "bypass"] = Field(
+            default="ask", description="ask: confirm tool execution; bypass: run tools without approval. ask_user questions are still shown.")
 
     def __init__(self):
         self.valves = self.Valves()
@@ -380,7 +387,8 @@ class Pipe:
         store = await asyncio.to_thread(StateStore, self.valves.STATE_DIR)
         owner = uuid.uuid4().hex
         saved, history = await asyncio.to_thread(store.acquire, key, owner, self.valves.TURN_TIMEOUT)
-        client = AcpClient(command, args, str(cwd), __event_call__, __event_emitter__, self.valves.DIALOG_TIMEOUT)
+        client = AcpClient(command, args, str(cwd), __event_call__, __event_emitter__, self.valves.DIALOG_TIMEOUT,
+                           bypass_tool_permissions=self.valves.PERMISSION_MODE == "bypass")
         completed_session = completed_history = None
         prompt_task = next_event = None
         chunks = []
