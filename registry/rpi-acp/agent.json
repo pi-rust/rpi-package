@@ -1,7 +1,7 @@
 {
   "id": "rpi-acp",
   "name": "rpi",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Rust coding agent (rpi) exposed over the Agent Client Protocol",
   "repository": "https://github.com/pi-rust/rpi-package",
   "website": "https://github.com/pi-rust/rpi-package/tree/main/packages/rpi-acp",
@@ -13,34 +13,34 @@
   "distribution": {
     "binary": {
       "darwin-aarch64": {
-        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-macos-aarch64.tar.gz",
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-feb33392c0b3/rpi-acp-macos-aarch64.tar.gz",
         "cmd": "./rpi-acp-bridge",
         "args": [],
-        "sha256": "82bb55bec187d191aed6005feeb454e689a7f9117f6bc4189f3d35061d9c07e7"
+        "sha256": "7eb3333e357bafee48d587879667d163388292f0381b8feed05702c1113130ca"
       },
       "darwin-x86_64": {
-        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-macos-x86_64.tar.gz",
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-feb33392c0b3/rpi-acp-macos-x86_64.tar.gz",
         "cmd": "./rpi-acp-bridge",
         "args": [],
-        "sha256": "df806415550afd6b7ed3355fa791a122b39fd96cd218f4d13f7427f4480d0a44"
+        "sha256": "d22cb7b4619f7a69e3b3b322b4e01feb076ec11adbf43052216ade82c8cc6830"
       },
       "linux-aarch64": {
-        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-linux-aarch64.tar.gz",
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-feb33392c0b3/rpi-acp-linux-aarch64.tar.gz",
         "cmd": "./rpi-acp-bridge",
         "args": [],
-        "sha256": "7859a60da72cd15ee00d008ce64bf6ff27b57f5af4a7b01a60d85207c717449d"
+        "sha256": "add6fa2f6eccbaa8210315731256e4556534609d5a4efff5b7b3a4537db6a55f"
       },
       "linux-x86_64": {
-        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-linux-x86_64.tar.gz",
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-feb33392c0b3/rpi-acp-linux-x86_64.tar.gz",
         "cmd": "./rpi-acp-bridge",
         "args": [],
-        "sha256": "7b681954d173c29010038b8b6503103dcc0108b412e7dd75de71efbecf0bfee7"
+        "sha256": "0af33062bd4b02b546b011bc855a5105bec828123f06fb3feaf0ea1d05e71ef7"
       },
       "windows-x86_64": {
-        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-windows-x86_64.zip",
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-feb33392c0b3/rpi-acp-windows-x86_64.zip",
         "cmd": "./rpi-acp-bridge.exe",
         "args": [],
-        "sha256": "b1ee91d880d9b82459750a2d3d1b03fe37f4632c07254a1636b7b4d83c4bb9de"
+        "sha256": "8e586515538c6b98a9709dcf4b7e2c8b2d4cbc1d20872a1ad2c1b28810a78ce4"
       }
     }
   }
