@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.6...rpi-acp-v0.1.7) - 2026-10-15
+
+### Added
+
+- *(acp)* advertise ACP terminal auth and generate the registry entry ([#14](https://github.com/pi-rust/rpi-package/pull/14))
+
 ## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.5...rpi-acp-v0.1.6) - 2026-10-14
 
 ### Other

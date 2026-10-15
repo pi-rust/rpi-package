@@ -166,14 +166,14 @@
   },
   {
     "name": "rpi-acp",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "type": "extension",
     "tool": "--acp (Agent Client Protocol stdio server)",
     "inspiredBy": "Zed external agents / agent-client-protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-acp",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.1.6/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.1.7/rpi-extension.json"
   },
   {
     "name": "rpi-permission-gate",
