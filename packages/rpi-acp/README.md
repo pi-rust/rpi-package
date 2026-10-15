@@ -158,6 +158,14 @@ Zed  ──ACP (JSON-RPC over stdio)──▶  rpi-acp-bridge  ──spawn──
 cargo build --release -p rpi-acp --bin rpi-acp-bridge
 ```
 
+It also runs two maintenance commands, which is what an ACP client (or a package
+manager) launches instead of the bare server:
+
+```bash
+rpi-acp-bridge --setup          # provider credential login (ACP terminal auth)
+rpi-acp-bridge --install-zed    # register agent_servers.rpi in Zed
+```
+
 `rpi-acp-bridge` locates the agent binary to spawn in this order:
 
 1. `RPI_BIN` (explicit path),
@@ -218,6 +226,36 @@ It prints the sha256 and a ready-to-paste `distribution.binary` stanza; see
 [`registry/rpi-acp/agent.json`](../../registry/rpi-acp/agent.json) and
 [`registry/README.md`](../../registry/README.md).
 
+## Authentication
+
+`initialize` advertises one ACP **terminal** auth method, `rpi-credentials`,
+whose descriptor is `args: ["--setup"]`. The ACP client runs the same program it
+uses to launch the agent, plus `--setup`, as an interactive terminal process; a
+zero exit status means the credentials are ready and the client reconnects.
+
+`--setup [--provider <id>]` (default provider: `anthropic`) decides the exit code
+by what is actually usable, not by whether a prompt was answered:
+
+| State | Result |
+| --- | --- |
+| Credential already in the environment or `~/.rpi` | Prints the source, exits `0` — no prompt |
+| Nothing configured, stdin is a terminal | Runs `rpi auth login`, re-checks, exits `0` only if usable |
+| Nothing configured, stdin is a pipe | Exits `3` with the commands that work (never hangs on a prompt) |
+
+The middle row is rpi's own login — provider-neutral API key, or a registered
+OAuth provider extension. The last row matters because `rpi auth login` prompts
+through the terminal only: running it on a pipe would block until some outer
+timeout killed it, so `--setup` fails fast instead.
+
+Per the ACP auth-methods RFD, the method is advertised **only when the client
+announced it can open a terminal** (`clientCapabilities.auth.terminal`, or the
+flat `clientCapabilities.terminal` + `_meta["terminal-auth"]` shape the ACP
+Registry's verifier sends). Clients that cannot run it get no method, and no
+`authenticate` call is needed either way — a terminal method is out of band.
+
+`packages/rpi-acp/tests/registry_auth.py --bridge <binary>` reproduces the ACP
+Registry's handshake (and its pass/fail rule) locally.
+
 ## Capabilities and limitations
 
 * **Stable ACP v1** with durable sessions. `loadSession` and session resume are
@@ -245,6 +283,9 @@ It prints the sha256 and a ready-to-paste `distribution.binary` stanza; see
 * Prompt templates / slash commands are not advertised as
   `available_commands_update`: `--mode rpc` does not expand prompt templates
   (only the host TUI does), so a client-side command list would be misleading.
+* Authentication is signalled out of band through the terminal method above, so
+  `authenticate` is a tolerant no-op rather than a real handler; rpi never asks
+  the client to collect a secret.
 
 ## Question extension v1
 

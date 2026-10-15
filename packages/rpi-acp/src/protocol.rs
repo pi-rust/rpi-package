@@ -224,7 +224,26 @@ impl Default for Writer {
     }
 }
 
+/// The `terminal` auth method we advertise: the client re-runs this same agent
+/// program with `--setup` in an interactive terminal. Described in [`crate::auth`].
+///
+/// ACP says an agent may advertise a `terminal` method only when the client
+/// announced the matching capability, so [`Writer::negotiate_auth`] gates it.
+fn terminal_auth_method() -> Value {
+    json!({
+        "id": crate::auth::AUTH_METHOD_ID,
+        "name": "Log in from the terminal",
+        "description": "Run rpi's provider credential setup in a terminal",
+        "type": "terminal",
+        "args": [crate::auth::SETUP_ARG],
+        "env": {},
+    })
+}
+
 /// The `initialize` result. Advertises stable ACP v1 and the content we accept.
+///
+/// `authMethods` carries the `terminal` login so a registry or editor client can
+/// offer sign-in; see [`Writer::negotiate_auth`] for why it is capability-gated.
 pub fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
@@ -246,8 +265,43 @@ pub fn initialize_result() -> Value {
             "title": "rpi",
             "version": env!("CARGO_PKG_VERSION"),
         },
+        // Empty unless the client negotiated terminal auth; see `authMethods`.fn
         "authMethods": [],
     })
+}
+
+/// The `initialize` result for a client that did (or did not) offer to run our
+/// terminal login.
+pub fn initialize_result_for(terminal_auth: bool) -> Value {
+    let mut result = initialize_result();
+    if terminal_auth {
+        result["authMethods"] = json!([terminal_auth_method()]);
+    }
+    result
+}
+
+/// A client that can open our `--setup` in a terminal.
+///
+/// Two shapes are accepted because they coexist in the wild: the auth-methods
+/// RFD's `clientCapabilities.auth.terminal`, and the flat
+/// `clientCapabilities.terminal` + `clientCapabilities._meta["terminal-auth"]`
+/// that the ACP Registry's verifier sends today. Both intend the same thing —
+/// "this client can reproduce our launch command in an interactive terminal" —
+/// and a client that offered neither gets no `terminal` method, as the RFD
+/// requires.
+fn client_supports_terminal_auth(params: &Value) -> bool {
+    let capabilities = params.pointer("/clientCapabilities");
+    let Some(capabilities) = capabilities else {
+        return false;
+    };
+    let announced = [
+        capabilities.pointer("/auth/terminal"),
+        capabilities.get("terminal"),
+        capabilities.pointer("/_meta/terminal-auth"),
+    ];
+    announced
+        .iter()
+        .any(|value| matches!(value, Some(Value::Bool(true)) | Some(Value::Object(_))))
 }
 
 /// Run the ACP server until the client closes stdin, then return an exit code.
@@ -334,7 +388,10 @@ pub async fn run(
         match (id, method.as_deref()) {
             (Some(id), Some("initialize")) => {
                 writer.negotiate_questions(&message["params"]);
-                writer.respond(&id, initialize_result()).await;
+                let terminal_auth = client_supports_terminal_auth(&message["params"]);
+                writer
+                    .respond(&id, initialize_result_for(terminal_auth))
+                    .await;
             }
             // No auth methods are advertised, but tolerate a stray call.
             (Some(id), Some("authenticate")) => writer.respond(&id, json!({})).await,
@@ -539,6 +596,44 @@ mod tests {
         );
         assert_eq!(result["agentInfo"]["name"], "rpi");
         assert_eq!(result["agentCapabilities"]["_meta"]["pi-rust/questions"], 1);
+        // Baseline v1: no auth method until the client offers a terminal.
+        assert_eq!(result["authMethods"], json!([]));
+    }
+
+    #[test]
+    fn terminal_auth_is_advertised_only_for_a_capable_client() {
+        // The registry verifier's shape: flat `terminal` plus the `_meta` hint.
+        assert!(client_supports_terminal_auth(&json!({
+            "clientCapabilities": {"terminal": true,
+                                   "_meta": {"terminal-auth": true}}
+        })));
+        // The RFD's shape, in both v1 spellings of the value.
+        assert!(client_supports_terminal_auth(
+            &json!({"clientCapabilities": {"auth": {"terminal": true}}})
+        ));
+        assert!(client_supports_terminal_auth(
+            &json!({"clientCapabilities": {"auth": {"terminal": {}}}})
+        ));
+        for params in [
+            json!({}),
+            json!({"clientCapabilities": {}}),
+            json!({"clientCapabilities": {"auth": {}}}),
+            json!({"clientCapabilities": {"auth": {"terminal": false}}}),
+            json!({"clientCapabilities": {"terminal": false, "_meta": {"terminal-auth": false}}}),
+            json!({"clientCapabilities": {"_meta": {}}}),
+        ] {
+            assert!(!client_supports_terminal_auth(&params), "{params}");
+        }
+
+        let advertised = initialize_result_for(true);
+        let methods = advertised["authMethods"].as_array().unwrap();
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0]["type"], "terminal");
+        assert_eq!(methods[0]["id"], crate::auth::AUTH_METHOD_ID);
+        assert_eq!(methods[0]["args"], json!(["--setup"]));
+        assert!(methods[0]["name"].as_str().is_some_and(|n| !n.is_empty()));
+        // A terminal method must never carry a `command`; the client owns that.
+        assert!(methods[0].get("command").is_none());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "id": "rpi-acp",
   "name": "rpi",
-  "version": "0.1.3",
+  "version": "0.1.6",
   "description": "Rust coding agent (rpi) exposed over the Agent Client Protocol",
   "repository": "https://github.com/pi-rust/rpi-package",
   "website": "https://github.com/pi-rust/rpi-package/tree/main/packages/rpi-acp",
@@ -12,11 +12,35 @@
   "license_url": "https://github.com/pi-rust/rpi-package/blob/main/LICENSE",
   "distribution": {
     "binary": {
+      "darwin-aarch64": {
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-macos-aarch64.tar.gz",
+        "cmd": "./rpi-acp-bridge",
+        "args": [],
+        "sha256": "82bb55bec187d191aed6005feeb454e689a7f9117f6bc4189f3d35061d9c07e7"
+      },
+      "darwin-x86_64": {
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-macos-x86_64.tar.gz",
+        "cmd": "./rpi-acp-bridge",
+        "args": [],
+        "sha256": "df806415550afd6b7ed3355fa791a122b39fd96cd218f4d13f7427f4480d0a44"
+      },
+      "linux-aarch64": {
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-linux-aarch64.tar.gz",
+        "cmd": "./rpi-acp-bridge",
+        "args": [],
+        "sha256": "7859a60da72cd15ee00d008ce64bf6ff27b57f5af4a7b01a60d85207c717449d"
+      },
+      "linux-x86_64": {
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-linux-x86_64.tar.gz",
+        "cmd": "./rpi-acp-bridge",
+        "args": [],
+        "sha256": "7b681954d173c29010038b8b6503103dcc0108b412e7dd75de71efbecf0bfee7"
+      },
       "windows-x86_64": {
-        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.1.3/rpi-acp-windows-x86_64.zip",
+        "archive": "https://github.com/pi-rust/rpi-package/releases/download/rpi-packages-7249c71c5a9d/rpi-acp-windows-x86_64.zip",
         "cmd": "./rpi-acp-bridge.exe",
         "args": [],
-        "sha256": "412ef9b50673c3b965be5c350deba9d1ba6f307749f1175cd1c65aa1893fd415"
+        "sha256": "b1ee91d880d9b82459750a2d3d1b03fe37f4632c07254a1636b7b4d83c4bb9de"
       }
     }
   }

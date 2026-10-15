@@ -7,7 +7,8 @@
 //!    read piped stdin) it reads the `--acp` flag and, when set, `declare`s
 //!    `{"ownsStdio": true}`. The host then defers `read_piped_stdin` and runs
 //!    its headless `Rpc` lifecycle, leaving this process's stdio to us.
-//! 2. On `SessionStart` it starts the ACP server ([`protocol::run`]) on a
+//! 2. On `SessionStart` it runs the one-shot actions (Zed registration or the
+//!    `--setup` credential flow) or starts the ACP server ([`protocol::run`]) on a
 //!    dedicated thread. The server handles `initialize` / `session/new` /
 //!    `session/prompt` / `session/cancel` / `session/load` / `session/resume`.
 //! 3. Each ACP session is backed by a child `rpi --mode rpc` process rooted at
@@ -27,6 +28,7 @@
 
 // `pub` so the standalone `rpi-acp` binary (`src/main.rs`) can run the same ACP
 // server the extension embeds.
+pub mod auth;
 pub mod diag;
 mod history;
 pub mod protocol;
@@ -49,6 +51,9 @@ const ACP_FLAG: &str = "acp";
 const INSTALL_ZED_FLAG: &str = "install-zed";
 /// One-shot: print the Zed settings snippet, then exit.
 const PRINT_ZED_FLAG: &str = "print-zed";
+/// One-shot: run the interactive credential setup that backs ACP's `terminal`
+/// auth method, then exit `0` only once the provider is verified usable.
+const SETUP_FLAG: &str = "setup";
 
 // Host callbacks captured during `register`. The `PluginApi` pointer is only
 // valid for that call, so the function pointers + the opaque `user_data` (the
@@ -65,6 +70,8 @@ static ACP_ENABLED: AtomicBool = AtomicBool::new(false);
 static INSTALL_ZED: AtomicBool = AtomicBool::new(false);
 /// Set once `--print-zed` was seen: print the snippet and exit.
 static PRINT_ZED: AtomicBool = AtomicBool::new(false);
+/// Set once `--setup` was seen: run credential setup and exit instead of serving.
+static SETUP: AtomicBool = AtomicBool::new(false);
 /// Guards against starting the server twice (SessionStart can fire on reload).
 static SERVER_STARTED: AtomicBool = AtomicBool::new(false);
 static SERVER_STOP: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
@@ -210,8 +217,14 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
     if event.tag != EventTag::SessionStart {
         return 0;
     }
-    // `--install-zed` / `--print-zed` are one-shot: do the work, hand the host a
-    // status code, and let it exit. They take precedence over `--acp`.
+    // `--install-zed` / `--print-zed` / `--setup` are one-shot: do the work, hand
+    // the host a status code, and let it exit. They take precedence over `--acp`,
+    // which is what lets an ACP client's terminal-auth invocation
+    // (`rpi --acp --setup`) run setup instead of a second server.
+    if SETUP.load(Ordering::Acquire) {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        return finish_with(auth::run(&args));
+    }
     if INSTALL_ZED.load(Ordering::Acquire) || PRINT_ZED.load(Ordering::Acquire) {
         let write = INSTALL_ZED.load(Ordering::Acquire);
         return finish_with(zed::run_default_action(write));
@@ -300,6 +313,10 @@ fn register_plugin(api: &rpi_plugin_sdk::PluginApi) -> i32 {
             StbStringRef::from_str(PRINT_ZED_FLAG),
             StbStringRef::from_str("Print the Zed settings snippet, then exit"),
         );
+        let _ = register_flag(
+            StbStringRef::from_str(SETUP_FLAG),
+            StbStringRef::from_str("Set up provider credentials, then exit"),
+        );
     }
 
     // Decide NOW, during register: the host only learns whether to defer
@@ -308,7 +325,8 @@ fn register_plugin(api: &rpi_plugin_sdk::PluginApi) -> i32 {
     let acp = flag_is_on(get_cli_flag(ACP_FLAG).as_ref());
     let install = flag_is_on(get_cli_flag(INSTALL_ZED_FLAG).as_ref());
     let print = flag_is_on(get_cli_flag(PRINT_ZED_FLAG).as_ref());
-    if !acp && !install && !print {
+    let setup = flag_is_on(get_cli_flag(SETUP_FLAG).as_ref());
+    if !acp && !install && !print && !setup {
         return 0;
     }
 
@@ -332,7 +350,8 @@ fn register_plugin(api: &rpi_plugin_sdk::PluginApi) -> i32 {
     // One-shot actions own the headless lifecycle without starting an ACP server.
     INSTALL_ZED.store(install, Ordering::Release);
     PRINT_ZED.store(print, Ordering::Release);
-    ACP_ENABLED.store(acp && !install && !print, Ordering::Release);
+    SETUP.store(setup, Ordering::Release);
+    ACP_ENABLED.store(acp && !install && !print && !setup, Ordering::Release);
 
     if let Some(register) = api.register_event_handler {
         let rc = register(

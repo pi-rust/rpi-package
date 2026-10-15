@@ -87,6 +87,14 @@ jobs:
           python3 packages/rpi-acp/tests/streaming.py --bridge "$RPI_TEST_ACP_BRIDGE"
           python3 -m unittest discover -s packages/rpi-acp/tests -v
 
+      # The ACP Registry only lists agents that advertise an agent/terminal auth
+      # method, and its verifier's handshake is the exact shape this reproduces.
+      # Failing here beats discovering it in the registry's CI.
+      - name: Verify the ACP Registry auth handshake
+        run: |
+          python3 packages/rpi-acp/tests/registry_auth.py \
+            --bridge "$GITHUB_WORKSPACE/target/debug/rpi-acp-bridge"
+
       - name: Verify crate packages before publishing
         run: cargo publish --workspace --dry-run --allow-dirty --locked
 

@@ -39,33 +39,75 @@ Go's `GOOS-GOARCH` spelling. Map them when filling in `agent.json`:
 
 ## Fill in `rpi-acp/agent.json`
 
-`rpi-acp/agent.json` is the entry to submit. Replace every placeholder:
+`rpi-acp/agent.json` is the entry to submit. It is **generated**, not hand-written:
 
-1. `version` — the release tag the archives were built from.
-2. `<release-url>` — e.g.
-   `https://github.com/pi-rust/rpi-package/releases/download/v0.1.0`.
-3. `sha256` for each platform — printed by `task pack-acp` (a value not in the
-   table below means that platform's archive has not been built yet).
+```bash
+python3 registry/render-agent-json.py --bundle-tag rpi-packages-<sha12>
+```
 
-Only include the platforms you actually built; the schema allows a subset.
+The bundle release already publishes every value the entry needs — the per-platform
+`acp_bridge` archive URL and `sha256` live in that release's `rpi-packages.json` —
+so rendering from it removes the copy-by-hand step where a wrong checksum or a
+stale version used to slip through. The version comes from
+`packages/rpi-acp/Cargo.toml`, and only the platforms the release actually built
+are listed (the schema allows a subset).
+
+`--check` re-renders and exits non-zero when the committed file differs, which is
+how CI keeps it in step with the last release.
+
 `icon.svg` is served from the registry CDN
 (`https://cdn.agentclientprotocol.com/registry/v1/latest/rpi-acp.svg`), so it is
-not referenced from `agent.json`.
+not referenced from `agent.json`. It is the site mark (`rpi.laofu.online`) scaled
+to the registry's required 16×16 and reduced to a single `currentColor` fill —
+see *Icon* below.
+
+## Authentication
+
+The registry lists only agents whose `initialize` advertises an `agent` or
+`terminal` auth method, and it verifies that by launching the configured agent
+program itself. rpi advertises one `terminal` method:
+
+```json
+{
+  "id": "rpi-credentials",
+  "name": "Log in from the terminal",
+  "type": "terminal",
+  "args": ["--setup"]
+}
+```
+
+`--setup` runs `rpi auth check` first (a credential in the environment or in
+`~/.rpi` already counts, and exits `0` with no prompt), falls back to
+`rpi auth login` when stdin is a terminal, and only then re-checks before
+exiting `0`. On a pipe with nothing configured it fails fast with the exact
+commands that work rather than hanging on a prompt it cannot reach. See
+[`packages/rpi-acp/src/auth.rs`](../packages/rpi-acp/src/auth.rs).
+
+`packages/rpi-acp/tests/registry_auth.py --bridge <binary>` reproduces the
+registry's handshake locally, and CI runs it on every change.
+
+## Icon
+
+The registry requires a 16×16, square, monochrome SVG that uses `currentColor`
+(hardcoded fills fail validation) and forbids HTML comments. The site favicon is
+32×32 with a dark rounded background and a highlighted middle bar; `icon.svg`
+keeps the three-bar geometry, scales it to fit inside 16×16, drops the plate so
+the mark themes in light and dark mode, and uses one `currentColor` fill.
 
 ## Before opening the PR
 
 The registry is curated. Checklist:
 
-- [ ] Release assets uploaded for every listed platform (`rpi-acp-<slug>.{zip,tar.gz}`),
-      and each `sha256` re-checked against the downloaded asset.
-- [ ] `rpi-acp-bridge` starts and answers `initialize` on the release binary
-      (not just a local debug build).
-- [ ] `LICENSE` is present (MIT, `license_url` set).
-- [ ] `icon.svg` is the real mark, not the placeholder in this folder.
-- [ ] Decide on `authMethods`: the bridge currently advertises **none**, so rpi
-      relies on provider credentials already present in the environment. A
-      curated entry that expects interactive sign-in must implement and advertise
-      ACP auth — treat that as an explicit gap rather than an oversight.
+- [x] Release assets uploaded for every listed platform
+      (`rpi-acp-<slug>.{zip,tar.gz}`), each `sha256` rendered from the release
+      manifest rather than transcribed.
+- [x] `rpi-acp-bridge` starts and answers `initialize` on the release binary
+      (the registry's own `verify_agents.py` passes against it).
+- [x] `LICENSE` is present (MIT, `license_url` set).
+- [x] `icon.svg` satisfies the registry's validator (16×16, square, single
+      `currentColor` fill, no comments).
+- [x] `authMethods`: the `terminal` method above, present only when the client
+      offered a terminal-auth capability, per the ACP auth-methods RFD.
 
 ## Submit
 

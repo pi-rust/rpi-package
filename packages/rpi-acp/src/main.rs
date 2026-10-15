@@ -12,9 +12,11 @@
 //!   `rpi` is located via `RPI_BIN`, a sibling `rpi` next to this binary, or
 //!   `rpi` on `PATH` (see [`rpi_acp::session`]).
 //!
-//! Besides serving, it can register itself with Zed:
+//! Besides serving, it can run the maintenance commands an ACP client or a
+//! package manager needs:
 //!
 //! ```text
+//! rpi-acp-bridge --setup           # provider credential login (ACP terminal auth)
 //! rpi-acp-bridge --install-zed     # add agent_servers.rpi, idempotent
 //! rpi-acp-bridge --print-zed       # print the settings snippet, write nothing
 //! ```
@@ -31,15 +33,24 @@ const USAGE: &str = "\
 rpi-acp-bridge - ACP stdio agent for rpi
 
 USAGE:
-    rpi-acp-bridge [--install-zed [OPTIONS]] [--print-zed]
+    rpi-acp-bridge [--setup [--provider <ID>]] [--install-zed [OPTIONS]] [--print-zed]
 
 With no arguments it serves ACP on stdin/stdout (this is how Zed launches it).
 
 COMMANDS:
+    --setup         Log in to a provider, then exit 0 once credentials are usable.
+                    This is the ACP `terminal` auth method: an ACP client runs
+                    the same command it uses to start the agent, plus --setup.
+                    Must be interactive. A credential already in the environment
+                    or in the rpi agent dir needs no prompt (exit 0 immediately);
+                    otherwise it runs `rpi auth login` and re-checks afterwards.
     --install-zed   Register rpi under `agent_servers` in Zed's settings.json
     --print-zed     Print the settings snippet instead of writing it
     -h, --help      Show this help
     -V, --version   Show the version
+
+OPTIONS (for --setup):
+    --provider <ID>     Provider to log in to (default: anthropic)
 
 OPTIONS (for --install-zed):
     --settings <FILE>   Zed settings.json (default: Zed's per-OS location,
@@ -49,7 +60,14 @@ OPTIONS (for --install-zed):
 ";
 
 fn main() {
-    match subcommand(std::env::args().skip(1).collect()) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--setup` is the ACP terminal-auth entry point and may arrive with extra
+    // flags after it (`--setup --provider openai`), so it is detected anywhere
+    // in the argument list rather than only in first position.
+    if rpi_acp::auth::requested(&args) {
+        std::process::exit(rpi_acp::auth::run(&args));
+    }
+    match subcommand(args) {
         Some(code) => std::process::exit(code),
         None => serve(),
     }
