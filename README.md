@@ -29,11 +29,12 @@ it embeds sherpa-onnx + SenseVoice and runs entirely offline (see
 [`packages/rpi-voice/README.md`](packages/rpi-voice/README.md) for the build
 either way).
 
-`rpi-run-stats` adds a live top-right monitoring panel: rounds, provider steps,
+`rpi-run-stats` adds a live monitoring row below the usage footer: turns, LLM calls, tool executions,
 output tok/s, time to first token, response time, rolling 60-second TPM,
 input/output/cache tokens, errors and USD cost. Use `/stats on`, `/stats off`
-or `/stats` to toggle it, and `/stats position top-left` to move it.
-It uses the generic declarative panel interface in the host.
+or `/stats` to toggle it, or press F8. Values use fixed-width columns to keep
+the row stable. USD accumulates model usage costs calculated by the host from
+model pricing. It uses the host's generic `UiComponent` text interface.
 See [rpi-run-stats](packages/rpi-run-stats/README.md) for measurement definitions.
 
 ## Native ACP integration

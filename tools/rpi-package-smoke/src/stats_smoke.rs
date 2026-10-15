@@ -1,6 +1,6 @@
 use rpi_extensions::{
-    dispatch_data_event_claiming, dispatch_empty_event, host_free_string,
-    load_session_mixed, NullDiagnostics, RegistrySnapshot,
+    dispatch_data_event_claiming, dispatch_empty_event, host_free_string, load_session_mixed,
+    NullDiagnostics, RegistrySnapshot,
 };
 use rpi_plugin_sdk::{EventTag, StablePluginEvent, StbString, StbStringRef};
 use serde_json::json;
@@ -49,8 +49,10 @@ fn installed_monitor_loads_commands_and_events_and_shuts_down_cleanly() {
             (cmd.handler)(StbStringRef::from_str(&input), &mut out, cmd.user_data),
             0
         );
-        let text = out.to_string_lossy();
-        host_free_string(out);
+        // SAFETY: the successful callback returns a live SDK-owned allocation;
+        // copy it before freeing it exactly once with the host allocator.
+        let text = unsafe { out.to_string_lossy() };
+        unsafe { host_free_string(out) };
         assert!(text.contains(needle), "{args}: {text}");
     }
     for tag in [
@@ -64,6 +66,10 @@ fn installed_monitor_loads_commands_and_events_and_shuts_down_cleanly() {
     for (tag, message) in [
         (EventTag::BeforeProviderRequest, json!({})),
         (
+            EventTag::ToolExecutionStart,
+            json!({"toolCallId":"tool-1","toolName":"bash"}),
+        ),
+        (
             EventTag::MessageUpdate,
             json!({"assistantMessageEvent":{"type":"text_delta","delta":"hello"}}),
         ),
@@ -75,14 +81,18 @@ fn installed_monitor_loads_commands_and_events_and_shuts_down_cleanly() {
         let handlers = snapshot.handlers_for(tag);
         assert_eq!(handlers.len(), 1);
         let payload = StbString::from_string(message.to_string());
-        let event = if tag == EventTag::BeforeProviderRequest {
+        let event = if matches!(
+            tag,
+            EventTag::BeforeProviderRequest | EventTag::ToolExecutionStart
+        ) {
             StablePluginEvent::data(tag, payload)
         } else {
             StablePluginEvent::message(tag, payload)
         };
         // Match host fan-out ownership: handlers borrow the event, then the
         // host frees its allocation once the handlers have returned.
-        assert_eq!((handlers[0].handler)(event,handlers[0].user_data),0);
-        host_free_string(payload);
+        assert_eq!((handlers[0].handler)(event, handlers[0].user_data), 0);
+        // SAFETY: payload was allocated above and only borrowed by the handler.
+        unsafe { host_free_string(payload) };
     }
 }
