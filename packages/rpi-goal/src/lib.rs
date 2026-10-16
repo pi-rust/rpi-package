@@ -15,6 +15,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 const GOAL_FILE: &str = ".rpi/goals.json";
+/// State is stored as a custom entry in the current session branch. Unlike the
+/// legacy project file, this cannot leak an active goal into another session.
+const GOAL_STATE_ENTRY: &str = "goal-state";
 /// The custom-message type stored in the generic AgentMessage payload.
 const GOAL_CUSTOM_TYPE: &str = "goal";
 const MAX_TITLE_CHARS: usize = 500;
@@ -45,12 +48,25 @@ struct PendingInjection {
 }
 
 static PENDING_INJECT: OnceLock<Mutex<Option<PendingInjection>>> = OnceLock::new();
+static PENDING_STATE: OnceLock<Mutex<Option<Goals>>> = OnceLock::new();
+// Tests and older hosts may not implement GetSessionBranch. Live hosts return
+// an `entries` array, which enables session-scoped state; otherwise retain the
+// file fallback for compatibility.
+static SESSION_BRANCH_SUPPORTED: AtomicBool = AtomicBool::new(true);
 // Accessed under the queue mutex, including while its pending slot is empty
 // because a flush has taken the notice into an in-flight host callback.
 static INJECTION_REVISION: AtomicU64 = AtomicU64::new(0);
 
 fn pending_inject() -> &'static Mutex<Option<PendingInjection>> {
     PENDING_INJECT.get_or_init(|| Mutex::new(None))
+}
+
+fn pending_state() -> &'static Mutex<Option<Goals>> {
+    PENDING_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn queue_state(goals: &Goals) {
+    *pending_state().lock().unwrap_or_else(|p| p.into_inner()) = Some(goals.clone());
 }
 
 fn queue_inject(goal: &Goal) {
@@ -70,6 +86,7 @@ fn queue_notice(goal: &Goal, budget_reason: Option<String>) {
 }
 
 fn flush_pending_inject() {
+    flush_pending_state();
     flush_pending_inject_with(|pending| match &pending.budget_reason {
         Some(reason) => append_budget_message(&pending.goal, reason),
         None => append_goal_custom_message(&pending.goal),
@@ -166,20 +183,23 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Goal {
     title: String,
     status: String, // active | paused | complete
     notes: String,
+    #[serde(alias = "started_at")]
     started_at: i64,
+    #[serde(alias = "updated_at")]
     updated_at: i64,
     /// Turns completed while the goal was active. Drives the `max_turns` budget.
-    #[serde(default)]
+    #[serde(default, alias = "turns_used")]
     turns_used: u32,
     /// Turn budget. `None` = unlimited.
-    #[serde(default)]
+    #[serde(default, alias = "max_turns")]
     max_turns: Option<u32>,
     /// Absolute epoch-ms deadline. `None` = unlimited.
-    #[serde(default)]
+    #[serde(default, alias = "deadline_ms")]
     deadline_ms: Option<i64>,
 }
 
@@ -237,7 +257,46 @@ fn goals_path() -> PathBuf {
         .join(GOAL_FILE)
 }
 
+fn flush_pending_state() {
+    let state = pending_state()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    let Some(goals) = state else {
+        return;
+    };
+    if write_goals(&goals).is_err() {
+        *pending_state().lock().unwrap_or_else(|p| p.into_inner()) = Some(goals);
+    }
+}
+
 fn read_goals() -> Goals {
+    if RUNTIME.get().is_some() && SESSION_BRANCH_SUPPORTED.load(Ordering::Relaxed) {
+        if let Some(goals) = pending_state()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            return goals;
+        }
+        if let Ok(value) = call_runtime(RuntimeActionId::GetSessionBranch, json!({})) {
+            if let Some(entries) = value.get("entries").and_then(Value::as_array) {
+                SESSION_BRANCH_SUPPORTED.store(true, Ordering::Relaxed);
+                for entry in entries.iter().rev() {
+                    if entry.get("type").and_then(Value::as_str) == Some("custom")
+                        && entry.get("customType").and_then(Value::as_str) == Some(GOAL_STATE_ENTRY)
+                    {
+                        if let Some(data) = entry.get("data") {
+                            return serde_json::from_value(data.clone()).unwrap_or_default();
+                        }
+                    }
+                }
+                return Goals::default();
+            }
+        }
+        SESSION_BRANCH_SUPPORTED.store(false, Ordering::Relaxed);
+    }
+
     let path = goals_path();
     let Ok(text) = fs::read_to_string(&path) else {
         return Goals::default();
@@ -246,6 +305,13 @@ fn read_goals() -> Goals {
 }
 
 fn write_goals(goals: &Goals) -> Result<(), String> {
+    if RUNTIME.get().is_some() && SESSION_BRANCH_SUPPORTED.load(Ordering::Relaxed) {
+        call_runtime(
+            RuntimeActionId::AppendEntry,
+            json!({"customType": GOAL_STATE_ENTRY, "data": goals}),
+        )?;
+        return Ok(());
+    }
     let path = goals_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create goal directory: {e}"))?;
@@ -439,7 +505,11 @@ fn validate_notes(notes: &str) -> Result<String, String> {
 fn persist_and_queue(goals: &Goals, goal: &Goal) -> Result<(), String> {
     let mut goals = goals.clone();
     goals.active = Some(goal.clone());
-    write_goals(&goals)?;
+    if RUNTIME.get().is_some() && SESSION_BRANCH_SUPPORTED.load(Ordering::Relaxed) {
+        queue_state(&goals);
+    } else {
+        write_goals(&goals)?;
+    }
     queue_inject(goal);
     Ok(())
 }
@@ -533,7 +603,11 @@ fn op_complete() -> Result<Goal, String> {
     done.updated_at = now_ms();
     goals.archived.push(done.clone());
     goals.active = None;
-    write_goals(&goals)?;
+    if RUNTIME.get().is_some() && SESSION_BRANCH_SUPPORTED.load(Ordering::Relaxed) {
+        queue_state(&goals);
+    } else {
+        write_goals(&goals)?;
+    }
     queue_inject(&done);
     Ok(done)
 }
@@ -954,16 +1028,41 @@ fn split_title_notes(rest: &str) -> (String, Option<String>) {
     (title_parts.join(" "), notes)
 }
 
-/// Shown after `/goal start`: recording a goal does not run the agent, so the
-/// user still has to send a message to begin.
 const START_NEXT_STEP_HINT: &str =
-    "ℹ️ Goal recorded — send your next message to start working on it.";
+    "ℹ️ Goal recorded; the first work run is starting in the background.";
 
-fn started_confirmation(title: &str, budget_summary: Option<&str>) -> String {
-    match budget_summary {
-        Some(budget) => format!("🎯 Goal started: {title}\n{budget}\n{START_NEXT_STEP_HINT}"),
-        None => format!("🎯 Goal started: {title}\n{START_NEXT_STEP_HINT}"),
-    }
+fn start_from_command(title: &str, notes: &str) -> Result<String, String> {
+    let goal = op_start(title, notes, None, None)?;
+    // Persist the session state and notice before starting the run. The full
+    // SendUserMessage call itself must not run on the TUI command thread.
+    flush_pending_state();
+    flush_pending_inject();
+    let prompt = if goal.notes.trim().is_empty() {
+        format!("Work on the active goal: {}", goal.title)
+    } else {
+        format!(
+            "Work on the active goal: {}\nNotes: {}",
+            goal.title, goal.notes
+        )
+    };
+    // A full SendUserMessage waits for the agent run to finish. Calling it
+    // inline deadlocks the TUI, leaving the editor populated and unresponsive.
+    std::thread::Builder::new()
+        .name("rpi-goal-start".into())
+        .spawn(move || {
+            if let Err(error) =
+                call_runtime(RuntimeActionId::SendUserMessage, json!({"text": prompt}))
+            {
+                eprintln!("rpi-goal: failed to start goal run: {error}");
+            }
+        })
+        .map_err(|error| format!("unable to start goal worker: {error}"))?;
+    Ok(format!(
+        "🎯 Goal started: {}\n{}\n{}",
+        goal.title,
+        goal.budget_summary(now_ms()),
+        START_NEXT_STEP_HINT
+    ))
 }
 
 const COMMAND_HELP: &str = "\
@@ -995,8 +1094,7 @@ fn run_command(args: &str) -> String {
         "help" => Ok(COMMAND_HELP.to_string()),
         "start" => {
             let (title, notes) = split_title_notes(rest);
-            op_start(&title, notes.as_deref().unwrap_or(""), None, None)
-                .map(|goal| started_confirmation(&goal.title, Some(&goal.budget_summary(now_ms()))))
+            start_from_command(&title, notes.as_deref().unwrap_or(""))
         }
         "pause" => op_set_status("paused").map(|goal| format!("⏸️ Paused: {}", goal.title)),
         "resume" => op_set_status("active").map(|goal| format!("▶️ Resumed: {}", goal.title)),
@@ -1048,8 +1146,7 @@ fn run_command(args: &str) -> String {
         // Unknown verb → treat the whole input as a title (shorthand start).
         _ => {
             let (title, notes) = split_title_notes(args);
-            op_start(&title, notes.as_deref().unwrap_or(""), None, None)
-                .map(|goal| started_confirmation(&goal.title, None))
+            start_from_command(&title, notes.as_deref().unwrap_or(""))
         }
     };
 
@@ -1255,12 +1352,9 @@ mod tests {
     }
 
     #[test]
-    fn start_confirmation_tells_the_user_to_send_a_message() {
-        let text = started_confirmation("Ship it", Some("turns 0/20"));
-        assert!(text.contains("Ship it"));
-        assert!(text.contains("turns 0/20"));
-        assert!(text.contains(START_NEXT_STEP_HINT));
-        assert!(started_confirmation("Ship it", None).contains(START_NEXT_STEP_HINT));
+    fn start_confirmation_mentions_background_work() {
+        assert!(START_NEXT_STEP_HINT.contains("background"));
+        assert!(START_NEXT_STEP_HINT.contains("Goal recorded"));
     }
 
     // -----------------------------------------------------------------------

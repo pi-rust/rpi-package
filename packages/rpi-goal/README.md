@@ -2,10 +2,13 @@
 
 Codex-style goal mode for the `rpi` Rust agent.
 
-`goal` keeps one persistent objective per project. The extension stores the
-state in `.rpi/goals.json` and injects a generic custom message into the session
-transcript when the goal changes. The host uses the normal message/context path;
-there is no goal-specific logic in `pi-rust`.
+`goal` keeps one objective per session branch. The extension stores the latest
+state as a `goal-state` custom entry in the current session, then injects a
+generic custom message into the session transcript when the goal changes. The
+host uses the normal message/context path; there is no goal-specific logic in
+`pi-rust`. A slash-command start also submits the first work message
+automatically in the background; a goal tool call made during an existing
+turn does not nest a second run.
 
 ## Slash command
 
@@ -56,7 +59,13 @@ paused, turns are not counted.
 
 ## Storage
 
-Per project: `.rpi/goals.json`:
+The live extension stores state as a `goal-state` custom entry in the current
+session branch. This keeps goals isolated between unrelated sessions while
+allowing a resumed/forked branch to retain its own goal history. The legacy
+`.rpi/goals.json` file is used only by library tests that run without a host
+runtime; it is not read by a live plugin.
+
+The stored data has this shape:
 
 ```json
 {
@@ -74,42 +83,22 @@ Per project: `.rpi/goals.json`:
 }
 ```
 
-The file is written atomically (tmp + rename). Fields added after the first
-release (`turnsUsed` / `maxTurns` / `deadlineMs`) default when missing, so older
-files keep loading.
+When no runtime is available, the test fallback is written atomically (tmp +
+rename). Fields added after the first release default when missing.
 
 ## Context injection
 
 When the goal state changes, the extension calls the generic `AppendEntry`
-runtime action with an `AgentMessage::Custom` payload:
+runtime action with a `goal-state` custom entry. The user-facing goal notice is
+queued and flushed at a safe turn/command boundary, so it cannot be inserted
+between an assistant `tool_calls` message and its tool result. Failed appends
+remain queued and are retried; the injection fingerprint is updated only after
+a successful append.
 
-```json
-{
-  "message": {
-    "kind": "custom",
-    "role": "custom",
-    "content": [{ "type": "text", "text": "🎯 Active goal: …" }],
-    "data": {
-      "customType": "goal",
-      "display": true,
-      "details": { "status": "active" }
-    },
-    "timestamp": 1750000000000
-  }
-}
-```
-
-This is the same generic custom-message path used by the native Pi
-architecture. `pi-rust` does not know about the `goal` type or its state
-schema; it simply persists and forwards the custom message to the model.
+The notice uses the generic custom-message path used by the native Pi
+architecture. `pi-rust` does not know about the `goal` type or its state schema;
+it simply persists and forwards the custom message to the model.
 
 Injection is deduplicated per goal-state fingerprint (`title|status|notes`). The
 live turn counter is deliberately excluded from the fingerprint so a running
 budget does not re-inject every turn.
-
-Changes made by the `goal` tool are queued until `TurnEnd`, keeping custom
-messages outside tool-call batches. Slash commands flush at the end of their
-handler. A failed `AppendEntry` keeps the latest notice for the next safe
-boundary; only a successful append marks it delivered. Budget-exhaustion notices
-use the same retry path and retain the reason the goal paused. A newer goal
-change supersedes an older notice still waiting to be delivered.

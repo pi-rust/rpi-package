@@ -60,7 +60,7 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
 fn parse_todos(value: &Value) -> Option<TodoState> {
     let todos = value.get("todos")?.as_array()?;
     let mut result = Vec::new();
-    let mut next_id = value.get("nextId").and_then(Value::as_u64).unwrap_or(1);
+    let mut next_id = value.get("nextId").and_then(Value::as_u64).unwrap_or(0);
     for item in todos {
         let id = item.get("id").and_then(Value::as_u64)?;
         let text = item.get("text").and_then(Value::as_str)?.to_string();
@@ -195,7 +195,7 @@ fn todo(params: &Value) -> Result<String, String> {
                 ));
             }
             let todo = Todo {
-                id: guard.next_id.max(1),
+                id: guard.next_id,
                 text: text.to_string(),
                 done: false,
                 in_progress: false,
@@ -213,7 +213,9 @@ fn todo(params: &Value) -> Result<String, String> {
                 return Ok(result(
                     action,
                     &guard,
-                    format!("Todo #{id} not found"),
+                    format!(
+                        "Todo #{id} not found; call `todo` with action `list` and use the returned zero-based id"
+                    ),
                     Some("todo not found"),
                 ));
             };
@@ -233,18 +235,19 @@ fn todo(params: &Value) -> Result<String, String> {
             if !matches!(status, "pending" | "in_progress" | "completed") {
                 return Err("status must be pending, in_progress, or completed".into());
             }
-            let item = guard
-                .todos
-                .iter_mut()
-                .find(|todo| todo.id == id)
-                .ok_or_else(|| format!("Todo #{id} not found"))?;
+            let Some(item) = guard.todos.iter_mut().find(|todo| todo.id == id) else {
+                let text = format!(
+                    "Todo #{id} not found; call `todo` with action `list` and use the returned zero-based id"
+                );
+                return Ok(result(action, &guard, text, Some("todo not found")));
+            };
             item.done = status == "completed";
             item.in_progress = status == "in_progress";
             Ok(result(action, &guard, render(&guard, true), None))
         }
         "clear" => {
             guard.todos.clear();
-            guard.next_id = 1;
+            guard.next_id = 0;
             Ok(result(action, &guard, render(&guard, true), None))
         }
         _ => Err("action must be one of: list, add, update, toggle, clear".into()),
@@ -337,8 +340,8 @@ rpi_plugin_sdk::export_plugin!(|api| {
     };
     let schema = Box::new(StableToolSchema {
     name: StbString::from_string(TOOL.into()),
-    description: StbString::from_string("Manage one session task list. Actions: list, add (text), update (id, status: pending/in_progress/completed), toggle (id), clear. Mark the task you are working on in_progress and completed when finished.".into()),
-    parameters: StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","add","update","toggle","clear"]},"text":{"type":"string"},"id":{"type":"integer"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"includeDone":{"type":"boolean"}},"required":["action"]}"#.into()),
+    description: StbString::from_string("Manage one session task list. Task IDs are zero-based: the first added task is #0. Always call list first and use the exact returned id for update/toggle; an id is not an array position after tasks are removed or cleared. Actions: list, add (text), update (id, status: pending/in_progress/completed), toggle (id), clear.".into()),
+    parameters: StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","add","update","toggle","clear"]},"text":{"type":"string"},"id":{"type":"integer","minimum":0,"description":"Zero-based task ID returned by list/add; the first task is 0."},"status":{"type":"string","enum":["pending","in_progress","completed"]},"includeDone":{"type":"boolean"}},"required":["action"]}"#.into()),
 });
     let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
     drop(schema);
@@ -349,11 +352,17 @@ rpi_plugin_sdk::export_plugin!(|api| {
 mod tests {
     use super::*;
     #[test]
+    fn new_state_starts_at_zero() {
+        let state = parse_todos(&json!({"todos":[]})).unwrap();
+        assert_eq!(state.next_id, 0);
+    }
+
+    #[test]
     fn restores_state_from_details() {
         let state =
-            parse_todos(&json!({"todos":[{"id":1,"text":"a","done":true}],"nextId":2})).unwrap();
+            parse_todos(&json!({"todos":[{"id":0,"text":"a","done":true}],"nextId":1})).unwrap();
         assert!(state.todos[0].done);
-        assert_eq!(state.next_id, 2);
+        assert_eq!(state.next_id, 1);
     }
     #[test]
     fn rejects_unknown_action() {
@@ -362,16 +371,16 @@ mod tests {
     #[test]
     fn renders_and_restores_all_task_states() {
         let state = parse_todos(&json!({"todos":[
-            {"id":1,"text":"Pending task","done":false},
-            {"id":2,"text":"Working task","status":"in_progress"},
-            {"id":3,"text":"Finished task","status":"completed"}
+            {"id":0,"text":"Pending task","done":false},
+            {"id":1,"text":"Working task","status":"in_progress"},
+            {"id":2,"text":"Finished task","status":"completed"}
         ]}))
         .unwrap();
         let text = render(&state, true);
         assert!(text.contains("1/3 completed"));
-        assert!(text.contains("[ ] #1: Pending task"));
-        assert!(text.contains("[•] #2: Working task"));
-        assert!(text.contains("[✓] #3: Finished task"));
+        assert!(text.contains("[ ] #0: Pending task"));
+        assert!(text.contains("[•] #1: Working task"));
+        assert!(text.contains("[✓] #2: Finished task"));
         assert_eq!(state_json(&state)["todos"][2]["done"], true);
         assert_eq!(state_json(&state)["todos"][1]["status"], "in_progress");
     }
