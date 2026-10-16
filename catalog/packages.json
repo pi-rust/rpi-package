@@ -12,14 +12,14 @@
   },
   {
     "name": "rpi-mcp-adapter",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "type": "extension",
     "tool": "mcp_list + mcp_call + mcp_request",
     "inspiredBy": "pi-mcp-adapter",
     "sourceDownloadsPerMonth": 761442,
     "install": "rpi install rpi-mcp-adapter",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.1/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.2/rpi-extension.json"
   },
   {
     "name": "rpi-subagents",
@@ -67,14 +67,14 @@
   },
   {
     "name": "rpi-goal",
-    "version": "0.1.8",
+    "version": "0.1.9",
     "type": "extension",
     "tool": "goal",
     "inspiredBy": "Codex goal mode",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-goal",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.1.8/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.1.9/rpi-extension.json"
   },
   {
     "name": "rpi-plan-mode",

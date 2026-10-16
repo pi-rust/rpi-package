@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "rpi-plugin-sdk",
  "serde",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-adapter"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk",
