@@ -1,0 +1,129 @@
+name: Backfill selected extension releases
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        required: true
+        type: string
+      package_releases:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact source commit matching the existing package release tags
+        required: true
+        type: string
+      package_releases:
+        description: JSON array of existing package release tags
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      # Keep release tooling separate: old source tags may lack this backfill mode.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: backfill-${{ matrix.target }}
+      - name: Build only the requested extension libraries
+        env:
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          TARGET: ${{ matrix.target }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess
+          tags = json.loads(os.environ['PACKAGE_RELEASES'])
+          if not isinstance(tags, list) or not tags:
+              raise ValueError('At least one package tag is required')
+          metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked']))
+          packages = {f"{p['name']}-v{p['version']}": p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
+          args = ['cargo', 'build', '--release', '--locked', '--lib']
+          for tag in tags:
+              if not isinstance(tag, str) or not re.fullmatch(r'[A-Za-z0-9_-]+-v[0-9]+\.[0-9]+\.[0-9]+', tag):
+                  raise ValueError(f'Invalid package tag: {tag!r}')
+              package = packages[tag]
+              if not any('cdylib' in t['crate_types'] for t in package['targets']):
+                  raise ValueError(f'Not an extension: {tag}')
+              args.extend(['-p', package['name']])
+          subprocess.run(args, check=True)
+          subprocess.run(['python', '.release-tools/.github/scripts/prebuilt-assets.py', 'build',
+                          '--packages-only', '--target', os.environ['TARGET'],
+                          '--repository', os.environ['GITHUB_REPOSITORY'],
+                          '--source-ref', os.environ['SOURCE_REF'], '--bundle-tag', 'unused',
+                          '--tags', os.environ['PACKAGE_RELEASES']], check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selected-${{ matrix.target }}
+          path: dist/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selected-*
+          path: dist/release-assets/
+          merge-multiple: true
+      - name: Validate five platforms and publish discovery manifests last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+        run: |
+          python .github/scripts/prebuilt-assets.py publish --packages-only \
+            --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
+            --bundle-tag unused --tags "$PACKAGE_RELEASES"

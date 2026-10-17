@@ -14,10 +14,10 @@ for entry in catalog:
     package = packages[entry["name"]]
     entry["version"] = package["version"]
     entry["repository"] = package["repository"]
-    # Source-only extensions can participate in local workspace installs before
-    # their SDK dependencies are published. Do not advertise a nonexistent
-    # per-crate release for a package excluded from publishing.
-    if package.get("publish") == []:
+    # Source-only extensions do not advertise releases unless they explicitly
+    # opt into GitHub prebuilt distribution independently of crates.io.
+    prebuilt = package.get("metadata", {}).get("rpi", {}).get("prebuilt", False)
+    if package.get("publish") == [] and not prebuilt:
         entry.pop("prebuilt_manifest", None)
         continue
     entry["prebuilt_manifest"] = (

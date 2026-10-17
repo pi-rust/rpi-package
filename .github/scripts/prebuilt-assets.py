@@ -86,6 +86,9 @@ def build(args):
         library_target = next((target for target in package["targets"] if "cdylib" in target["crate_types"]), None)
         if not library_target:
             continue
+        tag = f"{package['name']}-v{package['version']}"
+        if getattr(args, "packages_only", False) and tag not in selected:
+            continue
         stem = library_target["name"] if windows else "lib" + library_target["name"]
         library = release_dir / f"{stem}.{extension}"
         if not library.is_file():
@@ -115,6 +118,10 @@ def build(args):
         write_json(output / f"{package['name']}.{args.target}.json", fragment)
     if selected != found:
         raise ValueError(f"Release tags do not match workspace versions: {sorted(selected - found)}")
+    if getattr(args, "packages_only", False):
+        if not selected:
+            raise ValueError("Package-only builds require at least one release tag")
+        return
 
     os_name = "windows" if windows else "macos" if macos else "linux"
     arch = args.target.split("-")[0]
@@ -188,6 +195,22 @@ def publish(args):
         paths = [checked_archive(root, fragment["distribution"]) for fragment in fragments]
         prepared.append((tag, path, paths))
 
+    if getattr(args, "packages_only", False):
+        if not prepared:
+            raise ValueError("Package-only publishing requires at least one release tag")
+        for tag, _, _ in prepared:
+            check_tag_source(args.repository, tag, args.source_ref)
+            if not release_exists(tag):
+                raise ValueError(f"Package Release must exist before uploading assets: {tag}")
+        for tag, manifest, paths in prepared:
+            existing = json.loads(command("gh", "release", "view", tag, "--json", "assets"))["assets"]
+            if any(item["name"] == "rpi-extension.json" for item in existing):
+                print(f"Preserving already published immutable assets: {tag}")
+                continue
+            upload(tag, paths)
+            upload(tag, [manifest])
+        return
+
     bundles = collect(root, "bundle.*.json", args.source_ref)
     bundle_manifest = {
         "schema_version": 1, "repository": f"https://github.com/{args.repository}",
@@ -236,6 +259,7 @@ def main():
     parser.add_argument("--source-ref", required=True)
     parser.add_argument("--bundle-tag", required=True)
     parser.add_argument("--tags", default="[]", help="JSON array of per-package release tags")
+    parser.add_argument("--packages-only", action="store_true", help="Build/publish selected packages without the full workspace bundle")
     parser.add_argument("--output", default="dist/release-assets")
     args = parser.parse_args()
     if args.command == "build" and not args.target:

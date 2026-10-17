@@ -1,5 +1,13 @@
 # rpi-ui-adapter
 
+安装 GitHub 预编译包（五平台构建完成后可用）：
+
+```bash
+rpi install rpi-ui-adapter --github pi-rust/rpi-package
+```
+
+使用 `rpi update` 升级、`rpi uninstall rpi-ui-adapter` 卸载。
+
 通过 `rpi --webui=<UI>` 接入现有 Web UI。首个适配器是 Open WebUI 0.12.2。
 **每个 UI 使用自己的配置文件和参数结构**，统一放在当前项目的 `.rpi/webui/`：
 

@@ -182,8 +182,9 @@
     "tool": "--webui=openwebui (UI adapters for ACP agents)",
     "inspiredBy": "Open WebUI Pipe / Agent Client Protocol",
     "sourceDownloadsPerMonth": null,
-    "install": "rpi install rpi-ui-adapter",
-    "repository": "https://github.com/pi-rust/rpi-package"
+    "install": "rpi install rpi-ui-adapter --github pi-rust/rpi-package",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-ui-adapter-v0.1.0/rpi-extension.json"
   },
   {
     "name": "rpi-permission-gate",
@@ -203,7 +204,8 @@
     "tool": null,
     "inspiredBy": "Provider integrations",
     "sourceDownloadsPerMonth": null,
-    "install": "rpi package link providers --path packages/rpi-providers --debug",
-    "repository": "https://github.com/pi-rust/rpi-package"
+    "install": "rpi install rpi-providers --github pi-rust/rpi-package",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-providers-v0.1.0/rpi-extension.json"
   }
 ]

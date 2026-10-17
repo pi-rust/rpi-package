@@ -27,12 +27,27 @@ on:
         description: Bundle Release tag (empty generates a tag from the commit)
         required: false
         type: string
+      packages_only:
+        description: Backfill only selected package releases without building the full bundle
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  backfill:
+    if: inputs.packages_only == true
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-packages.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      package_releases: ${{ inputs.package_releases }}
+
   source:
+    if: inputs.packages_only != true
     runs-on: ubuntu-22.04
     permissions:
       contents: read

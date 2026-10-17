@@ -68,6 +68,38 @@ class PrebuiltAssetsTests(unittest.TestCase):
         self.assertEqual(manifest["version"], "1.2.3")
         self.assertEqual(manifest["sdk"], self.sdk)
 
+    def test_package_only_publish_needs_no_bundle_and_uploads_manifest_last(self):
+        self.args.packages_only = True
+        for path in self.root.glob("bundle.*.json"):
+            path.unlink()
+        with mock.patch.object(assets, "release_exists", return_value=True), \
+                mock.patch.object(assets, "check_tag_source"), \
+                mock.patch.object(assets, "command", return_value='{"assets": []}'), \
+                mock.patch.object(assets, "upload") as upload:
+            assets.publish(self.args)
+        self.assertEqual(len(upload.call_args_list), 2)
+        self.assertEqual(len(upload.call_args_list[0].args[1]), 5)
+        self.assertEqual(upload.call_args_list[1].args[1][0].name, "rpi-extension.json")
+
+    def test_package_only_publish_still_requires_all_five_platforms(self):
+        self.args.packages_only = True
+        next(self.root.glob("rpi-demo.*.json")).unlink()
+        self.assert_rejected_before_upload()
+
+    def test_package_only_publish_rejects_empty_selection(self):
+        self.args.packages_only = True
+        self.args.tags = "[]"
+        self.assert_rejected_before_upload()
+
+    def test_package_only_publish_preserves_complete_releases(self):
+        self.args.packages_only = True
+        with mock.patch.object(assets, "release_exists", return_value=True), \
+                mock.patch.object(assets, "check_tag_source"), \
+                mock.patch.object(assets, "command", return_value='{"assets": [{"name":"rpi-extension.json"}]}'), \
+                mock.patch.object(assets, "upload") as upload:
+            assets.publish(self.args)
+        upload.assert_not_called()
+
     def assert_rejected_before_upload(self):
         with mock.patch.object(assets, "upload") as upload:
             with self.assertRaises(ValueError):

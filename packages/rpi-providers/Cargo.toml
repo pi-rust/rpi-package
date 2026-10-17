@@ -10,6 +10,10 @@ repository.workspace = true
 description = "Unified DeepSeek, OpenRouter, llama.cpp and proxy provider extension for rpi"
 readme = "README.md"
 
+# GitHub prebuilt releases are independent of crates.io publication.
+[package.metadata.rpi]
+prebuilt = true
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
