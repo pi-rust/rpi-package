@@ -199,14 +199,14 @@
   },
   {
     "name": "rpi-ui-adapter",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "type": "extension",
     "tool": "--webui=openwebui (UI adapters for ACP agents)",
     "inspiredBy": "Open WebUI Pipe / Agent Client Protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-ui-adapter --github pi-rust/rpi-package",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-ui-adapter-v0.1.0/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-ui-adapter-v0.1.1/rpi-extension.json"
   },
   {
     "name": "rpi-providers",
