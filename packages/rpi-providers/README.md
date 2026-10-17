@@ -21,7 +21,7 @@ provider ID 不变，无需合并凭据。匿名目录就绪不代表本地服�
 [`feature-stream-porider` 分支宿主](https://github.com/bigfish1913/pi-rust/tree/feature-stream-porider)。
 相关核心依赖发布前，本包设置 `publish = false`，不发布到 crates.io；预编译包通过 GitHub Release 分发，其他扩展的 SDK 依赖不变。
 
-安装预编译包（需要上述兼容宿主；五平台构建完成后可用）：
+安装预编译包（需要上述兼容宿主）：
 
 ```sh
 rpi install rpi-providers --github pi-rust/rpi-package

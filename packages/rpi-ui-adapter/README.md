@@ -1,6 +1,6 @@
 # rpi-ui-adapter
 
-安装 GitHub 预编译包（五平台构建完成后可用）：
+安装 GitHub 预编译包：
 
 ```bash
 rpi install rpi-ui-adapter --github pi-rust/rpi-package
