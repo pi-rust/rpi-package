@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "rpi-plugin-sdk",
  "serde",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-todo"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "rpi-plugin-sdk",
  "serde_json",

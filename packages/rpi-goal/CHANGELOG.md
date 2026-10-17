@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.1.9...rpi-goal-v0.1.10) - 2026-10-17
+
+### Fixed
+
+- *(goal)* keep TUI responsive when starting work ([#26](https://github.com/pi-rust/rpi-package/pull/26))
+
 ## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.1.8...rpi-goal-v0.1.9) - 2026-10-16
 
 ### Added
