@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.8...rpi-acp-v0.1.9) - 2026-10-17
+
+### Added
+
+- *(release)* add package-only backfill and prebuilt distribution
+- *(release)* add cross-platform prebuilt extension distribution
+
+### Fixed
+
+- harden subagent lifecycle and integrations
+
+### Other
+
+- Merge main into feature-1014 and preserve release compatibility
+- explain native Computer ACP setup and selective releases
+- *(acp)* fold core back into ACP and remove WebUI integration
+- Merge main into feature-1014 and preserve ACP integration checks
+- *(release)* use reusable release assets workflow
+
 ## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.7...rpi-acp-v0.1.8) - 2026-10-16
 
 ### Added

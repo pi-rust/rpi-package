@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/pi-rust/rpi-package/compare/rpi-run-stats-v0.1.3...rpi-run-stats-v0.1.4) - 2026-10-17
+
+### Added
+
+- *(rpi-run-stats)* persist timing metrics across turns
+- *(rpi-run-stats)* replace text labels with monochrome glyphs
+- *(release)* add package-only backfill and prebuilt distribution
+- *(run-stats)* stabilize metrics and show tool calls and priced costs
+
+### Other
+
+- Merge main into feature-1014 and preserve release compatibility
+- Merge main into feature-1014 and preserve ACP integration checks
+- *(release)* use reusable release assets workflow
+
 ### Changed
 
 - Group monochrome, single-column icons into counts, response performance and usage, with a space before each value.

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-subagents-v0.1.6...rpi-subagents-v0.1.7) - 2026-10-17
+
+### Added
+
+- *(release)* add package-only backfill and prebuilt distribution
+
+### Fixed
+
+- harden subagent lifecycle and integrations
+
+### Other
+
+- Merge main into feature-1014 and preserve release compatibility
+- Merge main into feature-1014 and preserve ACP integration checks
+- *(release)* use reusable release assets workflow
+
 ### Added
 
 - Run `delegate_task` through the host-managed `ChildAgent` lifecycle with

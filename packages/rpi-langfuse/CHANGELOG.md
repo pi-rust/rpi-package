@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/pi-rust/rpi-package/compare/rpi-langfuse-v0.4.3...rpi-langfuse-v0.4.4) - 2026-10-17
+
+### Added
+
+- *(ui-adapter)* add Open WebUI integration
+
+### Other
+
+- Merge main into feature-1014 and preserve release compatibility
+- Merge main into feature-1014 and preserve ACP integration checks
+- *(release)* use reusable release assets workflow
+
 ## [0.4.3](https://github.com/pi-rust/rpi-package/compare/rpi-langfuse-v0.4.2...rpi-langfuse-v0.4.3) - 2026-10-14
 
 ### Other

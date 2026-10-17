@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.1.10...rpi-goal-v0.1.11) - 2026-10-17
+
+### Added
+
+- *(release)* add package-only backfill and prebuilt distribution
+
+### Fixed
+
+- *(goal)* keep TUI responsive when starting work
+
+### Other
+
+- Merge main into feature-1014 and preserve release compatibility
+- Merge main into feature-1014 and preserve ACP integration checks
+- *(release)* use reusable release assets workflow
+
 ## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.1.9...rpi-goal-v0.1.10) - 2026-10-17
 
 ### Fixed
