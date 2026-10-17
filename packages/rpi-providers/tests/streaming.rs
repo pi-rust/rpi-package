@@ -113,12 +113,27 @@ async fn read_request(socket: &mut TcpStream) -> serde_json::Value {
 }
 
 async fn http_chunk(socket: &mut TcpStream, bytes: &[u8]) {
-    socket
-        .write_all(format!("{:x}\r\n", bytes.len()).as_bytes())
-        .await
-        .unwrap();
-    socket.write_all(bytes).await.unwrap();
-    socket.write_all(b"\r\n").await.unwrap();
+    let mut frame = format!("{:x}\r\n", bytes.len()).into_bytes();
+    frame.extend_from_slice(bytes);
+    frame.extend_from_slice(b"\r\n");
+    socket.write_all(&frame).await.unwrap();
+}
+
+async fn finish_response(socket: &mut TcpStream) {
+    // [DONE] completes SSE. Clients may close before the HTTP trailer arrives.
+    // Earlier writes of content and the terminal SSE frame must still succeed.
+    if let Err(error) = socket.write_all(b"0\r\n\r\n").await {
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+            ),
+            "unexpected HTTP trailer error after [DONE]: {error}"
+        );
+    }
 }
 
 fn sse(delta: serde_json::Value, finish: serde_json::Value) -> String {
@@ -172,7 +187,7 @@ async fn stub(reject: bool) -> (String, oneshot::Sender<()>, tokio::task::JoinHa
         last.push_str(&format!("data: {}\n\n", serde_json::json!({"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}})));
         last.push_str("data: [DONE]\n\n");
         http_chunk(&mut socket, last.as_bytes()).await;
-        socket.write_all(b"0\r\n\r\n").await.unwrap();
+        finish_response(&mut socket).await;
     });
     (base, release, server)
 }
@@ -314,7 +329,7 @@ async fn reply(socket: &mut TcpStream, chunks: &[String]) {
         http_chunk(socket, chunk.as_bytes()).await;
     }
     http_chunk(socket, b"data: [DONE]\n\n").await;
-    socket.write_all(b"0\r\n\r\n").await.unwrap();
+    finish_response(socket).await;
 }
 
 async fn collect(
