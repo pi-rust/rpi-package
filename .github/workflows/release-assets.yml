@@ -106,6 +106,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-assets-${{ matrix.target }}
+      - name: Reset cached native speech links
+        run: |
+          cargo clean -p sherpa-onnx-sys
+          python3 - <<'PY'
+          import pathlib, shutil
+          target = pathlib.Path('target').resolve()
+          native = target / 'sherpa-onnx-prebuilt'
+          if native.resolve().parent != target:
+              raise RuntimeError('Native cache must stay inside target')
+          shutil.rmtree(native, ignore_errors=True)
+          PY
+      - name: Restore native speech libraries
+        uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: native-speech-1.13.8-${{ runner.os }}-${{ runner.arch }}
       - name: Test platform packaging
         run: cargo test --locked -p rpi-package-install
       - name: Build extension libraries and installer
