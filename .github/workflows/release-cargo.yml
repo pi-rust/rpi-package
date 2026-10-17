@@ -56,7 +56,7 @@ jobs:
       - name: Install release-plz
         uses: taiki-e/install-action@v2
         with:
-          tool: release-plz@0.3.172
+          tool: release-plz@0.3.171
 
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
