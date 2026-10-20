@@ -17,9 +17,17 @@ provider ID 不变，无需合并凭据。匿名目录就绪不代表本地服�
 
 ## 安装、升级与迁移
 
-当前依赖固定到 pi-rust 中包含 SDK `provider` feature 的实现提交，宿主按
-`packages/rpi-providers/Cargo.toml` 中同一 `rev` 构建。
-相关核心依赖发布前，本包设置 `publish = false`，不发布到 crates.io；预编译包通过 GitHub Release 分发，其他扩展的 SDK 依赖不变。
+当前使用 crates.io 发布的 `rpi-plugin-sdk` 0.6.3，并显式启用可选的 `provider`
+feature；`rpi-ai` 与集成测试使用的 `rpi-extensions` 同样固定为 0.6.3。
+使用 rpi 0.6.3 宿主，无需从指定 Git 提交构建。本包目前仍设置 `publish = false`，
+通过 GitHub Release 分发预编译包；其他扩展继续使用工作区固定的 SDK 0.3.20。
+
+```toml
+rpi-plugin-sdk = { version = "=0.6.3", features = ["provider"] }
+rpi-ai = { version = "=0.6.3", features = ["providers"] }
+```
+
+`provider` 默认关闭；普通工具扩展无需启用，也不会因此引入 AI / HTTP 依赖。
 
 安装预编译包（需要上述兼容宿主）：
 
@@ -115,7 +123,7 @@ cargo test -p rpi-providers
 中文 UTF-8 跨块、thinking 与 usage、响应未结束时取消、HTTP 401、唯一终态、思考开关，
 以及工具调用 → 工具结果 → 回答 → 新用户轮次的完整历史回传。
 
-宿主命令与凭据检查另外需要先构建上述分支的 CLI，再设置路径显式执行：
+宿主命令与凭据检查另外需要安装或构建 rpi 0.6.3 CLI，再设置路径显式执行：
 
 ```powershell
 $env:RPI_TEST_CLI = 'C:\path\to\pi-rust\target\debug\rpi.exe'

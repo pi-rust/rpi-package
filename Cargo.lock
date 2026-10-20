@@ -2390,7 +2390,8 @@ dependencies = [
 [[package]]
 name = "rpi-agent"
 version = "0.6.3"
-source = "git+https://github.com/bigfish1913/pi-rust?rev=5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b#5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a9b0baed23372341379551b7b63d68162e1d345507945945166538dde8ae73d"
 dependencies = [
  "async-trait",
  "futures",
@@ -2408,7 +2409,8 @@ dependencies = [
 [[package]]
 name = "rpi-ai"
 version = "0.6.3"
-source = "git+https://github.com/bigfish1913/pi-rust?rev=5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b#5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "914f23e600119f8468f7435cca167542ea6b79c762b4ec572fec8e5b68bb5011"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2456,7 +2458,8 @@ dependencies = [
 [[package]]
 name = "rpi-extensions"
 version = "0.6.3"
-source = "git+https://github.com/bigfish1913/pi-rust?rev=5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b#5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3de92b749bda3b51e9aaffa930b85c978419c388047ada7dd5f45987ec65204f"
 dependencies = [
  "async-trait",
  "dirs",
@@ -2586,7 +2589,8 @@ dependencies = [
 [[package]]
 name = "rpi-plugin-sdk"
 version = "0.6.3"
-source = "git+https://github.com/bigfish1913/pi-rust?rev=5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b#5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67468ea2041972b86f58a1819320076a0bd5701aa64b4bf7b98f2ede6dbe49aa"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-ai",
@@ -2640,7 +2644,8 @@ dependencies = [
 [[package]]
 name = "rpi-telemetry"
 version = "0.6.3"
-source = "git+https://github.com/bigfish1913/pi-rust?rev=5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b#5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95206c42356341d136d93058ec6f154379582afca3e0efe6e4f3210b7af69c3a"
 dependencies = [
  "async-trait",
  "serde",

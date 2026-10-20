@@ -63,9 +63,9 @@ rpi install rpi-providers --github pi-rust/rpi-package
 ```
 
 This package is distributed through GitHub Releases and currently has
-`publish = false`. It requires a host built from the same pinned core revision
-as its dependencies in [Cargo.toml](packages/rpi-providers/Cargo.toml). See
-[the package guide](packages/rpi-providers/README.md) for compatibility,
+`publish = false`. It uses the published `rpi-plugin-sdk` 0.6.3 with the optional
+`provider` feature and matching `rpi-ai` 0.6.3; use the rpi 0.6.3 host for this
+package. See [the package guide](packages/rpi-providers/README.md) for compatibility,
 source linking, migration and tests.
 
 ## Native ACP integration
@@ -183,10 +183,10 @@ cd .\rpi-packages-windows-x86_64
 ```
 
 Developers can instead clone this repository and run `task install`. Most
-extensions use the published `rpi-plugin-sdk` pinned in the workspace;
-`rpi-providers` uses Git dependencies pinned to a reviewed core revision, which
-Cargo fetches automatically. A sibling `pi-rust` checkout is not needed for
-the workspace build. Linux builds with voice support also need native audio
+extensions use the published `rpi-plugin-sdk` 0.3.20 pinned in the workspace;
+`rpi-providers` independently pins the published SDK and core dependencies to
+0.6.3, enabling `provider` only for that package. A sibling `pi-rust` checkout
+is not needed for the workspace build. Linux builds with voice support also need native audio
 and TLS development libraries (`libasound2-dev`, `libssl-dev` and `pkg-config`
 on Ubuntu).
 

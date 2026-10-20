@@ -17,12 +17,12 @@ prebuilt = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-# Provider registration and manifests require the provider-package host API.
-# Keep all three dependencies on the same reviewed core revision. Do not change
+# SDK 0.6.3 publishes the optional provider bridge and matching host API.
+# Keep all three dependencies on the same released version. Do not change
 # the SDK used by unrelated extensions in this workspace.
 [dependencies]
-rpi-ai = { git = "https://github.com/bigfish1913/pi-rust", rev = "5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b", features = ["providers"] }
-rpi-plugin-sdk = { git = "https://github.com/bigfish1913/pi-rust", rev = "5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b", features = ["provider"] }
+rpi-ai = { version = "=0.6.3", features = ["providers"] }
+rpi-plugin-sdk = { version = "=0.6.3", features = ["provider"] }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,6 +30,6 @@ reqwest.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "process"] }
 
 [dev-dependencies]
-rpi-extensions = { git = "https://github.com/bigfish1913/pi-rust", rev = "5f3a552ef12b03266f83cd99c97ed9ac2d0e6f6b" }
+rpi-extensions = { version = "=0.6.3" }
 tokio = { workspace = true, features = ["macros", "net", "io-util"] }
 tempfile = "3"
