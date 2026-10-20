@@ -94,7 +94,9 @@ jobs:
         run: python3 .github/scripts/sync-release-catalog.py
 
       - name: Test workspace
-        run: cargo test --workspace --locked
+        run: |
+          cargo build -p rpi-providers --locked
+          cargo test --workspace --locked
 
       - name: Test the prebuilt distribution contract
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v

@@ -62,8 +62,8 @@ one package; maintain vendor implementations in separate modules.
 rpi install rpi-providers --github pi-rust/rpi-package
 ```
 
-This package is distributed through GitHub Releases and currently has
-`publish = false`. It uses the published `rpi-plugin-sdk` 0.6.3 with the optional
+Starting with 0.1.2, this package is published to crates.io and distributed as
+prebuilt archives through GitHub Releases. It uses `rpi-plugin-sdk` 0.6.3 with the optional
 `provider` feature and matching `rpi-ai` 0.6.3; use the rpi 0.6.3 host for this
 package. See [the package guide](packages/rpi-providers/README.md) for compatibility,
 source linking, migration and tests.

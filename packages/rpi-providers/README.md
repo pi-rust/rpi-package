@@ -19,8 +19,8 @@ provider ID 不变，无需合并凭据。匿名目录就绪不代表本地服�
 
 当前使用 crates.io 发布的 `rpi-plugin-sdk` 0.6.3，并显式启用可选的 `provider`
 feature；`rpi-ai` 与集成测试使用的 `rpi-extensions` 同样固定为 0.6.3。
-使用 rpi 0.6.3 宿主，无需从指定 Git 提交构建。本包目前仍设置 `publish = false`，
-通过 GitHub Release 分发预编译包；其他扩展继续使用工作区固定的 SDK 0.3.20。
+使用 rpi 0.6.3 宿主，无需从指定 Git 提交构建。从 0.1.2 开始，本包发布到 crates.io，
+并通过 GitHub Release 分发预编译包；其他扩展继续使用工作区固定的 SDK 0.3.20。
 
 ```toml
 rpi-plugin-sdk = { version = "=0.6.3", features = ["provider"] }
@@ -29,7 +29,13 @@ rpi-ai = { version = "=0.6.3", features = ["providers"] }
 
 `provider` 默认关闭；普通工具扩展无需启用，也不会因此引入 AI / HTTP 依赖。
 
-安装预编译包（需要上述兼容宿主）：
+安装（需要上述兼容宿主）：
+
+```sh
+rpi install rpi-providers
+```
+
+也可以显式指定 GitHub 预编译包：
 
 ```sh
 rpi install rpi-providers --github pi-rust/rpi-package
