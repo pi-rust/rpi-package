@@ -84,9 +84,22 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub(crate) async fn run_until(
-    config: AppConfig,
+    mut config: AppConfig,
     stop: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let requested = SocketAddr::new(config.bind.parse()?, config.port);
+    let listener = tokio::net::TcpListener::bind(requested)
+        .await
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot listen on {requested}: {error}"),
+            )
+        })?;
+    let address = listener.local_addr()?;
+    // Port zero requests an OS-assigned port; use it for both Host validation
+    // and the startup page, rather than advertising an unusable port zero.
+    config.port = address.port();
     let mut projects = vec![Project::new(&config.project)?];
     for path in &config.projects {
         let project = Project::new(path)?;
@@ -107,10 +120,9 @@ pub(crate) async fn run_until(
         projects_root,
         config.registry.with_file_name("projects.json"),
     )?;
-    let security = Arc::new(Security::new(
-        allowed_hosts(&config),
-        configured_password().as_deref(),
-    ));
+    let hosts = allowed_hosts(&config);
+    let password = configured_password();
+    let security = Arc::new(Security::new(hosts.clone(), password.as_deref()));
     let (shutdown, shutdown_receiver) = watch::channel(false);
     let state = AppState {
         config: config.clone(),
@@ -160,9 +172,11 @@ pub(crate) async fn run_until(
         .route("/favicon.svg", get(favicon))
         .layer(from_fn_with_state(security, crate::security::guard))
         .with_state(state.clone());
-    let address: SocketAddr = format!("{}:{}", config.bind, config.port).parse()?;
-    let listener = tokio::net::TcpListener::bind(address).await?;
-    println!("rpi-web listening on http://{address}");
+    println!(
+        "{}",
+        crate::startup::page(address, &config, &hosts, state.security.enabled())
+    );
+    std::io::Write::flush(&mut std::io::stdout())?;
     let mut shutdown_receiver = state.shutdown.clone();
     let serving = std::future::IntoFuture::into_future(
         axum::serve(listener, router).with_graceful_shutdown(async move {
@@ -175,6 +189,7 @@ pub(crate) async fn run_until(
     tokio::select! {
         result = &mut serving => result?,
         _ = stop => {
+            println!("  Status      Stopping...");
             let _ = shutdown.send(true);
             let _ = tokio::time::timeout(std::time::Duration::from_secs(8), async {
                 let _lifecycle = state.session_lifecycle.lock().await;
@@ -184,6 +199,7 @@ pub(crate) async fn run_until(
             }).await;
         }
     }
+    println!("  Status      Stopped");
     Ok(())
 }
 
@@ -227,10 +243,22 @@ fn allowed_hosts(config: &AppConfig) -> Vec<String> {
         .filter(|hosts: &Vec<String>| !hosts.is_empty())
         .or_else(|| config.allowed_hosts.clone())
         .unwrap_or_else(|| {
-            vec![
+            let mut hosts = vec![
                 format!("127.0.0.1:{}", config.port),
                 format!("localhost:{}", config.port),
-            ]
+            ];
+            if let Ok(ip) = config.bind.parse::<std::net::IpAddr>() {
+                if ip.is_ipv6() {
+                    hosts.push(format!("[::1]:{}", config.port));
+                }
+                if !ip.is_unspecified() {
+                    let authority = SocketAddr::new(ip, config.port).to_string();
+                    if !hosts.contains(&authority) {
+                        hosts.push(authority);
+                    }
+                }
+            }
+            hosts
         })
 }
 

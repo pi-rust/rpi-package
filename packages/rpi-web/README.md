@@ -30,6 +30,26 @@ Run the installation command from the `rpi-package` repository root, then start 
 
 Both entry points read the same `.rpi/web.json`. Use `rpi --web=/absolute/path/to/web.json` to select an explicit file, and `rpi --web=help` for help. Keep the host process running; Ctrl+C stops Web, closes streams and session children, and releases the listener. Saved transcripts remain available after restart. Choose one service entry point per process: `--web` cannot be combined with `--acp`, `--webui`, or `--server`.
 
+After the listener binds successfully, the terminal shows a server status page:
+
+```text
+  rpi Web Server v...
+  ================================================
+
+  Status      Running
+  Listen IP   127.0.0.1
+  Port        3030
+  Open        http://127.0.0.1:3030
+  Project     /path/to/project
+  Password    Not configured
+  Host rules  127.0.0.1:3030, localhost:3030
+
+  Open the URL in your browser to use the workspace.
+  Keep this terminal open. Press Ctrl+C to stop.
+```
+
+`--web` runs the server in the terminal; open the displayed URL to chat in the browser. The page shows the actual bound port, including an OS-assigned port when `port` is `0`. IPv6 URLs use brackets. A wildcard listener (`0.0.0.0` or `::`) displays a loopback browser URL. Configure `allowedHosts` and the login password before connecting remotely. A port conflict exits with an error without displaying a Running page.
+
 ### Standalone executable
 
 The standalone program remains available for direct execution and container deployments:
@@ -242,6 +262,7 @@ Environment variables are read at startup; restart the service after changing th
 | Symptom | What to check |
 | --- | --- |
 | Cannot start `rpi` | Check `rpi --version` and set an absolute `--rpi-bin` path |
+| `rpi --web` opens terminal chat instead of the server | Install the Web extension with `rpi install rpi-web --github pi-rust/rpi-package`, then restart rpi. Recent hosts report a missing Web extension directly. |
 | Blank page or JS / CSS 404 | Check that `--assets` contains `index.html` and the nested `assets/` directory; update the complete frontend bundle and refresh |
 | LAN access rejected | Check the bind address, port connectivity, and the Host / port entries in `RPI_WEB_ALLOWED_HOSTS` |
 | Login succeeds but model calls fail | Configure model authorization separately from the Web password; check the service user's credentials and selected model |

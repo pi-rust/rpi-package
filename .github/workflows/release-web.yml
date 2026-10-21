@@ -98,6 +98,15 @@ jobs:
           PY
       - name: Build the Web executable and extension
         run: cargo build --release --locked -p rpi-web --bin rpi-web --lib
+      - name: Verify the startup page and HTTP listener on this platform
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked']))
+          binary = Path(metadata['target_directory']) / 'release' / ('rpi-web.exe' if os.name == 'nt' else 'rpi-web')
+          subprocess.run([sys.executable, 'packages/rpi-web/scripts/verify-startup.py', '--web', str(binary)], check=True)
+          PY
       - name: Package the binary and verified frontend together
         env:
           TARGET: ${{ matrix.target }}

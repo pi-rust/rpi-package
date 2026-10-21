@@ -12,6 +12,7 @@ mod protocol;
 mod registry;
 mod security;
 mod server;
+mod startup;
 mod timing;
 mod workspace;
 
