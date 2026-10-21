@@ -19,8 +19,8 @@ def backend():
     for line in sys.stdin:
         command = json.loads(line)
         if command["type"] == "get_state":
-            print(json.dumps(dict(type="response", id=command["id"], status="ok",
-                                  result=dict(sessionId=session_id, leafId=None))), flush=True)
+            print(json.dumps(dict(type="response", id=command["id"], command="get_state", success=True,
+                                  data=dict(sessionId=session_id, leafId=None))), flush=True)
 
 
 def check(command, env, root, bypass, legacy=False):

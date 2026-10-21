@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-21
+
+### Fixed
+
+- Align the ACP extension and standalone bridge with the current native RPC: send prompt `message`, read `success`/`data`, and wait for `agent_settled` after acceptance. Preserve final message snapshots and report rejected or failed runs correctly. Update RPC fixtures and add acceptance, state, and terminal-outcome regressions.
+- Stop a desynchronized backend when its event queue overflows instead of waiting indefinitely for a lost acceptance or returning an incomplete reply. Require reconnecting before reusing that backend.
+- Inherit the workspace's exact SDK version so published builds retain the tested plugin ABI.
+
 ## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.8...rpi-acp-v0.1.9) - 2026-10-17
 
 ### Added

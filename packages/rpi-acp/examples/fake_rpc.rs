@@ -31,7 +31,6 @@ fn main() {
         )
         .unwrap();
     }
-    let mut prompt_id = Value::Null;
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
         let message: Value = serde_json::from_str(&line).unwrap();
@@ -45,10 +44,13 @@ fn main() {
         }
         match message["type"].as_str().unwrap_or("") {
             "get_state" => send(
-                json!({"type":"response", "id":message["id"], "status":"ok", "result":{"leafId":null,"sessionId":session_id}}),
+                json!({"type":"response", "id":message["id"], "command":"get_state", "success":true, "data":{"leafId":null,"sessionId":session_id}}),
             ),
             "prompt" => {
-                prompt_id = message["id"].clone();
+                assert!(message["message"].is_string());
+                send(
+                    json!({"type":"response","id":message["id"],"command":"prompt","success":true,"data":{"accepted":true}}),
+                );
                 send(
                     json!({"type":"ui_dialog_request", "requestId":"question", "toolCallId":"ask", "ui":{
                     "purpose":"question","kind":"selector","question":"语言？",
@@ -67,11 +69,12 @@ fn main() {
                 send(json!({"type":"ui_dialog_closed","requestId":"permission"}));
                 send(json!({"type":"message_update","eventType":"text_delta","delta":"完成🌊"}));
                 send(
-                    json!({"type":"response","id":prompt_id,"status":"ok","result":{"outcome":"completed","finalText":"完成🌊"}}),
+                    json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"完成🌊"}],"stopReason":"stop"}}),
                 );
+                send(json!({"type":"agent_settled","runId":"fixture-run","outcome":"completed"}));
             }
             "abort" => send(
-                json!({"type":"response","id":prompt_id,"status":"ok","result":{"outcome":"aborted"}}),
+                json!({"type":"agent_settled","runId":"fixture-run","outcome":"aborted","aborted":true}),
             ),
             _ => {}
         }

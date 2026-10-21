@@ -50,8 +50,12 @@ were temporary (`--no-session`) and cannot be restored after their backend exits
 
 ### Event mapping
 
-Streaming text is checked against cumulative message snapshots and the RPC
-completion's `finalText`. Missing text is sent before ACP reports completion,
+The child RPC uses `message` for prompt text and `success`/`data` for responses.
+A prompt's `data.accepted: true` response starts the turn; ACP waits for
+`agent_settled` before completing it and allowing another prompt.
+
+Streaming text is checked against cumulative message snapshots, including
+the final `message_end`. Missing text is sent before ACP reports completion,
 without duplicating chunks already delivered. Backend failures return an ACP
 request error; output length limits report `max_tokens` instead of `end_turn`.
 
@@ -64,11 +68,14 @@ request error; output length limits report `max_tokens` instead of `end_turn`.
 | `tool_execution_update` | `tool_call_update` (`in_progress`, content) |
 | `tool_execution_end` | `tool_call_update` (`completed` / `failed`, `rawOutput`) |
 | `tool_execution_end` (`plan_mode_complete`) | `plan` (step list + done markers) |
-| response `outcome: aborted` | prompt `stopReason: cancelled` |
-| response `outcome: completed` | prompt `stopReason: end_turn` |
+| `agent_settled` with `outcome: aborted` | prompt `stopReason: cancelled` |
+| `agent_settled` with `outcome: completed` | prompt `stopReason: end_turn` (or `max_tokens` for length limits) |
+| rejected response or failed `agent_settled` | ACP request error |
 
 ## Requirements
 
+* A current `rpi` RPC host with prompt `message`, `success`/`data` responses,
+  and terminal `agent_settled` events.
 * `rpi` whose plugin ABI supports the `ownsStdio` declaration (the field is
   additive on the `declare` callback) and `StdioLifecycle` runtime action (21).
   The owner reports EOF/completion to the host, which dispatches
@@ -385,7 +392,9 @@ updating only the ACP plugin does not repair the host's scheduler bridge.
 The optional native regression uses a local model fixture and no provider calls.
 Set `RPI_TEST_HOST`, `RPI_TEST_PLUGIN` (ACP library), and `RPI_TEST_GOAL_PLUGIN`,
 then run `python -m unittest discover -s packages/rpi-acp/tests -p test_native_turns.py -v`.
-It checks consecutive prompts and a real tool execution followed by another reply.
+It checks consecutive prompts, a real tool execution followed by another reply,
+and native cancellation followed by another prompt. All model traffic stays
+inside the local fixture server.
 
 ## Manual smoke test
 ```powershell

@@ -10,8 +10,9 @@
 //! `docs` / `crates/rpi-cli/src/modes.rs`): commands go in on stdin as
 //! `{"id":N,"type":"prompt"|"abort"|...}`, and one JSON object per line comes
 //! back on stdout — fine-grained lifecycle events (`message_update`,
-//! `tool_execution_start`, …) plus a final
-//! `{"type":"response","id":N,"status":"ok","result":{…}}` per command.
+//! `tool_execution_start`, …) plus
+//! `{"type":"response","id":N,"success":true,"data":{…}}` per command.
+//! Prompt responses acknowledge acceptance; `agent_settled` ends the run.
 //!
 //! We spawn one child per ACP session with `current_dir = session/new.cwd`, so
 //! the agent's tools run in the client's workspace.
@@ -61,6 +62,7 @@ pub struct Session {
     events: broadcast::Sender<Value>,
     /// Per-session command id counter (matches `response.id`).
     next_id: AtomicU64,
+    stopped: AtomicBool,
 }
 
 impl Session {
@@ -149,10 +151,16 @@ impl Session {
             prompt_lock: TokioMutex::new(()),
             events,
             next_id: AtomicU64::new(1),
+            stopped: AtomicBool::new(false),
         }))
     }
 
     async fn send(&self, value: Value) -> Result<(), String> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(
+                "rpi backend stopped; restart the ACP connection to restore saved history".into(),
+            );
+        }
         let mut stdin = self.stdin.lock().await;
         let mut buf = value.to_string();
         buf.push('\n');
@@ -187,10 +195,16 @@ impl Session {
                     );
                 }
                 if event["type"] == "response" && event["id"] == id {
-                    if event["status"] != "ok" {
-                        return Err(format!("open session: {}", event["error"]));
+                    if event["success"] != true {
+                        return Err(format!(
+                            "open session: {}",
+                            event["error"].as_str().unwrap_or("invalid RPC response")
+                        ));
                     }
-                    return Ok(event["result"].clone());
+                    if !event["data"].is_object() {
+                        return Err("open session: invalid RPC state data".into());
+                    }
+                    return Ok(event["data"].clone());
                 }
             }
         })
@@ -221,10 +235,11 @@ impl Session {
         let mut dialogs = DialogTasks::default();
         let mut text = StreamText::default();
         let mut stream_error = None;
+        let mut accepted = false;
         let mut rx = self.events.subscribe();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let content = prompt_text(blocks);
-        self.send(json!({"id": id, "type": "prompt", "content": content}))
+        self.send(json!({"id": id, "type": "prompt", "message": content}))
             .await?;
 
         let stop_reason = 'prompt: loop {
@@ -246,27 +261,32 @@ impl Session {
                     if value.get("type").and_then(Value::as_str) == Some("response")
                         && value.get("id").and_then(Value::as_u64) == Some(id)
                     {
-                        if value.get("status").and_then(Value::as_str) == Some("error") {
+                        if value["success"] != true {
                             let message = value
                                 .get("error")
                                 .and_then(Value::as_str)
-                                .unwrap_or("agent run failed");
+                                .unwrap_or("agent rejected the prompt");
                             break 'prompt if cancelled {
                                 Ok("cancelled")
                             } else {
                                 Err(message.into())
                             };
                         }
+                        if value.pointer("/data/accepted") != Some(&Value::Bool(true)) {
+                            break 'prompt Err("rpi did not acknowledge prompt acceptance".into());
+                        }
+                        accepted = true;
+                        continue;
+                    }
+                    if value["type"] == "agent_settled" && accepted {
                         let outcome = value
-                            .pointer("/result/outcome")
+                            .get("outcome")
                             .and_then(Value::as_str)
-                            .unwrap_or("completed");
+                            .unwrap_or("unknown");
                         if let Some(error) = stream_error {
                             break 'prompt Err(error);
                         }
-                        if let Some(final_text) =
-                            value.pointer("/result/finalText").and_then(Value::as_str)
-                        {
+                        if let Some(final_text) = value.get("finalText").and_then(Value::as_str) {
                             match text.complete(final_text) {
                                 Ok(Some(update)) => {
                                     writer
@@ -283,9 +303,10 @@ impl Session {
                         diagln!("[rpi-acp] session {acp_session_id}: prompt {id} outcome {outcome}, text bytes {}, repaired bytes {}", text.text.len(), text.repaired);
                         break 'prompt match outcome {
                             "aborted" => Ok("cancelled"),
-                            "failed" => Err(text.error.clone().unwrap_or_else(|| "rpi run failed before completing the reply; check the agent stderr log".into())),
-                            _ if text.stop_reason.as_deref() == Some("length") => Ok("max_tokens"),
-                            _ => Ok("end_turn"),
+                            "failed" => Err(value["error"].as_str().filter(|error| !error.is_empty()).map(str::to_owned).or_else(|| text.error.clone()).unwrap_or_else(|| "rpi run failed before completing the reply; check the agent stderr log".into())),
+                            "completed" if text.stop_reason.as_deref() == Some("length") => Ok("max_tokens"),
+                            "completed" => Ok("end_turn"),
+                            other => Err(format!("rpi run did not complete: {other}")),
                         };
                     }
                     if value.get("type").and_then(Value::as_str) == Some("session_end") {
@@ -342,8 +363,11 @@ impl Session {
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    diagln!("[rpi-acp] dropped {skipped} child events (reader lagged)");
-                    continue;
+                    // The lost frames may contain acceptance or settlement.
+                    // Stop this backend rather than report a truncated success
+                    // or allow another prompt while its outcome is unknown.
+                    self.kill().await;
+                    break 'prompt Err(format!("rpi event stream lost {skipped} events; backend stopped. Restart the ACP connection to restore saved history."));
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     break 'prompt Err("rpi event stream closed before the prompt completed".into())
@@ -356,6 +380,7 @@ impl Session {
 
     /// Kill the child (session/close, process shutdown).
     pub async fn kill(&self) {
+        self.stopped.store(true, Ordering::Release);
         self.cancellation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
         if let Some(mut child) = self.child.lock().await.take() {
@@ -1048,6 +1073,7 @@ mod tests {
             prompt_lock: TokioMutex::new(()),
             events: broadcast::channel(64).0,
             next_id: AtomicU64::new(1),
+            stopped: AtomicBool::new(false),
         });
         (session, commands)
     }
@@ -1059,6 +1085,197 @@ mod tests {
             .unwrap()
             .unwrap();
         serde_json::from_str(&line).unwrap()
+    }
+
+    fn settle_prompt(session: &Session, command: &Value, mut result: Value) {
+        session.events.send(json!({"type":"response","id":command["id"],"command":"prompt","success":true,"data":{"accepted":true}})).unwrap();
+        result["type"] = json!("agent_settled");
+        result["runId"] = json!("test-run");
+        session.events.send(result).unwrap();
+    }
+
+    #[tokio::test]
+    async fn state_reads_native_data_and_reports_rejections() {
+        for (response, expected) in [
+            (
+                json!({"success":true,"data":{"sessionId":"native","leafId":"leaf"}}),
+                Ok(json!({"sessionId":"native","leafId":"leaf"})),
+            ),
+            (
+                json!({"success":false,"error":"storage unavailable"}),
+                Err("open session: storage unavailable".to_owned()),
+            ),
+            (
+                json!({"success":true}),
+                Err("open session: invalid RPC state data".to_owned()),
+            ),
+        ] {
+            let (session, commands) = test_session();
+            let mut commands = BufReader::new(commands).lines();
+            let state = tokio::spawn({
+                let session = session.clone();
+                async move { session.state().await }
+            });
+            let command = read_json(&mut commands).await;
+            let mut response = response;
+            response["type"] = json!("response");
+            response["id"] = command["id"].clone();
+            session.events.send(response).unwrap();
+            assert_eq!(state.await.unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_prompt_waits_for_settlement_and_preserves_final_snapshot() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let (output, peer) = tokio::io::duplex(8192);
+        let writer = Arc::new(Writer::with_output(output));
+        let mut replies = BufReader::new(peer).lines();
+        let prompt = tokio::spawn({
+            let session = session.clone();
+            let writer = writer.clone();
+            async move {
+                session
+                    .prompt(
+                        &writer,
+                        "s",
+                        &[ContentBlock::Text {
+                            text: "hello".into(),
+                        }],
+                    )
+                    .await
+            }
+        });
+        let command = read_json(&mut commands).await;
+        assert_eq!(command["message"], "hello");
+        assert!(command.get("content").is_none());
+        // A previous run's settlement before this acknowledgement is unrelated.
+        session
+            .events
+            .send(json!({"type":"agent_settled","runId":"old","outcome":"completed"}))
+            .unwrap();
+        session.events.send(json!({"type":"response","id":command["id"],"success":true,"data":{"accepted":true}})).unwrap();
+        session
+            .events
+            .send(json!({"type":"message_update","eventType":"text_delta","delta":"前半段🌊"}))
+            .unwrap();
+        assert_eq!(
+            read_json(&mut replies).await["params"]["update"]["content"]["text"],
+            "前半段🌊"
+        );
+        assert!(!prompt.is_finished());
+        assert_eq!(
+            session.prompt(&writer, "s", &[]).await,
+            Err("a prompt is already running".into())
+        );
+        session.events.send(json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"前半段🌊，后半段。"}],"stopReason":"stop"}})).unwrap();
+        assert_eq!(
+            read_json(&mut replies).await["params"]["update"]["content"]["text"],
+            "，后半段。"
+        );
+        assert!(!prompt.is_finished());
+        session
+            .events
+            .send(json!({"type":"agent_settled","runId":"current","outcome":"completed"}))
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
+                .await
+                .unwrap()
+                .unwrap(),
+            Ok("end_turn")
+        );
+    }
+
+    #[tokio::test]
+    async fn native_prompt_errors_and_terminal_outcomes_are_not_successes() {
+        for (response, settlement, expected) in [
+            (
+                json!({"success":false,"error":"model unavailable"}),
+                None,
+                Err("model unavailable".to_owned()),
+            ),
+            (
+                json!({"success":true,"data":{}}),
+                None,
+                Err("rpi did not acknowledge prompt acceptance".to_owned()),
+            ),
+            (
+                json!({"success":true,"data":{"accepted":true}}),
+                Some(json!({"outcome":"failed","error":"provider offline"})),
+                Err("provider offline".to_owned()),
+            ),
+            (
+                json!({"success":true,"data":{"accepted":true}}),
+                Some(json!({"outcome":"suspended"})),
+                Err("rpi run did not complete: suspended".to_owned()),
+            ),
+            (
+                json!({"success":true,"data":{"accepted":true}}),
+                Some(json!({"outcome":"aborted"})),
+                Ok("cancelled"),
+            ),
+        ] {
+            let (session, commands) = test_session();
+            let mut commands = BufReader::new(commands).lines();
+            let writer = Arc::new(Writer::with_output(tokio::io::sink()));
+            let prompt = tokio::spawn({
+                let session = session.clone();
+                async move { session.prompt(&writer, "s", &[]).await }
+            });
+            let command = read_json(&mut commands).await;
+            let mut response = response;
+            response["type"] = json!("response");
+            response["id"] = command["id"].clone();
+            session.events.send(response).unwrap();
+            if let Some(mut settlement) = settlement {
+                settlement["type"] = json!("agent_settled");
+                session.events.send(settlement).unwrap();
+            }
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn event_overflow_cannot_leave_a_prompt_waiting_for_a_lost_acknowledgement() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let writer = Arc::new(Writer::with_output(tokio::io::sink()));
+        let prompt = tokio::spawn({
+            let session = session.clone();
+            async move { session.prompt(&writer, "s", &[]).await }
+        });
+        let command = read_json(&mut commands).await;
+        session.events.send(json!({"type":"response","id":command["id"],"success":true,"data":{"accepted":true}})).unwrap();
+        // Do not yield: deterministically evict the acknowledgement from the
+        // small test channel before the prompt reads it.
+        for _ in 0..100 {
+            session
+                .events
+                .send(json!({"type":"message_update","eventType":"text_delta","delta":"x"}))
+                .unwrap();
+        }
+        session
+            .events
+            .send(json!({"type":"agent_settled","outcome":"completed"}))
+            .unwrap();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
+            .await
+            .expect("event loss must not leave the prompt waiting")
+            .unwrap();
+        assert!(outcome.unwrap_err().contains("event stream lost"));
+        assert!(session
+            .state()
+            .await
+            .unwrap_err()
+            .contains("backend stopped"));
     }
 
     #[tokio::test]
@@ -1081,7 +1298,11 @@ mod tests {
             .events
             .send(json!({"type":"message_update","eventType":"text_delta","delta":"前半段🌊"}))
             .unwrap();
-        session.events.send(json!({"type":"response","id":command["id"],"status":"ok", "result":{"outcome":"completed","finalText":"前半段🌊，后半段。"}})).unwrap();
+        settle_prompt(
+            &session,
+            &command,
+            json!({"outcome":"completed","finalText":"前半段🌊，后半段。"}),
+        );
         let mut text = String::new();
         loop {
             let message = read_json(&mut replies).await;
@@ -1160,7 +1381,11 @@ mod tests {
             });
             let command = read_json(&mut commands).await;
             session.events.send(json!({"type":"message_end","message":{"role":"assistant", "content":[{"type":"text","text":"partial"}],"stopReason":reason,"errorMessage":"provider disconnected"}})).unwrap();
-            session.events.send(json!({"type":"response","id":command["id"],"status":"ok", "result":{"outcome":outcome,"finalText":"partial"}})).unwrap();
+            settle_prompt(
+                &session,
+                &command,
+                json!({"outcome":outcome,"finalText":"partial"}),
+            );
             assert_eq!(prompt.await.unwrap(), expected);
         }
     }
@@ -1187,7 +1412,7 @@ mod tests {
             .events
             .send(json!({"type":"ui_dialog_closed","requestId":"q"}))
             .unwrap();
-        session.events.send(json!({"type":"response","id":command["id"],"status":"ok","result":{"outcome":"completed"}})).unwrap();
+        settle_prompt(&session, &command, json!({"outcome":"completed"}));
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
                 .await
@@ -1227,7 +1452,7 @@ mod tests {
         let response = read_json(&mut commands).await;
         assert_eq!(response["requestId"], "q2");
         assert_eq!(response["answer"]["values"][0], "允许一次");
-        session.events.send(json!({"type":"response","id":command["id"],"status":"ok","result":{"outcome":"completed"}})).unwrap();
+        settle_prompt(&session, &command, json!({"outcome":"completed"}));
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
                 .await
@@ -1255,7 +1480,7 @@ mod tests {
         read_json(&mut replies).await;
         session.abort().await.unwrap();
         assert_eq!(read_json(&mut commands).await["type"], "abort");
-        session.events.send(json!({"type":"response","id":command["id"],"status":"ok","result":{"outcome":"aborted"}})).unwrap();
+        settle_prompt(&session, &command, json!({"outcome":"aborted"}));
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
                 .await
@@ -1381,7 +1606,7 @@ mod tests {
             .await;
         writer.resolve(second["id"].as_u64().unwrap(), answer).await;
         assert_eq!(read_json(&mut commands).await["requestId"], "q2");
-        session.events.send(json!({"type":"response","id":command["id"],"status":"ok","result":{"outcome":"completed"}})).unwrap();
+        settle_prompt(&session, &command, json!({"outcome":"completed"}));
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
                 .await

@@ -1,6 +1,6 @@
 [package]
 name = "rpi-acp"
-version = "0.1.9"
+version = "0.1.10"
 edition.workspace = true
 rust-version = "1.85"
 license.workspace = true
@@ -22,7 +22,7 @@ name = "rpi-acp-bridge"
 path = "src/main.rs"
 
 [dependencies]
-rpi-plugin-sdk = { version = "0.3.20", features = ["stdio"] }
+rpi-plugin-sdk = { workspace = true, features = ["stdio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
 uuid = { version = "1", features = ["v4"] }

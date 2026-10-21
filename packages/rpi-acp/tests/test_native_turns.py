@@ -19,6 +19,9 @@ from restart import Client
 )), "set native host, ACP and goal plugin paths")
 class NativeTurnTests(unittest.TestCase):
     def test_goal_observer_does_not_block_completion_or_tool_continuation(self):
+        cancel_started = threading.Event()
+        release_cancel = threading.Event()
+
         class Model(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
@@ -26,6 +29,9 @@ class NativeTurnTests(unittest.TestCase):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 last = body["messages"][-1]
+                if last.get("content") == "cancel":
+                    cancel_started.set()
+                    release_cancel.wait(timeout=10)
                 tool = last["role"] == "user" and last.get("content") == "tools"
                 if tool:
                     delta = {"content": "Before read.", "tool_calls": [{
@@ -41,11 +47,14 @@ class NativeTurnTests(unittest.TestCase):
                 ]
                 data = ("".join("data: " + json.dumps(e) + "\n\n" for e in events)
                         + "data: [DONE]\n\n").encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    pass  # The cancelled native request closes its connection.
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
         serving = threading.Thread(target=server.serve_forever, daemon=True)
@@ -95,9 +104,38 @@ class NativeTurnTests(unittest.TestCase):
                                 self.assertTrue(any(u["sessionUpdate"] == "tool_call" for u in updates))
                                 self.assertTrue(any(u["sessionUpdate"] == "tool_call_update"
                                                     and u.get("status") == "completed" for u in updates))
+                    cancelled = []
+                    errors = []
+
+                    def prompt_until_cancelled():
+                        try:
+                            cancelled.append(client.request("session/prompt", {
+                                "sessionId": sid, "prompt": [{"type": "text", "text": "cancel"}],
+                            }))
+                        except BaseException as error:
+                            errors.append(error)
+
+                    waiting = threading.Thread(target=prompt_until_cancelled, daemon=True)
+                    waiting.start()
+                    try:
+                        self.assertTrue(cancel_started.wait(timeout=10), "native prompt did not reach the local model")
+                        client.process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "session/cancel",
+                                                               "params": {"sessionId": sid}}) + "\n")
+                        client.process.stdin.flush()
+                        waiting.join(timeout=10)
+                        self.assertFalse(waiting.is_alive(), "native cancellation did not settle ACP")
+                        self.assertEqual(errors, [])
+                        self.assertEqual(cancelled[0][0].get("result"), {"stopReason": "cancelled"})
+                    finally:
+                        release_cancel.set()
+                    result, _ = client.request("session/prompt", {
+                        "sessionId": sid, "prompt": [{"type": "text", "text": "after cancellation"}],
+                    })
+                    self.assertEqual(result.get("result"), {"stopReason": "end_turn"}, result)
                 finally:
                     client.close()
         finally:
+            release_cancel.set()
             server.shutdown()
             server.server_close()
             serving.join(timeout=5)

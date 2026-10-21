@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-from restart import Client
+from restart import Client, fixture_environment
 
 FINAL = "前半段🌊，中间部分，后半段。"
 
@@ -45,7 +45,9 @@ def backend():
         if kind == "get_state":
             result = dict(sessionId=session_id, leafId=None)
         elif kind == "prompt":
-            scenario = command["content"]
+            assert isinstance(command["message"], str) and "content" not in command
+            scenario = command["message"]
+            emit(dict(type="response", id=command["id"], command=kind, success=True, data=dict(accepted=True)))
             start()
             text, outcome = FINAL, "completed"
             if scenario == "middle":
@@ -77,14 +79,18 @@ def backend():
                 text = "测试🌊\n" * 10000
                 delta("测试🌊\n")
             elif scenario != "no-deltas":
-                # Completion arrives before the last delta on older backends.
+                # The final message snapshot repairs omitted deltas.
                 delta("前半段🌊")
-            result = dict(outcome=outcome, finalText=text)
+            if scenario not in ("middle", "end-snapshot", "complete", "failed", "length"):
+                end(text)
+            emit(dict(type="agent_settled", runId="fixture-run", outcome=outcome,
+                      error="mock provider disconnected" if outcome == "failed" else None))
+            continue
         elif kind == "abort":
             continue
         else:
             raise AssertionError(command)
-        emit(dict(type="response", id=command["id"], status="ok", result=result))
+        emit(dict(type="response", id=command["id"], command=kind, success=True, data=result))
 
 
 def check(command, env, cwd):
@@ -134,6 +140,7 @@ if __name__ == "__main__":
                 launcher.chmod(0o700)
             env = dict(os.environ, RPI_BIN=str(launcher), RPI_ACP_SESSION_DIR=str(root / "sessions"),
                        RPI_ACP_NO_PERMISSION_GATE="1", RPI_ACP_NO_AUTO_REGISTER_ZED="1")
+            env.update(fixture_environment(root))
             check([args.bridge], env, str(root))
             if args.rpi and args.extension:
                 check([args.rpi, "--acp", "--no-session", "--local-only", "--extension", args.extension], env, str(root))
