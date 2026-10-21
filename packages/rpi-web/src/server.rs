@@ -39,6 +39,8 @@ pub struct AppConfig {
     pub rpi_bin: PathBuf,
     pub bind: String,
     pub port: u16,
+    /// Optional Host allowlist; RPI_WEB_ALLOWED_HOSTS takes precedence.
+    pub allowed_hosts: Option<Vec<String>>,
     /// Optional `--session-dir` forwarded to the native host.
     pub session_dir: Option<PathBuf>,
     /// Where the bridge remembers session ids across restarts.
@@ -55,6 +57,7 @@ impl Default for AppConfig {
             rpi_bin: PathBuf::from("rpi"),
             bind: "127.0.0.1".into(),
             port: 3030,
+            allowed_hosts: None,
             session_dir: None,
             registry: crate::registry::default_path(),
         }
@@ -94,7 +97,7 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         config.registry.with_file_name("projects.json"),
     )?;
     let security = Arc::new(Security::new(
-        allowed_hosts(config.port),
+        allowed_hosts(&config),
         configured_password().as_deref(),
     ));
     let state = AppState {
@@ -174,7 +177,7 @@ fn configured_password() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn allowed_hosts(port: u16) -> Vec<String> {
+fn allowed_hosts(config: &AppConfig) -> Vec<String> {
     std::env::var("RPI_WEB_ALLOWED_HOSTS")
         .ok()
         .map(|value| {
@@ -186,7 +189,13 @@ fn allowed_hosts(port: u16) -> Vec<String> {
                 .collect()
         })
         .filter(|hosts: &Vec<String>| !hosts.is_empty())
-        .unwrap_or_else(|| vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")])
+        .or_else(|| config.allowed_hosts.clone())
+        .unwrap_or_else(|| {
+            vec![
+                format!("127.0.0.1:{}", config.port),
+                format!("localhost:{}", config.port),
+            ]
+        })
 }
 
 async fn auth_status(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Json<Value> {
