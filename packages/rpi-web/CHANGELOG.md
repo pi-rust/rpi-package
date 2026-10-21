@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Preserve local command feedback while the initial transcript snapshot loads, and wait for the model catalog before resolving slash model names.
+
 ## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.1...rpi-web-v0.1.2) - 2026-10-21
 
 ### Added

@@ -3541,3 +3541,38 @@ for (const outcome of ["done", "error", "closed"] as const) {
     ).toBe(true);
   });
 }
+
+test("initial snapshot preserves slash feedback entered while history is loading", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requested = false;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/snapshot`,
+    async (route) => {
+      requested = true;
+      await held;
+      await route.fallback();
+    },
+  );
+  await page.goto("/");
+  await expect.poll(() => requested).toBe(true);
+  const input = page.locator(".composer textarea");
+  await input.fill("/help");
+  await input.press("Enter");
+  await expect(page.locator(".transcript-note")).toContainText(["/help"]);
+  release();
+  await expect(page.locator(".transcript-note")).toContainText(["/help"]);
+  await expect(
+    page
+      .locator(".transcript-note")
+      .filter({ hasText: "restored from session history" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".transcript-note").filter({ hasText: "/help" }),
+  ).toBeVisible();
+});

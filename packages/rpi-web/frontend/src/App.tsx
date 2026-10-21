@@ -1166,7 +1166,16 @@ export default function App() {
           const snapshot = await snapshotOf(sessionId);
           if (cancelled) return;
           restoreSnapshotStatus(snapshot);
-          setRows(rowsFromMessages(snapshot.messages));
+          setRows((previous) => {
+            const restored = rowsFromMessages(snapshot.messages);
+            const ids = new Set(restored.map((row) => row.id));
+            return [
+              ...restored,
+              ...previous.filter(
+                (row) => row.kind === "note" && !ids.has(row.id),
+              ),
+            ];
+          });
           setPersistedHistory(snapshot.history ?? null);
           setLeafId(snapshot.leafId ?? "");
           setInterrupted(Boolean(snapshot.pendingResume));
@@ -1444,7 +1453,12 @@ export default function App() {
           note("set_model is not advertised by this host.");
           return;
         }
-        const target = matchModel(models, arg);
+        const available = models.length
+          ? models
+          : ((await api.models(sessionId)).models ?? []);
+        if (navigation !== navigationRevision.current) return;
+        setModels(available);
+        const target = matchModel(available, arg);
         if (!target) {
           setPanel(true);
           note(
@@ -1452,7 +1466,7 @@ export default function App() {
               ? language === "zh"
                 ? `无法唯一确定模型“${arg}”，请使用 服务商/模型ID 或在运行时设置中选择。`
                 : `No unique model matches "${arg}". Use provider/model-id or select it in Runtime.`
-              : `Runtime lists ${models.length} models.`,
+              : `Runtime lists ${available.length} models.`,
           );
           return;
         }
