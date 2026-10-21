@@ -58,8 +58,8 @@ with tempfile.TemporaryDirectory(prefix='rpi-chat-check-') as temporary:
             tool = not state['tool'] and not has_result
             if tool:
                 state['tool'] = True
-                block = {'type':'tool_use', 'id':'test-read-1', 'name':'read', 'input':{}}
-                delta = {'type':'input_json_delta', 'partial_json':json.dumps({'path':'sample.txt'})}
+                block = {'type':'tool_use', 'id':'test-bash-1', 'name':'bash', 'input':{}}
+                delta = {'type':'input_json_delta', 'partial_json':json.dumps({'command':"sleep 1.2; echo timed-command"})}
             else:
                 state['completed'] += 1
                 block = {'type':'text', 'text':''}
@@ -224,6 +224,8 @@ const { chromium, expect } = require(path.resolve(process.argv[1], 'node_modules
         before = request(path + '/snapshot')['messages']
         results = [message for message in before if message.get('role') == 'toolResult']
         assert results and all(not message.get('isError') for message in results)
+        timing = results[0].get('webTiming')
+        assert timing and timing['elapsedMs'] >= 1100 and not timing['running'], timing
         stop(process)
         process = start()
         request(path + '/open', {})
@@ -235,7 +237,7 @@ const { chromium, expect } = require(path.resolve(process.argv[1], 'node_modules
             return value
         assert canonical(before) == canonical(after), 'native transcript changed across bridge/native restart'
         assert state['completed'] == 2 and state['requests'] == (4 if args.browser else 3)
-        print(json.dumps({'passed':True, 'localProviderOnly':True, 'realNativeToolCall':True,
+        print(json.dumps({'passed':True, 'localProviderOnly':True, 'realNativeToolCall':True, 'bashDurationPreserved':True,
             'twoTurns':True, 'restartPreservesTranscript':True, 'declinedCompactionSettles':True, **browser_report}))
     finally:
         if process and process.poll() is None: stop(process)

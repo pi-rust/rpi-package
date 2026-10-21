@@ -3443,3 +3443,101 @@ test("slash model selection rejects ambiguous names and accepts provider qualifi
       expect.objectContaining({ provider: "beta", modelId: "shared" }),
     ]);
 });
+
+for (const outcome of ["done", "error", "closed"] as const) {
+  test(`bash elapsed time advances, freezes after ${outcome}, and survives reload`, async ({
+    page,
+  }) => {
+    await mockHost(page);
+    let finished = false;
+    let releaseEnd!: () => void;
+    const end = new Promise<void>((resolve) => {
+      releaseEnd = resolve;
+    });
+    const messages = () => [
+      {
+        role: "assistant",
+        timestamp: 123,
+        content: [
+          {
+            type: "toolCall",
+            id: "bash-timed",
+            name: "bash",
+            arguments: { command: "sleep 1" },
+            webTiming: { elapsedMs: finished ? 1234 : 200, running: !finished },
+          },
+        ],
+      },
+      ...(finished
+        ? [
+            {
+              role: "toolResult",
+              toolCallId: "bash-timed",
+              toolName: "bash",
+              isError: outcome !== "done",
+              content: [{ type: "text", text: "command output" }],
+              webTiming: { elapsedMs: 1234, running: false },
+            },
+          ]
+        : []),
+    ];
+    await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: finished ? "ready" : "running",
+          messages: messages(),
+          lastSeq: finished ? 5 : 4,
+          events: [],
+        },
+      }),
+    );
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        await end;
+        const event =
+          outcome === "closed"
+            ? { type: "host_closed" }
+            : {
+                type: "tool_execution_end",
+                toolCallId: "bash-timed",
+                toolName: "bash",
+                isError: outcome === "error",
+                result: "command output",
+                webTiming: { elapsedMs: 1234, running: false },
+              };
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body: `retry: 60000\nid: 5\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+        });
+      },
+    );
+    await page.goto("/");
+    const timer = page.locator(".tool-elapsed");
+    await expect(timer).toBeVisible();
+    const first = await timer.innerText();
+    await expect.poll(() => timer.innerText()).not.toBe(first);
+    finished = true;
+    releaseEnd();
+    await expect(
+      page.locator(`.tool-card.tool-${outcome === "done" ? "done" : "error"}`),
+    ).toBeVisible();
+    if (outcome !== "closed") await expect(timer).toHaveText("1.2s");
+    const frozen = await timer.innerText();
+    await page.waitForTimeout(350);
+    await expect(timer).toHaveText(frozen);
+    await page.reload();
+    await expect(timer).toHaveText("1.2s");
+    await page
+      .getByRole("combobox", { name: "Language", exact: true })
+      .selectOption("zh");
+    await expect(timer).toHaveAccessibleName("耗时 1.2s");
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  });
+}

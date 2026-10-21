@@ -1,18 +1,44 @@
 # rpi-web
 
-rpi-web 是原生 `rpi` 编程智能体的 Web 工作台，提供项目与会话侧栏、流式对话、工具执行与交互、Markdown、文件预览和 Git 差异查看，支持简体中文 / English 和浅色 / 深色主题。
+rpi-web is a browser workspace for the native `rpi` coding agent. It provides a project and session sidebar, streaming conversations, tool interactions, Markdown rendering, file previews, and Git diffs. Tool cards show elapsed execution time while commands run and keep the final duration after completion, reload, and service restart. The interface supports English and Simplified Chinese, with light and dark themes.
 
-运行关系：`浏览器 → rpi-web → rpi --mode rpc → 模型与项目工具`。每个打开的会话对应一个原生宿主进程。项目文件、模型凭据和会话记录都由运行服务的电脑或服务器保存。
+Runtime: `browser → rpi --web (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
 
-## 安装
+## Installation
 
-本指南使用原生宿主 **rpi 0.7.0**；Web 请安装下面链接中的新发行版。宿主和 Web 需要分别安装；rpi-web 是独立程序，不使用 `rpi install rpi-web` 安装。
+This guide uses the **rpi 0.7.0** native host. Web shares one implementation between a native extension and a standalone executable.
 
-1. 从 [宿主 v0.7.0](https://github.com/bigfish1913/pi-rust/releases/tag/v0.7.0) 下载并解压对应平台的 `rpi`。
-2. 从 [Web 发行包](https://github.com/pi-rust/rpi-package/releases?q=rpi-web-v) 下载并解压 `rpi-web`。支持 Windows x64、Linux x64 / ARM64、macOS Intel / Apple Silicon。
-3. 保留 Web 压缩包中的整个 `assets/` 目录。可以将宿主程序放到同一目录，或用 `--rpi-bin` 指定其绝对路径。发行包中的 `rpi-web-release.json` 提供文件校验信息。
+### Native extension
 
-例如，Windows 解压后的目录可以是：
+The latest release supports native extension installation (Web 0.1.1 and earlier are standalone only):
+
+```bash
+rpi install rpi-web --github pi-rust/rpi-package
+rpi --web=init  # Create project .rpi/web.json once.
+rpi --web      # Start from that project directory.
+```
+
+The host also supports `rpi install rpi-web` with repository discovery from crates.io metadata. To try the current implementation from a local checkout before publication:
+
+```bash
+rpi install rpi-web --path packages/rpi-web
+rpi --web=init
+rpi --web
+```
+
+Run the installation command from the `rpi-package` repository root, then start Web from the project you want to use. The extension includes the complete frontend in its library; it needs no standalone Web executable, Node.js, or separate assets directory. Unless `rpiBin` is explicitly configured, sessions use the same `rpi` executable that loaded the extension. RPC children do not start another Web server.
+
+Both entry points read the same `.rpi/web.json`. Use `rpi --web=/absolute/path/to/web.json` to select an explicit file, and `rpi --web=help` for help. Keep the host process running; Ctrl+C stops Web, closes streams and session children, and releases the listener. Saved transcripts remain available after restart. Choose one service entry point per process: `--web` cannot be combined with `--acp`, `--webui`, or `--server`.
+
+### Standalone executable
+
+The standalone program remains available for direct execution and container deployments:
+
+1. Download and extract `rpi` for your platform from the [host v0.7.0 release](https://github.com/bigfish1913/pi-rust/releases/tag/v0.7.0).
+2. Download and extract `rpi-web` from the [Web releases](https://github.com/pi-rust/rpi-package/releases?q=rpi-web-v). Builds are available for Windows x64, Linux x64 / ARM64, and macOS Intel / Apple Silicon.
+3. The archive includes a complete `assets/` directory for external frontend overrides. Place the host executable alongside the Web executable, or select it with an absolute `--rpi-bin` path. The release's `rpi-web-release.json` contains checksums.
+
+For example, a Windows installation can use this layout:
 
 ```text
 C:/Tools/rpi-web/
@@ -24,9 +50,9 @@ C:/Tools/rpi-web/
     └── assets/
 ```
 
-Linux / macOS 的程序名为 `rpi-web` 和 `rpi`，没有 `.exe` 后缀。预编译发行包无需 Rust 或 Node.js；使用 Git 功能时，需要让服务进程能在 PATH 中找到 Git。
+On Linux / macOS, the executables are named `rpi-web` and `rpi`, without the `.exe` suffix. Prebuilt archives do not require Rust or Node.js. Git must be on the service process's PATH to use Git features.
 
-也可通过 Cargo 安装这两个程序：
+You can also install both executables with Cargo:
 
 ```bash
 cargo install rpi-cli --version 0.7.0 --locked
@@ -35,19 +61,19 @@ rpi --version
 rpi-web --version
 ```
 
-Cargo 安装后，仍建议从 Web 发行包保存完整 `assets/`，启动时用 `--assets` 指定其绝对路径，避免依赖 Cargo 源码缓存中的前端文件。
+The source version embeds the complete frontend in both entry points. Explicit `--assets` / JSON `assets` still selects an external frontend. Older standalone releases, including 0.1.1, require the archive's complete `assets/` directory.
 
-## 推荐：把启动配置放进 .rpi
+## Recommended: save startup settings in .rpi
 
-旧版 `0.1.0` 仅支持下文的命令行启动方式；使用配置文件前请更新 Web 程序。
+Configuration files are supported starting with Web **0.1.1**. Version `0.1.0` supports only the command-line startup described below.
 
-在项目目录内执行一次：
+Run this once from your project directory:
 
 ```bash
 rpi-web --init
 ```
 
-会创建 `.rpi/web.json`，已有文件不会被覆盖。默认内容是：
+For an extension installation, use `rpi --web=init` instead. Either command creates `.rpi/web.json` without overwriting an existing file. The default contents are:
 
 ```json
 {
@@ -57,13 +83,14 @@ rpi-web --init
 }
 ```
 
-将 `rpi` 加入 PATH，并将完整 `assets/` 放在 Web 程序旁边后，以后在这个项目目录直接运行：
+With the host available, subsequent starts from that project directory need only:
 
 ```bash
-rpi-web
+rpi --web  # Extension installation.
+# Or: rpi-web, when using the standalone executable.
 ```
 
-需要自定义时，编辑配置文件即可，例如 Windows：
+Edit the configuration when you need different paths or settings. For example, on Windows:
 
 ```json
 {
@@ -77,110 +104,110 @@ rpi-web
 }
 ```
 
-所有字段都可省略。JSON 路径相对于**该配置文件所在目录**解析，所以项目 `.rpi/web.json` 中的 `"project": ".."` 指向项目根目录；`rpiBin` 为裸程序名时从 PATH 查找，带目录时按路径解析。使用绝对路径时，Windows 推荐写成 `D:/Projects/...`，避免反斜杠转义。
+Every field is optional. JSON paths are resolved relative to **the configuration file's directory**, so `"project": ".."` in a project's `.rpi/web.json` selects the project root. A bare `rpiBin` program name is found on PATH; a value containing a directory is resolved as a path. On Windows, use forward slashes such as `D:/Projects/...` to avoid JSON backslash escaping.
 
-配置读取顺序：内置默认值 → `~/.rpi/web.json` → 启动项目的 `.rpi/web.json` → 命令行参数。默认启动项目是当前目录，指定 `--project PATH` 时从该目录查找项目配置，不会向父目录递归搜索。全局配置适合固定管理多个项目的服务；项目配置适合在项目目录启动。
+Settings are applied in this order: built-in defaults → `~/.rpi/web.json` → the startup project's `.rpi/web.json` → command-line options. The startup project defaults to the current directory. With `--project PATH`, the project configuration is discovered in that directory; parent directories are not searched. Global settings suit a service managing several projects, while project settings suit starting from a project directory.
 
-同名字段覆盖前一层；项目配置中的 `projects` 数组替换全局列表，命令行 `--add-project` 再追加项目。临时改端口只需 `rpi-web --port 3031`。如果配置了 `allowedHosts`，改端口时也要更新相应的 Host 条目。
+Later fields replace earlier values. A project's `projects` array replaces the global list; CLI `--add-project` options append to the resulting list. For a temporary port change, use `rpi-web --port 3031`. If you configured `allowedHosts`, update its port entries as needed.
 
-指定配置文件时，只加载这个文件，再应用命令行覆盖：
+To load only a specific configuration file, followed by CLI overrides:
 
 ```bash
 rpi-web --config /path/to/.rpi/web.json
-# 在指定位置生成配置。
+# Create a configuration at a specific location.
 rpi-web --config /path/to/.rpi/web.json --init
 ```
 
-另外可配置 `sessionDir`、`registry` 和 `allowedHosts`。不设置它们时保留原有默认值，历史会话位置不变。JSON 为严格格式，拼错字段或无效内容会在启动时明确报错。
+Additional fields include `sessionDir`, `registry`, and `allowedHosts`. Omitting them preserves the existing defaults and session-storage locations. Configuration uses strict JSON: unknown fields or invalid contents produce a startup error.
 
-Web 访问密码与模型 API Key 仍由环境变量或宿主凭据配置提供，不写入 Web JSON。`RPI_WEB_ALLOWED_HOSTS` 环境变量优先于 JSON 中的 `allowedHosts`。
+Supply the Web access password and model API keys through environment variables or the native host's credential configuration, rather than Web JSON. The `RPI_WEB_ALLOWED_HOSTS` environment variable overrides JSON `allowedHosts`.
 
-## 命令行启动（兼容 0.1.0）
+## Command-line startup (also supports 0.1.0)
 
-先准备一个已经存在的项目目录，并为服务进程配置模型凭据。下面使用 Anthropic 环境变量；也可使用 `OPENAI_API_KEY`，然后在 Web 中选择对应模型。已有 CLI 配置时，Web 启动的宿主会使用同一运行用户的配置。
+Choose an existing project directory and configure model credentials for the service process. The examples below use an Anthropic environment variable. You can instead set `OPENAI_API_KEY` and select a corresponding model in the Web interface. If the CLI is already configured, Web's native host uses the same service user's settings.
 
-**Windows / PowerShell**（程序按上面的目录布局解压）：
+**Windows / PowerShell**, using the installation layout above:
 
 ```powershell
 $env:ANTHROPIC_API_KEY = 'your-api-key'
 C:/Tools/rpi-web/rpi-web.exe --project D:/Projects/my-project --rpi-bin C:/Tools/rpi-web/rpi.exe --assets C:/Tools/rpi-web/assets --port 3030
 ```
 
-**Linux / macOS**（在解压后的 Web 目录运行）：
+**Linux / macOS**, from the extracted Web directory:
 
 ```bash
 export ANTHROPIC_API_KEY='your-api-key'
 ./rpi-web --project /path/to/my-project --rpi-bin /path/to/rpi --assets "$PWD/assets" --port 3030
 ```
 
-打开 [http://127.0.0.1:3030/](http://127.0.0.1:3030/)。终端中的服务进程需要保持运行；按 Ctrl+C 停止。默认只监听本机，未设置访问密码时直接进入工作台。
+Open [http://127.0.0.1:3030/](http://127.0.0.1:3030/). Keep the service process running; press Ctrl+C to stop it. By default, Web listens only on loopback and opens the workspace directly when no access password is configured.
 
-模型 API Key 和 Web 登录密码用途不同：API Key 用于访问模型，`RPI_WEB_PASSWORD` 用于登录工作台。自定义模型、代理网关及凭据配置见 [宿主配置指南](https://github.com/bigfish1913/pi-rust/blob/main/crates/rpi-cli/README.md)。自定义模型通常配置在 `~/.rpi/agent/models.json`。
+Model API keys and the Web login password serve different purposes: API keys authorize model requests, while `RPI_WEB_PASSWORD` protects workspace access. See the [host configuration guide](https://github.com/bigfish1913/pi-rust/blob/main/crates/rpi-cli/README.md) for credentials, custom models, and gateways. Custom models are typically configured in `~/.rpi/agent/models.json`.
 
-## 第一次使用
+## First conversation
 
-1. 在左侧选择项目，点击该项目旁的 **新建会话**，进入对话。
-2. 点击顶部模型名称或打开运行时面板，选择模型、思考等级和可用工具。**服务商授权**可配置 API Key；OAuth 操作只会在宿主支持时显示。
-3. 输入需求并按 Enter 发送，Shift+Enter 换行。回复、思考过程和工具结果会流式更新；需要交互的工具会显示相应对话框。
-4. 执行中可用停止按钮取消任务；继续发送的普通消息会进入后续队列。可在队列面板查看和取消待处理消息。
-5. 点击文件按钮查看项目文件及 Git 变更。文件和差异面板提供只读预览；智能体执行工具时可以按请求修改项目文件。
-6. 在设置中切换简体中文 / English、浅色 / 深色主题；登录页也可以切换语言。
+1. Select a project in the sidebar and click its **New session** action.
+2. Click the model name in the toolbar or open **Runtime settings** to choose the model, thinking level, and tools. Use **Provider auth** to configure an API key; OAuth controls appear only when the host supports them.
+3. Enter a request and press Enter to send, or Shift+Enter for a newline. Replies, thinking, and tool results stream into the conversation. Interactive tools display the corresponding dialogs.
+4. Use the stop button to cancel a running task. Ordinary messages sent during a run enter the follow-up queue; inspect or cancel pending messages in the queue panel.
+5. Open the file panel to inspect project files and Git changes. These panels provide read-only previews; the agent can modify project files through its tools when requested.
+6. Open settings to choose English / Simplified Chinese and light / dark appearance. Language selection is also available on the login screen.
 
-### 新建项目与添加已有项目
+### Create or add projects
 
-点击侧栏 **添加项目**：
+Click **Add project** in the sidebar:
 
-- **新建项目**：输入名称，可选择初始化 Git。服务会在 `--projects-root` 下创建文件夹。
-- **打开已有目录**：填写该根目录内的现有子目录，相对路径按 `--projects-root` 解析，也可填写根目录内的绝对路径。
+- **Create project**: enter a name and optionally initialize Git. The service creates a directory inside `--projects-root`.
+- **Open folder**: enter an existing subdirectory inside that root. Relative paths are resolved against `--projects-root`; absolute paths inside the root are also accepted.
 
-远程访问时，这里选择的是**服务器目录**。需要添加根目录外的现有项目时，在启动命令中使用可重复的 `--add-project`：
+When using a remote service, these are **server directories**. To register an existing project outside the managed root, use repeatable `--add-project` options at startup:
 
 ```bash
 rpi-web --project /work/project-a --add-project /work/project-b --add-project /work/project-c --projects-root /work/new-projects --rpi-bin /path/to/rpi --assets /path/to/web/assets
 ```
 
-每个项目有独立的会话分组；新会话使用所选项目作为工具工作目录，分叉与克隆保留来源项目。会话菜单可重命名、置顶、归档和恢复；归档保留历史记录，也不会取消正在执行的任务。侧栏搜索可按项目名或会话标题过滤。
+Sessions are grouped by project. New sessions use the selected project as the tools' working directory; forks and clones retain their source project. Session menus support rename, pin, archive, and restore. Archiving retains history and does not cancel a running task. Sidebar search filters project names and session titles.
 
-### 常用命令与快捷键
+### Commands and keyboard shortcuts
 
-| 操作 | 输入或快捷键 |
+| Action | Command or shortcut |
 | --- | --- |
-| 查看命令帮助 | `/help` |
-| 选择模型 / 思考等级 / 工具 | `/model`、`/thinking`、`/tools` |
-| 新建会话 / 停止执行 | `/new`、`/abort` |
-| 压缩上下文 | `/compact` 或 `/compact 压缩时需要保留的重点` |
-| 恢复被中断的运行 | `/continue` 或中断提示中的继续按钮 |
-| 新建会话 | Ctrl / Cmd + N |
-| 搜索会话 | Ctrl / Cmd + K |
-| 展开 / 收起侧栏 | Ctrl / Cmd + B |
-| 打开设置 | Ctrl / Cmd + , |
+| Show command help | `/help` |
+| Choose model / thinking level / tools | `/model`, `/thinking`, `/tools` |
+| Create a session / stop a run | `/new`, `/abort` |
+| Compact context | `/compact` or `/compact important details to preserve` |
+| Resume an interrupted run | `/continue` or the interrupted-run banner action |
+| Create a session | Ctrl / Cmd + N |
+| Search sessions | Ctrl / Cmd + K |
+| Toggle the sidebar | Ctrl / Cmd + B |
+| Open settings | Ctrl / Cmd + , |
 
-操作会根据宿主返回的能力显示；本版本尚未覆盖 Codex 的全部功能。
+Available actions depend on host capabilities. This version does not yet provide full Codex feature parity.
 
-## 启动参数
+## Startup options
 
-可用 `rpi-web --help` 查看参数。
+Run `rpi-web --help` to list options.
 
-| 参数 | 默认值与用途 |
+| Option | Default and purpose |
 | --- | --- |
-| `--init` | 生成项目 `.rpi/web.json`；与 `--config` 合用时生成到指定位置，不覆盖已有文件 |
-| `--config PATH` | 只读取指定 JSON 配置，跳过全局 / 项目自动发现 |
-| `--project PATH` | 当前工作目录；启动时必须已经存在，作为默认项目，也用于查找项目配置 |
-| `--add-project PATH` | 无；可重复添加其他已存在的项目 |
-| `--projects-root PATH` | 注册表同级的 `projects/`；浏览器中新建或打开项目的根目录 |
-| `--rpi-bin PATH` | `rpi`；从 PATH 查找宿主，推荐指定绝对路径 |
-| `--assets PATH` | 自动查找程序旁或源码中的前端；部署时推荐指定完整 `assets/` 的绝对路径 |
-| `--bind IP` | `127.0.0.1`；需要局域网或容器访问时使用 `0.0.0.0` |
-| `--port N` | `3030`；命令行覆盖配置文件 |
-| `--registry PATH` | `~/.rpi-web/sessions.json`；保存会话索引、标题和组织信息 |
-| `--session-dir PATH` | 使用宿主默认会话存储；可显式指定原生会话记录目录 |
-| `--version` / `-V` | 打印 Web 版本 |
+| `--init` | Create project `.rpi/web.json`, or the `--config` destination; never overwrite an existing file |
+| `--config PATH` | Load only this JSON configuration, skipping global / project discovery |
+| `--project PATH` | Current working directory; must exist; selects the default project and project configuration location |
+| `--add-project PATH` | None; repeat to add other existing projects |
+| `--projects-root PATH` | `projects/` beside the registry; managed root for browser-created or added projects |
+| `--rpi-bin PATH` | `rpi` on PATH; an absolute executable path is recommended |
+| `--assets PATH` | Discover assets beside the executable or in the source tree; an absolute path to the complete frontend directory is recommended for deployment |
+| `--bind IP` | `127.0.0.1`; use `0.0.0.0` for LAN or container access |
+| `--port N` | `3030`; CLI overrides the configuration file |
+| `--registry PATH` | `~/.rpi-web/sessions.json`; session index, titles, and organization metadata |
+| `--session-dir PATH` | Native host's default session store; override to select an explicit transcript directory |
+| `--version` / `-V` | Print the Web version |
 
-## 局域网或服务器访问
+## LAN and server access
 
-下面以服务器地址 `192.168.1.10`、端口 `3030` 为例；请替换为实际地址。除了调整监听地址，还需设置允许的 Host 和访问密码。
+The following examples use server address `192.168.1.10` and port `3030`; replace them with your own address. Configure the bind address, allowed Host values, and access password.
 
-**Linux / macOS：**
+**Linux / macOS:**
 
 ```bash
 export RPI_WEB_PASSWORD='replace-with-a-long-password'
@@ -188,7 +215,7 @@ export RPI_WEB_ALLOWED_HOSTS='192.168.1.10:3030,127.0.0.1:3030,localhost:3030'
 rpi-web --project /work/my-project --rpi-bin /path/to/rpi --assets /path/to/web/assets --bind 0.0.0.0 --port 3030
 ```
 
-**Windows / PowerShell：**
+**Windows / PowerShell:**
 
 ```powershell
 $env:RPI_WEB_PASSWORD = 'replace-with-a-long-password'
@@ -196,47 +223,47 @@ $env:RPI_WEB_ALLOWED_HOSTS = '192.168.1.10:3030,127.0.0.1:3030,localhost:3030'
 C:/Tools/rpi-web/rpi-web.exe --project D:/Projects/my-project --rpi-bin C:/Tools/rpi-web/rpi.exe --assets C:/Tools/rpi-web/assets --bind 0.0.0.0 --port 3030
 ```
 
-在其他设备访问 `http://192.168.1.10:3030/`，使用设置的密码登录。`RPI_WEB_ALLOWED_HOSTS` 是逗号分隔的 Host 列表，填写主机名或 IP 与实际端口，不带 `http://`、路径或结尾斜杠；默认只允许 `127.0.0.1:端口` 和 `localhost:端口`。
+From another device, open `http://192.168.1.10:3030/` and sign in with the configured password. `RPI_WEB_ALLOWED_HOSTS` is a comma-separated list of Host values: use the hostname or IP and the actual port, without a URL scheme, path, or trailing slash. Defaults allow only `127.0.0.1:port` and `localhost:port`.
 
-使用 HTTPS 反向代理时，把实际域名（例如 `rpi-web.example.com`）加入允许列表，代理需保留浏览器的 Host、设置 `X-Forwarded-Proto: https`，并关闭 SSE 响应缓冲。若代理在另一台机器或容器，还需让它能够连接 Web 的监听地址。公网部署应使用 HTTPS 并设置访问密码。当前登录方式是共享访问密码；访问者共用服务端的项目和会话。
+For an HTTPS reverse proxy, add the public domain, such as `rpi-web.example.com`, to the allowlist. Preserve the browser's Host header, set `X-Forwarded-Proto: https`, and disable SSE response buffering. A proxy on another machine or container must be able to reach Web's listening address. Use HTTPS and an access password for public deployment. Authentication currently uses one shared access password; visitors share the service's projects and sessions.
 
-环境变量在启动时读取，修改后需重启服务；程序不会自动加载 `.env` 文件，请由 shell 或进程管理器注入。API Key 等宿主环境变量也要传给同一个服务进程。
+Environment variables are read at startup; restart the service after changing them. The program does not automatically load `.env` files, so inject variables through your shell or process manager. Native-host environment variables, including model API keys, must reach the same service process.
 
-## 数据保存与升级
+## Persistence and upgrades
 
-- `--registry` 指定的文件保存会话索引、标题、置顶和归档状态；同级 `projects.json` 保存通过浏览器添加的项目。
-- 项目源码保存在各项目目录中。原生对话记录由宿主保存；设置 `--session-dir` 时会使用指定目录，注册表不能代替这些记录。
-- 模型配置、凭据和扩展由运行服务的用户保存与加载；容器部署时需持久化相应目录。
-- 重启服务后，历史会话可能显示为离线，点击会话即可重新打开。刷新浏览器会从宿主恢复对话。
-- 升级时等待当前任务结束，备份以上数据，停止 Web，替换程序和配套的完整 `assets/`，保持原来的项目、注册表、会话目录和运行用户，再启动并检查 `--version`。
+- The registry stores session IDs, titles, pinning, and archive state. Its sibling `projects.json` stores projects added through the browser.
+- Source files stay in each project's directory. Native transcripts are stored by the host, or in the directory selected by `--session-dir`. The registry is not a substitute for transcript files.
+- Model configuration, credentials, and extensions belong to the service user. Persist the corresponding directories when deploying in containers.
+- After restart, saved sessions may appear offline; select a session to reopen it. Browser refreshes restore conversations from the host.
+- Before upgrading, let active tasks finish, back up these data locations, and stop Web. Replace the executable and complete matching `assets/` directory, retain the same projects, registry, session directories, and service user, then restart and check `--version`.
 
-## 常见问题
+## Troubleshooting
 
-| 现象 | 检查方法 |
+| Symptom | What to check |
 | --- | --- |
-| 提示无法启动 `rpi` | 检查 `rpi --version`，使用 `--rpi-bin` 指定宿主程序的绝对路径 |
-| 页面空白或 JS / CSS 404 | 检查 `--assets` 指向的目录是否包含 `index.html` 与内层 `assets/`；整套更新前端后刷新页面 |
-| 局域网访问被拒绝 | 检查 `--bind`、端口连通性及 `RPI_WEB_ALLOWED_HOSTS` 是否包含浏览器使用的 Host 与端口 |
-| 登录成功但模型调用失败 | Web 密码与模型授权分别配置；检查服务用户的模型凭据，确认所选模型与凭据对应 |
-| 模型列表或配置没有更新 | 配置需位于服务器的服务用户目录；修改宿主启动配置后重新打开会话，环境变量变更后重启 Web |
-| 重启后找不到历史 | 检查是否使用同一注册表、原生会话目录、项目路径和运行用户 |
-| 无法打开已有项目目录 | 浏览器只能添加 `--projects-root` 内的子目录；其他现有目录使用 `--add-project` |
+| Cannot start `rpi` | Check `rpi --version` and set an absolute `--rpi-bin` path |
+| Blank page or JS / CSS 404 | Check that `--assets` contains `index.html` and the nested `assets/` directory; update the complete frontend bundle and refresh |
+| LAN access rejected | Check the bind address, port connectivity, and the Host / port entries in `RPI_WEB_ALLOWED_HOSTS` |
+| Login succeeds but model calls fail | Configure model authorization separately from the Web password; check the service user's credentials and selected model |
+| Model list or settings are stale | Update configuration for the service user on the server; reopen sessions after host startup-setting changes and restart Web after environment changes |
+| History missing after restart | Check that the registry, native session directory, project paths, and service user are unchanged |
+| Cannot add an existing folder | Browser-added directories must be inside `--projects-root`; use `--add-project` for other existing directories |
 
-## 开发与 API 参考
+## Development and API reference
 
-以下保留协议、持久化和前端开发说明。普通使用只需完成上面的安装和启动步骤。
+The following sections cover protocol details, persistence, and frontend development. For regular use, follow the installation and startup steps above.
 
-### 从源码运行
+### Run from source
 
-在 `rpi-package` 仓库根目录执行，先安装或编译好原生宿主：
+From the `rpi-package` repository root, with a native host already installed or built:
 
 ```bash
 cargo run --locked -p rpi-web -- --project /path/to/project --rpi-bin /path/to/rpi --assets packages/rpi-web/assets --port 3030
 ```
 
-仓库已提交构建后的前端资源；只有修改前端时才需要按下文安装 Node.js 依赖并重新构建。
+Built frontend assets are committed to the repository. Install Node.js dependencies and rebuild only when changing the frontend, as described below.
 
-### API 与能力发现
+### API and capability discovery
 
 The server binds to loopback by default and exposes:
 
@@ -377,19 +404,22 @@ npm run dev          # Vite on :3181, proxying /api to :3030
 npm run e2e:production # builds and runs browser regression against the actual production bundle
 ```
 
-`assets/` is generated output and is committed so the binary can be served
-without a Node toolchain. Rebuild and commit it whenever `frontend/src` changes.
+`assets/` is generated output committed to the repository. Both entry points embed it during compilation, and the standalone server can also serve an external directory. Rebuild and commit it whenever `frontend/src` changes; rebuild the Rust library or executable to update its embedded frontend.
 
-## 集成验证
+## Integration checks
 
-以下脚本启动独立的 Web、宿主及临时数据目录。配置、项目、授权与事件验证不调用模型；聊天验证使用本地模型模拟服务，不消耗真实服务商额度。Windows 请提供 `.exe` 的绝对路径。
+These scripts start isolated Web and native-host processes with temporary data directories. Configuration, project, authentication, and event checks do not call a model. Chat verification uses a local provider fixture and consumes no real provider quota. On Windows, supply absolute `.exe` paths.
 
 ```bash
+python packages/rpi-web/scripts/verify-extension.py --rpi /path/to/rpi --plugin /path/to/rpi_web_extension.dll --browser
+# On Linux / macOS use librpi_web_extension.so / .dylib.
 python packages/rpi-web/scripts/verify-config.py --web /path/to/rpi-web --rpi /path/to/rpi
 python packages/rpi-web/scripts/verify-projects.py --web /path/to/rpi-web --rpi /path/to/rpi --project /path/to/project
 python packages/rpi-web/scripts/verify-auth.py --web /path/to/rpi-web --rpi /path/to/rpi
-# Linux / WSL：合成 RPC 故障测试。
+# Linux / WSL: synthetic RPC fault checks.
 python3 packages/rpi-web/scripts/verify-events.py --web /path/to/rpi-web
-# 加 --browser 需先在 frontend 中安装 npm 依赖和 Playwright Chromium。
+# --browser requires frontend npm dependencies and Playwright Chromium.
 python packages/rpi-web/scripts/verify-chat.py --web /path/to/rpi-web --rpi /path/to/rpi --browser
 ```
+
+Execution timings are stored beside the configured session registry in a directory with the same basename and a `.tool-timings` suffix (for example, `registry.tool-timings/`). Commands completed before this feature was installed have no recorded duration.

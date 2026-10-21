@@ -1,4 +1,4 @@
-use rpi_web::{
+use rpi_web_extension::{
     config::{self, Launch},
     run,
 };

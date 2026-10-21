@@ -153,6 +153,7 @@ pub struct BufferedEvent {
 }
 
 pub struct HostSession {
+    worker: StdMutex<Option<tokio::task::JoinHandle<()>>>,
     ready: Value,
     events: broadcast::Sender<BufferedEvent>,
     commands: mpsc::Sender<Outbound>,
@@ -183,8 +184,9 @@ impl HostSession {
         project: PathBuf,
         session_dir: Option<PathBuf>,
         session_id: &str,
+        timings_dir: PathBuf,
     ) -> Result<Arc<Self>, String> {
-        Self::spawn_with_fork(rpi_bin, project, session_dir, session_id, None).await
+        Self::spawn_with_fork(rpi_bin, project, session_dir, session_id, None, timings_dir).await
     }
 
     /// Start a new native session by forking an existing durable session.
@@ -194,8 +196,17 @@ impl HostSession {
         session_dir: Option<PathBuf>,
         requested_id: &str,
         source_id: &str,
+        timings_dir: PathBuf,
     ) -> Result<Arc<Self>, String> {
-        Self::spawn_with_fork(rpi_bin, project, session_dir, requested_id, Some(source_id)).await
+        Self::spawn_with_fork(
+            rpi_bin,
+            project,
+            session_dir,
+            requested_id,
+            Some(source_id),
+            timings_dir,
+        )
+        .await
     }
 
     async fn spawn_with_fork(
@@ -204,7 +215,12 @@ impl HostSession {
         session_dir: Option<PathBuf>,
         session_id: &str,
         fork_source: Option<&str>,
+        timings_dir: PathBuf,
     ) -> Result<Arc<Self>, String> {
+        let mut timings = crate::timing::ToolTimings::load(
+            timings_dir.join(format!("{}.json", fork_source.unwrap_or(session_id))),
+        )?;
+        timings.set_session(session_id);
         let mut command = Command::new(&rpi_bin);
         command.arg("--mode").arg("rpc");
         if let Some(source) = fork_source {
@@ -245,6 +261,7 @@ impl HostSession {
         let history: Arc<Mutex<VecDeque<BufferedEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
         let seq = Arc::new(AtomicU64::new(0));
         let session = Arc::new(Self {
+            worker: StdMutex::new(None),
             ready: ready.clone(),
             events: events.clone(),
             commands,
@@ -266,7 +283,7 @@ impl HostSession {
         let state_reader = state.clone();
         let history_reader = history.clone();
         let seq_reader = seq.clone();
-        tokio::spawn(async move {
+        let worker = tokio::spawn(async move {
             let mut lines = reader.lines();
             loop {
                 let line = tokio::select! {
@@ -282,7 +299,7 @@ impl HostSession {
                         _ => break,
                     }
                 };
-                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
                     publish(
                         &events_reader,
                         &history_reader,
@@ -294,6 +311,8 @@ impl HostSession {
                     continue;
                 };
                 if value["type"] == "response" {
+                    timings.response(&mut value);
+                    timings.response(&mut value);
                     if value["success"] == true
                         && value["data"]["accepted"] == true
                         && matches!(
@@ -317,6 +336,7 @@ impl HostSession {
                         let _ = reply.send(Ok(value));
                     }
                 } else {
+                    timings.event(&mut value);
                     publish(
                         &events_reader,
                         &history_reader,
@@ -327,6 +347,7 @@ impl HostSession {
                     .await;
                 }
             }
+            timings.finish_active();
             {
                 let mut state = state_reader.write().await;
                 state.status = "closed".into();
@@ -349,6 +370,7 @@ impl HostSession {
             }
         });
 
+        *session.worker.lock().expect("host worker") = Some(worker);
         Ok(session)
     }
 
@@ -390,6 +412,20 @@ impl HostSession {
                 pending_id: None,
             })
             .await;
+    }
+
+    pub async fn shutdown(&self) {
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.stop()).await;
+        let worker = self.worker.lock().expect("host worker").take();
+        if let Some(mut worker) = worker {
+            if tokio::time::timeout(Duration::from_secs(3), &mut worker)
+                .await
+                .is_err()
+            {
+                worker.abort();
+                let _ = worker.await;
+            }
+        }
     }
 
     pub async fn snapshot(&self) -> HostSnapshot {
@@ -586,7 +622,7 @@ mod tests {
         let script = root.join("host");
         std::fs::write(&script, "#!/bin/sh\nexec 0<&-\nprintf '{\"type\":\"ready\",\"protocol\":\"rpi\"}\\n'\nexec sleep 30\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let session = HostSession::spawn(script, root.clone(), None, "test")
+        let session = HostSession::spawn(script, root.clone(), None, "test", root.join("timings"))
             .await
             .unwrap();
         let response = tokio::time::timeout(

@@ -12,6 +12,10 @@ def output(*command):
 def select(metadata, refs, revision):
     tags = []
     for package in metadata["packages"]:
+        # Web publishes its embedded-frontend extension beside the standalone
+        # archive in release-web.yml, using one verified frontend build.
+        if package["name"] == "rpi-web":
+            continue
         if package["id"] not in metadata["workspace_members"] or package["publish"] == []:
             continue
         if not any("cdylib" in target["crate_types"] for target in package["targets"]):

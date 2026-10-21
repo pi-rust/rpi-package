@@ -41,7 +41,9 @@ def build(args):
         raise ValueError("Binary reports the wrong package version")
     root = Path(args.assets)
     inventory = frontend_inventory(root)
-    prefix = f"rpi-web-{package['version']}-{args.target}"
+    # The generic extension archive uses rpi-web-VERSION-TARGET; keep the
+    # standalone archive distinct when both are attached to the same release.
+    prefix = f"rpi-web-standalone-{package['version']}-{args.target}"
     archive = Path(args.output) / (prefix + (".zip" if windows else ".tar.gz"))
     archive.parent.mkdir(parents=True, exist_ok=True)
     files = [(binary, f"{prefix}/{binary_name}"),

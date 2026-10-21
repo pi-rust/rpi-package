@@ -76,6 +76,10 @@ import {
   upsertTool,
   withoutPrefix,
   eventsAfterSnapshot,
+  toolTiming,
+  elapsedMs,
+  stopToolTimers,
+  type ToolTiming,
   textOf,
   type Row,
 } from "./transcript";
@@ -443,6 +447,7 @@ export default function App() {
           setStatus("running");
           break;
         case "agent_settled": {
+          setRows(stopToolTimers);
           setRunActive(false);
           dialogRequests.current.clear();
           activeDialogId.current = "";
@@ -515,6 +520,7 @@ export default function App() {
           setError(String(event.error ?? "Native host error"));
           break;
         case "host_closed":
+          setRows(stopToolTimers);
           setRunActive(false);
           dialogRequests.current.clear();
           activeDialogId.current = "";
@@ -633,6 +639,7 @@ export default function App() {
             upsertTool(previous, String(event.toolCallId ?? seq), {
               name: String(event.toolName ?? "tool"),
               args: event.args,
+              timing: toolTiming(event.webTiming),
               status: "running",
             }),
           );
@@ -643,6 +650,7 @@ export default function App() {
               name: String(event.toolName ?? "tool"),
               args: event.args,
               result: event.partialResult,
+              timing: toolTiming(event.webTiming),
               status: "running",
             }),
           );
@@ -652,6 +660,7 @@ export default function App() {
             upsertTool(previous, String(event.toolCallId ?? seq), {
               name: String(event.toolName ?? "tool"),
               result: event.result,
+              timing: toolTiming(event.webTiming),
               status: event.isError ? "error" : "done",
             }),
           );
@@ -3266,6 +3275,9 @@ function RowView({ row, language }: { row: Row; language: Language }) {
         <summary>
           <Wrench size={14} />
           <strong>{row.name}</strong>
+          {row.timing && (
+            <ToolElapsed timing={row.timing} language={language} />
+          )}
           <span className="tool-status">
             {toolStatusLabel(row.status, language)}
           </span>
@@ -3307,6 +3319,37 @@ function RowView({ row, language }: { row: Row; language: Language }) {
         </div>
       )}
     </article>
+  );
+}
+
+function ToolElapsed({
+  timing,
+  language,
+}: {
+  timing: ToolTiming;
+  language: Language;
+}) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!timing.running) return;
+    const interval = window.setInterval(() => tick((value) => value + 1), 100);
+    return () => window.clearInterval(interval);
+  }, [timing]);
+  const milliseconds = elapsedMs(timing);
+  const seconds = milliseconds / 1000;
+  const duration =
+    seconds < 60
+      ? `${seconds.toFixed(1)}s`
+      : seconds < 3600
+        ? `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`
+        : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds / 60) % 60}m ${Math.floor(seconds % 60)}s`;
+  return (
+    <span
+      className="tool-elapsed"
+      aria-label={translate(language, "toolElapsed", { duration })}
+    >
+      {duration}
+    </span>
   );
 }
 

@@ -23,6 +23,7 @@ function snapshotMessageKey(message: unknown): string | null {
     if (value && typeof value === "object")
       return Object.fromEntries(
         Object.entries(value)
+          .filter(([key]) => key !== "webTiming")
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([key, item]) => [key, stable(item)]),
       );
@@ -83,6 +84,51 @@ export function eventsAfterSnapshot(
   );
 }
 
+export interface ToolTiming {
+  elapsedMs: number;
+  running: boolean;
+  receivedAt: number;
+}
+
+export function toolTiming(value: unknown): ToolTiming | undefined {
+  if (!value || typeof value !== "object") return;
+  const timing = value as Record<string, unknown>;
+  if (
+    typeof timing.elapsedMs !== "number" ||
+    !Number.isFinite(timing.elapsedMs) ||
+    timing.elapsedMs < 0
+  )
+    return;
+  return {
+    elapsedMs: timing.elapsedMs,
+    running: timing.running === true,
+    receivedAt: performance.now(),
+  };
+}
+
+export function elapsedMs(timing: ToolTiming): number {
+  return (
+    timing.elapsedMs +
+    (timing.running ? Math.max(0, performance.now() - timing.receivedAt) : 0)
+  );
+}
+
+export function stopToolTimers(rows: Row[]): Row[] {
+  return rows.map((row) =>
+    row.kind === "tool" && row.timing?.running
+      ? {
+          ...row,
+          status: "error",
+          timing: {
+            ...row.timing,
+            elapsedMs: elapsedMs(row.timing),
+            running: false,
+          },
+        }
+      : row,
+  );
+}
+
 export type ToolStatus = "pending" | "running" | "done" | "error";
 
 export type Row =
@@ -95,6 +141,7 @@ export type Row =
       args?: unknown;
       result?: unknown;
       status: ToolStatus;
+      timing?: ToolTiming;
     }
   | {
       kind: "note";
@@ -166,7 +213,10 @@ export function rowsFromAssistant(
         id: `call-${callId}`,
         name: String(block.name ?? "tool"),
         args: block.arguments,
-        status: "pending",
+        status: (block.webTiming as { running?: boolean } | undefined)?.running
+          ? "running"
+          : "pending",
+        timing: toolTiming(block.webTiming),
       });
     }
   }
@@ -216,7 +266,12 @@ export function rowsFromMessages(raw: unknown[]): Row[] {
       if (existing >= 0) {
         const row = rows[existing];
         if (row.kind === "tool") {
-          rows[existing] = { ...row, result: resultOf(message), status };
+          rows[existing] = {
+            ...row,
+            result: resultOf(message),
+            status,
+            timing: toolTiming(message.webTiming) ?? row.timing,
+          };
         }
         return;
       }
@@ -226,6 +281,7 @@ export function rowsFromMessages(raw: unknown[]): Row[] {
         name: String(message.toolName ?? "tool"),
         result: resultOf(message),
         status,
+        timing: toolTiming(message.webTiming),
       });
       return;
     }
@@ -273,6 +329,7 @@ export function prependRows(older: Row[], current: Row[]): Row[] {
       name: row.name !== "tool" ? row.name : candidate.name,
       args: row.args ?? candidate.args,
       result: row.result ?? candidate.result,
+      timing: row.timing ?? candidate.timing,
       status:
         row.status === "error" || row.status === "done"
           ? row.status
@@ -291,6 +348,7 @@ export function upsertTool(
     args?: unknown;
     result?: unknown;
     status?: ToolStatus;
+    timing?: ToolTiming;
   },
 ): Row[] {
   const rowId = `call-${id}`;
@@ -307,6 +365,7 @@ export function upsertTool(
         args: patch.args,
         result: patch.result,
         status: patch.status ?? "running",
+        timing: patch.timing,
       },
     ];
   }
@@ -319,6 +378,7 @@ export function upsertTool(
       args: patch.args ?? row.args,
       result: patch.result ?? row.result,
       status: patch.status ?? row.status,
+      timing: patch.timing ?? row.timing,
     };
   }
   return next;

@@ -84,8 +84,20 @@ jobs:
         with:
           name: web-ui
           path: web-assets
-      - name: Build the Web binary
-        run: cargo build --release --locked -p rpi-web --bin rpi-web
+      - name: Embed the verified frontend in both entrypoints
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path.cwd().resolve()
+          destination = (root / 'packages/rpi-web/assets').resolve()
+          if destination.parent != root / 'packages/rpi-web':
+              raise RuntimeError('Frontend destination must stay inside the Web package')
+          shutil.rmtree(destination)
+          shutil.copytree('web-assets', destination)
+          PY
+      - name: Build the Web executable and extension
+        run: cargo build --release --locked -p rpi-web --bin rpi-web --lib
       - name: Package the binary and verified frontend together
         env:
           TARGET: ${{ matrix.target }}
@@ -96,10 +108,20 @@ jobs:
             --target "$TARGET" --source-ref "$SOURCE_REF" \
             --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
             --assets web-assets --output dist/web-release
+          python .github/scripts/prebuilt-assets.py build \
+            --target "$TARGET" --source-ref "$SOURCE_REF" \
+            --repository "$GITHUB_REPOSITORY" --bundle-tag unused \
+            --tags "[\"$RELEASE_TAG\"]" --packages-only --output dist/web-extension
       - uses: actions/upload-artifact@v4
         with:
           name: rpi-web-bin-${{ matrix.target }}
           path: dist/web-release/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpi-web-extension-${{ matrix.target }}
+          path: dist/web-extension/
           if-no-files-found: error
 
   publish:
@@ -129,3 +151,19 @@ jobs:
           python .github/scripts/web-release.py publish \
             --source-ref "$SOURCE_REF" --tag "$RELEASE_TAG" \
             --repository "$GITHUB_REPOSITORY" --output dist/web-release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rpi-web-extension-*
+          path: dist/web-extension/
+          merge-multiple: true
+      - name: Publish the installable extension and discovery manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python .github/scripts/prebuilt-assets.py publish \
+            --source-ref "$SOURCE_REF" --repository "$GITHUB_REPOSITORY" \
+            --bundle-tag unused --tags "[\"$RELEASE_TAG\"]" \
+            --packages-only --output dist/web-extension

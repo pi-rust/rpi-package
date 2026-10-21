@@ -66,6 +66,9 @@ class WebReleaseTests(unittest.TestCase):
         self.assertEqual(tags.select_web(metadata, refs, "commit"), "rpi-web-v0.1.0")
         self.assertEqual(tags.select(metadata, refs, "commit"), [])
         self.assertEqual(tags.select_web(metadata, refs, "other"), "")
+        metadata["packages"][0]["targets"].append({"crate_types": ["cdylib", "rlib"]})
+        self.assertEqual(tags.select(metadata, refs, "commit"), [])
+        self.assertEqual(tags.select_web(metadata, refs, "commit"), "rpi-web-v0.1.0")
 
 
 if __name__ == "__main__":

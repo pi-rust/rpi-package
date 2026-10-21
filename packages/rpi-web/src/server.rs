@@ -25,8 +25,8 @@ use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::process::Command;
-use tokio::sync::{broadcast, Mutex, RwLock};
-use tower_http::services::{ServeDir, ServeFile};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
+use tower_http::services::ServeDir;
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -73,9 +73,20 @@ struct AppState {
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
     security: Arc<Security>,
+    shutdown: watch::Receiver<bool>,
 }
 
 pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
+    run_until(config, async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+}
+
+pub(crate) async fn run_until(
+    config: AppConfig,
+    stop: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut projects = vec![Project::new(&config.project)?];
     for path in &config.projects {
         let project = Project::new(path)?;
@@ -100,6 +111,7 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         allowed_hosts(&config),
         configured_password().as_deref(),
     ));
+    let (shutdown, shutdown_receiver) = watch::channel(false);
     let state = AppState {
         config: config.clone(),
         projects: Arc::new(RwLock::new(projects)),
@@ -108,8 +120,15 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         session_lifecycle: Arc::new(Mutex::new(())),
         registry: Arc::new(RwLock::new(Registry::load(config.registry.clone())?)),
         security: security.clone(),
+        shutdown: shutdown_receiver,
     };
     let asset_root = asset_root(&config);
+    let files = ServeDir::new(asset_root.join("assets"));
+    let files = if config.assets.is_none() {
+        files.fallback(get(crate::assets::asset))
+    } else {
+        files.fallback(get(|| async { StatusCode::NOT_FOUND }))
+    };
     let router = Router::new()
         .route("/", get(index))
         .route("/api/v1/health", get(health))
@@ -137,17 +156,34 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/sessions/{id}/commands", post(command))
         .route("/api/v1/sessions/{id}/snapshot", get(snapshot))
         .route("/api/v1/sessions/{id}/events", get(events))
-        .nest_service("/assets", ServeDir::new(asset_root.join("assets")))
-        .route_service(
-            "/favicon.svg",
-            ServeFile::new(asset_root.join("favicon.svg")),
-        )
+        .nest_service("/assets", files)
+        .route("/favicon.svg", get(favicon))
         .layer(from_fn_with_state(security, crate::security::guard))
-        .with_state(state);
+        .with_state(state.clone());
     let address: SocketAddr = format!("{}:{}", config.bind, config.port).parse()?;
     let listener = tokio::net::TcpListener::bind(address).await?;
     println!("rpi-web listening on http://{address}");
-    axum::serve(listener, router).await?;
+    let mut shutdown_receiver = state.shutdown.clone();
+    let serving = std::future::IntoFuture::into_future(
+        axum::serve(listener, router).with_graceful_shutdown(async move {
+            if !*shutdown_receiver.borrow_and_update() {
+                let _ = shutdown_receiver.changed().await;
+            }
+        }),
+    );
+    tokio::pin!(serving);
+    tokio::select! {
+        result = &mut serving => result?,
+        _ = stop => {
+            let _ = shutdown.send(true);
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                let _lifecycle = state.session_lifecycle.lock().await;
+                let hosts: Vec<_> = state.sessions.read().await.values().cloned().collect();
+                futures_util::future::join_all(hosts.iter().map(|host| host.shutdown())).await;
+                let _ = serving.await;
+            }).await;
+        }
+    }
     Ok(())
 }
 
@@ -226,6 +262,14 @@ async fn index(State(state): State<AppState>) -> Html<String> {
         .await
         .unwrap_or_else(|_| include_str!("../assets/index.html").to_string());
     Html(html)
+}
+
+async fn favicon(State(state): State<AppState>) -> axum::response::Response {
+    match tokio::fs::read(asset_root(&state.config).join("favicon.svg")).await {
+        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], bytes).into_response(),
+        Err(_) if state.config.assets.is_none() => crate::assets::favicon().await,
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn health() -> Json<Value> {
@@ -476,6 +520,7 @@ async fn spawn_host(
         project.root.clone(),
         state.config.session_dir.clone(),
         id,
+        state.config.registry.with_extension("tool-timings"),
     )
     .await
 }
@@ -652,6 +697,7 @@ async fn fork_session_impl(
         state.config.session_dir.clone(),
         &requested_id,
         source_id,
+        state.config.registry.with_extension("tool-timings"),
     )
     .await
     {
@@ -1128,7 +1174,11 @@ async fn snapshot(State(state): State<AppState>, Path(id): Path<String>) -> impl
     }
     let events = events
         .iter()
-        .map(|event| json!({"seq": event.seq, "event": event.value}))
+        .map(|event| {
+            let mut value = event.value.clone();
+            crate::timing::refresh_event(&mut value);
+            json!({"seq": event.seq, "event": value})
+        })
         .collect::<Vec<_>>();
     Json(json!({
         "sessionId": id,
@@ -1185,11 +1235,19 @@ async fn events(
         .into_iter()
         .filter(|event| after.map_or(true, |seq| event.seq > seq))
         .collect();
-    Sse::new(authorized_events(
-        event_stream(ready, replay, receiver, gap, after),
-        state.security,
-        headers,
-    ))
+    let mut shutdown = state.shutdown;
+    Sse::new(
+        authorized_events(
+            event_stream(ready, replay, receiver, gap, after),
+            state.security,
+            headers,
+        )
+        .take_until(async move {
+            if !*shutdown.borrow_and_update() {
+                let _ = shutdown.changed().await;
+            }
+        }),
+    )
     .keep_alive(axum::response::sse::KeepAlive::default())
     .into_response()
 }
@@ -1280,7 +1338,8 @@ fn authorized_events(
     )
 }
 
-fn to_sse(event: BufferedEvent) -> Event {
+fn to_sse(mut event: BufferedEvent) -> Event {
+    crate::timing::refresh_event(&mut event.value);
     let event_type = event
         .value
         .get("type")

@@ -68,22 +68,22 @@ prebuilt archives through GitHub Releases. It uses `rpi-plugin-sdk` 0.6.3 with t
 package. See [the package guide](packages/rpi-providers/README.md) for compatibility,
 source linking, migration and tests.
 
-## Web 工作台（rpi-web）
+## Web workspace (rpi-web)
 
-`rpi-web` 提供按项目管理会话的浏览器界面，支持中文、流式对话、工具交互、Markdown、文件预览与 Git 差异。它是独立程序，需要配合原生 `rpi` 宿主运行。
+`rpi-web` provides project-based conversations in a browser, with streaming replies, tool interactions, Markdown rendering, file previews, and Git diffs. The interface supports English and Simplified Chinese. It supports a native extension entry point and a standalone program, sharing the same Web core.
 
-下载并解压 [Web 发行包](https://github.com/pi-rust/rpi-package/releases?q=rpi-web-v)，保留完整 `assets/` 目录，并安装 [宿主 v0.7.0](https://github.com/bigfish1913/pi-rust/releases/tag/v0.7.0)。为服务进程配置模型凭据后启动：
+Download and extract a [Web release](https://github.com/pi-rust/rpi-package/releases?q=rpi-web-v), keep the complete `assets/` directory, and install the [rpi 0.7.0 host](https://github.com/bigfish1913/pi-rust/releases/tag/v0.7.0). Configure model credentials for the service process before starting:
 
 ```bash
-# 在解压后的 Web 目录运行；项目目录需要已经存在。
+# Run from the extracted Web directory with an existing project directory.
 ./rpi-web --project /path/to/project --rpi-bin /path/to/rpi --assets ./assets --port 3030
 ```
 
-打开 [http://127.0.0.1:3030/](http://127.0.0.1:3030/)，选择项目并新建会话。Windows 使用 `rpi-web.exe` 和 `rpi.exe`。
+Open [http://127.0.0.1:3030/](http://127.0.0.1:3030/), select a project, and create a session. On Windows, use `rpi-web.exe` and `rpi.exe`.
 
-[中文使用指南](packages/rpi-web/README.md) 包含 Windows / Linux / macOS 示例、新建项目、模型配置、登录密码、远程访问、数据保存与升级说明。Web 程序使用发行包或 `cargo install rpi-web --locked` 安装；下文的 `rpi install` 用于扩展包。
+The [Web user guide](packages/rpi-web/README.md) covers Windows / Linux / macOS setup, project creation, model credentials, password login, remote access, persistence, and upgrades. The source version adds `rpi --web` with embedded frontend resources; install it locally using `rpi install rpi-web --path packages/rpi-web`. This extension entry point will be available in the next release. Existing Web 0.1.1 archives provide the standalone program.
 
-支持 `.rpi/web.json` 启动配置：在项目目录执行一次 `rpi-web --init`，配置好宿主与资源路径后，日常只需运行 `rpi-web`。也可使用 `~/.rpi/web.json` 管理全局配置，命令行参数用于临时覆盖。旧版 `0.1.0` 需更新 Web 程序后使用。
+Web 0.1.1 supports `.rpi/web.json` startup settings. Run `rpi-web --init` once in a project directory, configure the host and assets paths, then use `rpi-web` for subsequent starts. Global defaults can be stored in `~/.rpi/web.json`, and CLI arguments provide temporary overrides. Users of Web 0.1.0 must upgrade to use configuration files.
 
 ## Native ACP integration
 

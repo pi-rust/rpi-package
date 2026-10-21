@@ -2646,3 +2646,17 @@ details[open] > summary:before {
   justify-content: flex-start;
   text-align: left;
 }
+
+.tool-elapsed {
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.tool-elapsed + .tool-status {
+  margin-left: 0;
+  flex-shrink: 0;
+  white-space: nowrap;
+}

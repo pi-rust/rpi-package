@@ -26,6 +26,18 @@ tasks:
     dir: packages/rpi-web/frontend
     cmds: [npm run build]
 
+  web:extension:test:
+    desc: Verify the Web extension against an isolated native host (RPI_HOST=path/to/rpi)
+    requires:
+      vars: [RPI_HOST]
+    vars:
+      WEB_PLUGIN:
+        sh: python -c "import json,subprocess,os; m=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'])); print(os.path.join(m['target_directory'],'debug','{{.DLL_PREFIX}}rpi_web_extension{{.DLL_SUFFIX}}'))"
+    cmds:
+      - cargo build -p rpi-web --lib --locked
+      - python packages/rpi-web/scripts/verify-extension.py --rpi "{{.RPI_HOST}}" --plugin "{{.WEB_PLUGIN}}"
+
+
   web:frontend:test:
     internal: true
     dir: packages/rpi-web/frontend

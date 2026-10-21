@@ -229,5 +229,16 @@
     "install": "rpi install rpi-providers --github pi-rust/rpi-package",
     "repository": "https://github.com/pi-rust/rpi-package",
     "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-providers-v0.1.2/rpi-extension.json"
+  },
+  {
+    "name": "rpi-web",
+    "version": "0.1.1",
+    "type": "extension",
+    "tool": null,
+    "inspiredBy": "Browser project and session workspace",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-web",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.1/rpi-extension.json"
   }
 ]
