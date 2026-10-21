@@ -26,6 +26,7 @@ jobs:
       source_ref: ${{ steps.version.outputs.source_ref }}
       package_releases: ${{ steps.tags.outputs.package_releases }}
       bundle_tag: ${{ steps.tags.outputs.bundle_tag }}
+      web_tag: ${{ steps.tags.outputs.web_tag }}
     defaults:
       run:
         shell: bash
@@ -154,3 +155,11 @@ jobs:
       source_ref: ${{ needs.release.outputs.source_ref }}
       package_releases: ${{ needs.release.outputs.package_releases }}
       bundle_tag: ${{ needs.release.outputs.bundle_tag }}
+
+  web-assets:
+    needs: release
+    if: needs.release.outputs.web_tag != ''
+    uses: ./.github/workflows/release-web.yml
+    with:
+      source_ref: ${{ needs.release.outputs.source_ref }}
+      tag: ${{ needs.release.outputs.web_tag }}

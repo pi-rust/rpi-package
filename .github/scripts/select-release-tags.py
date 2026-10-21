@@ -33,6 +33,19 @@ def main():
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as destination:
         destination.write(f"package_releases={json.dumps(select(metadata, refs, revision), separators=(',', ':'))}\n")
         destination.write(f"bundle_tag=rpi-packages-{revision[:12]}\n")
+        destination.write(f"web_tag={select_web(metadata, refs, revision)}\n")
+
+
+def select_web(metadata, refs, revision):
+    for package in metadata["packages"]:
+        if (package["id"] in metadata["workspace_members"] and package["name"] == "rpi-web"
+                and package["publish"] != []
+                and any("bin" in target["crate_types"] for target in package["targets"])):
+            tag = f"rpi-web-v{package['version']}"
+            ref = f"refs/tags/{tag}"
+            if refs.get(ref + "^{}", refs.get(ref)) == revision:
+                return tag
+    return ""
 
 
 if __name__ == "__main__":

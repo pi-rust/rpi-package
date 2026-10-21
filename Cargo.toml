@@ -22,6 +22,7 @@ members = [
     "packages/rpi-langfuse",
     "packages/rpi-voice",
     "packages/rpi-providers",
+    "packages/rpi-web",
     "tools/rpi-package-install",
 ]
 exclude = ["tools/rpi-package-smoke"]

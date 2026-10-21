@@ -7,3 +7,8 @@
 # 部署打包目录
 .deploy/
 __pycache__/
+
+# Web frontend build dependencies and test output
+packages/rpi-web/frontend/node_modules/
+packages/rpi-web/frontend/test-results/
+packages/rpi-web/frontend/playwright-report/

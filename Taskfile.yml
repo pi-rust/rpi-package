@@ -15,6 +15,30 @@ tasks:
     cmds:
       - task --list
 
+  web:build:
+    desc: Typecheck and bundle the web workspace, then build the native bridge
+    cmds:
+      - task: web:frontend:build
+      - cargo build -p rpi-web --locked
+
+  web:frontend:build:
+    internal: true
+    dir: packages/rpi-web/frontend
+    cmds: [npm run build]
+
+  web:frontend:test:
+    internal: true
+    dir: packages/rpi-web/frontend
+    cmds:
+      - npm run typecheck
+      - npm run e2e
+
+  web:test:
+    desc: Verify the web bridge and browser workspace
+    cmds:
+      - cargo test -p rpi-web --lib --locked
+      - task: web:frontend:test
+
   check:
     desc: Check all package crates
     cmds:

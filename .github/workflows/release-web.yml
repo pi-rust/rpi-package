@@ -1,0 +1,131 @@
+name: Build portable Web releases
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact published source commit
+        required: true
+        type: string
+      tag:
+        description: Published rpi-web-vX.Y.Z tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: packages/rpi-web/frontend/package-lock.json
+      - name: Build and verify the production frontend
+        working-directory: packages/rpi-web/frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run e2e:production
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-ui
+          path: packages/rpi-web/assets/
+          if-no-files-found: error
+
+  build:
+    needs: frontend
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web-release-${{ matrix.target }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-ui
+          path: web-assets
+      - name: Build the Web binary
+        run: cargo build --release --locked -p rpi-web --bin rpi-web
+      - name: Package the binary and verified frontend together
+        env:
+          TARGET: ${{ matrix.target }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python .github/scripts/web-release.py build \
+            --target "$TARGET" --source-ref "$SOURCE_REF" \
+            --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
+            --assets web-assets --output dist/web-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpi-web-bin-${{ matrix.target }}
+          path: dist/web-release/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rpi-web-bin-*
+          path: dist/web-release/
+          merge-multiple: true
+      - name: Verify every platform and publish the manifest last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python .github/scripts/web-release.py publish \
+            --source-ref "$SOURCE_REF" --tag "$RELEASE_TAG" \
+            --repository "$GITHUB_REPOSITORY" --output dist/web-release
