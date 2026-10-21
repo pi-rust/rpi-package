@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.2...rpi-web-v0.1.3) - 2026-10-21
+
+### Fixed
+
+- *(web)* preserve command feedback during initial history load ([#47](https://github.com/pi-rust/rpi-package/pull/47))
+
 - Preserve local command feedback while the initial transcript snapshot loads, and wait for the model catalog before resolving slash model names.
 
 ## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.1...rpi-web-v0.1.2) - 2026-10-21
