@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.2...rpi-providers-v0.1.3) - 2026-10-22
+
+### Fixed
+
+- *(providers)* reserve thinking budget for DeepSeek reasoning models
+
+### Other
+
+- *(providers)* pin the released 0.8.0 SDK
+
 ### Fixed
 
 - DeepSeek 的 reasoning 模型把思考 token 算进 `max_tokens`，8192 的答案额度会被长思考全部吃掉，
