@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.11...rpi-acp-v0.1.12) - 2026-10-22
+
+### Fixed
+
+- *(acp)* expose Zed model and provider switching
+
 ### Fixed
 
 - Make Zed model configuration resilient across native RPC state shapes, group models by Provider, and retain model switching when thinking-level discovery is unavailable. Configuration failures are now logged instead of silently hiding the ACP options.
