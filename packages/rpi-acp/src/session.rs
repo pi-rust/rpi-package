@@ -483,6 +483,14 @@ impl Session {
                             )
                             .await;
                     }
+                    if let Some(plan) = translate_todo_event(&value) {
+                        writer
+                            .notify(
+                                "session/update",
+                                json!({"sessionId": acp_session_id, "update": plan}),
+                            )
+                            .await;
+                    }
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     // The lost frames may contain acceptance or settlement.
@@ -1021,6 +1029,40 @@ pub fn translate_plan_event(event: &Value) -> Option<Value> {
     if entries.is_empty() {
         return None;
     }
+    Some(json!({"sessionUpdate": "plan", "entries": entries}))
+}
+
+fn translate_todo_event(event: &Value) -> Option<Value> {
+    if event.get("type").and_then(Value::as_str) != Some("tool_execution_end")
+        || event.get("toolName").and_then(Value::as_str) != Some("todo")
+    {
+        return None;
+    }
+    let todos = event.pointer("/result/details/todos")?.as_array()?;
+    let entries = todos
+        .iter()
+        .filter_map(|todo| {
+            let content = todo.get("text").and_then(Value::as_str)?.trim();
+            if content.is_empty() {
+                return None;
+            }
+            let status = todo
+                .get("status")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    todo.get("done")
+                        .and_then(Value::as_bool)
+                        .filter(|done| *done)
+                        .map(|_| "completed")
+                })
+                .unwrap_or("pending");
+            Some(json!({
+                "content": content,
+                "priority": "medium",
+                "status": status,
+            }))
+        })
+        .collect::<Vec<_>>();
     Some(json!({"sessionUpdate": "plan", "entries": entries}))
 }
 
@@ -1973,6 +2015,41 @@ mod tests {
         assert_eq!(plan["entries"][0]["status"], "completed");
         assert_eq!(plan["entries"][1]["content"], "2. Implement");
         assert_eq!(plan["entries"][1]["status"], "pending");
+    }
+
+    #[test]
+    fn todo_completion_emits_live_plan_statuses() {
+        let event = json!({
+            "type": "tool_execution_end",
+            "toolCallId": "todo-call",
+            "toolName": "todo",
+            "isError": false,
+            "result": {
+                "details": {
+                    "todos": [
+                        {"id": 0, "text": "Inspect", "status": "completed"},
+                        {"id": 1, "text": "Implement", "status": "in_progress"},
+                        {"id": 2, "text": "Test", "status": "pending"},
+                    ],
+                },
+            },
+        });
+        let plan = translate_todo_event(&event).unwrap();
+        assert_eq!(plan["sessionUpdate"], "plan");
+        assert_eq!(plan["entries"][0]["content"], "Inspect");
+        assert_eq!(plan["entries"][0]["status"], "completed");
+        assert_eq!(plan["entries"][1]["status"], "in_progress");
+        assert_eq!(plan["entries"][2]["status"], "pending");
+    }
+
+    #[test]
+    fn todo_clear_emits_an_empty_plan_update() {
+        let event = json!({
+            "type": "tool_execution_end",
+            "toolName": "todo",
+            "result": {"details": {"todos": []}},
+        });
+        assert_eq!(translate_todo_event(&event).unwrap()["entries"], json!([]));
     }
 
     #[test]

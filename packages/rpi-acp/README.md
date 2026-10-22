@@ -69,6 +69,7 @@ request error; output length limits report `max_tokens` instead of `end_turn`.
 | `tool_execution_update` | `tool_call_update` (`in_progress`, content) |
 | `tool_execution_end` | `tool_call_update` (`completed` / `failed`, `rawOutput`) |
 | `tool_execution_end` (`plan_mode_complete`) | `plan` (step list + done markers) |
+| `tool_execution_end` (`todo`) | `plan` (live todo statuses, including completion) |
 | `agent_settled` with `outcome: aborted` | prompt `stopReason: cancelled` |
 | `agent_settled` with `outcome: completed` | prompt `stopReason: end_turn` (or `max_tokens` for length limits) |
 | rejected response or failed `agent_settled` | ACP request error |
