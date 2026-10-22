@@ -418,8 +418,9 @@ pub async fn run(
                 match open_session(&session_id, PathBuf::from(&cwd), None).await {
                     Ok((session, state)) => {
                         let mut result = json!({"sessionId": session_id});
-                        if let Ok(config) = config_options_for(&session, &state).await {
-                            result["configOptions"] = config["configOptions"].clone();
+                        match config_options_for(&session, &state).await {
+                            Ok(config) => result["configOptions"] = config["configOptions"].clone(),
+                            Err(error) => diagln!("[rpi-acp] session {session_id}: config options unavailable: {error}"),
                         }
                         sessions.lock().await.insert(session_id.clone(), session);
                         writer.respond(&id, result).await;
@@ -494,8 +495,9 @@ pub async fn run(
                         match updates {
                             Ok(updates) => {
                                 let mut result = json!({});
-                                if let Ok(config) = config_options_for(&session, &state).await {
-                                    result["configOptions"] = config["configOptions"].clone();
+                                match config_options_for(&session, &state).await {
+                                    Ok(config) => result["configOptions"] = config["configOptions"].clone(),
+                                    Err(error) => diagln!("[rpi-acp] session {session_id}: config options unavailable: {error}"),
                                 }
                                 sessions.lock().await.insert(session_id.to_owned(), session);
                                 for update in updates {
@@ -675,39 +677,105 @@ fn split_model_value(value: &str) -> (Option<&str>, &str) {
 /// the current `get_state` onto ACP v1 Session Config Options: a `model`
 /// selector and a `thought_level` selector.
 fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
-    let current_model_id = state.get("modelId").and_then(Value::as_str).unwrap_or("");
-    let current_provider = state.get("provider").and_then(Value::as_str).unwrap_or("");
+    // RPC hosts have returned both the legacy string fields and the newer
+    // `{model: {id, provider, ...}}` snapshot. Accept both shapes so the
+    // selected option remains stable after a live switch.
+    let state_model = state
+        .get("modelId")
+        .and_then(Value::as_str)
+        .or_else(|| state.get("model").and_then(Value::as_str))
+        .or_else(|| state.pointer("/model/id").and_then(Value::as_str))
+        .unwrap_or("");
+    let (embedded_provider, current_model_id) = split_model_value(state_model);
+    let current_provider = state
+        .get("provider")
+        .and_then(Value::as_str)
+        .or_else(|| state.pointer("/model/provider").and_then(Value::as_str))
+        .filter(|provider| !provider.is_empty())
+        .or(embedded_provider)
+        .unwrap_or("");
     let current_thinking = state
         .get("thinkingLevel")
         .and_then(Value::as_str)
         .unwrap_or("medium");
 
-    let model_options: Vec<Value> = models
-        .as_array()
-        .map(|array| {
-            array
-                .iter()
-                .map(|model| {
-                    let id = model.get("id").and_then(Value::as_str).unwrap_or("");
-                    let name = model.get("name").and_then(Value::as_str).unwrap_or(id);
-                    let provider = model.get("provider").and_then(Value::as_str).unwrap_or("");
-                    let context = model
-                        .get("contextWindow")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0);
-                    // `provider/id` keeps same-named models distinct; `set_model`
-                    // splits it back apart before forwarding.
-                    let value = format!("{provider}/{id}");
-                    let description = if context > 0 {
-                        format!("{provider} · {context} tokens")
-                    } else {
-                        provider.to_string()
-                    };
-                    json!({ "value": value, "name": name, "description": description })
+    // Keep the provider in the value so two providers may expose the same model
+    // id without colliding. With multiple providers, use ACP's grouped select
+    // form so Zed exposes the provider boundary.
+    let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
+    let mut selections: Vec<(String, String, String)> = Vec::new();
+    if let Some(array) = models.as_array() {
+        for model in array {
+            let id = model.get("id").and_then(Value::as_str).unwrap_or("");
+            if id.is_empty() {
+                continue;
+            }
+            let name = model.get("name").and_then(Value::as_str).unwrap_or(id);
+            let provider = model.get("provider").and_then(Value::as_str).unwrap_or("");
+            let context = model
+                .get("contextWindow")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let value = if provider.is_empty() {
+                id.to_owned()
+            } else {
+                format!("{provider}/{id}")
+            };
+            let option = if context > 0 {
+                json!({
+                    "value": value,
+                    "name": name,
+                    "description": format!("{context} tokens")
                 })
-                .collect()
+            } else {
+                json!({ "value": value, "name": name })
+            };
+            if let Some((_, options)) = groups.iter_mut().find(|(group, _)| group == provider) {
+                options.push(option);
+            } else {
+                groups.push((provider.to_owned(), vec![option]));
+            }
+            selections.push((provider.to_owned(), id.to_owned(), value));
+        }
+    }
+
+    let model_options = if groups.len() > 1 {
+        groups
+            .into_iter()
+            .map(|(provider, options)| {
+                let name = if provider.is_empty() {
+                    "Other".to_owned()
+                } else {
+                    provider.clone()
+                };
+                json!({ "group": provider, "name": name, "options": options })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        groups.pop().map(|(_, options)| options).unwrap_or_default()
+    };
+
+    let current_value = selections
+        .iter()
+        .find(|(provider, id, _)| provider == current_provider && id == current_model_id)
+        .map(|(_, _, value)| value.clone())
+        .or_else(|| {
+            selections
+                .iter()
+                .find(|(_, id, _)| id == current_model_id)
+                .map(|(_, _, value)| value.clone())
         })
-        .unwrap_or_default();
+        // ACP requires currentValue to identify an available option. Older
+        // hosts may not report modelId/provider yet, so use the first model
+        // instead of emitting the invalid "/" value.
+        .or_else(|| selections.first().map(|(_, _, value)| value.clone()))
+        .unwrap_or_else(|| {
+            if current_provider.is_empty() {
+                current_model_id.to_owned()
+            } else {
+                format!("{current_provider}/{current_model_id}")
+            }
+        });
 
     let thinking_options: Vec<Value> = thinking
         .as_array()
@@ -722,15 +790,26 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
                 .collect()
         })
         .unwrap_or_default();
+    let current_thinking_value = thinking_options
+        .iter()
+        .find(|option| option["value"].as_str() == Some(current_thinking))
+        .and_then(|option| option["value"].as_str())
+        .or_else(|| {
+            thinking_options
+                .first()
+                .and_then(|option| option["value"].as_str())
+        })
+        .unwrap_or(current_thinking);
 
     let mut options = Vec::new();
-    if !model_options.is_empty() {
+    if !selections.is_empty() {
         options.push(json!({
             "id": "model",
-            "name": "Model",
+            "name": "Model / Provider",
+            "description": "Select the model and provider used for the next prompt",
             "category": "model",
             "type": "select",
-            "currentValue": format!("{current_provider}/{current_model_id}"),
+            "currentValue": current_value,
             "options": model_options,
         }));
     }
@@ -740,7 +819,7 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
             "name": "Thinking",
             "category": "thought_level",
             "type": "select",
-            "currentValue": current_thinking,
+            "currentValue": current_thinking_value,
             "options": thinking_options,
         }));
     }
@@ -752,7 +831,14 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
 /// the caller, so it is not re-read here.
 async fn config_options_for(session: &Arc<Session>, state: &Value) -> Result<Value, String> {
     let models = session.available_models().await?;
-    let thinking = session.available_thinking_levels().await?;
+    // Model switching must remain available if an older host lacks this optional query.
+    let thinking = match session.available_thinking_levels().await {
+        Ok(levels) => levels,
+        Err(error) => {
+            diagln!("[rpi-acp] thinking-level discovery unavailable: {error}");
+            json!([])
+        }
+    };
     Ok(config_options(&models, &thinking, state))
 }
 
@@ -946,7 +1032,7 @@ mod tests {
         assert_eq!(model_options.len(), 2);
         assert_eq!(model_options[0]["value"], "anthropic/sonnet");
         assert_eq!(model_options[0]["name"], "Claude Sonnet");
-        assert_eq!(model_options[0]["description"], "anthropic · 200000 tokens");
+        assert_eq!(model_options[0]["description"], "200000 tokens");
 
         let thinking_option = &options[1];
         assert_eq!(thinking_option["id"], "thinking");
@@ -956,6 +1042,52 @@ mod tests {
         assert_eq!(thinking_options.len(), 3);
         assert_eq!(thinking_options[0]["value"], "off");
         assert_eq!(thinking_options[0]["name"], "Off");
+    }
+
+    #[test]
+    fn config_options_groups_providers_and_accepts_legacy_state() {
+        let models = json!([
+            {"id": "same", "name": "Same A", "provider": "a", "contextWindow": 1000},
+            {"id": "same", "name": "Same B", "provider": "b", "contextWindow": 2000},
+        ]);
+        let config = config_options(&models, &json!([]), &json!({"model": "same"}));
+        let model = &config["configOptions"][0];
+        assert_eq!(model["currentValue"], "a/same");
+        let groups = model["options"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0]["group"], "a");
+        assert_eq!(groups[1]["group"], "b");
+        assert_eq!(groups[1]["options"][0]["value"], "b/same");
+    }
+
+    #[test]
+    fn config_options_reads_object_model_state() {
+        let config = config_options(
+            &json!([{"id": "m", "provider": "provider"}]),
+            &json!([]),
+            &json!({"model": {"id": "m", "provider": "provider"}}),
+        );
+        assert_eq!(config["configOptions"][0]["currentValue"], "provider/m");
+    }
+
+    #[test]
+    fn config_options_uses_first_model_when_state_has_no_model() {
+        let config = config_options(
+            &json!([{"id": "first", "provider": "provider"}]),
+            &json!([]),
+            &json!({}),
+        );
+        assert_eq!(config["configOptions"][0]["currentValue"], "provider/first");
+    }
+
+    #[test]
+    fn config_options_falls_back_to_an_available_thinking_level() {
+        let config = config_options(
+            &json!([{"id": "m", "provider": "provider"}]),
+            &json!(["off"]),
+            &json!({"thinkingLevel": "medium"}),
+        );
+        assert_eq!(config["configOptions"][1]["currentValue"], "off");
     }
 
     #[test]

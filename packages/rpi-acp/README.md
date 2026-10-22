@@ -26,7 +26,8 @@ are part of this package.
    extension. This is what makes an ACP stdio server possible inside an `rpi`
    process at all — see *Requirements* below.
 2. **Serves ACP v1** on stdio (`initialize`, `session/new`, `session/prompt`,
-   `session/cancel`, `session/load`, `session/resume`). See `src/protocol.rs`.
+   `session/cancel`, `session/load`, `session/resume`,
+   `session/set_config_option`). See `src/protocol.rs`.
 3. **Backs each ACP session with a child `rpi --mode rpc` process** rooted at
    the session's `cwd`, translating its event stream into ACP `session/update`
    notifications (streamed text, thinking, tool calls). See `src/session.rs`.
@@ -160,8 +161,25 @@ agent's arguments:
 "args": ["--acp", "--bypass"]
 ```
 
-Save the settings and restart Zed before starting a new rpi thread. The flag
-only affects this process and its ACP session children; it does not change
+Save the settings and restart Zed before starting a new rpi thread.
+
+### Model and Provider selection
+
+For an rpi host that supports the native RPC model catalog, each ACP session
+returns a `model` Session Config Option. Its values use `provider/model`, so
+selecting a model also selects its Provider; when several Providers are
+available, Zed receives them as grouped choices. `session/set_config_option`
+forwards the selected value to the child RPC as `modelId` plus `provider`.
+Thinking levels are exposed as a separate `thought_level` option.
+
+These controls are session-level settings in Zed's ACP thread configuration,
+not Zed's global `agent.default_model` setting. If they do not appear, enable
+`RPI_ACP_DEBUG=1` in Zed's environment and check its agent stderr log for
+`config options unavailable`; the child rpi must support
+`get_available_models`, `set_model`, and (optionally)
+`get_available_thinking_levels`.
+
+The flag only affects this process and its ACP session children; it does not change
 system environment variables or saved permission settings. It overrides
 `--permission-gate` and `RPI_PERMISSION_GATE=1`. Other extensions' policies and
 ordinary user questions are unchanged. Omitting the flag keeps the default

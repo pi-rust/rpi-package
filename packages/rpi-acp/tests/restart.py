@@ -87,8 +87,19 @@ def check(command, env, cwd, store):
         assert result["result"]["agentCapabilities"]["loadSession"] is True
         result, _ = first.request("session/new", {"cwd": cwd, "mcpServers": []})
         assert "error" not in result, (result, "".join(first.errors))
+        config_options = result["result"].get("configOptions", [])
+        model = next((option for option in config_options if option.get("id") == "model"), None)
+        assert model is not None, (result, "".join(first.errors))
+        values = []
+        for option in model["options"]:
+            values.extend(item["value"] for item in option.get("options", [option]))
+        assert "acp-fixture/fixture" in values, (result, "".join(first.errors))
         session_id = result["result"]["sessionId"]
         uuid.UUID(session_id)
+        switched, _ = first.request("session/set_config_option", {
+            "sessionId": session_id, "configId": "model", "value": "acp-fixture/fixture"
+        })
+        assert "error" not in switched, (switched, "".join(first.errors))
     finally:
         first.close()
 

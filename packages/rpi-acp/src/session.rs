@@ -308,6 +308,8 @@ impl Session {
     pub async fn set_model(&self, model_id: &str, provider: Option<&str>) -> Result<(), String> {
         let mut params = serde_json::Map::new();
         params.insert("modelId".to_string(), json!(model_id));
+        // Keep the legacy field for older rpi RPC hosts; current hosts ignore it.
+        params.insert("model".to_string(), json!(model_id));
         if let Some(provider) = provider {
             params.insert("provider".to_string(), json!(provider));
         }
