@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-orchestrator-v0.1.8...rpi-orchestrator-v0.1.9) - 2026-10-22
+
+### Fixed
+
+- *(orchestrator)* keep the crate clippy-clean
+
 ## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-orchestrator-v0.1.7...rpi-orchestrator-v0.1.8) - 2026-10-22
 
 ### Fixed

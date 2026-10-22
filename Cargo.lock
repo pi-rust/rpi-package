@@ -2523,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2544,7 +2544,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-orchestrator"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2647,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
