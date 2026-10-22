@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hide the `todo` tool's structured arguments and result envelope from ACP tool-call cards, showing a concise action title instead of raw JSON.
 - Forward `todo` result snapshots as ACP plan updates so Zed's plan panel reflects pending, in-progress, and completed task states immediately.
 
 ## [0.1.12](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.11...rpi-acp-v0.1.12) - 2026-10-22

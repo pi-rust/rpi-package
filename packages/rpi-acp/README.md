@@ -65,8 +65,10 @@ request error; output length limits report `max_tokens` instead of `end_turn`.
 | `message_update` / `text_delta` | `agent_message_chunk` |
 | `message_update` / `thinking_delta` | `agent_thought_chunk` |
 | `tool_execution_start` (`read`, `bash`, …) | `tool_call` (`in_progress`, `rawInput`) |
+| `tool_execution_start` (`todo`) | `tool_call` with a concise action title (without raw JSON arguments) |
 | `tool_execution_start` (`edit`/`write`) | `tool_call` with ACP `diff` content |
 | `tool_execution_update` | `tool_call_update` (`in_progress`, content) |
+| `tool_execution_end` (`todo`) | `tool_call_update` (`completed` / `failed`, content) |
 | `tool_execution_end` | `tool_call_update` (`completed` / `failed`, `rawOutput`) |
 | `tool_execution_end` (`plan_mode_complete`) | `plan` (step list + done markers) |
 | `tool_execution_end` (`todo`) | `plan` (live todo statuses, including completion) |
