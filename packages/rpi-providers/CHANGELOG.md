@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.3...rpi-providers-v0.1.4) - 2026-10-23
+
+### Fixed
+
+- *(providers)* reuse lifecycle resources and ship pending transport fixes
+- *(providers)* preserve case insensitive request header precedence
+- *(providers)* adopt stream watchdog and preserve compat overrides
+
+### Other
+
+- *(providers)* cover BOM and CR-only streaming through the DLL
+- *(providers)* verify named and empty SSE keepalives
+- *(providers)* cover non-reasoning models and reload diagnostics
+- *(providers)* pin final reviewed SDK revision
+
 ### Fixed
 
 - Ship the pending stream idle timeout, keepalive/BOM/CR framing, DeepSeek compat/reasoning replay and case-insensitive header fixes together.
