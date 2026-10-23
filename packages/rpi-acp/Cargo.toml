@@ -1,6 +1,6 @@
 [package]
 name = "rpi-acp"
-version = "0.1.12"
+version = "0.1.13"
 edition.workspace = true
 rust-version = "1.85"
 license.workspace = true
