@@ -93,7 +93,8 @@ jobs:
           destination = (root / 'packages/rpi-web/assets').resolve()
           if destination.parent != root / 'packages/rpi-web':
               raise RuntimeError('Frontend destination must stay inside the Web package')
-          shutil.rmtree(destination)
+          if destination.exists():
+              shutil.rmtree(destination)
           shutil.copytree('web-assets', destination)
           PY
       - name: Build the Web executable and extension
