@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.5...rpi-web-v0.1.6) - 2026-10-23
+
+### Added
+
+- *(e2e)* mock stats data and update shell card assertions
+- *(rpi-web)* add MenuSelect component and background process helper
+
+### Fixed
+
+- *(web)* restore desktop chrome after the mobile responsive pass
+- *(rpi-web)* prevent console windows in background processes
+- fix queued message editing
+
+### Other
+
+- *(web)* note the desktop chrome and toolbar fixes in the changelog
+- *(web)* stop tracking generated frontend bundle
+- *(release)* bump workspace to 0.1.9
+- *(rpi-web)* add session tags and sidebar filters`
+
 ### Fixed
 
 - Restore the desktop workspace chrome after the responsive pass: keep the rounded buttons, cards, popovers and composer instead of the global square-corner override, and restore the missing `--radius` token.

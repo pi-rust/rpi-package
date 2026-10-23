@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.13...rpi-acp-v0.1.14) - 2026-10-23
+
+### Fixed
+
+- *(acp)* hide todo tool JSON from Zed cards
+- *(acp)* refresh Zed plan from todo updates
+
+### Other
+
+- Merge branch 'main' of github.com:pi-rust/rpi-package into feature/web-session-search
+- *(release)* bump workspace to 0.1.9
+
 <<<<<<< HEAD
 =======
 ## [0.1.13](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.12...rpi-acp-v0.1.13) - 2026-10-23
