@@ -1,4 +1,4 @@
-//! Optional host entry point: `rpi --web`, sharing the standalone server.
+//! Optional host entry point: `rpi --webserver`, sharing the standalone server.
 use crate::config::{self, Launch};
 use rpi_plugin_sdk::{
     EventTag, FreeStringFn, RuntimeActionFn, RuntimeActionId, StablePluginEvent, StbString,
@@ -53,7 +53,7 @@ fn flag_text(value: Value) -> Option<String> {
     }
 }
 
-/// Append `--web` options the host CLI already parsed, so `rpi --web --port N`
+/// Append options the host CLI already parsed, so `rpi --webserver --port N`
 /// behaves like `rpi-web --port N` (CLI overrides every config file).
 fn append_service_flags(args: &mut Vec<String>) {
     args.extend(service_options(flag_value("bind"), flag_value("port")));
@@ -78,6 +78,18 @@ fn enabled(value: Option<&Value>) -> bool {
     }
 }
 
+fn service_mode(primary: Option<Value>, legacy: Option<Value>) -> Result<Option<Value>, String> {
+    let primary = primary.filter(|value| enabled(Some(value)));
+    let legacy = legacy.filter(|value| enabled(Some(value)));
+    match (primary, legacy) {
+        (Some(primary), Some(legacy)) if primary != legacy => {
+            Err("--webserver and --web specify different values; use only one entry point".into())
+        }
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        _ => Ok(None),
+    }
+}
+
 fn finish(code: i32) {
     action(
         RuntimeActionId::StdioLifecycle,
@@ -92,12 +104,20 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
     }
     for other in ["acp", "webui", "server"] {
         if enabled(flag(other).as_ref()) {
-            eprintln!("[rpi-web] --web cannot be combined with --{other}");
+            eprintln!("[rpi-web] --webserver (--web) cannot be combined with --{other}");
             finish(2);
             return 0;
         }
     }
-    let args = match flag("web") {
+    let mode = match service_mode(flag("webserver"), flag("web")) {
+        Ok(mode) => mode,
+        Err(error) => {
+            eprintln!("[rpi-web] {error}");
+            finish(2);
+            return 0;
+        }
+    };
+    let args = match mode {
         Some(Value::String(mode)) if mode.eq_ignore_ascii_case("true") => vec![],
         Some(Value::String(mode)) if mode == "init" => vec!["--init".into()],
         Some(Value::String(mode)) if mode == "help" => vec!["--help".into()],
@@ -114,7 +134,10 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
             return 0;
         }
         Ok(Launch::Help) => {
-            println!("rpi --web[=CONFIG|init|help]\n{}", config::HELP);
+            println!(
+                "rpi --webserver[=CONFIG|init|help]\nAlias: --web\n{}",
+                config::HELP
+            );
             finish(0);
             return 0;
         }
@@ -128,7 +151,7 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
             return 0;
         }
     };
-    // Children use this exact host, and receive no --web flag, preventing recursion.
+    // Children receive neither service flag, preventing recursive Web servers.
     if config.rpi_bin == std::path::Path::new("rpi") {
         match std::env::current_exe() {
             Ok(path) => config.rpi_bin = path,
@@ -183,28 +206,36 @@ fn register(api: &rpi_plugin_sdk::PluginApi) -> i32 {
     let Some(register_flag) = api.register_flag else {
         return 1;
     };
-    if register_flag(
-        StbStringRef::from_str("web"),
-        StbStringRef::from_str("Start Web workspace; optional configuration path, init or help"),
-    ) != 0
-    {
-        return 1;
+    for (name, description) in [
+        (
+            "webserver",
+            "Start Web server; optional configuration path, init or help",
+        ),
+        ("web", "Compatibility alias for --webserver"),
+    ] {
+        if register_flag(
+            StbStringRef::from_str(name),
+            StbStringRef::from_str(description),
+        ) != 0
+        {
+            return 1;
+        }
     }
     if let Some(register_flag) = api.register_flag {
         let _ = register_flag(
             StbStringRef::from_str("port"),
             StbStringRef::from_str(
-                "Web workspace listen port (overrides web.json), used with --web",
+                "Web server listen port (overrides web.json), used with --webserver",
             ),
         );
         let _ = register_flag(
             StbStringRef::from_str("bind"),
             StbStringRef::from_str(
-                "Web workspace listen address (overrides web.json), used with --web",
+                "Web server listen address (overrides web.json), used with --webserver",
             ),
         );
     }
-    if !enabled(flag("web").as_ref()) {
+    if !enabled(flag("webserver").as_ref()) && !enabled(flag("web").as_ref()) {
         return 0;
     }
     if action(RuntimeActionId::StdioLifecycle, json!({"op":"status"})).is_none() {
@@ -227,6 +258,40 @@ rpi_plugin_sdk::export_plugin!(register);
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn service_entry_points_preserve_modes_and_reject_ambiguous_configuration() {
+        for value in [
+            json!(true),
+            json!("true"),
+            json!("init"),
+            json!("help"),
+            json!("/path/web.json"),
+        ] {
+            assert_eq!(
+                service_mode(Some(value.clone()), None).unwrap(),
+                Some(value.clone())
+            );
+            assert_eq!(
+                service_mode(None, Some(value.clone())).unwrap(),
+                Some(value.clone())
+            );
+            assert_eq!(
+                service_mode(Some(json!(false)), Some(value.clone())).unwrap(),
+                Some(value)
+            );
+        }
+        assert_eq!(service_mode(None, None).unwrap(), None);
+        assert_eq!(
+            service_mode(Some(json!(false)), Some(json!("false"))).unwrap(),
+            None
+        );
+        assert_eq!(
+            service_mode(Some(json!("init")), Some(json!("init"))).unwrap(),
+            Some(json!("init"))
+        );
+        assert!(service_mode(Some(json!("init")), Some(json!("other.json"))).is_err());
+    }
+
     #[test]
     fn inactive_flags_do_not_start_a_server_in_rpc_children() {
         for value in [

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-24
+
+### Changed
+
+- Prefer `rpi --webserver` for starting the Web server, including `=init`, `=help`, explicit configuration paths, and host `--port` / `--bind` overrides. Keep `--web` as a compatibility alias with the same configuration and session storage.
+- Reject different values supplied to `--webserver` and `--web` together, and retain service-entry conflict checks and inactive RPC child behavior.
+- Document how React/Vite assets are built, embedded in the extension, and served without a separate frontend process.
+
+### Fixed
+
+- Allow the generated, ignored frontend bundle to be included during crate publication, fixing the release failure caused by Cargo's dirty-file check.
+
 ## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.5...rpi-web-v0.1.6) - 2026-10-23
 
 ### Added

@@ -18,7 +18,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--rpi', required=True)
 parser.add_argument('--plugin', required=True)
 parser.add_argument('--browser', action='store_true')
+parser.add_argument('--flag', choices=['--webserver', '--web'], default='--webserver')
 args = parser.parse_args()
+service_flag = args.flag
 host, plugin = str(Path(args.rpi).resolve()), Path(args.plugin).resolve()
 
 with tempfile.TemporaryDirectory(prefix='rpi-web-extension-check-') as temporary:
@@ -38,15 +40,18 @@ with tempfile.TemporaryDirectory(prefix='rpi-web-extension-check-') as temporary
         port = listener.getsockname()[1]
     base = f'http://127.0.0.1:{port}'
     config = root / '.rpi/web.json'
-    result = subprocess.run([*command, '--web=init'], cwd=root, env=env, stdin=subprocess.DEVNULL,
+    result = subprocess.run([*command, service_flag + '=init'], cwd=root, env=env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, encoding='utf-8', timeout=30)
     assert result.returncode == 0, result.stderr
     assert json.loads(config.read_text(encoding='utf-8'))['project'] == '..'
     original = config.read_bytes()
-    repeated = subprocess.run([*command, '--web=init'], cwd=root, env=env, stdin=subprocess.DEVNULL,
+    repeated = subprocess.run([*command, service_flag + '=init'], cwd=root, env=env, stdin=subprocess.DEVNULL,
                               capture_output=True, timeout=30)
     assert repeated.returncode == 2 and config.read_bytes() == original
-    settings = dict(project='..', port=port, registry='web/sessions.json', sessionDir='web/history')
+    help_result = subprocess.run([*command, service_flag + '=help'], cwd=root, env=env,
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', timeout=30)
+    assert help_result.returncode == 0 and 'rpi --webserver' in help_result.stdout, help_result.stderr
+    settings = dict(project='..', bind='0.0.0.0', port=0, registry='web/sessions.json', sessionDir='web/history')
     config.write_text(json.dumps(settings), encoding='utf-8')
     process = None
     opener = None
@@ -62,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='rpi-web-extension-check-') as temporary
         def start():
             global process, opener
             opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-            process = subprocess.Popen([*command, '--web'], cwd=root, env=env, stdin=subprocess.DEVNULL,
+            process = subprocess.Popen([*command, service_flag + '=' + str(config), '--bind', '127.0.0.1', '--port', str(port)], cwd=root, env=env, stdin=subprocess.DEVNULL,
                 stdout=log, stderr=log, start_new_session=os.name != 'nt',
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             for _ in range(100):
@@ -160,16 +165,19 @@ const {chromium, expect} = require(path.resolve(process.argv[1], 'node_modules/@
                     occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 occupied.bind(('127.0.0.1', port))
                 occupied.listen()
-                failed = subprocess.run([*command, '--web=true'], cwd=root, env=env, stdin=subprocess.DEVNULL,
+                failed = subprocess.run([*command, service_flag + '=true', '--bind', '127.0.0.1', '--port', str(port)], cwd=root, env=env, stdin=subprocess.DEVNULL,
                     capture_output=True, timeout=30)
                 assert failed.returncode == 1, 'Bind failure did not finish the host lifecycle'
-            missing = subprocess.run([*command, '--web=' + str(root / 'missing.json')], cwd=root, env=env,
+            missing = subprocess.run([*command, service_flag + '=' + str(root / 'missing.json')], cwd=root, env=env,
                 stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
             assert missing.returncode == 2
-            conflicting = subprocess.run([*command, '--web', '--server'], cwd=root, env=env,
+            conflicting = subprocess.run([*command, service_flag, '--server'], cwd=root, env=env,
                 stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
             assert conflicting.returncode == 2
-            # No --web means normal RPC, even with the extension installed.
+            aliases = subprocess.run([*command, '--webserver=init', '--web=help'], cwd=root, env=env,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', timeout=30)
+            assert aliases.returncode == 2 and 'different values' in aliases.stderr
+            # No service flag means normal RPC, even with the extension installed.
             rpc = subprocess.run([*command, '--mode', 'rpc'], cwd=root, env=env,
                 input='{"type":"stop","id":"fixture-stop"}\n', capture_output=True,
                 text=True, encoding='utf-8', timeout=30)
@@ -178,6 +186,6 @@ const {chromium, expect} = require(path.resolve(process.argv[1], 'node_modules/@
             print(json.dumps(dict(passed=True, nativePlugin=True, init=True, frontend=True,
                 authenticated=True, nativeRpc=True, noRecursiveStartup=True,
                 restartPreservesSessions=True, gracefulShutdown=os.name != 'nt',
-                startupFailuresExit=True, initPreservesExisting=True, browser=args.browser, noModelCalls=True)))
+                startupFailuresExit=True, initPreservesExisting=True, serviceFlag=service_flag, explicitConfig=True, cliOverrides=True, help=True, aliasConflict=True, browser=args.browser, noModelCalls=True)))
         finally:
             stop()

@@ -81,7 +81,7 @@ Download and extract a [Web release](https://github.com/pi-rust/rpi-package/rele
 
 Open [http://127.0.0.1:3030/](http://127.0.0.1:3030/), select a project, and create a session. On Windows, use `rpi-web.exe` and `rpi.exe`.
 
-The [Web user guide](packages/rpi-web/README.md) covers Windows / Linux / macOS setup, project creation, model credentials, password login, remote access, persistence, and upgrades. The source version adds `rpi --web` with embedded frontend resources; install it locally using `rpi install rpi-web --path packages/rpi-web`. This extension entry point will be available in the next release. Existing Web 0.1.1 archives provide the standalone program.
+The [Web user guide](packages/rpi-web/README.md) covers Windows / Linux / macOS setup, project creation, model credentials, password login, remote access, persistence, and upgrades. Web 0.1.7 uses `rpi --webserver` to start the native extension with embedded frontend resources; `--web` remains a compatibility alias. Install it with `rpi install rpi-web --github pi-rust/rpi-package`, or from a checkout using `rpi install rpi-web --path packages/rpi-web`.
 
 Web 0.1.1 supports `.rpi/web.json` startup settings. Run `rpi-web --init` once in a project directory, configure the host and assets paths, then use `rpi-web` for subsequent starts. Global defaults can be stored in `~/.rpi/web.json`, and CLI arguments provide temporary overrides. Users of Web 0.1.0 must upgrade to use configuration files.
 

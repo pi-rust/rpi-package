@@ -38,8 +38,9 @@ with tempfile.TemporaryDirectory(prefix='rpi-web-startup-') as directory:
     if args.plugin:
         plugin = Path(args.plugin).resolve()
         shutil.copy2(plugin, extensions / plugin.name)
-        commands.append(('extension', [str(Path(args.rpi).resolve()), '--offline', '--no-session',
-            '--local-only', '--extensions-dir', str(extensions), '--web']))
+        for flag in ['--webserver', '--web']:
+            commands.append(('extension ' + flag, [str(Path(args.rpi).resolve()), '--offline', '--no-session',
+                '--local-only', '--extensions-dir', str(extensions), flag]))
     binds = ['127.0.0.1', '0.0.0.0']
     ipv6 = False
     try:

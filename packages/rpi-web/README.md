@@ -2,7 +2,7 @@
 
 rpi-web is a browser workspace for the native `rpi` coding agent. It provides a project and session sidebar, streaming conversations, tool interactions, Markdown rendering, file previews, and Git diffs. Tool cards show elapsed execution time while commands run and keep the final duration after completion, reload, and service restart. The interface supports English and Simplified Chinese, with light and dark themes.
 
-Runtime: `browser → rpi --web (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
+Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
 
 ## Installation
 
@@ -14,27 +14,27 @@ The latest release supports native extension installation (Web 0.1.1 and earlier
 
 ```bash
 rpi install rpi-web --github pi-rust/rpi-package
-rpi --web=init  # Create project .rpi/web.json once.
-rpi --web      # Start from that project directory.
+rpi --webserver=init  # Create project .rpi/web.json once.
+rpi --webserver      # Start from that project directory.
 ```
 
 The host also supports `rpi install rpi-web` with repository discovery from crates.io metadata. To try the current implementation from a local checkout before publication:
 
 ```bash
 rpi install rpi-web --path packages/rpi-web
-rpi --web=init
-rpi --web
+rpi --webserver=init
+rpi --webserver
 ```
 
-Run the installation command from the `rpi-package` repository root, then start Web from the project you want to use. The extension includes the complete frontend in its library; it needs no standalone Web executable, Node.js, or separate assets directory. Unless `rpiBin` is explicitly configured, sessions use the same `rpi` executable that loaded the extension. RPC children do not start another Web server.
+Run the installation command from the `rpi-package` repository root, then start Web from the project you want to use. The extension includes the complete frontend in its library; it needs no standalone Web executable, Node.js, or separate assets directory. Unless `rpiBin` is explicitly configured, sessions use the same `rpi` executable that loaded the extension. RPC children do not start another Web server. Starting with Web 0.1.7, `--webserver` is the preferred entry point; `--web` remains a compatibility alias, including `=init`, `=help`, and `=CONFIG`. Both names use the same `.rpi/web.json`. Use one name per invocation; different values supplied to both names are rejected.
 
-Both entry points read the same `.rpi/web.json`. Use `rpi --web=/absolute/path/to/web.json` to select an explicit file, and `rpi --web=help` for help. Keep the host process running; Ctrl+C stops Web, closes streams and session children, and releases the listener. Saved transcripts remain available after restart. Choose one service entry point per process: `--web` cannot be combined with `--acp`, `--webui`, or `--server`.
+Both entry points read the same `.rpi/web.json`. Use `rpi --webserver=/absolute/path/to/web.json` to select an explicit file, and `rpi --webserver=help` for help. Keep the host process running; Ctrl+C stops Web, closes streams and session children, and releases the listener. Saved transcripts remain available after restart. Choose one service entry point per process: `--webserver` cannot be combined with `--acp`, `--webui`, or `--server`.
 
 The host also forwards its own `--port` and `--bind` options to Web, so a one-off override needs no file edit:
 
 ```bash
-rpi --web --port 3031
-rpi --web --port 3031 --bind 0.0.0.0
+rpi --webserver --port 3031
+rpi --webserver --port 3031 --bind 0.0.0.0
 ```
 
 These values are applied after every configuration file, exactly like `rpi-web --port 3031 / --bind 0.0.0.0` for the standalone executable.
@@ -57,7 +57,7 @@ After the listener binds successfully, the terminal shows a server status page:
   Keep this terminal open. Press Ctrl+C to stop.
 ```
 
-`--web` runs the server in the terminal; open the displayed URL to chat in the browser. The page shows the actual bound port, including an OS-assigned port when `port` is `0`. IPv6 URLs use brackets. A wildcard listener (`0.0.0.0` or `::`) displays a loopback browser URL. Configure `allowedHosts` and the login password before connecting remotely. A port conflict exits with an error without displaying a Running page.
+`--webserver` runs the server in the terminal; open the displayed URL to chat in the browser. The page shows the actual bound port, including an OS-assigned port when `port` is `0`. IPv6 URLs use brackets. A wildcard listener (`0.0.0.0` or `::`) displays a loopback browser URL. Configure `allowedHosts` and the login password before connecting remotely. A port conflict exits with an error without displaying a Running page.
 
 ### Standalone executable
 
@@ -102,7 +102,7 @@ Run this once from your project directory:
 rpi-web --init
 ```
 
-For an extension installation, use `rpi --web=init` instead. Either command creates `.rpi/web.json` without overwriting an existing file. The default contents are:
+For an extension installation, use `rpi --webserver=init` instead. Either command creates `.rpi/web.json` without overwriting an existing file. The default contents are:
 
 ```json
 {
@@ -115,7 +115,7 @@ For an extension installation, use `rpi --web=init` instead. Either command crea
 With the host available, subsequent starts from that project directory need only:
 
 ```bash
-rpi --web  # Extension installation.
+rpi --webserver  # Extension installation.
 # Or: rpi-web, when using the standalone executable.
 ```
 
@@ -137,7 +137,7 @@ Every field is optional. JSON paths are resolved relative to **the configuration
 
 Settings are applied in this order: built-in defaults → `~/.rpi/agent/web.json` (or `$RPI_CODING_AGENT_DIR/web.json`) → the startup project's `.rpi/web.json` → command-line options. A legacy `~/.rpi/web.json` is still read first, so an existing installation keeps working while the agent-dir file takes precedence. The startup project defaults to the current directory. With `--project PATH`, the project configuration is discovered in that directory; parent directories are not searched. Global settings suit a service managing several projects, while project settings suit starting from a project directory.
 
-Later fields replace earlier values. A project's `projects` array replaces the global list; CLI `--add-project` options append to the resulting list. For a temporary port change, use `rpi-web --port 3031` (standalone) or `rpi --web --port 3031` (extension). If you configured `allowedHosts`, update its port entries as needed.
+Later fields replace earlier values. A project's `projects` array replaces the global list; CLI `--add-project` options append to the resulting list. For a temporary port change, use `rpi-web --port 3031` (standalone) or `rpi --webserver --port 3031` (extension). If you configured `allowedHosts`, update its port entries as needed.
 
 To load only a specific configuration file, followed by CLI overrides:
 
@@ -226,8 +226,8 @@ Run `rpi-web --help` to list options.
 | `--projects-root PATH` | `projects/` beside the registry; managed root for browser-created or added projects |
 | `--rpi-bin PATH` | `rpi` on PATH; an absolute executable path is recommended |
 | `--assets PATH` | Discover assets beside the executable or in the source tree; an absolute path to the complete frontend directory is recommended for deployment |
-| `--bind IP` | `127.0.0.1`; use `0.0.0.0` for LAN or container access; `rpi --web --bind IP` works too |
-| `--port N` | `3030`; CLI (`rpi --web --port N` or `rpi-web --port N`) overrides every configuration file |
+| `--bind IP` | `127.0.0.1`; use `0.0.0.0` for LAN or container access; `rpi --webserver --bind IP` works too |
+| `--port N` | `3030`; CLI (`rpi --webserver --port N` or `rpi-web --port N`) overrides every configuration file |
 | `--registry PATH` | `~/.rpi-web/sessions.json`; session index, titles, and organization metadata |
 | `--session-dir PATH` | Native host's default session store; override to select an explicit transcript directory |
 | `--version` / `-V` | Print the Web version |
@@ -271,7 +271,7 @@ Environment variables are read at startup; restart the service after changing th
 | Symptom | What to check |
 | --- | --- |
 | Cannot start `rpi` | Check `rpi --version` and set an absolute `--rpi-bin` path |
-| `rpi --web` opens terminal chat instead of the server | Install the Web extension with `rpi install rpi-web --github pi-rust/rpi-package`, then restart rpi. Recent hosts report a missing Web extension directly. |
+| `rpi --webserver` opens terminal chat instead of the server | Install the Web extension with `rpi install rpi-web --github pi-rust/rpi-package`, then restart rpi. Check that Web 0.1.7 or newer is installed for `--webserver`; older extensions use `--web`. |
 | Blank page or JS / CSS 404 | Check that `--assets` contains `index.html` and the nested `assets/` directory; update the complete frontend bundle and refresh |
 | LAN access rejected | Check the bind address, port connectivity, and the Host / port entries in `RPI_WEB_ALLOWED_HOSTS` |
 | Login succeeds but model calls fail | Configure model authorization separately from the Web password; check the service user's credentials and selected model |
@@ -295,6 +295,14 @@ The frontend bundle in `assets/` is generated, not committed. Build it once with
 frontend commands below before `cargo build` / `cargo run` if you want the embedded
 workspace; without it the server still compiles and serves a "frontend not built" page,
 and `--assets` can point at an existing bundle.
+
+### How the frontend is built and served
+
+The frontend is a React application built with Vite. At release time, `npm ci` and `npm run build` run in `frontend/`; Vite writes `index.html`, JavaScript, CSS, and the favicon into `../assets/`. Cargo then runs `build.rs`, which inventories that directory and generates `include_bytes!` entries for every file. Both the native extension library and the standalone executable contain this bundle.
+
+At runtime, `rpi --webserver` loads the extension and starts the shared Axum HTTP server. Opening its URL loads the embedded HTML and assets into the browser, which runs React and connects to the same server's API and SSE routes. Each active session uses a native `rpi --mode rpc` child. There is no separate frontend process, Node.js runtime, or Vite server in a release installation. An explicit `--assets` setting can select external frontend files instead.
+
+For frontend development, `npm run dev` starts Vite with hot reload; its `/api` proxy points to the separately running Rust backend. This development server is not part of the installed extension.
 
 ### API and capability discovery
 
