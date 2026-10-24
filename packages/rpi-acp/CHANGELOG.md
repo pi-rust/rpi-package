@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.14...rpi-acp-v0.1.15) - 2026-10-24
+
+### Other
+
+- extract shared extension core and HTTP adapter
+
 ## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.13...rpi-acp-v0.1.14) - 2026-10-23
 
 ### Fixed

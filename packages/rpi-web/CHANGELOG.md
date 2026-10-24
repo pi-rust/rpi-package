@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.7...rpi-web-v0.1.8) - 2026-10-24
+
+### Fixed
+
+- *(web)* improve session loading and workspace UI
+
+### Other
+
+- extract shared extension core and HTTP adapter
+
 ### Fixed
 
 - Show the session's project directory and Git branch beside the composer, with linked-worktree detection and compact path truncation on narrow screens.
