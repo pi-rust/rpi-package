@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.16...rpi-acp-v0.1.17) - 2026-10-25
+
+### Added
+
+- *(durable)* add branch-backed durable runtime
+
 ### Added
 
 - Add the optional ACP `session/durable` extension for branch-backed durable

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.1...rpi-http-v0.1.2) - 2026-10-25
+
+### Added
+
+- *(durable)* add branch-backed durable runtime
+
 ### Added
 
 - Add `GET` and `POST /api/v1/sessions/{id}/durable` for optional durable

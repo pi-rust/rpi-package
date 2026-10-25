@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.9...rpi-web-v0.1.10) - 2026-10-25
+
+### Added
+
+- *(durable)* add branch-backed durable runtime
+
 ## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.8...rpi-web-v0.1.9) - 2026-10-25
 
 ### Other

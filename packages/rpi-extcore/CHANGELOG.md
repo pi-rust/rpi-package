@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.2...rpi-extcore-v0.1.3) - 2026-10-25
+
+### Added
+
+- *(durable)* add branch-backed durable runtime
+
+### Fixed
+
+- *(extcore)* keep test helpers out of published builds
+- *(durable)* require advertised branch capabilities
+
 ### Added
 
 - Connect `DurableCoordinator` to `Service` session lifecycles, native branch
