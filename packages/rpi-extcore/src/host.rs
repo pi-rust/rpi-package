@@ -599,6 +599,18 @@ impl HostSession {
         self.ready.clone()
     }
 
+    /// Whether the native ready frame advertises an optional RPC command.
+    /// Hosts that omit `supportedCommands` are treated as legacy-compatible:
+    /// the caller may still probe the command and handle an unsupported error.
+    pub fn supports_command(&self, command: &str) -> bool {
+        self.ready
+            .get("supportedCommands")
+            .and_then(Value::as_array)
+            .map_or(true, |commands| {
+                commands.iter().any(|value| value.as_str() == Some(command))
+            })
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<BufferedEvent> {
         self.runtime.events.subscribe()
     }

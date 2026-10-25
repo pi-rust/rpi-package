@@ -593,6 +593,11 @@ impl DurableRuntime {
     /// Try to attach durable support without making it a prerequisite for a
     /// normal native session. Unsupported optional RPCs return `None`.
     pub async fn try_attach(session: Arc<HostSession>) -> Result<Option<Arc<Self>>, String> {
+        if !session.supports_command("get_session_branch")
+            || !session.supports_command("append_entry")
+        {
+            return Ok(None);
+        }
         let entries = match session.session_branch().await {
             Ok(entries) => entries,
             Err(_) => return Ok(None),
