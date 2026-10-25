@@ -38,6 +38,30 @@ The existing `/api/v1` payloads, cookie authentication, `X-Rpi-Web: 1` mutation 
 
 For compatibility the default registry remains `~/.rpi-web/sessions.json`. Run one backend writer per registry. Separate standalone instances can select their own `--registry` paths.
 
+The durable control plane is available for an opened session at
+`GET /api/v1/sessions/{id}/durable` and
+`POST /api/v1/sessions/{id}/durable`. Durable changes can be streamed from
+`GET /api/v1/sessions/{id}/durable/events`; it emits `durable_ready` for a new
+subscriber and `durable_change` events with the persisted state revision. Use
+`Last-Event-ID` or `?after=` to reconnect. A `resync_required` event means the
+bounded replay window no longer covers the requested revision.
+
+The POST body selects a coordinator operation without duplicating its state
+machine:
+
+```json
+{"operation":"enqueue","text":"run tests"}
+{"operation":"claim","itemId":"item-1"}
+{"operation":"finish","itemId":"item-1","status":"completed","note":"passed"}
+```
+
+Supported operations are `start_run`, `settle_run`, `recover_run`, `enqueue`,
+`claim`, `finish` and `cancel`. Durable is an optional native capability: if
+`rpi --mode rpc` does not provide branch operations, ordinary sessions still
+work and these endpoints return `503 durable_unavailable`. Tool side effects
+are never replayed, and the queue API is coordination only; it does not start a
+background scheduler.
+
 ## Embed the API
 
 `router(core, &config, shutdown_receiver)` builds an API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. Rust callers and HTTP clients then observe the same service state.

@@ -15,6 +15,7 @@ use futures_util::{
     StreamExt,
 };
 use rpi_extcore::{
+    durable::{DurableMutation, QueueStatus},
     host::BufferedEvent,
     protocol::{self, ApiCommand},
     reply::{IntoReply, ReplyKind, ServiceReply},
@@ -24,7 +25,7 @@ use rpi_extcore::{
         SessionListQuery,
     },
 };
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{broadcast, watch};
@@ -233,6 +234,11 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/sessions/{id}/metadata", post(session_metadata))
         .route("/api/v1/sessions/{id}/commands", post(command))
         .route("/api/v1/sessions/{id}/snapshot", get(snapshot))
+        .route(
+            "/api/v1/sessions/{id}/durable",
+            get(durable_state).post(durable_mutation),
+        )
+        .route("/api/v1/sessions/{id}/durable/events", get(durable_events))
         .route("/api/v1/sessions/{id}/events", get(events))
         .with_state(state)
 }
@@ -528,6 +534,91 @@ async fn command(
     .into_response()
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableMutationRequest {
+    operation: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    item_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+fn parse_durable_mutation(request: DurableMutationRequest) -> Result<DurableMutation, String> {
+    let item_id = || {
+        request
+            .item_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "itemId is required".to_string())
+    };
+    match request.operation.trim() {
+        "start_run" => Ok(DurableMutation::StartRun),
+        "settle_run" => Ok(DurableMutation::SettleRun),
+        "recover_run" => Ok(DurableMutation::RecoverRun),
+        "enqueue" => Ok(DurableMutation::Enqueue {
+            text: request
+                .text
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "text is required".to_string())?,
+        }),
+        "claim" => Ok(DurableMutation::Claim { id: item_id()? }),
+        "finish" => {
+            let status = match request.status.as_deref() {
+                Some("completed") => QueueStatus::Completed,
+                Some("failed") => QueueStatus::Failed,
+                Some(other) => return Err(format!("invalid finish status: {other}")),
+                None => return Err("status is required for finish".to_string()),
+            };
+            Ok(DurableMutation::Finish {
+                id: item_id()?,
+                status,
+                note: request.note.unwrap_or_default(),
+            })
+        }
+        "cancel" => Ok(DurableMutation::Cancel {
+            id: item_id()?,
+            note: request.note.unwrap_or_default(),
+        }),
+        other => Err(format!("unsupported durable operation: {other}")),
+    }
+}
+
+async fn durable_state(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    HttpReply(
+        service::durable_state(&state.backend, id)
+            .await
+            .into_reply(),
+    )
+    .into_response()
+}
+
+async fn durable_mutation(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<DurableMutationRequest>,
+) -> axum::response::Response {
+    let mutation = match parse_durable_mutation(request) {
+        Ok(mutation) => mutation,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+        }
+    };
+    HttpReply(
+        service::mutate_durable(&state.backend, id, mutation)
+            .await
+            .into_reply(),
+    )
+    .into_response()
+}
+
 async fn snapshot(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -560,6 +651,122 @@ fn optional_json<T: DeserializeOwned + Default>(
 #[derive(Debug, serde::Deserialize)]
 struct EventQuery {
     after: Option<u64>,
+}
+
+async fn durable_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<EventQuery>,
+) -> axum::response::Response {
+    let after = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .or(query.after);
+    let Some(subscription) = state.backend.durable_subscription(&id, after).await else {
+        let status = if state.backend.live_session(&id).await.is_some() {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::NOT_FOUND
+        };
+        return (
+            status,
+            Json(json!({
+                "error": if status == StatusCode::NOT_FOUND {
+                    "session not found"
+                } else {
+                    "durable unavailable"
+                },
+                "code": if status == StatusCode::NOT_FOUND {
+                    "session_not_found"
+                } else {
+                    "durable_unavailable"
+                }
+            })),
+        )
+            .into_response();
+    };
+    let mut shutdown = state.shutdown;
+    Sse::new(
+        authorized_events(
+            durable_event_stream(id, subscription),
+            state.security,
+            headers,
+        )
+        .take_until(async move {
+            if !*shutdown.borrow_and_update() {
+                let _ = shutdown.changed().await;
+            }
+        }),
+    )
+    .keep_alive(axum::response::sse::KeepAlive::default())
+    .into_response()
+}
+
+fn durable_event_stream(
+    session_id: String,
+    subscription: rpi_extcore::durable::DurableSubscription,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    let rpi_extcore::durable::DurableSubscription {
+        ready,
+        replay,
+        receiver,
+        gap,
+        after,
+    } = subscription;
+    let mut head = Vec::new();
+    if after.is_none() {
+        head.push(Ok(Event::default()
+            .event("durable_ready")
+            .id(ready.revision.to_string())
+            .data(
+                json!({
+                    "sessionId": session_id,
+                    "revision": ready.revision,
+                    "state": ready,
+                })
+                .to_string(),
+            )));
+    }
+    if gap {
+        head.push(Ok(Event::default().event("resync_required").data(
+            json!({
+                "type": "resync_required",
+                "code": "durable_event_gap"
+            })
+            .to_string(),
+        )));
+    }
+    stream::iter(head).chain(
+        rpi_extcore::durable::replay_changes(replay, receiver, after.or(Some(ready.revision))).map(
+            move |item| {
+                Ok(match item {
+                    rpi_extcore::durable::DurableStreamItem::Change(change) => Event::default()
+                        .event("durable_change")
+                        .id(change.revision.to_string())
+                        .data(
+                            json!({
+                                "sessionId": session_id,
+                                "revision": change.revision,
+                                "state": change.state,
+                            })
+                            .to_string(),
+                        ),
+                    rpi_extcore::durable::DurableStreamItem::ResyncRequired { dropped } => {
+                        Event::default().event("resync_required").data(
+                            json!({
+                                "type": "resync_required",
+                                "code": "durable_event_stream_lagged",
+                                "dropped": dropped
+                            })
+                            .to_string(),
+                        )
+                    }
+                })
+            },
+        ),
+    )
 }
 
 async fn events(
@@ -675,6 +882,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn durable_requests_map_to_protocol_neutral_mutations() {
+        let mutation = parse_durable_mutation(DurableMutationRequest {
+            operation: "enqueue".into(),
+            text: Some("run tests".into()),
+            item_id: None,
+            status: None,
+            note: None,
+        })
+        .unwrap();
+        assert!(matches!(mutation, DurableMutation::Enqueue { text } if text == "run tests"));
+
+        let mutation = parse_durable_mutation(DurableMutationRequest {
+            operation: "finish".into(),
+            text: None,
+            item_id: Some("item-1".into()),
+            status: Some("completed".into()),
+            note: Some("passed".into()),
+        })
+        .unwrap();
+        assert!(matches!(
+            mutation,
+            DurableMutation::Finish {
+                id,
+                status: QueueStatus::Completed,
+                note
+            } if id == "item-1" && note == "passed"
+        ));
+    }
+
+    #[test]
+    fn durable_requests_reject_invalid_operations_and_statuses() {
+        let error = parse_durable_mutation(DurableMutationRequest {
+            operation: "finish".into(),
+            text: None,
+            item_id: Some("item-1".into()),
+            status: Some("queued".into()),
+            note: None,
+        })
+        .unwrap_err();
+        assert!(error.contains("invalid finish status"));
+    }
+
+    #[test]
     fn optional_creation_bodies_reject_invalid_json_and_types() {
         assert!(optional_json::<CreateSessionRequest>(b"").is_ok());
         assert!(optional_json::<CreateSessionRequest>(br#"{"projectId":"project-a"}"#).is_ok());
@@ -717,6 +967,76 @@ mod tests {
             assert_eq!(text.matches("id: 5\n").count(), usize::from(has_replay));
             assert_eq!(text.matches("id: 6\n").count(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn durable_events_emit_ready_changes_and_reconnect_replay() {
+        use rpi_extcore::durable::{DurableChange, DurableState, DurableSubscription};
+
+        let (sender, receiver) = broadcast::channel(8);
+        sender
+            .send(DurableChange {
+                revision: 1,
+                state: DurableState {
+                    revision: 1,
+                    ..DurableState::default()
+                },
+            })
+            .unwrap();
+        drop(sender);
+        let body = axum::body::to_bytes(
+            Sse::new(durable_event_stream(
+                "session-1".into(),
+                DurableSubscription {
+                    ready: DurableState::default(),
+                    replay: vec![],
+                    receiver,
+                    gap: false,
+                    after: None,
+                },
+            ))
+            .into_response()
+            .into_body(),
+            4096,
+        )
+        .await
+        .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: durable_ready\n"));
+        assert!(text.contains("event: durable_change\n"));
+        assert!(text.contains("id: 1\n"));
+
+        let (sender, receiver) = broadcast::channel(8);
+        drop(sender);
+        let body = axum::body::to_bytes(
+            Sse::new(durable_event_stream(
+                "session-1".into(),
+                DurableSubscription {
+                    ready: DurableState {
+                        revision: 1,
+                        ..DurableState::default()
+                    },
+                    replay: vec![DurableChange {
+                        revision: 1,
+                        state: DurableState {
+                            revision: 1,
+                            ..DurableState::default()
+                        },
+                    }],
+                    receiver,
+                    gap: false,
+                    after: Some(0),
+                },
+            ))
+            .into_response()
+            .into_body(),
+            4096,
+        )
+        .await
+        .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!text.contains("event: durable_ready\n"));
+        assert_eq!(text.matches("id: 1\n").count(), 1);
     }
 
     #[tokio::test]

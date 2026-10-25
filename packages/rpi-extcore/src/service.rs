@@ -1,10 +1,15 @@
 //! Session and workspace operations shared by protocol adapters.
+#[cfg(test)]
+use crate::durable::ENTRY_TYPE;
 use crate::{
+    durable::{
+        DurableCoordinator, DurableError, DurableMutation, DurableRuntime, DurableSubscription,
+    },
     host::HostSession,
     projects::Projects,
     protocol::{self, ApiCommand},
     registry::{Registry, RegistryEntry},
-    reply::{IntoReply, ReplyKind, ServiceReply},
+    reply::{IntoReply, ReplyKind, ServiceReply, ServiceResult},
     workspace::{self, Project},
 };
 use serde::Deserialize;
@@ -45,6 +50,8 @@ pub struct Service {
     projects: Arc<RwLock<Projects>>,
     default_project_id: String,
     sessions: Arc<RwLock<HashMap<String, Arc<HostSession>>>>,
+    durable: Arc<RwLock<HashMap<String, Arc<DurableRuntime>>>>,
+    durable_observers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
 }
@@ -78,6 +85,8 @@ impl Service {
             projects: Arc::new(RwLock::new(projects)),
             default_project_id,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            durable: Arc::new(RwLock::new(HashMap::new())),
+            durable_observers: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             registry: Arc::new(RwLock::new(registry)),
         }))
@@ -97,8 +106,174 @@ impl Service {
         let _lifecycle = self.session_lifecycle.lock().await;
         let sessions: Vec<_> = self.sessions.read().await.values().cloned().collect();
         futures_util::future::join_all(sessions.iter().map(|session| session.shutdown())).await;
+        let observers: Vec<_> = self
+            .durable_observers
+            .lock()
+            .await
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect();
+        for observer in observers {
+            observer.abort();
+        }
+        self.durable.write().await.clear();
+    }
+
+    /// Return the durable runtime for a live native session.
+    pub async fn durable_runtime(&self, id: &str) -> Option<Arc<DurableRuntime>> {
+        self.durable.read().await.get(id).cloned()
+    }
+
+    pub async fn durable_subscription(
+        &self,
+        id: &str,
+        after: Option<u64>,
+    ) -> Option<DurableSubscription> {
+        let runtime = self.durable_runtime(id).await?;
+        Some(runtime.subscribe_changes(after).await)
+    }
+
+    /// Return the durable coordinator for a live native session.
+    pub async fn durable_coordinator(&self, id: &str) -> Option<Arc<Mutex<DurableCoordinator>>> {
+        self.durable_runtime(id)
+            .await
+            .map(|runtime| runtime.coordinator())
+    }
+
+    /// Apply one protocol-neutral durable mutation and persist it as a native
+    /// custom entry. The in-memory mutation is rolled back if the append fails.
+    pub async fn update_durable<F, T>(&self, id: &str, update: F) -> Result<T, String>
+    where
+        F: FnOnce(&mut DurableCoordinator) -> Result<T, DurableError>,
+    {
+        if self.live_session(id).await.is_none() {
+            return Err("session not found".to_string());
+        }
+        let runtime = self
+            .durable_runtime(id)
+            .await
+            .ok_or_else(|| "durable coordinator is not initialized".to_string())?;
+        runtime.update(update).await
+    }
+
+    /// Return the current durable state for a live session.
+    pub async fn durable_state(&self, id: &str) -> ServiceResult {
+        if self.live_session(id).await.is_none() {
+            return Err((
+                ReplyKind::NotFound,
+                json!({"error": "session not found", "code": "session_not_found"}),
+            ));
+        }
+        let runtime = self.durable_runtime(id).await.ok_or_else(|| {
+            (
+                ReplyKind::Unavailable,
+                json!({
+                    "error": "durable coordinator is not initialized",
+                    "code": "durable_unavailable"
+                }),
+            )
+        })?;
+        Ok(json!({"sessionId": id, "state": runtime.state().await}))
+    }
+
+    /// Apply one durable control-plane mutation and return the resulting state.
+    pub async fn mutate_durable(&self, id: &str, mutation: DurableMutation) -> ServiceResult {
+        let result = self
+            .update_durable(id, |coordinator| coordinator.apply(mutation))
+            .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) if error == "session not found" => {
+                return Err((ReplyKind::NotFound, json!({"error": error})))
+            }
+            Err(error) if error == "durable coordinator is not initialized" => {
+                return Err((
+                    ReplyKind::Unavailable,
+                    json!({
+                        "error": error,
+                        "code": "durable_unavailable"
+                    }),
+                ))
+            }
+            Err(error) => {
+                let kind = if error.contains("queue item")
+                    || error.contains("only an interrupted run")
+                    || error.contains("run is ")
+                {
+                    ReplyKind::Conflict
+                } else if error.contains("required") || error.contains("must be") {
+                    ReplyKind::InvalidInput
+                } else if error.contains("queue cannot contain") {
+                    ReplyKind::LimitExceeded
+                } else {
+                    ReplyKind::HostUnavailable
+                };
+                return Err((kind, json!({"error": error})));
+            }
+        };
+        let coordinator = self.durable_coordinator(id).await.ok_or_else(|| {
+            (
+                ReplyKind::Unavailable,
+                json!({"error": "durable coordinator disappeared"}),
+            )
+        })?;
+        let state = coordinator.lock().await.state().clone();
+        Ok(json!({
+            "sessionId": id,
+            "result": result,
+            "state": state,
+        }))
     }
 }
+
+pub async fn durable_state(state: &Service, id: String) -> ServiceResult {
+    state.durable_state(&id).await
+}
+
+pub async fn mutate_durable(
+    state: &Service,
+    id: String,
+    mutation: DurableMutation,
+) -> ServiceResult {
+    state.mutate_durable(&id, mutation).await
+}
+
+async fn attach_durable(
+    state: &Service,
+    id: &str,
+    session: Arc<HostSession>,
+) -> Result<(), String> {
+    if let Some(previous) = state.durable_observers.lock().await.remove(id) {
+        previous.abort();
+    }
+    state.durable.write().await.remove(id);
+
+    let Some(runtime) = DurableRuntime::try_attach(session).await? else {
+        // Durable is an optional native capability. Keep the ordinary session
+        // alive when an older host does not expose branch RPCs.
+        return Ok(());
+    };
+    state
+        .durable
+        .write()
+        .await
+        .insert(id.to_owned(), runtime.clone());
+    let observer = runtime.spawn_observer();
+    state
+        .durable_observers
+        .lock()
+        .await
+        .insert(id.to_owned(), observer);
+    Ok(())
+}
+
+async fn detach_durable(state: &Service, id: &str) {
+    if let Some(observer) = state.durable_observers.lock().await.remove(id) {
+        observer.abort();
+    }
+    state.durable.write().await.remove(id);
+}
+
 pub async fn list_projects(state: &Service) -> Value {
     let projects = state.projects.read().await;
 
@@ -285,6 +460,16 @@ pub async fn create_session(
     let id = uuid::Uuid::new_v4().to_string();
     match spawn_host(state, &id, &project).await {
         Ok(session) => {
+            if let Err(error) = attach_durable(state, &id, session.clone()).await {
+                session.stop().await;
+                return (
+                    ReplyKind::HostUnavailable,
+                    json!({
+                        "error": error,
+                        "code": "durable_runtime_unavailable"
+                    }),
+                );
+            }
             let ready = session.ready();
             let snapshot = session.snapshot().await;
             let saved = state.registry.write().await.upsert(RegistryEntry {
@@ -298,6 +483,7 @@ pub async fn create_session(
                 updated_at: snapshot.updated_at,
             });
             if let Err(error) = saved {
+                detach_durable(state, &id).await;
                 session.stop().await;
                 return (ReplyKind::Internal, json!({"error": error}));
             }
@@ -566,7 +752,19 @@ async fn fork_session_impl(
         .sessions
         .write()
         .await
-        .insert(actual_id.clone(), session);
+        .insert(actual_id.clone(), session.clone());
+    if let Err(error) = attach_durable(state, &actual_id, session.clone()).await {
+        state.sessions.write().await.remove(&actual_id);
+        session.stop().await;
+        return (
+            ReplyKind::HostUnavailable,
+            json!({
+                "error": error,
+                "code": "durable_runtime_unavailable"
+            }),
+        )
+            .into_reply();
+    }
     (
         ReplyKind::Created,
         json!({
@@ -604,6 +802,7 @@ pub async fn open_session(state: &Service, id: String) -> (ReplyKind, Value) {
         }
         // The native child exited (crash, kill, or `stop`); drop the corpse so
         // the branch can be reopened from its persisted session file.
+        detach_durable(state, &id).await;
         state.sessions.write().await.remove(&id);
     }
     let known = state.registry.read().await.get(&id).cloned();
@@ -619,6 +818,16 @@ pub async fn open_session(state: &Service, id: String) -> (ReplyKind, Value) {
     };
     match spawn_host(state, &id, &project).await {
         Ok(session) => {
+            if let Err(error) = attach_durable(state, &id, session.clone()).await {
+                session.stop().await;
+                return (
+                    ReplyKind::HostUnavailable,
+                    json!({
+                        "error": error,
+                        "code": "durable_runtime_unavailable"
+                    }),
+                );
+            }
             let snapshot = session.snapshot().await;
             let saved = {
                 let mut registry = state.registry.write().await;
@@ -639,6 +848,7 @@ pub async fn open_session(state: &Service, id: String) -> (ReplyKind, Value) {
                 })
             };
             if let Err(error) = saved {
+                detach_durable(state, &id).await;
                 session.stop().await;
                 return (ReplyKind::Internal, json!({"error": error}));
             }
@@ -875,6 +1085,7 @@ pub async fn delete_session(state: &Service, id: String) -> ServiceReply {
         Err(error) => return (ReplyKind::Internal, json!({"error": error})).into_reply(),
     };
     let removed = state.sessions.write().await.remove(&id);
+    detach_durable(state, &id).await;
     match removed {
         Some(session) => {
             session.stop().await;
@@ -1072,6 +1283,156 @@ pub fn replay_gap(after: Option<u64>, first: Option<u64>, latest: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn durable_service_recovers_branch_and_persists_live_mutations() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let root =
+            std::env::temp_dir().join(format!("rpi-durable-service-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let service = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("sessions.json"),
+            ..BackendConfig::default()
+        })
+        .unwrap();
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        let injector_for_fixture = injector.clone();
+        let appends = Arc::new(AtomicUsize::new(0));
+        let appends_for_fixture = appends.clone();
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let data = if request["type"] == "get_session_branch" {
+                    json!({"entries": [{
+                        "type": "custom",
+                        "customType": ENTRY_TYPE,
+                        "data": {
+                            "revision": 3,
+                            "nextRunId": 1,
+                            "run": {"id": "run-1", "status": "running", "tools": []},
+                            "queue": []
+                        }
+                    }]})
+                } else {
+                    appends_for_fixture.fetch_add(1, Ordering::SeqCst);
+                    json!({"entryId": "entry-durable"})
+                };
+                injector_for_fixture
+                    .send(json!({
+                        "type": "response",
+                        "id": request["id"],
+                        "success": true,
+                        "data": data
+                    }))
+                    .unwrap();
+            }
+        });
+        service
+            .sessions
+            .write()
+            .await
+            .insert("durable".into(), session.clone());
+
+        attach_durable(&service, "durable", session.clone())
+            .await
+            .unwrap();
+        let recovered = service.durable_coordinator("durable").await.unwrap();
+        assert_eq!(
+            recovered.lock().await.state().run.as_ref().unwrap().status,
+            crate::durable::RunStatus::Interrupted
+        );
+
+        let item_id = service
+            .update_durable("durable", |coordinator| {
+                Ok(coordinator.enqueue("persist this")?.id.clone())
+            })
+            .await
+            .unwrap();
+        assert_eq!(item_id, "item-1");
+        assert!(appends.load(Ordering::SeqCst) >= 2);
+
+        let claimed = service
+            .mutate_durable(
+                "durable",
+                DurableMutation::Claim {
+                    id: item_id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed["result"]["changed"], true);
+        let snapshot = service.durable_state("durable").await.unwrap();
+        assert_eq!(snapshot["state"]["queue"][0]["status"], "claimed");
+
+        detach_durable(&service, "durable").await;
+        fixture.abort();
+        service.shutdown().await;
+        drop(service);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn durable_observer_folds_native_lifecycle_events() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let root =
+            std::env::temp_dir().join(format!("rpi-durable-events-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let service = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("sessions.json"),
+            ..BackendConfig::default()
+        })
+        .unwrap();
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        let injector_for_fixture = injector.clone();
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let data = if request["type"] == "get_session_branch" {
+                    json!({"entries": []})
+                } else {
+                    json!({"entryId": "entry-durable"})
+                };
+                injector_for_fixture
+                    .send(json!({
+                        "type": "response",
+                        "id": request["id"],
+                        "success": true,
+                        "data": data
+                    }))
+                    .unwrap();
+            }
+        });
+        service
+            .sessions
+            .write()
+            .await
+            .insert("events".into(), session.clone());
+        attach_durable(&service, "events", session.clone())
+            .await
+            .unwrap();
+        injector.send(json!({"type": "agent_start"})).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let state = service.durable_coordinator("events").await.unwrap();
+        assert_eq!(
+            state.lock().await.state().run.as_ref().unwrap().status,
+            crate::durable::RunStatus::Running
+        );
+
+        detach_durable(&service, "events").await;
+        fixture.abort();
+        service.shutdown().await;
+        drop(service);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn snapshot_limits_native_history_without_losing_the_earlier_cursor() {
         use tokio::io::{AsyncBufReadExt, BufReader};

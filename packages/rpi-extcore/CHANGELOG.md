@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Connect `DurableCoordinator` to `Service` session lifecycles, native branch
+  recovery, lifecycle event observation and atomic custom-entry persistence.
+- Add native RPC support for reading the selected session branch and appending
+  protocol-neutral custom entries.
+- Add protocol-neutral durable control-plane mutations for run recovery and
+  branch-scoped queue operations.
+- Add `DurableRuntime` so Service and ACP share branch recovery, event
+  observation, mutation persistence and append-failure rollback.
+- Publish bounded revision-based durable changes for reconnectable adapters.
+
+## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.1...rpi-extcore-v0.1.2) - 2026-10-25
+
+### Added
+
+- Add the protocol-neutral `durable` coordinator for bounded run, tool
+  recovery and branch-scoped work queue semantics.
+- Prepare the crate for independent crates.io consumption with explicit package
+  metadata, docs.rs configuration and public API guidance.
+
 ## [0.1.1](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.0...rpi-extcore-v0.1.1) - 2026-10-25
 
 ### Other

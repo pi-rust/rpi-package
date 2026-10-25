@@ -66,6 +66,17 @@
     "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-lens-v0.1.9/rpi-extension.json"
   },
   {
+    "name": "rpi-durable",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "durable",
+    "inspiredBy": "Durable session workflow checkpoints",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-durable --path packages/rpi-durable",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-durable-v0.1.0/rpi-extension.json"
+  },
+  {
     "name": "rpi-todo",
     "version": "0.2.4",
     "type": "extension",

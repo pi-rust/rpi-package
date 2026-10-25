@@ -77,6 +77,24 @@ async fn http_and_rust_share_project_state_without_frontend_or_plugin_runtime() 
         .unwrap()
         .iter()
         .any(|project| project["name"] == "from-http"));
+    let durable_state = client
+        .get(format!("{base}/api/v1/sessions/missing/durable"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(durable_state.status(), reqwest::StatusCode::NOT_FOUND);
+    let durable_state_body: Value = durable_state.json().await.unwrap();
+    assert_eq!(durable_state_body["code"], "session_not_found");
+
+    let durable_events = client
+        .get(format!("{base}/api/v1/sessions/missing/durable/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(durable_events.status(), reqwest::StatusCode::NOT_FOUND);
+    let durable_events_body: Value = durable_events.json().await.unwrap();
+    assert_eq!(durable_events_body["code"], "session_not_found");
+
     for path in ["/", "/assets/index.js"] {
         assert_eq!(
             client

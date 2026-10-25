@@ -4,9 +4,11 @@
 //! 2.0 with one message per line on stdin/stdout:
 //!
 //! * client → agent requests we implement: `initialize`, `session/new`,
-//!   `session/prompt`, `session/load`, `session/resume`; notification `session/cancel`.
+//!   `session/prompt`, `session/load`, `session/resume`, and the rpi extension
+//!   `session/durable`; notification `session/cancel`.
 //! * agent → client: `session/update` notifications (streamed text, thinking,
-//!   tool calls) and one JSON-RPC response per request.
+//!   tool calls), optional `session/durable_update` notifications, and one
+//!   JSON-RPC response per request.
 //!
 //! We deliberately do **not** implement the client-side `fs/*` and `terminal/*`
 //! methods: rpi already has native `read`/`write`/`edit`/`bash` tools, so the
@@ -15,6 +17,7 @@
 //! terminal agent.
 
 use crate::diagln;
+use rpi_extcore::durable::{DurableMutation, QueueStatus};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -48,6 +51,64 @@ pub fn acp_stdin() -> Result<(StdinLines, Option<String>), String> {
         Err(error) => return Err(error.to_string()),
     };
     Ok((input, pending))
+}
+
+#[derive(Debug, Deserialize)]
+struct DurableRequest {
+    operation: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(rename = "itemId", default)]
+    item_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// ACP extension for durable state and branch-scoped queue coordination.
+/// Standard ACP clients may ignore this method; rpi-aware clients can use it
+/// without bypassing the native session branch.
+fn durable_mutation(params: &Value) -> Result<DurableMutation, String> {
+    let request: DurableRequest = serde_json::from_value(params.clone())
+        .map_err(|error| format!("invalid durable request: {error}"))?;
+    let item_id = || {
+        request
+            .item_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "itemId is required".to_string())
+    };
+    match request.operation.trim() {
+        "start_run" => Ok(DurableMutation::StartRun),
+        "settle_run" => Ok(DurableMutation::SettleRun),
+        "recover_run" => Ok(DurableMutation::RecoverRun),
+        "enqueue" => Ok(DurableMutation::Enqueue {
+            text: request
+                .text
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "text is required".to_string())?,
+        }),
+        "claim" => Ok(DurableMutation::Claim { id: item_id()? }),
+        "finish" => {
+            let status = match request.status.as_deref() {
+                Some("completed") => QueueStatus::Completed,
+                Some("failed") => QueueStatus::Failed,
+                Some(other) => return Err(format!("invalid finish status: {other}")),
+                None => return Err("status is required for finish".to_string()),
+            };
+            Ok(DurableMutation::Finish {
+                id: item_id()?,
+                status,
+                note: request.note.unwrap_or_default(),
+            })
+        }
+        "cancel" => Ok(DurableMutation::Cancel {
+            id: item_id()?,
+            note: request.note.unwrap_or_default(),
+        }),
+        other => Err(format!("unsupported durable operation: {other}")),
+    }
 }
 
 /// ACP protocol major version we speak. Stable v1.
@@ -94,6 +155,8 @@ pub struct Writer {
     closed: std::sync::atomic::AtomicBool,
     next_id: AtomicU64,
     questions: std::sync::atomic::AtomicBool,
+    /// Whether the client supports the standard ACP `elicitation/create` form.
+    elicitation: std::sync::atomic::AtomicBool,
 }
 
 impl Writer {
@@ -104,6 +167,7 @@ impl Writer {
             closed: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             questions: std::sync::atomic::AtomicBool::new(false),
+            elicitation: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -184,10 +248,21 @@ impl Writer {
                 == Some(1),
             Ordering::Release,
         );
+        self.elicitation.store(
+            matches!(
+                params.pointer("/clientCapabilities/elicitation/form"),
+                Some(Value::Object(_)) | Some(Value::Bool(true))
+            ),
+            Ordering::Release,
+        );
     }
 
     pub(crate) fn supports_questions(&self) -> bool {
         self.questions.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn supports_elicitation(&self) -> bool {
+        self.elicitation.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -198,6 +273,7 @@ impl Writer {
             closed: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             questions: std::sync::atomic::AtomicBool::new(false),
+            elicitation: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -255,7 +331,14 @@ pub fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "agentCapabilities": {
-            "_meta": {"pi-rust/questions": 1},
+            "_meta": {
+                "pi-rust/questions": 1,
+                "rpi/durable": {
+                    "version": 1,
+                    "optional": true,
+                    "notifications": ["session/durable_update"]
+                }
+            },
             "loadSession": true,
             "auth": {"logout": {}},
             "sessionCapabilities": {"resume": {}, "delete": {}},
@@ -426,6 +509,53 @@ pub async fn run(
                         writer.respond(&id, result).await;
                     }
                     Err(error) => writer.session_error(&id, "session/new", &error).await,
+                }
+            }
+            (Some(id), Some("session/durable")) => {
+                let session_id = message
+                    .pointer("/params/sessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let session = sessions.lock().await.get(&session_id).cloned();
+                let Some(session) = session else {
+                    writer.respond_error(&id, -32602, "unknown sessionId").await;
+                    continue;
+                };
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                if params.get("operation").and_then(Value::as_str) == Some("status") {
+                    match session.durable_state().await {
+                        Ok(state) => {
+                            writer
+                                .respond(&id, json!({"sessionId": session_id, "state": state}))
+                                .await
+                        }
+                        Err(error) => writer.respond_error(&id, -32001, &error).await,
+                    }
+                    continue;
+                }
+                let mutation = match durable_mutation(&params) {
+                    Ok(mutation) => mutation,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                match session.mutate_durable(mutation).await {
+                    Ok(mut result) => {
+                        result["sessionId"] = json!(session_id);
+                        let notification = json!({
+                            "sessionId": session_id,
+                            "revision": result["state"]["revision"],
+                            "state": result["state"],
+                        });
+                        writer.respond(&id, result).await;
+                        writer.notify("session/durable_update", notification).await;
+                    }
+                    Err(error) if error.starts_with("durable_unavailable:") => {
+                        writer.respond_error(&id, -32001, &error).await
+                    }
+                    Err(error) => writer.respond_error(&id, -32603, &error).await,
                 }
             }
             (Some(id), Some("session/prompt")) => {
@@ -866,6 +996,43 @@ async fn open_session(
 mod tests {
     use super::*;
 
+    #[test]
+    fn durable_extension_parses_queue_mutations() {
+        let mutation = durable_mutation(&json!({
+            "operation": "finish",
+            "itemId": "item-1",
+            "status": "completed",
+            "note": "passed"
+        }))
+        .unwrap();
+        assert!(matches!(
+            mutation,
+            DurableMutation::Finish {
+                id,
+                status: QueueStatus::Completed,
+                note
+            } if id == "item-1" && note == "passed"
+        ));
+        assert!(durable_mutation(&json!({
+            "operation": "finish",
+            "itemId": "item-1",
+            "status": "queued"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn initialize_advertises_durable_extension() {
+        assert_eq!(
+            initialize_result()["agentCapabilities"]["_meta"]["rpi/durable"]["optional"],
+            true
+        );
+        assert_eq!(
+            initialize_result()["agentCapabilities"]["_meta"]["rpi/durable"]["notifications"][0],
+            "session/durable_update"
+        );
+    }
+
     #[tokio::test]
     async fn disconnect_resolves_pending_requests_and_rejects_new_ones() {
         let (output, peer) = tokio::io::duplex(1024);
@@ -959,6 +1126,22 @@ mod tests {
         assert!(writer.supports_questions());
     }
 
+    #[test]
+    fn standard_elicitation_requires_form_capability() {
+        let writer = Writer::new();
+        for params in [
+            json!({}),
+            json!({"clientCapabilities":{"elicitation":{}}}),
+            json!({"clientCapabilities":{"elicitation":{"url":{}}}}),
+        ] {
+            writer.negotiate_questions(&params);
+            assert!(!writer.supports_elicitation(), "{params}");
+        }
+        writer.negotiate_questions(&json!({
+            "clientCapabilities":{"elicitation":{"form":{}}}
+        }));
+        assert!(writer.supports_elicitation());
+    }
     #[test]
     fn content_blocks_parse_text_link_and_resource() {
         let text: ContentBlock =

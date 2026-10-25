@@ -1,12 +1,15 @@
 [package]
 name = "rpi-extcore"
-version = "0.1.1"
+version = "0.1.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Shared native RPC, session and workspace services for rpi extensions"
+readme = "README.md"
+keywords = ["rpi", "agent", "rpc", "session", "workspace"]
+categories = ["api-bindings", "command-line-utilities", "development-tools"]
 
 [features]
 test-support = []
@@ -18,3 +21,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 futures-util = "0.3"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -31,7 +31,8 @@ are part of this package.
    process at all — see *Requirements* below.
 2. **Serves ACP v1** on stdio (`initialize`, `session/new`, `session/prompt`,
    `session/cancel`, `session/load`, `session/resume`,
-   `session/set_config_option`). See `src/protocol.rs`.
+   `session/set_config_option` and the rpi extension `session/durable`. See
+   `src/protocol.rs`.
 3. **Backs each ACP session with a child `rpi --mode rpc` process** rooted at
    the session's `cwd`, translating its event stream into ACP `session/update`
    notifications (streamed text, thinking, tool calls). See `src/session.rs`.
@@ -52,6 +53,21 @@ messages, assistant text/thinking, and tool calls/results before responding.
 the transcript. An unknown or missing session returns an error rather than
 silently opening an empty conversation. Sessions created by ACP 0.1.1 and older
 were temporary (`--no-session`) and cannot be restored after their backend exits.
+
+### Durable control plane
+
+rpi-aware ACP clients may call the extension method
+`session/durable` with `params.sessionId`. Use `{"operation":"status"}` to
+read the branch-scoped durable state, or use `start_run`, `settle_run`,
+`recover_run`, `enqueue`, `claim`, `finish` and `cancel` to coordinate durable
+runs and queue items. The method persists through the native session branch,
+never replays tool side effects, and does not start a background scheduler.
+Standard ACP clients can ignore the extension; capability metadata marks
+`rpi/durable` as optional. Successful durable mutations and durable state
+changes observed during a prompt also produce the custom notification
+`session/durable_update` with `{sessionId, revision, state}`. If the native host
+lacks branch operations, normal ACP sessions continue to work and
+`session/durable` returns an unavailable error.
 
 ### Event mapping
 
@@ -331,8 +347,10 @@ Registry's handshake (and its pass/fail rule) locally.
   automatic activation only. Only `confirm`/`selector` dialogs
   with explicit `purpose: "permission"` and per-option `permission` decisions
   map to a permission request. Option titles are preserved in the returned
-  answer. Ordinary questions use the negotiated extension below; clients that
-  do not advertise it cancel questions. Closure, timeout, prompt cancellation and disconnect retire pending
+  answer. Ordinary `ask_user` questions use standard ACP Elicitation when the
+  client advertises form support, with the legacy private extension as a
+  compatibility fallback. Clients that advertise neither capability cancel
+  questions. Closure, timeout, prompt cancellation and disconnect retire pending
   requests, including when the client never answers.
 * Prompt templates / slash commands are not advertised as
   `available_commands_update`: `--mode rpc` does not expand prompt templates
@@ -341,42 +359,48 @@ Registry's handshake (and its pass/fail rule) locally.
   `authenticate` is a tolerant no-op rather than a real handler; rpi never asks
   the client to collect a secret.
 
-## Question extension v1
+## Questions and ACP Elicitation
 
-ACP v1 has no standard generic multi-choice question method. Both peers advertise
-`"_meta":{"pi-rust/questions":1}` in their `clientCapabilities` /
-`agentCapabilities` during `initialize`, following
-[ACP extensibility](https://agentclientprotocol.com/protocol/v1/extensibility).
-Only a client advertising integer version `1` receives custom requests.
-Permissions continue using `session/request_permission` independently.
-
-The agent sends `_rpi/request_question` with the original dialog UI, including
-question/context/options/descriptions, `allowMultiple`, `allowFreeform`,
-`allowComment`, `suggest`, and the timeout in seconds:
+`rpi-ask-user` questions use the standard ACP v1 `elicitation/create` form
+when the client advertises `clientCapabilities.elicitation.form`. Current Zed
+clients advertise this capability and render the request as a form. The request
+contains a JSON Schema generated from the native dialog:
 
 ```json
-{"jsonrpc":"2.0","id":42,"method":"_rpi/request_question","params":{
-  "sessionId":"session-uuid","requestId":"dialog-id","toolCallId":"ask-1",
-  "ui":{"kind":"selector","question":"Which languages?",
-    "options":[{"title":"Rust"},{"title":"Python"}],
-    "allowMultiple":true,"allowComment":true}
+{"jsonrpc":"2.0","id":42,"method":"elicitation/create","params":{
+  "mode":"form","sessionId":"session-uuid","toolCallId":"ask-1",
+  "message":"Which languages?",
+  "requestedSchema":{"type":"object","properties":{
+    "answers":{"type":"array","items":{"type":"string",
+      "enum":["Rust","Python"]}},"minItems":1},
+    "comment":{"type":"string"}},"required":["answers"]}
 }}
 ```
 
-The client answers that JSON-RPC request with
-`{"answer":{"values":["Rust","Python"],"text":"Optional comment"}}`, or
-`{"cancelled":true}`. Input dialogs use `values:["text"]` and optionally
-`text:"text"`. Values are original labels, not option indexes. The bridge
-rejects unoffered choices unless freeform is allowed, duplicate labels,
-multiple values for single-choice dialogs and malformed answers. Unsupported
-UI kinds and invalid permission dialogs cancel without being reinterpreted.
+The client returns an ACP form response such as:
 
-`_rpi/dialog_closed` is a notification containing `sessionId` and `requestId`.
-Clients should retire matching UI callbacks and ignore late answers. Permission
-requests carry the original request ID under
-`params._meta["pi-rust/dialog"].requestId` for the same lifecycle mapping.
-Timeouts default to 300 seconds, with per-dialog overrides bounded to 1–86400
-seconds. The original host may impose a shorter timeout.
+```json
+{"action":"accept","content":{"answers":["Rust","Python"],"comment":"Both"}}
+```
+
+`rpi-acp` validates the returned values against the original native dialog and
+converts them back to `ui_dialog_response`. `decline`, `cancel`, timeout,
+prompt cancellation, and disconnect all cancel the native question. Single
+choice and input questions use an `answer` string; multi-choice questions use
+an `answers` array. `allowComment` is represented by the optional `comment`
+field.
+
+For older clients that explicitly advertise
+`_meta["pi-rust/questions"]: 1`, `rpi-acp` retains the private
+`_rpi/request_question` / `_rpi/dialog_closed` compatibility protocol. Standard
+ACP Elicitation is preferred when both capabilities are present. A client that
+advertises neither question capability receives a cancellation because ACP has
+no other safe generic question transport.
+
+`elicitation/create` is an agent-to-client JSON-RPC request; the response uses
+the same request ID. No ACP Rust SDK is required—the existing hand-written
+JSON-RPC dispatcher serializes the standard ACP envelopes directly.
+
 
 ## Diagnosing a failed connection
 

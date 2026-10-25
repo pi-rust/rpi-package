@@ -15,6 +15,7 @@ versioned prebuilt manifests for catalog extensions.
 | [rpi-mcp-adapter](packages/rpi-mcp-adapter/README.md) | Connect MCP servers with `mcp_list`, `mcp_call` and `mcp_request` |
 | [rpi-subagents](packages/rpi-subagents/README.md) | Delegate work with `delegate_task` |
 | [rpi-orchestrator](packages/rpi-orchestrator/README.md) | Bounded child agents and task graphs with `subagent`, `plan` and `dispatch` |
+| [rpi-durable](packages/rpi-durable/README.md) | Persist and resume workflow checkpoints with `durable` |
 | [rpi-lens](packages/rpi-lens/README.md) | Inspect code with `code_lens` |
 | [rpi-codegraph](packages/rpi-codegraph/README.md) | Query code relationships with `codegraph` |
 | [rpi-todo](packages/rpi-todo/README.md) | Track tasks with `todo` |
@@ -93,7 +94,10 @@ Web 0.1.1 supports `.rpi/web.json` startup settings. Run `rpi-web --init` once i
 cargo run --locked -p rpi-http -- --project /path/to/project --rpi-bin /path/to/rpi --port 3030
 ```
 
-See [rpi-extcore](packages/rpi-extcore/README.md), [rpi-http](packages/rpi-http/README.md) and the [architecture contract](docs/architecture/extension-core.md). The new packages are ordinary Rust libraries; existing extension installation and startup commands remain the same.
+`rpi-extcore` is also published as a reusable crates.io library. Applications
+can depend on the compatible minor line with `rpi-extcore = "0.1"`; it requires
+Rust 1.78+ and a compatible native `rpi --mode rpc` executable at runtime. See
+[rpi-extcore](packages/rpi-extcore/README.md), [rpi-http](packages/rpi-http/README.md) and the [architecture contract](docs/architecture/extension-core.md). The new packages are ordinary Rust libraries; existing extension installation and startup commands remain the same.
 
 ## Native ACP integration
 

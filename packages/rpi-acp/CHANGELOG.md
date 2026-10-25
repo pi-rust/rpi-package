@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add the optional ACP `session/durable` extension for branch-backed durable
+  state, run recovery and queue coordination; hosts without branch support
+  continue to serve ordinary ACP sessions.
+- Add the optional `session/durable_update` notification after durable state is
+  successfully persisted, including its revision and complete branch-backed
+  state snapshot.
+
 ## [0.1.16](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.15...rpi-acp-v0.1.16) - 2026-10-25
 
 ### Other

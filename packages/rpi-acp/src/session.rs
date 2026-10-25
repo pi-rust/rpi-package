@@ -17,6 +17,9 @@
 //! We spawn one child per ACP session with `current_dir = session/new.cwd`, so
 //! the agent's tools run in the client's workspace.
 
+#[cfg(test)]
+use rpi_extcore::durable::ENTRY_TYPE;
+use rpi_extcore::durable::{DurableMutation, DurableRuntime};
 use rpi_extcore::host::{HostSession, SessionOptions};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -32,6 +35,7 @@ use tokio::process::Command;
 use tokio::sync::broadcast;
 use tokio::task::{AbortHandle, JoinSet};
 
+use crate::diagln;
 use crate::protocol::{ContentBlock, Writer};
 
 static PERMISSION_BYPASS: AtomicBool = AtomicBool::new(false);
@@ -79,6 +83,7 @@ fn forwarded_model_provider_from(args: &[String]) -> (Option<String>, Option<Str
 /// A live ACP session backed by one `rpi --mode rpc` child process.
 pub struct Session {
     rpc: Arc<HostSession>,
+    durable: Option<Arc<DurableRuntime>>,
     #[cfg(test)]
     events: Option<rpi_extcore::host::TestEvents>,
 }
@@ -105,8 +110,18 @@ impl Session {
             bypass: PERMISSION_BYPASS.load(Ordering::Acquire),
         })
         .await?;
+        let durable = match DurableRuntime::try_attach(rpc.clone()).await {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                // Durable state is optional. A native host without branch RPCs
+                // must not prevent ordinary ACP sessions from starting.
+                diagln!("[rpi-acp] durable branch unavailable: {error}");
+                None
+            }
+        };
         Ok(Arc::new(Self {
             rpc,
+            durable,
             #[cfg(test)]
             events: None,
         }))
@@ -135,6 +150,44 @@ impl Session {
     }
     pub async fn set_thinking_level(&self, level: &str) -> Result<(), String> {
         self.rpc.set_thinking_level(level).await
+    }
+
+    pub async fn durable_state(&self) -> Result<Value, String> {
+        let runtime = self.durable.as_ref().ok_or_else(|| {
+            "durable_unavailable: native host does not support durable branch operations"
+                .to_string()
+        })?;
+        Ok(serde_json::to_value(runtime.state().await).unwrap_or(Value::Null))
+    }
+
+    pub async fn mutate_durable(&self, mutation: DurableMutation) -> Result<Value, String> {
+        let runtime = self.durable.as_ref().ok_or_else(|| {
+            "durable_unavailable: native host does not support durable branch operations"
+                .to_string()
+        })?;
+        let result = runtime.mutate(mutation).await?;
+        Ok(json!({"result": result, "state": runtime.state().await}))
+    }
+
+    /// Build the optional ACP notification payload from the runtime's
+    /// authoritative persisted state. ACP does not maintain a second ledger.
+    pub async fn durable_update(&self, session_id: &str) -> Option<Value> {
+        let runtime = self.durable.as_ref()?;
+        let state = runtime.state().await;
+        Some(json!({
+            "sessionId": session_id,
+            "revision": state.revision,
+            "state": state,
+        }))
+    }
+
+    async fn observe_durable(&self, session_id: &str, event: &Value) -> Option<Value> {
+        let runtime = self.durable.as_ref()?;
+        if runtime.observe(event).await.ok()? {
+            self.durable_update(session_id).await
+        } else {
+            None
+        }
     }
 
     /// Ask the child to abort the current run (`session/cancel`).
@@ -170,6 +223,9 @@ impl Session {
             };
             match event {
                 Ok(value) => {
+                    if let Some(update) = self.observe_durable(acp_session_id, &value).await {
+                        writer.notify("session/durable_update", update).await;
+                    }
                     let progress = run.tracker.observe(&value, cancelled);
                     for delta in progress.deltas {
                         writer
@@ -358,7 +414,7 @@ impl DialogTasks {
     async fn close(&mut self, id: &str, writer: &Writer, session_id: &str) {
         if let Some(task) = self.pending.remove(id) {
             task.abort();
-            if writer.supports_questions() {
+            if writer.supports_questions() && !writer.supports_elicitation() {
                 writer
                     .notify(
                         crate::questions::CLOSED_METHOD,
@@ -445,6 +501,18 @@ async fn handle_ui_dialog(
         .await
         .unwrap_or(Value::Null);
         permission_answer(request_id, &result, &options)
+    } else if writer.supports_elicitation() {
+        if let Some(params) = crate::questions::elicitation_request(event, session_id) {
+            let result = tokio::time::timeout(
+                timeout,
+                writer.request(crate::questions::ELICITATION_METHOD, params),
+            )
+            .await
+            .unwrap_or(Value::Null);
+            crate::questions::elicitation_answer(request_id, &event["ui"], &result)
+        } else {
+            json!({"type":"ui_dialog_response", "requestId":request_id, "cancelled":true})
+        }
     } else if writer.supports_questions() {
         if let Some(params) = crate::questions::request(event, session_id) {
             let result = tokio::time::timeout(
@@ -458,10 +526,10 @@ async fn handle_ui_dialog(
             json!({"type":"ui_dialog_response", "requestId":request_id, "cancelled":true})
         }
     } else {
-        // Old clients have no question capability. Never relabel a question as permission.
+        // Clients without standard elicitation or the legacy extension cannot answer.
         json!({"type":"ui_dialog_response", "requestId":request_id, "cancelled":true})
     };
-    if writer.supports_questions() {
+    if writer.supports_questions() && !writer.supports_elicitation() {
         writer
             .notify(
                 crate::questions::CLOSED_METHOD,
@@ -882,7 +950,8 @@ mod tests {
         let (stdin, commands) = tokio::io::duplex(8192);
         let (rpc, events) = HostSession::test_connection(stdin, 64);
         let session = Arc::new(Session {
-            rpc,
+            rpc: rpc.clone(),
+            durable: Some(DurableRuntime::empty(rpc)),
             events: Some(events),
         });
         (session, commands)
@@ -902,6 +971,85 @@ mod tests {
         result["type"] = json!("agent_settled");
         result["runId"] = json!("test-run");
         session.events.as_ref().unwrap().send(result).unwrap();
+    }
+
+    #[tokio::test]
+    async fn durable_lifecycle_event_builds_update_notification_payload() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let observed = tokio::spawn({
+            let session = session.clone();
+            async move {
+                session
+                    .observe_durable("acp-session", &json!({"type":"agent_start"}))
+                    .await
+            }
+        });
+        let command = read_json(&mut commands).await;
+        assert_eq!(command["type"], "append_entry");
+        session
+            .events
+            .as_ref()
+            .unwrap()
+            .send(json!({
+                "type": "response",
+                "id": command["id"],
+                "success": true,
+                "data": {"entryId": "durable-entry"}
+            }))
+            .unwrap();
+        let update = observed.await.unwrap().unwrap();
+        assert_eq!(update["sessionId"], "acp-session");
+        assert_eq!(update["revision"], 1);
+        assert_eq!(update["state"]["run"]["status"], "running");
+    }
+
+    #[tokio::test]
+    async fn durable_unavailable_does_not_block_the_session() {
+        let (session, _commands) = test_session();
+        let unavailable = Session {
+            rpc: session.rpc.clone(),
+            durable: None,
+            events: None,
+        };
+        let error = unavailable.durable_state().await.unwrap_err();
+        assert!(error.starts_with("durable_unavailable:"));
+        let error = unavailable
+            .mutate_durable(DurableMutation::StartRun)
+            .await
+            .unwrap_err();
+        assert!(error.starts_with("durable_unavailable:"));
+    }
+
+    #[tokio::test]
+    async fn durable_mutation_appends_native_branch_entry() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let mutation = tokio::spawn({
+            let session = session.clone();
+            async move { session.mutate_durable(DurableMutation::StartRun).await }
+        });
+        let command = read_json(&mut commands).await;
+        assert_eq!(command["type"], "append_entry");
+        assert_eq!(command["customType"], ENTRY_TYPE);
+        session
+            .events
+            .as_ref()
+            .unwrap()
+            .send(json!({
+                "type": "response",
+                "id": command["id"],
+                "success": true,
+                "data": {"entryId": "durable-entry"}
+            }))
+            .unwrap();
+        let result = mutation.await.unwrap().unwrap();
+        assert_eq!(result["result"]["changed"], true);
+        assert_eq!(result["state"]["run"]["status"], "running");
+        let update = session.durable_update("acp-session").await.unwrap();
+        assert_eq!(update["sessionId"], "acp-session");
+        assert_eq!(update["revision"], 1);
+        assert_eq!(update["state"]["run"]["status"], "running");
     }
 
     #[tokio::test]
@@ -1358,10 +1506,82 @@ mod tests {
         writer
     }
 
+    fn elicitation_writer(output: impl AsyncWrite + Unpin + Send + 'static) -> Arc<Writer> {
+        let writer = Arc::new(Writer::with_output(output));
+        writer.negotiate_questions(&json!({
+            "clientCapabilities":{"elicitation":{"form":{}}}
+        }));
+        writer
+    }
+
     fn question_event(id: &str) -> Value {
         json!({"type":"ui_dialog_request","requestId":id,"toolCallId":"ask-1", "ui":{
             "kind":"selector","question":"使用哪些语言？","options":[{"title":"Rust"},{"title":"Python"}],
             "allowMultiple":true,"allowComment":true,"timeout":30}})
+    }
+
+    #[tokio::test]
+    async fn standard_elicitation_round_trip_uses_zed_form_protocol() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let (output, peer) = tokio::io::duplex(8192);
+        let writer = elicitation_writer(output);
+        let mut replies = BufReader::new(peer).lines();
+        let task = tokio::spawn({
+            let session = session.clone();
+            let writer = writer.clone();
+            async move { handle_ui_dialog(&session, &writer, "s", &question_event("q")).await }
+        });
+        let request = read_json(&mut replies).await;
+        assert_eq!(request["method"], crate::questions::ELICITATION_METHOD);
+        assert_eq!(request["params"]["mode"], "form");
+        assert_eq!(
+            request["params"]["requestedSchema"]["properties"]["answers"]["type"],
+            "array"
+        );
+        writer
+            .resolve(
+                request["id"].as_u64().unwrap(),
+                json!({"action":"accept","content":{"answers":["Rust","Python"],"comment":"一起用"}}),
+            )
+            .await;
+        let answer = read_json(&mut commands).await;
+        assert_eq!(
+            answer["answer"],
+            json!({"values":["Rust","Python"],"text":"一起用"})
+        );
+        assert_eq!(answer["requestId"], "q");
+        task.await.unwrap();
+        assert_eq!(writer.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn standard_elicitation_timeout_cancels_without_legacy_close_notification() {
+        let (session, commands) = test_session();
+        let mut commands = BufReader::new(commands).lines();
+        let (output, peer) = tokio::io::duplex(8192);
+        let writer = elicitation_writer(output);
+        let mut replies = BufReader::new(peer).lines();
+        let mut event = question_event("q-timeout");
+        event["ui"]["timeout"] = json!(1);
+        let task = tokio::spawn({
+            let session = session.clone();
+            let writer = writer.clone();
+            async move { handle_ui_dialog(&session, &writer, "s", &event).await }
+        });
+        let request = read_json(&mut replies).await;
+        assert_eq!(request["method"], crate::questions::ELICITATION_METHOD);
+        assert_eq!(
+            read_json(&mut commands).await,
+            json!({"type":"ui_dialog_response","requestId":"q-timeout","cancelled":true})
+        );
+        task.await.unwrap();
+        assert_eq!(writer.pending_count(), 0);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), replies.next_line())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

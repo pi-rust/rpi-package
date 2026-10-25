@@ -6,6 +6,7 @@ members = [
     "packages/rpi-btw",
     "packages/rpi-lens",
     "packages/rpi-orchestrator",
+    "packages/rpi-durable",
     "packages/rpi-todo",
     "packages/rpi-goal",
     "packages/rpi-plan-mode",

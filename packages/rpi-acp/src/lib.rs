@@ -10,7 +10,8 @@
 //! 2. On `SessionStart` it runs the one-shot actions (Zed registration or the
 //!    `--setup` credential flow) or starts the ACP server ([`protocol::run`]) on a
 //!    dedicated thread. The server handles `initialize` / `session/new` /
-//!    `session/prompt` / `session/cancel` / `session/load` / `session/resume`.
+//!    `session/prompt` / `session/cancel` / `session/load` / `session/resume`
+//!    / `session/durable`.
 //! 3. Each ACP session is backed by a child `rpi --mode rpc` process rooted at
 //!    the session's `cwd`; its event stream is translated into ACP
 //!    `session/update` notifications (see [`session`]).
