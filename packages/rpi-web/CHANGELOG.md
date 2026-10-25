@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.8...rpi-web-v0.1.9) - 2026-10-25
+
+### Other
+
+- *(snapshot)* parallelize messages and history requests
+- add architecture boundary guidance
+
 ## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.7...rpi-web-v0.1.8) - 2026-10-24
 
 ### Fixed

@@ -2390,7 +2390,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-extcore",
  "rpi-plugin-sdk 0.3.20",
@@ -2470,7 +2470,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-extcore"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "serde",
@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "futures-util",
@@ -2741,7 +2741,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "axum",
  "rpi-extcore",
