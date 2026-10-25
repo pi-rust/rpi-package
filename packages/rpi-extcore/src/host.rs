@@ -569,6 +569,7 @@ impl HostSession {
         )
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test_connection_with_ready(
         stdin: impl AsyncWrite + Unpin + Send + 'static,
         capacity: usize,
