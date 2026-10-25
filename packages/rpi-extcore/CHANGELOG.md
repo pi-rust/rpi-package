@@ -19,8 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observation, mutation persistence and append-failure rollback.
 - Publish bounded revision-based durable changes for reconnectable adapters.
 - Detect optional durable branch support from the native ready capability list
-  before probing branch RPCs, while retaining legacy-host fallback probing when
-  the list is absent.
+  before probing branch RPCs; hosts without an explicit capability list safely
+  remain ordinary non-durable sessions.
 
 ## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.1...rpi-extcore-v0.1.2) - 2026-10-25
 

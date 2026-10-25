@@ -558,6 +558,22 @@ impl HostSession {
         stdin: impl AsyncWrite + Unpin + Send + 'static,
         capacity: usize,
     ) -> (Arc<Self>, TestEvents) {
+        Self::test_connection_with_ready(
+            stdin,
+            capacity,
+            json!({
+                "type": "ready",
+                "protocol": "rpi",
+                "supportedCommands": ["get_session_branch", "append_entry"]
+            }),
+        )
+    }
+
+    pub fn test_connection_with_ready(
+        stdin: impl AsyncWrite + Unpin + Send + 'static,
+        capacity: usize,
+        ready: Value,
+    ) -> (Arc<Self>, TestEvents) {
         let (commands, outbound) = mpsc::channel(32);
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (raw_events, _) = broadcast::channel(capacity);
@@ -566,7 +582,7 @@ impl HostSession {
         let session = Arc::new(Self {
             worker: Arc::new(Mutex::new(None)),
             shutdown_gate: Mutex::new(()),
-            ready: json!({"type":"ready","protocol":"rpi"}),
+            ready,
             run_gate: Arc::new(Mutex::new(())),
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(Some(abort)),
@@ -600,15 +616,13 @@ impl HostSession {
     }
 
     /// Whether the native ready frame advertises an optional RPC command.
-    /// Hosts that omit `supportedCommands` are treated as legacy-compatible:
-    /// the caller may still probe the command and handle an unsupported error.
+    /// Durable support requires an explicit capability advertisement so an old
+    /// host cannot be crashed by an unknown optional command.
     pub fn supports_command(&self, command: &str) -> bool {
         self.ready
             .get("supportedCommands")
             .and_then(Value::as_array)
-            .map_or(true, |commands| {
-                commands.iter().any(|value| value.as_str() == Some(command))
-            })
+            .is_some_and(|commands| commands.iter().any(|value| value.as_str() == Some(command)))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<BufferedEvent> {

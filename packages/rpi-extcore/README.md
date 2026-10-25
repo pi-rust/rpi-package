@@ -69,9 +69,10 @@ ACP both use the runtime for branch recovery, interrupted-run handling, event
 observation, mutation persistence and append-failure rollback. Durable changes
 also expose a bounded revision-based replay stream for adapters. It keeps tool
 summaries and queue transitions bounded and never replays side effects. The
-native host must advertise the two RPC commands in its ready capability list
-(legacy hosts without that list are still probed); the branch remains the only
-durable source and no parallel database or scheduler is created.
+native host must advertise the two RPC commands in its ready capability list;
+hosts without an explicit capability list safely remain ordinary non-durable
+sessions. The branch remains the only durable source and no parallel database
+or scheduler is created.
 
 Sharing this library does not share memory between separate OS processes. Multiple clients must connect to the same service to share live sessions. Keep one backend writer per registry; independent service processes should use separate registry files.
 

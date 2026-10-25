@@ -896,30 +896,17 @@ mod tests {
 
     #[tokio::test]
     async fn try_attach_returns_none_when_branch_rpc_is_unavailable() {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
-        let (writer, peer) = tokio::io::duplex(4096);
-        let (session, injector) = HostSession::test_connection(writer, 16);
-        let fixture = tokio::spawn(async move {
-            let mut lines = BufReader::new(peer).lines();
-            let line = lines.next_line().await.unwrap().unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["type"], "get_session_branch");
-            injector
-                .send(json!({
-                    "type": "response",
-                    "id": request["id"],
-                    "success": false,
-                    "error": "unknown command"
-                }))
-                .unwrap();
-        });
+        let (writer, _peer) = tokio::io::duplex(4096);
+        let (session, _injector) = HostSession::test_connection_with_ready(
+            writer,
+            16,
+            json!({"type":"ready","protocol":"rpi","supportedCommands":[]}),
+        );
 
         assert!(DurableRuntime::try_attach(session.clone())
             .await
             .unwrap()
             .is_none());
-        fixture.await.unwrap();
         session.shutdown().await;
     }
 
