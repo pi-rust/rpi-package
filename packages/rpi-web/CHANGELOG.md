@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.11...rpi-web-v0.1.12) - 2026-10-26
+
+### Fixed
+
+- *(web)* deduplicate restored settlement notes
+
+### Other
+
+- Merge pull request #81 from pi-rust/fix/web-settlement-dedupe
+
 ## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.10...rpi-web-v0.1.11) - 2026-10-26
 
 ### Added
