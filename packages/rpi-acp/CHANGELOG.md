@@ -46,15 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Merge branch 'main' of github.com:pi-rust/rpi-package into feature/web-session-search
 - *(release)* bump workspace to 0.1.9
 
-<<<<<<< HEAD
-=======
 ## [0.1.13](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.12...rpi-acp-v0.1.13) - 2026-10-23
 
 ### Fixed
 
 - *(acp)* publish todo cards and live Zed plan updates ([#62](https://github.com/pi-rust/rpi-package/pull/62))
 
->>>>>>> c97625a2dd277655a4bfaf488a3212aeeef519ca
 ### Fixed
 
 - Hide the `todo` tool's structured arguments and result envelope from ACP tool-call cards, showing a concise action title instead of raw JSON.
