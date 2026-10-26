@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-orchestrator-v0.1.9...rpi-orchestrator-v0.1.10) - 2026-10-26
+
+### Fixed
+
+- remove rpi-acp changelog conflict markers and an orchestrator -D warnings error ([#77](https://github.com/pi-rust/rpi-package/pull/77))
+
 ## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-orchestrator-v0.1.8...rpi-orchestrator-v0.1.9) - 2026-10-22
 
 ### Fixed
