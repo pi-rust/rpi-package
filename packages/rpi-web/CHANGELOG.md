@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.10...rpi-web-v0.1.11) - 2026-10-26
+
+### Added
+
+- *(web)* refine workspace composer and tool output
+
 ## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.9...rpi-web-v0.1.10) - 2026-10-25
 
 ### Added
