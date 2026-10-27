@@ -672,58 +672,100 @@ fn decode_legacy_state(data: &Value) -> Result<DurableState, String> {
 
 fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), String> {
     let mut records = Vec::new();
-    for entry in entries {
+    let mut invalid_records = Vec::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
         if entry.get("type").and_then(Value::as_str) != Some("custom")
             || entry.get("customType").and_then(Value::as_str) != Some(ENTRY_TYPE)
         {
             continue;
         }
-        let data = entry
-            .get("data")
-            .ok_or("durable custom entry has no data")?;
-        let has_format = data.get("format").is_some();
-        let has_version = data.get("version").is_some();
-        if !has_format && !has_version {
-            let state = decode_legacy_state(data)?;
-            let entry_id = branch_entry_identity(entry);
-            records.push(BranchRecord::Legacy { state, entry_id });
-            continue;
-        }
-        let record: JournalRecord = serde_json::from_value(data.clone())
-            .map_err(|error| format!("invalid durable journal record: {error}"))?;
-        if record.format != JOURNAL_FORMAT || record.version != JOURNAL_VERSION {
-            return Err("unsupported durable journal format or version".into());
-        }
-        match record.kind {
-            JournalKind::Snapshot => {
-                if record.state.is_none() || record.changes.is_some() {
-                    return Err("durable snapshot must contain only a complete state".into());
+        let parsed = (|| -> Result<BranchRecord, String> {
+            let data = entry
+                .get("data")
+                .ok_or("durable custom entry has no data")?;
+            let has_format = data.get("format").is_some();
+            let has_version = data.get("version").is_some();
+            if !has_format && !has_version {
+                let state = decode_legacy_state(data)?;
+                let entry_id = branch_entry_identity(entry);
+                return Ok(BranchRecord::Legacy { state, entry_id });
+            }
+            let record: JournalRecord = serde_json::from_value(data.clone())
+                .map_err(|error| format!("invalid durable journal record: {error}"))?;
+            if record.format != JOURNAL_FORMAT || record.version != JOURNAL_VERSION {
+                return Err("unsupported durable journal format or version".into());
+            }
+            match record.kind {
+                JournalKind::Snapshot => {
+                    if record.state.is_none() || record.changes.is_some() {
+                        return Err("durable snapshot must contain only a complete state".into());
+                    }
+                }
+                JournalKind::Delta => {
+                    if record.state.is_some() || record.changes.as_ref().map_or(true, Vec::is_empty)
+                    {
+                        return Err("durable delta must contain non-empty changes only".into());
+                    }
                 }
             }
-            JournalKind::Delta => {
-                if record.state.is_some() || record.changes.as_ref().map_or(true, Vec::is_empty) {
-                    return Err("durable delta must contain non-empty changes only".into());
+            if record.revision < record.base_revision {
+                return Err("durable journal revision moves backwards".into());
+            }
+            if matches!(record.kind, JournalKind::Snapshot) {
+                let snapshot = record
+                    .state
+                    .as_ref()
+                    .ok_or("durable snapshot has no complete state")?;
+                if snapshot.revision != record.revision {
+                    return Err("durable snapshot state has the wrong revision".into());
                 }
+                validate_state(snapshot)?;
             }
+            let entry_id =
+                branch_entry_identity(entry).ok_or("versioned durable entry has no native id")?;
+            Ok(BranchRecord::Journal { record, entry_id })
+        })();
+        match parsed {
+            Ok(record) => records.push((entry_index, record)),
+            Err(error) => invalid_records.push((entry_index, error)),
         }
-        if record.revision < record.base_revision {
-            return Err("durable journal revision moves backwards".into());
-        }
-        if matches!(record.kind, JournalKind::Snapshot) {
-            let snapshot = record
-                .state
-                .as_ref()
-                .ok_or("durable snapshot has no complete state")?;
-            if snapshot.revision != record.revision {
-                return Err("durable snapshot state has the wrong revision".into());
-            }
-            validate_state(snapshot)?;
-        }
-        let entry_id =
-            branch_entry_identity(entry).ok_or("versioned durable entry has no native id")?;
-        records.push(BranchRecord::Journal { record, entry_id });
     }
 
+    // A complete snapshot is self-contained. Ignore malformed durable entries
+    // before the newest valid snapshot, but fail closed for anything after it.
+    // This keeps obsolete journal prefixes from making a later recovery base
+    // unusable while preserving strict suffix validation.
+    let latest_snapshot = records.iter().rposition(|(_, record)| {
+        matches!(
+            record,
+            BranchRecord::Journal {
+                record: JournalRecord {
+                    kind: JournalKind::Snapshot,
+                    ..
+                },
+                ..
+            }
+        )
+    });
+    let records = if let Some(snapshot) = latest_snapshot {
+        let snapshot_entry = records[snapshot].0;
+        if let Some((_, error)) = invalid_records
+            .iter()
+            .find(|(entry_index, _)| *entry_index > snapshot_entry)
+        {
+            return Err(error.clone());
+        }
+        records.into_iter().skip(snapshot).collect()
+    } else {
+        if let Some((_, error)) = invalid_records.first() {
+            return Err(error.clone());
+        }
+        records
+    };
+    let records = records
+        .into_iter()
+        .map(|(_, record)| record)
+        .collect::<Vec<_>>();
     let first_journal = records
         .iter()
         .position(|record| matches!(record, BranchRecord::Journal { .. }));
@@ -2746,6 +2788,10 @@ mod tests {
         let truncated = log[2..].to_vec();
         assert_eq!(decode_branch(&truncated).unwrap().0, final_state);
         assert_eq!(decode_branch(&truncated[..1]).unwrap().0, snapshot_state);
+
+        let mut corrupt_prefix = log;
+        corrupt_prefix[1]["data"]["version"] = json!(999);
+        assert_eq!(decode_branch(&corrupt_prefix).unwrap().0, final_state);
     }
 
     #[test]

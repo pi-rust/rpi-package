@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Persist an explicit tool-call key namespace so encoded long IDs cannot collide
   with naturally short native IDs, and return the state committed by a mutation
   rather than a later branch snapshot.
+- Use the newest valid self-contained snapshot as a replay base, ignoring
+  malformed obsolete journal prefixes while still failing closed on suffix
+  corruption.
 - Persist a stable tool-call identity so bounded display IDs cannot associate a
   long tool result with the wrong execution, including when legacy entries are
   present; mark unrecoverable legacy truncations as unknown during restore.
