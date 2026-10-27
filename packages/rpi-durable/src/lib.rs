@@ -1244,6 +1244,21 @@ fn tool_call_id(value: &str) -> String {
     format!("{prefix}{suffix}")
 }
 
+fn legacy_hashed_tool_id(value: &str) -> Option<String> {
+    if value.chars().count() <= MAX_SUMMARY_CHARS {
+        return None;
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let suffix = format!("…{hash:016x}");
+    let prefix_len = MAX_SUMMARY_CHARS - suffix.chars().count();
+    let prefix: String = value.chars().take(prefix_len).collect();
+    Some(format!("{prefix}{suffix}"))
+}
+
 fn legacy_tool_call_id(value: &str) -> bool {
     value.chars().count() == MAX_SUMMARY_CHARS + 1 && value.ends_with('…')
 }
@@ -1273,11 +1288,15 @@ fn tool_call_key(value: &str) -> String {
 
 fn looks_like_generated_tool_id(value: &str) -> bool {
     let chars = value.chars().collect::<Vec<_>>();
-    chars.len() == MAX_SUMMARY_CHARS
-        && chars[MAX_SUMMARY_CHARS - (TOOL_ID_HASH_HEX_CHARS + 1)] == '…'
-        && chars[MAX_SUMMARY_CHARS - TOOL_ID_HASH_HEX_CHARS..]
-            .iter()
-            .all(|character| character.is_ascii_hexdigit())
+    if chars.len() != MAX_SUMMARY_CHARS {
+        return false;
+    }
+    [TOOL_ID_HASH_HEX_CHARS, 16].into_iter().any(|hash_chars| {
+        chars[MAX_SUMMARY_CHARS - (hash_chars + 1)] == '…'
+            && chars[MAX_SUMMARY_CHARS - hash_chars..]
+                .iter()
+                .all(|character| character.is_ascii_hexdigit())
+    })
 }
 
 fn legacy_tool_matches(tool: &ToolExecution, call_id: &str, stable_id: &str) -> bool {
@@ -1288,6 +1307,7 @@ fn legacy_tool_matches(tool: &ToolExecution, call_id: &str, stable_id: &str) -> 
         tool.call_id == call_id && !looks_like_generated_tool_id(&tool.call_id)
     } else {
         tool.call_id == stable_id
+            || legacy_hashed_tool_id(call_id).as_deref() == Some(tool.call_id.as_str())
     }
 }
 
@@ -2401,6 +2421,27 @@ mod tests {
         }]))
         .unwrap();
         assert_eq!(legacy[0].call_key, None);
+    }
+
+    #[test]
+    fn old_hashed_long_tool_ids_remain_replayable_after_hash_upgrade() {
+        let long_id = format!("{}tail", "x".repeat(MAX_SUMMARY_CHARS));
+        let old_id = legacy_hashed_tool_id(&long_id).unwrap();
+        let mut state = DurableState::default();
+        start_run(&mut state);
+        state.run.as_mut().unwrap().tools.push(ToolExecution {
+            call_id: old_id,
+            call_key: None,
+            name: "tool".into(),
+            params: String::new(),
+            status: ToolExecutionStatus::Started,
+            result: String::new(),
+        });
+
+        record_tool_end(&mut state, &long_id, "tool", "legacy result", false);
+        let tool = &state.run.unwrap().tools[0];
+        assert_eq!(tool.status, ToolExecutionStatus::Completed);
+        assert_eq!(tool.result, "legacy result");
     }
 
     #[test]
