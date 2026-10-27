@@ -6,6 +6,7 @@ use rpi_plugin_sdk::{
 use serde_json::{json, Value};
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 #[derive(Clone, Copy)]
 struct ToolFns {
@@ -22,6 +23,7 @@ struct Host {
     fail_append: bool,
     missing_ack: bool,
     invalid_json_ack: bool,
+    read_delay: bool,
     tool: Option<ToolFns>,
     events: Vec<(EventTag, EventHandlerFn)>,
 }
@@ -71,6 +73,10 @@ extern "C" fn runtime(
     .to_string_lossy();
     let value: Value = serde_json::from_str(&args).unwrap();
     let mut host = host().lock().unwrap();
+    let read_delay = action == RuntimeActionId::GetSessionBranch as u32 && host.read_delay;
+    if read_delay {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let mut invalid_json_ack = false;
     let (rc, result) = match RuntimeActionId::try_from(action).unwrap() {
         RuntimeActionId::GetSessionBranch if host.fail_read => (1, json!({"error":"read failed"})),
@@ -183,12 +189,29 @@ fn runtime_contract_is_sequential_and_fail_closed() {
         "status":"running",
         "steps":[{"id":"s","title":"S","status":"pending"}]
     });
+    old["data"]["run"] = json!({
+        "id":"run-1",
+        "status":"running",
+        "startedRevision":0,
+        "updatedRevision":0,
+        "tools":[]
+    });
     host().lock().unwrap().entries = vec![old];
+    host().lock().unwrap().read_delay = true;
+    let first = std::thread::spawn(|| action(json!({"action":"status"})).unwrap());
+    let second = std::thread::spawn(|| action(json!({"action":"status"})).unwrap());
+    let first = first.join().unwrap();
+    let second = second.join().unwrap();
+    host().lock().unwrap().read_delay = false;
+    assert_eq!(first["details"]["run"]["status"], "interrupted");
+    assert_eq!(second["details"]["run"]["status"], "interrupted");
+    assert_eq!(host().lock().unwrap().entries.len(), 2);
+
     assert_eq!(
         action(json!({"action":"status"})).unwrap()["details"]["workflow"]["name"],
         "legacy loaded before SessionStart"
     );
-    assert_eq!(host().lock().unwrap().entries.len(), 1);
+    assert_eq!(host().lock().unwrap().entries.len(), 2);
     assert_eq!(empty(EventTag::SessionTree), 0);
     action(json!({"action":"enqueue","text":"persist"})).unwrap();
 
