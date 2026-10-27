@@ -1060,6 +1060,7 @@ fn restore_state_inner() -> Result<(), String> {
         .and_then(Value::as_array)
         .ok_or("GetSessionBranch returned no valid entries array")?;
     let (restored, meta) = decode_branch(entries)?;
+    let restored = mark_unresolvable_legacy_tools(restored);
     let interrupted = mark_interrupted(restored.clone());
     let (restored, meta) = if interrupted != restored {
         commit_candidate(&restored, &meta, interrupted, |payload| {
@@ -1079,11 +1080,24 @@ fn restore_state_inner() -> Result<(), String> {
     Ok(())
 }
 
+fn restore_state_locked() -> Result<(), String> {
+    match restore_state_inner() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Keep the failure state under RESTORE_LOCK. Otherwise a mutation
+            // can pass the restore_error check between this function returning
+            // and the caller publishing the failure.
+            fail_restore(error.clone());
+            Err(error)
+        }
+    }
+}
+
 fn restore_state() -> Result<(), String> {
     let _restore_guard = restore_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    restore_state_inner()
+    restore_state_locked()
 }
 
 fn fail_restore(error: String) {
@@ -1128,13 +1142,24 @@ fn ensure_initialized() -> Result<(), String> {
         }
     }
 
-    match restore_state_inner() {
+    match restore_state_locked() {
         Ok(()) => Ok(()),
-        Err(error) => {
-            fail_restore(error.clone());
-            Err(format!("durable branch restore failed: {error}"))
-        }
+        Err(error) => Err(format!("durable branch restore failed: {error}")),
     }
+}
+
+fn snapshot_state() -> Result<DurableState, String> {
+    ensure_initialized()?;
+    let _restore_guard = restore_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let store = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(error) = &store.restore_error {
+        return Err(format!("durable branch restore failed: {error}"));
+    }
+    Ok(store.state.clone())
 }
 
 fn tool_call_id(value: &str) -> String {
@@ -1142,8 +1167,8 @@ fn tool_call_id(value: &str) -> String {
         return value.to_string();
     }
     // Keep the persisted/displayed ID bounded while making long IDs stable
-    // and collision-resistant. This avoids adding a second public field to
-    // the durable state schema.
+    // with a low accidental-collision risk. This avoids adding a second
+    // public field to the durable state schema.
     let mut hash = 0xcbf29ce484222325u64;
     for byte in value.as_bytes() {
         hash ^= u64::from(*byte);
@@ -1153,6 +1178,25 @@ fn tool_call_id(value: &str) -> String {
     let prefix_len = MAX_SUMMARY_CHARS - suffix.chars().count();
     let prefix: String = value.chars().take(prefix_len).collect();
     format!("{prefix}{suffix}")
+}
+
+fn legacy_tool_call_id(value: &str) -> bool {
+    value.chars().count() == MAX_SUMMARY_CHARS + 1 && value.ends_with('…')
+}
+
+fn mark_unresolvable_legacy_tools(mut next: DurableState) -> DurableState {
+    if let Some(run) = next.run.as_mut() {
+        for tool in &mut run.tools {
+            if legacy_tool_call_id(&tool.call_id) && tool.status == ToolExecutionStatus::Started {
+                tool.status = ToolExecutionStatus::Unknown;
+                if tool.result.is_empty() {
+                    tool.result =
+                        "tool identity was truncated before durable identity migration".into();
+                }
+            }
+        }
+    }
+    next
 }
 
 fn summary(value: &str) -> String {
@@ -1725,31 +1769,17 @@ fn durable(params: &Value) -> Result<String, String> {
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("status");
-    if let Err(error) = ensure_initialized() {
-        return Ok(error_result(action, &error));
-    }
-    let store = state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    if let Some(error) = &store.restore_error {
-        return Ok(error_result(
-            action,
-            &format!("durable branch restore failed: {error}"),
-        ));
-    }
-    let current = store.state;
+    let current = match snapshot_state() {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result(action, &error)),
+    };
     let next = match apply_action(&current, params) {
         Ok(next) => next,
         Err(error) => return Ok(result(action, &current, Some(&error))),
     };
 
     commit_state(&current, next)?;
-    let committed = state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .state
-        .clone();
+    let committed = snapshot_state()?;
     Ok(result(action, &committed, None))
 }
 
@@ -1814,12 +1844,8 @@ fn command(args, out, _user_data) {
         return 1;
     }
     let _ = args;
-    let snapshot = match ensure_initialized() {
-        Ok(()) => state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .state
-            .clone(),
+    let snapshot = match snapshot_state() {
+        Ok(state) => state,
         Err(error) => {
             out.write(json!({"kind":"message","text":format!("Error: {error}")}).to_string());
             return 0;
@@ -1834,8 +1860,7 @@ rpi_plugin_sdk::event_handler! {
 fn handle_event(event, _user_data) {
     match event.tag() {
         EventTag::SessionStart | EventTag::SessionTree => {
-            if let Err(error) = restore_state() {
-                fail_restore(error);
+            if restore_state().is_err() {
                 return 1;
             }
         }
@@ -2202,7 +2227,7 @@ mod tests {
     }
 
     #[test]
-    fn summarized_long_tool_ids_fall_back_to_a_replayable_tool_set() {
+    fn long_tool_ids_use_distinct_stable_ids_and_replay_cleanly() {
         let mut log = Vec::new();
         let mut state = DurableState::default();
         let mut meta = JournalMeta::default();
@@ -2249,6 +2274,24 @@ mod tests {
         let (committed, _) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
         state = committed;
         assert_eq!(decode_branch(&log).unwrap().0, state);
+    }
+
+    #[test]
+    fn legacy_truncated_tool_ids_are_not_left_active_after_restore() {
+        let mut state = DurableState::default();
+        start_run(&mut state);
+        state.run.as_mut().unwrap().tools.push(ToolExecution {
+            call_id: format!("{}…", "x".repeat(MAX_SUMMARY_CHARS)),
+            name: "tool".into(),
+            params: String::new(),
+            status: ToolExecutionStatus::Started,
+            result: String::new(),
+        });
+
+        let restored = mark_unresolvable_legacy_tools(state);
+        let tool = &restored.run.unwrap().tools[0];
+        assert_eq!(tool.status, ToolExecutionStatus::Unknown);
+        assert!(!tool.result.is_empty());
     }
 
     #[test]

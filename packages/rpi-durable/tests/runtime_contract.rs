@@ -5,6 +5,7 @@ use rpi_plugin_sdk::{
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -24,10 +25,13 @@ struct Host {
     missing_ack: bool,
     invalid_json_ack: bool,
     read_delay: bool,
+    block_read: bool,
     tool: Option<ToolFns>,
     events: Vec<(EventTag, EventHandlerFn)>,
 }
 static HOST: OnceLock<Mutex<Host>> = OnceLock::new();
+static READ_STARTED: AtomicBool = AtomicBool::new(false);
+static RELEASE_READ: AtomicBool = AtomicBool::new(false);
 fn host() -> &'static Mutex<Host> {
     HOST.get_or_init(|| Mutex::new(Host::default()))
 }
@@ -76,6 +80,13 @@ extern "C" fn runtime(
     let read_delay = action == RuntimeActionId::GetSessionBranch as u32 && host.read_delay;
     if read_delay {
         std::thread::sleep(Duration::from_millis(100));
+    }
+    let block_read = action == RuntimeActionId::GetSessionBranch as u32 && host.block_read;
+    if block_read {
+        READ_STARTED.store(true, Ordering::Release);
+        while !RELEASE_READ.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
     }
     let mut invalid_json_ack = false;
     let (rc, result) = match RuntimeActionId::try_from(action).unwrap() {
@@ -270,6 +281,64 @@ fn runtime_contract_is_sequential_and_fail_closed() {
     downgrade.push(legacy());
     host().lock().unwrap().entries = downgrade;
     assert_ne!(empty(EventTag::SessionTree), 0);
+
+    host().lock().unwrap().entries = vec![legacy()];
+    RELEASE_READ.store(false, Ordering::Release);
+    host().lock().unwrap().block_read = true;
+    let restore = std::thread::spawn(|| empty(EventTag::SessionTree));
+    for _ in 0..10_000 {
+        if READ_STARTED.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(READ_STARTED.load(Ordering::Acquire));
+
+    let (sent, received) = std::sync::mpsc::channel();
+    let mutation = std::thread::spawn(move || {
+        sent.send(action(
+            json!({"action":"enqueue","text":"wait for restore"}),
+        ))
+        .unwrap();
+    });
+    assert!(received.recv_timeout(Duration::from_millis(50)).is_err());
+    RELEASE_READ.store(true, Ordering::Release);
+    assert_eq!(restore.join().unwrap(), 0);
+    let mutation_result = received.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(mutation_result.is_ok());
+    mutation.join().unwrap();
+    host().lock().unwrap().block_read = false;
+
+    READ_STARTED.store(false, Ordering::Release);
+    RELEASE_READ.store(false, Ordering::Release);
+    host().lock().unwrap().fail_read = true;
+    host().lock().unwrap().block_read = true;
+    let before_failed_restore = host().lock().unwrap().entries.clone();
+    let restore = std::thread::spawn(|| empty(EventTag::SessionTree));
+    for _ in 0..10_000 {
+        if READ_STARTED.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(READ_STARTED.load(Ordering::Acquire));
+    let (sent, received) = std::sync::mpsc::channel();
+    let mutation = std::thread::spawn(move || {
+        sent.send(action(json!({"action":"enqueue","text":"must not append"})))
+            .unwrap();
+    });
+    assert!(received.recv_timeout(Duration::from_millis(50)).is_err());
+    RELEASE_READ.store(true, Ordering::Release);
+    assert_ne!(restore.join().unwrap(), 0);
+    let mutation_result = received.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(mutation_result.is_ok());
+    assert!(mutation_result.unwrap()["details"]["error"].is_string());
+    mutation.join().unwrap();
+    assert_eq!(host().lock().unwrap().entries, before_failed_restore);
+    host().lock().unwrap().fail_read = false;
+    host().lock().unwrap().block_read = false;
+    assert_eq!(empty(EventTag::SessionTree), 0);
+
     host().lock().unwrap().entries.clear();
     assert_eq!(empty(EventTag::SessionTree), 0);
 }

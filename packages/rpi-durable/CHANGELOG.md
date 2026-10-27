@@ -11,9 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Serialize first-use branch restoration and mutations during branch reload so
   concurrent callbacks cannot append against a replaced branch.
+- Keep restore failures published while the restore gate is held, and make
+  durable status snapshots wait for branch reloads.
 - Persist a stable tool-call identity so bounded display IDs cannot associate a
   long tool result with the wrong execution, including when legacy entries are
-  present.
+  present; mark unrecoverable legacy truncations as unknown during restore.
 
 ## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.1.0...rpi-durable-v0.2.0) - 2026-10-27
 
