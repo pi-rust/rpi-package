@@ -251,5 +251,16 @@
     "install": "rpi install rpi-web",
     "repository": "https://github.com/pi-rust/rpi-package",
     "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.12/rpi-extension.json"
+  },
+  {
+    "name": "rpi-edit-diagnostics",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "edit",
+    "inspiredBy": "pi-semantic-edit",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-edit-diagnostics",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-edit-diagnostics-v0.1.0/rpi-extension.json"
   }
 ]

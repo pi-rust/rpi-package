@@ -1,0 +1,21 @@
+[package]
+name = "rpi-edit-diagnostics"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Compiler-style edit tool for the rpi agent: exact matching plus copyable diagnostics"
+readme = "README.md"
+keywords = ["rpi", "edit", "diagnostics", "plugin"]
+categories = ["development-tools"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }
+similar = { version = "2", features = ["text"] }
+unicode-normalization = "0.1"
