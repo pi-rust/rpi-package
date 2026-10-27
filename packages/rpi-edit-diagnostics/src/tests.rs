@@ -604,10 +604,12 @@ fn relative_paths_without_a_host_cwd_fall_back_to_the_process_directory() {
     let resolved = resolve_path(None, "rel/file.txt");
     let expected = std::env::current_dir().unwrap().join("rel/file.txt");
     assert_eq!(resolved, expected);
-    assert_eq!(
-        resolve_path(None, "/abs/file.txt"),
-        PathBuf::from("/abs/file.txt")
-    );
+    // Absolute by the platform's rules: `/abs` has no drive on Windows.
+    let absolute = std::env::current_dir()
+        .unwrap()
+        .join("abs")
+        .join("file.txt");
+    assert_eq!(resolve_path(None, &absolute.to_string_lossy()), absolute);
 }
 
 #[test]
@@ -634,6 +636,44 @@ fn the_write_leaves_no_temporary_file_behind() {
 
     assert_eq!(dir.entries(), vec!["f.txt".to_string()]);
     assert_eq!(fs::read(&file).unwrap(), b"two\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn editing_through_a_symlink_changes_its_target_and_keeps_the_link() {
+    let dir = TempDir::new("symlink");
+    let target = dir.file("f.txt", b"one\n");
+    let link = dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    result_text(json!({
+        "path": link.to_string_lossy(),
+        "edits": [{ "oldText": "one", "newText": "two" }]
+    }));
+
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(fs::read(&target).unwrap(), b"two\n");
+    assert_eq!(
+        dir.entries(),
+        vec!["f.txt".to_string(), "link.txt".to_string()]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn editing_a_hard_linked_file_changes_every_link() {
+    let dir = TempDir::new("hardlink");
+    let file = dir.file("f.txt", b"one\n");
+    let other = dir.path().join("g.txt");
+    fs::hard_link(&file, &other).unwrap();
+    result_text(json!({
+        "path": file.to_string_lossy(),
+        "edits": [{ "oldText": "one", "newText": "two" }]
+    }));
+
+    assert_eq!(fs::read(&other).unwrap(), b"two\n");
 }
 
 #[test]

@@ -70,9 +70,15 @@ The tool result details also carry the display diff, the unified patch and
 
 A leading BOM and the file's dominant line ending (CRLF or LF) are preserved,
 and the new content is written to a temporary file in the same directory that is
-renamed over the target, so an interrupted write cannot truncate a file. A
-relative `path` is resolved against the host-injected `__rpi.cwd`, falling back
-to the process working directory; unknown argument keys are ignored.
+renamed over the target, so an interrupted write cannot truncate a file. Links
+behave as with the built-in edit: a symlink is followed and its target replaced,
+the link itself left in place; a file with other hard links is rewritten in
+place (not atomically), so every link sees the change. On Windows the link count
+is not available on stable Rust, so a hard-linked file is replaced and its other
+links keep the old content. A relative `path` is resolved against the
+host-injected `__rpi.cwd`, falling back to the process working directory; an
+absolute path follows the platform's rules (on Windows it needs a drive or UNC
+prefix). Unknown argument keys are ignored.
 
 ## Installation
 

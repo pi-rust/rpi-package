@@ -244,6 +244,32 @@ fn resolve_path(cwd: Option<&Path>, path: &str) -> PathBuf {
 // File IO
 // ---------------------------------------------------------------------------
 
+/// Write the edited text to the file `path` names, keeping link semantics the
+/// way the built-in edit does: a symlink is followed and its target is
+/// replaced, and a file with other hard links is rewritten in place so every
+/// link sees the change. Other files are replaced through a temporary file, so
+/// a reader sees either the old content or the new, never a partial write.
+fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if has_other_hard_links(&target) {
+        return fs::write(&target, content);
+    }
+    write_atomically(&target, content)
+}
+
+#[cfg(unix)]
+fn has_other_hard_links(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).is_ok_and(|metadata| metadata.nlink() > 1)
+}
+
+/// Stable Rust exposes no link count on Windows; hard-linked files there are
+/// replaced like any other file (README: Limitations).
+#[cfg(not(unix))]
+fn has_other_hard_links(_path: &Path) -> bool {
+    false
+}
+
 /// Replace `path`'s contents through a temporary file in the same directory, so
 /// the target is either the old file or the new one — never a partial write.
 fn write_atomically(path: &Path, content: &str) -> std::io::Result<()> {
@@ -314,7 +340,7 @@ fn run_tool(params: &Value) -> Result<String, String> {
         "{bom}{}",
         restore_line_endings(&applied.new_content, ending)
     );
-    write_atomically(&absolute, &final_content)
+    write_file(&absolute, &final_content)
         .map_err(|error| format!("Could not write file: {}. {error}", input.path))?;
 
     let diff = generate_diff_string(&applied.base_content, &applied.new_content, 4);
