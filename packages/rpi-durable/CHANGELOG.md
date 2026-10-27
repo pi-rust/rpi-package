@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.1.0...rpi-durable-v0.2.0) - 2026-10-27
+
+### Other
+
+- *(durable)* [**breaking**] persist incremental checkpoints with verified recovery ([#85](https://github.com/pi-rust/rpi-package/pull/85))
+
 ### Changed
 
 - Persist versioned incremental workflow, tool, and queue changes with periodic
