@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Persist a stable tool-call identity so bounded display IDs cannot associate a
   long tool result with the wrong execution, including when legacy entries are
   present; mark unrecoverable legacy truncations as unknown during restore.
+- Use a cryptographic SHA-256 digest for bounded long tool IDs instead of a
+  low-width non-cryptographic hash.
 
 ## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.1.0...rpi-durable-v0.2.0) - 2026-10-27
 

@@ -14,6 +14,7 @@ use rpi_plugin_sdk::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
@@ -26,6 +27,7 @@ const MAX_STEP_TITLE_CHARS: usize = 1_000;
 const MAX_NOTE_CHARS: usize = 4_000;
 const MAX_JOURNAL_ENTRIES: usize = 64;
 const MAX_SUMMARY_CHARS: usize = 1_000;
+const TOOL_ID_HASH_HEX_CHARS: usize = 64;
 const MAX_QUEUE_ITEMS: usize = 32;
 const MAX_QUEUE_TEXT_CHARS: usize = 4_000;
 const JOURNAL_FORMAT: &str = "rpi-durable-journal";
@@ -1229,14 +1231,14 @@ fn tool_call_id(value: &str) -> String {
         return value.to_string();
     }
     // Keep the persisted/displayed ID bounded while making long IDs stable
-    // with a low accidental-collision risk. This avoids adding a second
-    // public field to the durable state schema.
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    let suffix = format!("…{hash:016x}");
+    // with a cryptographic digest. This avoids adding a second public field
+    // to the durable state schema.
+    let digest = Sha256::digest(value.as_bytes());
+    let digest_hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let suffix = format!("…{digest_hex}");
     let prefix_len = MAX_SUMMARY_CHARS - suffix.chars().count();
     let prefix: String = value.chars().take(prefix_len).collect();
     format!("{prefix}{suffix}")
@@ -1272,8 +1274,8 @@ fn tool_call_key(value: &str) -> String {
 fn looks_like_generated_tool_id(value: &str) -> bool {
     let chars = value.chars().collect::<Vec<_>>();
     chars.len() == MAX_SUMMARY_CHARS
-        && chars[MAX_SUMMARY_CHARS - 17] == '…'
-        && chars[MAX_SUMMARY_CHARS - 16..]
+        && chars[MAX_SUMMARY_CHARS - (TOOL_ID_HASH_HEX_CHARS + 1)] == '…'
+        && chars[MAX_SUMMARY_CHARS - TOOL_ID_HASH_HEX_CHARS..]
             .iter()
             .all(|character| character.is_ascii_hexdigit())
 }
