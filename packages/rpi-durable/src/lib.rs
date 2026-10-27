@@ -1164,6 +1164,12 @@ fn summary(value: &str) -> String {
 }
 
 fn commit_state(current: &DurableState, next: DurableState) -> Result<(), String> {
+    // SessionStart/SessionTree restore uses the same gate. Hold it through
+    // the native append so a mutation cannot commit against the branch that
+    // is being replaced underneath it.
+    let _restore_guard = restore_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut guard = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1447,20 +1453,10 @@ fn record_tool_start(next: &mut DurableState, call_id: &str, name: &str, params:
         return;
     };
     let stable_id = tool_call_id(call_id);
-    let legacy_id = summary(call_id);
-    let exact_match = run
+    if run
         .tools
         .iter()
-        .any(|tool| tool.call_id == stable_id && tool.status != ToolExecutionStatus::Unknown);
-    let legacy_matches = run
-        .tools
-        .iter()
-        .filter(|tool| tool.call_id == legacy_id)
-        .collect::<Vec<_>>();
-    if exact_match
-        || (stable_id != legacy_id
-            && legacy_matches.len() == 1
-            && legacy_matches[0].status != ToolExecutionStatus::Unknown)
+        .any(|tool| tool.call_id == stable_id && tool.status != ToolExecutionStatus::Unknown)
     {
         return;
     }
@@ -1488,23 +1484,13 @@ fn record_tool_end(
         return;
     };
     let stable_id = tool_call_id(call_id);
-    let legacy_id = summary(call_id);
-    let mut matching = run
+    let matching = run
         .tools
         .iter()
         .enumerate()
         .filter(|(_, tool)| tool.call_id == stable_id)
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    if matching.is_empty() && stable_id != legacy_id {
-        matching = run
-            .tools
-            .iter()
-            .enumerate()
-            .filter(|(_, tool)| tool.call_id == legacy_id)
-            .map(|(index, _)| index)
-            .collect();
-    }
     if matching.len() == 1 {
         let tool = &mut run.tools[matching[0]];
         if matches!(
@@ -2263,6 +2249,32 @@ mod tests {
         let (committed, _) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
         state = committed;
         assert_eq!(decode_branch(&log).unwrap().0, state);
+    }
+
+    #[test]
+    fn legacy_long_tool_ids_do_not_fallback_to_a_new_colliding_id() {
+        let prefix = "x".repeat(MAX_SUMMARY_CHARS);
+        let old_id = format!("{prefix}old");
+        let new_id = format!("{prefix}new");
+        let mut state = DurableState::default();
+        start_run(&mut state);
+        state.run.as_mut().unwrap().tools.push(ToolExecution {
+            call_id: summary(&old_id),
+            name: "tool".into(),
+            params: "old".into(),
+            status: ToolExecutionStatus::Started,
+            result: String::new(),
+        });
+
+        record_tool_start(&mut state, &new_id, "tool", "new");
+        record_tool_end(&mut state, &new_id, "tool", "new result", false);
+
+        let tools = &state.run.as_ref().unwrap().tools;
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].status, ToolExecutionStatus::Started);
+        assert_eq!(tools[1].status, ToolExecutionStatus::Completed);
+        assert_eq!(tools[1].result, "new result");
+        assert_ne!(tools[0].call_id, tools[1].call_id);
     }
 
     fn append_action(
