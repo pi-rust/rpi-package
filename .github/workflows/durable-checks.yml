@@ -1,0 +1,39 @@
+name: Durable regression checks
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-durable/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/durable-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  durable:
+    name: Durable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check package formatting
+        run: cargo fmt -p rpi-durable -- --check
+      - name: Test workflow, journal replay and actual ABI callbacks
+        run: cargo test --locked -p rpi-durable
+      - name: Check all durable targets
+        run: cargo clippy --locked -p rpi-durable --all-targets -- -D warnings
+      - name: Build the release library
+        run: cargo build --release --locked -p rpi-durable
+      - name: Verify the registry package
+        run: cargo package --locked -p rpi-durable

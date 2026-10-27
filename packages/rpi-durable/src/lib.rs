@@ -28,11 +28,119 @@ const MAX_JOURNAL_ENTRIES: usize = 64;
 const MAX_SUMMARY_CHARS: usize = 1_000;
 const MAX_QUEUE_ITEMS: usize = 32;
 const MAX_QUEUE_TEXT_CHARS: usize = 4_000;
+const JOURNAL_FORMAT: &str = "rpi-durable-journal";
+const JOURNAL_VERSION: u64 = 1;
+const SNAPSHOT_INTERVAL: u64 = 32;
 
 type Runtime = PluginApi;
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-static STATE: OnceLock<Mutex<DurableState>> = OnceLock::new();
+static STATE: OnceLock<Mutex<Store>> = OnceLock::new();
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct JournalMeta {
+    anchor_entry_id: Option<String>,
+    commits_since_snapshot: u64,
+    force_snapshot: bool,
+}
+
+impl Default for JournalMeta {
+    fn default() -> Self {
+        Self {
+            anchor_entry_id: None,
+            commits_since_snapshot: 0,
+            force_snapshot: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct Store {
+    state: DurableState,
+    meta: JournalMeta,
+    initialized: bool,
+    restore_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JournalRecord {
+    format: String,
+    version: u64,
+    kind: JournalKind,
+    base_revision: u64,
+    revision: u64,
+    #[serde(default)]
+    base_entry_id: Option<String>,
+    #[serde(default)]
+    state: Option<DurableState>,
+    #[serde(default)]
+    changes: Option<Vec<JournalChange>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum JournalKind {
+    Snapshot,
+    Delta,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+enum JournalChange {
+    SetWorkflow {
+        workflow: Option<Workflow>,
+    },
+    UpdateStep {
+        step_id: String,
+        status: StepStatus,
+        note: Option<String>,
+    },
+    SetWorkflowMeta {
+        name: String,
+        status: WorkflowStatus,
+        reason: Option<String>,
+    },
+    SetCounters {
+        next_run_id: u64,
+        next_queue_id: u64,
+    },
+    SetRun {
+        run: Option<RunState>,
+    },
+    SetRunMeta {
+        id: String,
+        status: RunStatus,
+        started_revision: u64,
+        updated_revision: u64,
+        outcome: String,
+        recovery_of: String,
+    },
+    AppendTool {
+        tool: ToolExecution,
+    },
+    UpdateTool {
+        call_id: String,
+        status: ToolExecutionStatus,
+        result: String,
+    },
+    SetTools {
+        tools: Vec<ToolExecution>,
+    },
+    AppendQueue {
+        item: QueueItem,
+    },
+    UpdateQueue {
+        item: QueueItem,
+    },
+    SetQueue {
+        queue: Vec<QueueItem>,
+    },
+}
+
+fn state() -> &'static Mutex<Store> {
+    STATE.get_or_init(|| Mutex::new(Store::default()))
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,10 +321,6 @@ impl StepStatus {
     }
 }
 
-fn state() -> &'static Mutex<DurableState> {
-    STATE.get_or_init(|| Mutex::new(DurableState::default()))
-}
-
 fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     let runtime = *RUNTIME.get().ok_or("durable runtime is unavailable")?;
     let input = args.to_string();
@@ -243,39 +347,758 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     }
 }
 
-fn restore_state() {
-    let Ok(value) = call_runtime(RuntimeActionId::GetSessionBranch, json!({})) else {
-        return;
-    };
-    let Some(entries) = value.get("entries").and_then(Value::as_array) else {
-        return;
-    };
+fn append_entry_identity(response: &Value) -> Option<String> {
+    response.get("entryId").and_then(|value| match value {
+        Value::String(value) if !value.is_empty() => Some(value.clone()),
+        _ => None,
+    })
+}
 
-    let mut restored = DurableState::default();
+fn branch_entry_identity(entry: &Value) -> Option<String> {
+    entry.get("id").and_then(|value| match value {
+        Value::String(value) if !value.is_empty() => Some(value.clone()),
+        _ => None,
+    })
+}
+
+fn append_entry(payload: Value) -> Result<String, String> {
+    let response = call_runtime(RuntimeActionId::AppendEntry, payload).map_err(|error| {
+        // A successful host call with an unreadable acknowledgement may have
+        // committed already. Reconcile before using the previous anchor again.
+        if error.starts_with("invalid runtime response:") {
+            format!("durable append acknowledgement is unknown: {error}")
+        } else {
+            error
+        }
+    })?;
+    append_entry_identity(&response).ok_or_else(|| {
+        "durable append acknowledgement is unknown: AppendEntry returned no usable entryId; durable journal is unusable until the branch is explicitly reloaded".into()
+    })
+}
+
+fn validate_state(value: &DurableState) -> Result<(), String> {
+    if let Some(workflow) = &value.workflow {
+        if workflow.name.chars().count() > MAX_NAME_CHARS
+            || workflow.steps.is_empty()
+            || workflow.steps.len() > MAX_STEPS
+        {
+            return Err("durable journal workflow exceeds its bounds".into());
+        }
+        for step in &workflow.steps {
+            if step.id.is_empty()
+                || step.id.chars().count() > MAX_STEP_ID_CHARS
+                || step.title.chars().count() > MAX_STEP_TITLE_CHARS
+                || step
+                    .note
+                    .as_ref()
+                    .is_some_and(|note| note.chars().count() > MAX_NOTE_CHARS)
+            {
+                return Err("durable journal contains an invalid workflow step".into());
+            }
+        }
+        if workflow
+            .steps
+            .windows(2)
+            .any(|steps| steps[0].id == steps[1].id)
+            || workflow.steps.iter().enumerate().any(|(index, step)| {
+                workflow.steps[..index]
+                    .iter()
+                    .any(|other| other.id == step.id)
+            })
+        {
+            return Err("durable journal contains duplicate workflow step IDs".into());
+        }
+    }
+    if let Some(run) = &value.run {
+        if run.tools.len() > MAX_JOURNAL_ENTRIES {
+            return Err("durable journal contains too many tool entries".into());
+        }
+        for tool in &run.tools {
+            if tool.call_id.chars().count() > MAX_SUMMARY_CHARS + 1
+                || tool.name.chars().count() > MAX_SUMMARY_CHARS + 1
+                || tool.params.chars().count() > MAX_SUMMARY_CHARS + 1
+                || tool.result.chars().count() > MAX_SUMMARY_CHARS + 1
+            {
+                return Err("durable journal contains an oversized tool summary".into());
+            }
+        }
+    }
+    if value.queue.len() > MAX_QUEUE_ITEMS
+        || value.queue.iter().any(|item| {
+            item.id.chars().count() > MAX_STEP_ID_CHARS
+                || item.text.chars().count() > MAX_QUEUE_TEXT_CHARS
+                || item.note.chars().count() > MAX_NOTE_CHARS
+        })
+    {
+        return Err("durable journal contains an invalid queue".into());
+    }
+    if value
+        .queue
+        .iter()
+        .enumerate()
+        .any(|(index, item)| value.queue[..index].iter().any(|other| other.id == item.id))
+    {
+        return Err("durable journal contains duplicate queue item IDs".into());
+    }
+    Ok(())
+}
+
+fn apply_change(state: &mut DurableState, change: &JournalChange) -> Result<(), String> {
+    match change {
+        JournalChange::SetWorkflow { workflow } => state.workflow = workflow.clone(),
+        JournalChange::SetWorkflowMeta {
+            name,
+            status,
+            reason,
+        } => {
+            let workflow = state
+                .workflow
+                .as_mut()
+                .ok_or("durable journal workflow metadata path has no workflow")?;
+            workflow.name = name.clone();
+            workflow.status = status.clone();
+            workflow.reason = reason.clone();
+        }
+        JournalChange::UpdateStep {
+            step_id,
+            status,
+            note,
+        } => {
+            let workflow = state
+                .workflow
+                .as_mut()
+                .ok_or("durable journal step path has no workflow")?;
+            let step = workflow
+                .steps
+                .iter_mut()
+                .find(|step| step.id == *step_id)
+                .ok_or_else(|| format!("durable journal step path not found: {step_id}"))?;
+            step.status = status.clone();
+            step.note = note.clone();
+        }
+        JournalChange::SetCounters {
+            next_run_id,
+            next_queue_id,
+        } => {
+            state.next_run_id = *next_run_id;
+            state.next_queue_id = *next_queue_id;
+        }
+        JournalChange::SetRun { run } => state.run = run.clone(),
+        JournalChange::SetRunMeta {
+            id,
+            status,
+            started_revision,
+            updated_revision,
+            outcome,
+            recovery_of,
+        } => {
+            let run = state
+                .run
+                .as_mut()
+                .ok_or("durable journal run metadata path has no run")?;
+            run.id = id.clone();
+            run.status = status.clone();
+            run.started_revision = *started_revision;
+            run.updated_revision = *updated_revision;
+            run.outcome = outcome.clone();
+            run.recovery_of = recovery_of.clone();
+        }
+        JournalChange::AppendTool { tool } => {
+            let run = state
+                .run
+                .as_mut()
+                .ok_or("durable journal tool path has no run")?;
+            run.tools.push(tool.clone());
+            if run.tools.len() > MAX_JOURNAL_ENTRIES {
+                run.tools.drain(..run.tools.len() - MAX_JOURNAL_ENTRIES);
+            }
+        }
+        JournalChange::UpdateTool {
+            call_id,
+            status,
+            result,
+        } => {
+            let run = state
+                .run
+                .as_mut()
+                .ok_or("durable journal tool path has no run")?;
+            let matches = run.tools.iter_mut().filter(|tool| tool.call_id == *call_id);
+            let mut count = 0;
+            for tool in matches {
+                tool.status = status.clone();
+                tool.result = result.clone();
+                count += 1;
+            }
+            if count != 1 {
+                return Err(format!(
+                    "durable journal tool path matched {count} entries for {call_id}"
+                ));
+            }
+        }
+        JournalChange::SetTools { tools } => {
+            if tools.len() > MAX_JOURNAL_ENTRIES {
+                return Err("durable journal tool replacement exceeds its bound".into());
+            }
+            let run = state
+                .run
+                .as_mut()
+                .ok_or("durable journal tool path has no run")?;
+            run.tools = tools.clone();
+        }
+        JournalChange::AppendQueue { item } => {
+            if state.queue.len() >= MAX_QUEUE_ITEMS
+                || state.queue.iter().any(|existing| existing.id == item.id)
+            {
+                return Err("durable journal queue append is invalid".into());
+            }
+            state.queue.push(item.clone());
+        }
+        JournalChange::UpdateQueue { item } => {
+            let existing = state
+                .queue
+                .iter_mut()
+                .find(|existing| existing.id == item.id)
+                .ok_or_else(|| format!("durable journal queue path not found: {}", item.id))?;
+            *existing = item.clone();
+        }
+        JournalChange::SetQueue { queue } => {
+            if queue.len() > MAX_QUEUE_ITEMS {
+                return Err("durable journal queue replacement exceeds its bound".into());
+            }
+            state.queue = queue.clone();
+        }
+    }
+    validate_state(state)
+}
+
+fn apply_record(base: &DurableState, record: &JournalRecord) -> Result<DurableState, String> {
+    if record.format != JOURNAL_FORMAT || record.version != JOURNAL_VERSION {
+        return Err("unsupported durable journal format or version".into());
+    }
+    let next = match record.kind {
+        JournalKind::Snapshot => {
+            if record.changes.is_some() {
+                return Err("durable snapshot contains delta changes".into());
+            }
+            record
+                .state
+                .clone()
+                .ok_or("durable snapshot has no complete state")?
+        }
+        JournalKind::Delta => {
+            if record.state.is_some() {
+                return Err("durable delta contains a snapshot state".into());
+            }
+            let changes = record
+                .changes
+                .as_ref()
+                .ok_or("durable delta has no changes")?;
+            if changes.is_empty() {
+                return Err("durable delta must contain a change".into());
+            }
+            let mut next = base.clone();
+            for change in changes {
+                apply_change(&mut next, change)?;
+            }
+            next.revision = record.revision;
+            next
+        }
+    };
+    if next.revision != record.revision {
+        return Err("durable journal resulting revision does not match its state".into());
+    }
+    validate_state(&next)?;
+    Ok(next)
+}
+
+#[derive(Clone, Debug)]
+enum BranchRecord {
+    Legacy {
+        state: DurableState,
+        entry_id: Option<String>,
+    },
+    Journal {
+        record: JournalRecord,
+        entry_id: String,
+    },
+}
+
+fn decode_legacy_state(data: &Value) -> Result<DurableState, String> {
+    let object = data
+        .as_object()
+        .ok_or("invalid legacy durable state: expected an object")?;
+    if !object.contains_key("workflow") {
+        return Err("invalid durable state envelope: missing workflow discriminator".into());
+    }
+    const LEGACY_KEYS: &[&str] = &[
+        "workflow",
+        "run",
+        "nextRunId",
+        "nextQueueId",
+        "queue",
+        "revision",
+    ];
+    if let Some(key) = object
+        .keys()
+        .find(|key| !LEGACY_KEYS.contains(&key.as_str()))
+    {
+        return Err(format!("invalid legacy durable state: unknown field {key}"));
+    }
+    let state: DurableState = serde_json::from_value(data.clone())
+        .map_err(|error| format!("invalid legacy durable state: {error}"))?;
+    validate_state(&state)?;
+    Ok(state)
+}
+
+fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), String> {
+    let mut records = Vec::new();
     for entry in entries {
         if entry.get("type").and_then(Value::as_str) != Some("custom")
             || entry.get("customType").and_then(Value::as_str) != Some(ENTRY_TYPE)
         {
             continue;
         }
-        if let Some(data) = entry.get("data") {
-            if let Ok(next) = serde_json::from_value::<DurableState>(data.clone()) {
-                restored = next;
+        let data = entry
+            .get("data")
+            .ok_or("durable custom entry has no data")?;
+        let has_format = data.get("format").is_some();
+        let has_version = data.get("version").is_some();
+        if !has_format && !has_version {
+            let state = decode_legacy_state(data)?;
+            let entry_id = branch_entry_identity(entry);
+            records.push(BranchRecord::Legacy { state, entry_id });
+            continue;
+        }
+        let record: JournalRecord = serde_json::from_value(data.clone())
+            .map_err(|error| format!("invalid durable journal record: {error}"))?;
+        if record.format != JOURNAL_FORMAT || record.version != JOURNAL_VERSION {
+            return Err("unsupported durable journal format or version".into());
+        }
+        match record.kind {
+            JournalKind::Snapshot => {
+                if record.state.is_none() || record.changes.is_some() {
+                    return Err("durable snapshot must contain only a complete state".into());
+                }
+            }
+            JournalKind::Delta => {
+                if record.state.is_some() || record.changes.as_ref().map_or(true, Vec::is_empty) {
+                    return Err("durable delta must contain non-empty changes only".into());
+                }
+            }
+        }
+        if record.revision < record.base_revision {
+            return Err("durable journal revision moves backwards".into());
+        }
+        if matches!(record.kind, JournalKind::Snapshot) {
+            let snapshot = record
+                .state
+                .as_ref()
+                .ok_or("durable snapshot has no complete state")?;
+            if snapshot.revision != record.revision {
+                return Err("durable snapshot state has the wrong revision".into());
+            }
+            validate_state(snapshot)?;
+        }
+        let entry_id =
+            branch_entry_identity(entry).ok_or("versioned durable entry has no native id")?;
+        records.push(BranchRecord::Journal { record, entry_id });
+    }
+
+    let first_journal = records
+        .iter()
+        .position(|record| matches!(record, BranchRecord::Journal { .. }));
+    if let Some(first_journal) = first_journal {
+        if records[first_journal..]
+            .iter()
+            .any(|record| matches!(record, BranchRecord::Legacy { .. }))
+        {
+            return Err("legacy durable state appears after a versioned journal record".into());
+        }
+    }
+
+    let snapshot_index = records.iter().rposition(|record| {
+        matches!(
+            record,
+            BranchRecord::Journal {
+                record: JournalRecord {
+                    kind: JournalKind::Snapshot,
+                    ..
+                },
+                ..
+            }
+        )
+    });
+    let legacy_index = records
+        .iter()
+        .rposition(|record| matches!(record, BranchRecord::Legacy { .. }));
+    let start = match snapshot_index {
+        Some(snapshot) if legacy_index.map_or(true, |legacy| legacy < snapshot) => snapshot,
+        Some(_) => legacy_index.expect("legacy index exists after snapshot"),
+        None => legacy_index.unwrap_or(0),
+    };
+
+    let (mut restored, mut anchor, force_snapshot) = match records.get(start) {
+        None => (DurableState::default(), None, true),
+        Some(BranchRecord::Legacy { state, entry_id }) => {
+            validate_state(state)?;
+            (state.clone(), entry_id.clone(), true)
+        }
+        Some(BranchRecord::Journal { record, entry_id }) => {
+            if !matches!(record.kind, JournalKind::Snapshot) {
+                return Err("durable journal has no self-contained snapshot base".into());
+            }
+            // A complete snapshot is deliberately independent of records before it. Its
+            // own state/revision have already been validated above; its native id becomes
+            // the anchor for the suffix that follows it.
+            let restored = apply_record(&DurableState::default(), record)?;
+            (restored, Some(entry_id.clone()), false)
+        }
+    };
+    validate_state(&restored)?;
+    let mut commits_since_snapshot: u64 = 0;
+
+    for record in records
+        .iter()
+        .skip(if records.is_empty() { 0 } else { start + 1 })
+    {
+        let BranchRecord::Journal { record, entry_id } = record else {
+            return Err("legacy durable state appears after a versioned journal record".into());
+        };
+        if matches!(record.kind, JournalKind::Snapshot) {
+            return Err("unexpected durable snapshot after the selected snapshot anchor".into());
+        }
+        if record.base_revision != restored.revision || record.base_entry_id != anchor {
+            return Err("durable journal delta has a gap or wrong branch anchor".into());
+        }
+        if record.revision
+            != restored
+                .revision
+                .checked_add(1)
+                .ok_or("durable revision overflow")?
+        {
+            return Err("durable journal delta has a non-contiguous revision".into());
+        }
+        restored = apply_record(&restored, record)?;
+        anchor = Some(entry_id.clone());
+        commits_since_snapshot = commits_since_snapshot.saturating_add(1);
+    }
+    Ok((
+        restored,
+        JournalMeta {
+            anchor_entry_id: anchor,
+            commits_since_snapshot,
+            force_snapshot,
+        },
+    ))
+}
+
+fn run_meta(run: &RunState) -> JournalChange {
+    JournalChange::SetRunMeta {
+        id: run.id.clone(),
+        status: run.status.clone(),
+        started_revision: run.started_revision,
+        updated_revision: run.updated_revision,
+        outcome: run.outcome.clone(),
+        recovery_of: run.recovery_of.clone(),
+    }
+}
+
+fn tool_changes(current: &[ToolExecution], next: &[ToolExecution]) -> Option<Vec<JournalChange>> {
+    if next.len() == current.len() + 1 && next[..current.len()] == *current {
+        return Some(vec![JournalChange::AppendTool {
+            tool: next.last()?.clone(),
+        }]);
+    }
+    if current.len() == MAX_JOURNAL_ENTRIES
+        && next.len() == MAX_JOURNAL_ENTRIES
+        && next[..MAX_JOURNAL_ENTRIES - 1] == current[1..]
+    {
+        return Some(vec![JournalChange::AppendTool {
+            tool: next.last()?.clone(),
+        }]);
+    }
+    if current.len() == next.len() {
+        let mut changes = Vec::new();
+        for (before, after) in current.iter().zip(next) {
+            if before != after {
+                if before.call_id != after.call_id
+                    || before.name != after.name
+                    || before.params != after.params
+                    || current
+                        .iter()
+                        .filter(|tool| tool.call_id == before.call_id)
+                        .count()
+                        != 1
+                {
+                    return None;
+                }
+                changes.push(JournalChange::UpdateTool {
+                    call_id: after.call_id.clone(),
+                    status: after.status.clone(),
+                    result: after.result.clone(),
+                });
+            }
+        }
+        if !changes.is_empty() {
+            return Some(changes);
+        }
+    }
+    None
+}
+
+fn workflow_changes(current: &Option<Workflow>, next: &Option<Workflow>) -> Vec<JournalChange> {
+    if let (Some(before), Some(after)) = (current, next) {
+        if before.steps.len() == after.steps.len()
+            && before
+                .steps
+                .iter()
+                .zip(&after.steps)
+                .all(|(old, new)| old.id == new.id && old.title == new.title)
+        {
+            let mut changes = Vec::new();
+            if before.name != after.name
+                || before.status != after.status
+                || before.reason != after.reason
+            {
+                changes.push(JournalChange::SetWorkflowMeta {
+                    name: after.name.clone(),
+                    status: after.status.clone(),
+                    reason: after.reason.clone(),
+                });
+            }
+            for (before, after) in before.steps.iter().zip(&after.steps) {
+                if before.status != after.status || before.note != after.note {
+                    changes.push(JournalChange::UpdateStep {
+                        step_id: after.id.clone(),
+                        status: after.status.clone(),
+                        note: after.note.clone(),
+                    });
+                }
+            }
+            if !changes.is_empty() {
+                return changes;
             }
         }
     }
-    let restored = recover_from_branch(restored);
-    *state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = restored;
+    vec![JournalChange::SetWorkflow {
+        workflow: next.clone(),
+    }]
 }
 
-fn persist_state(next: &DurableState) -> Result<(), String> {
-    call_runtime(
-        RuntimeActionId::AppendEntry,
-        json!({"customType": ENTRY_TYPE, "data": next}),
-    )?;
+fn journal_changes(current: &DurableState, next: &DurableState) -> Vec<JournalChange> {
+    let mut changes = Vec::new();
+    if current.workflow != next.workflow {
+        changes.extend(workflow_changes(&current.workflow, &next.workflow));
+    }
+    if current.next_run_id != next.next_run_id || current.next_queue_id != next.next_queue_id {
+        changes.push(JournalChange::SetCounters {
+            next_run_id: next.next_run_id,
+            next_queue_id: next.next_queue_id,
+        });
+    }
+    match (&current.run, &next.run) {
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => changes.push(JournalChange::SetRun {
+            run: next.run.clone(),
+        }),
+        (Some(before), Some(after)) if before.id != after.id => {
+            changes.push(JournalChange::SetRun {
+                run: next.run.clone(),
+            })
+        }
+        (Some(before), Some(after)) => {
+            if before.id != after.id
+                || before.status != after.status
+                || before.started_revision != after.started_revision
+                || before.updated_revision != after.updated_revision
+                || before.outcome != after.outcome
+                || before.recovery_of != after.recovery_of
+            {
+                changes.push(run_meta(after));
+            }
+            if let Some(tool_changes) = tool_changes(&before.tools, &after.tools) {
+                changes.extend(tool_changes);
+            } else if before.tools != after.tools {
+                changes.push(JournalChange::SetTools {
+                    tools: after.tools.clone(),
+                });
+            }
+        }
+    }
+    if current.queue != next.queue {
+        if next.queue.len() == current.queue.len() + 1
+            && next.queue[..current.queue.len()] == *current.queue
+        {
+            changes.push(JournalChange::AppendQueue {
+                item: next.queue.last().expect("queue length checked").clone(),
+            });
+        } else if current.queue.len() == next.queue.len() {
+            let differing = current
+                .queue
+                .iter()
+                .zip(&next.queue)
+                .filter(|(before, after)| before != after)
+                .count();
+            if differing == 1 {
+                let index = current
+                    .queue
+                    .iter()
+                    .zip(&next.queue)
+                    .position(|(before, after)| before != after)
+                    .expect("queue difference counted");
+                changes.push(JournalChange::UpdateQueue {
+                    item: next.queue[index].clone(),
+                });
+            } else {
+                changes.push(JournalChange::SetQueue {
+                    queue: next.queue.clone(),
+                });
+            }
+        } else {
+            changes.push(JournalChange::SetQueue {
+                queue: next.queue.clone(),
+            });
+        }
+    }
+    changes
+}
+
+fn journal_record(
+    current: &DurableState,
+    next: &DurableState,
+    meta: &JournalMeta,
+) -> JournalRecord {
+    let changes = journal_changes(current, next);
+    JournalRecord {
+        format: JOURNAL_FORMAT.into(),
+        version: JOURNAL_VERSION,
+        kind: JournalKind::Delta,
+        base_revision: current.revision,
+        revision: next.revision,
+        base_entry_id: meta.anchor_entry_id.clone(),
+        state: None,
+        changes: Some(changes),
+    }
+}
+
+fn commit_candidate<F>(
+    current: &DurableState,
+    meta: &JournalMeta,
+    mut next: DurableState,
+    append: F,
+) -> Result<(DurableState, JournalMeta), String>
+where
+    F: FnOnce(Value) -> Result<String, String>,
+{
+    if next == *current {
+        return Ok((current.clone(), meta.clone()));
+    }
+    next.revision = current
+        .revision
+        .checked_add(1)
+        .ok_or("durable revision exhausted")?;
+    if let Some(run) = next.run.as_mut() {
+        run.updated_revision = next.revision;
+    }
+    let delta = journal_record(current, &next, meta);
+    if delta.changes.as_ref().map_or(true, Vec::is_empty) {
+        return Err("durable state changed without a journal change".into());
+    }
+    let snapshot = JournalRecord {
+        format: JOURNAL_FORMAT.into(),
+        version: JOURNAL_VERSION,
+        kind: JournalKind::Snapshot,
+        base_revision: current.revision,
+        revision: next.revision,
+        base_entry_id: meta.anchor_entry_id.clone(),
+        state: Some(next.clone()),
+        changes: None,
+    };
+    let delta_size = serde_json::to_vec(&delta)
+        .map_err(|error| format!("serialize durable delta: {error}"))?
+        .len();
+    let snapshot_size = serde_json::to_vec(&snapshot)
+        .map_err(|error| format!("serialize durable snapshot: {error}"))?
+        .len();
+    let use_snapshot = meta.force_snapshot
+        || meta.anchor_entry_id.is_none()
+        || meta.commits_since_snapshot + 1 >= SNAPSHOT_INTERVAL
+        || delta_size >= snapshot_size;
+    let record = if use_snapshot { snapshot } else { delta };
+    let entry_id = append(json!({
+        "customType": ENTRY_TYPE,
+        "data": record,
+    }))?;
+    Ok((
+        next,
+        JournalMeta {
+            anchor_entry_id: Some(entry_id),
+            commits_since_snapshot: if use_snapshot {
+                0
+            } else {
+                meta.commits_since_snapshot + 1
+            },
+            force_snapshot: false,
+        },
+    ))
+}
+
+fn restore_state() -> Result<(), String> {
+    let value = call_runtime(RuntimeActionId::GetSessionBranch, json!({}))?;
+    let entries = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or("GetSessionBranch returned no valid entries array")?;
+    let (restored, meta) = decode_branch(entries)?;
+    let interrupted = mark_interrupted(restored.clone());
+    let (restored, meta) = if interrupted != restored {
+        commit_candidate(&restored, &meta, interrupted, |payload| {
+            append_entry(payload)
+        })?
+    } else {
+        (restored, meta)
+    };
+    *state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Store {
+        state: restored,
+        meta,
+        initialized: true,
+        restore_error: None,
+    };
     Ok(())
+}
+
+fn fail_restore(error: String) {
+    *state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Store {
+        state: DurableState::default(),
+        meta: JournalMeta::default(),
+        initialized: true,
+        restore_error: Some(error),
+    };
+}
+
+fn ensure_initialized() -> Result<(), String> {
+    let status = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(error) = &status.restore_error {
+        return Err(format!("durable branch restore failed: {error}"));
+    }
+    if status.initialized {
+        return Ok(());
+    }
+    drop(status);
+
+    match restore_state() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            fail_restore(error.clone());
+            Err(format!("durable branch restore failed: {error}"))
+        }
+    }
 }
 
 fn summary(value: &str) -> String {
@@ -286,32 +1109,45 @@ fn summary(value: &str) -> String {
     result
 }
 
-fn commit_state(current: &DurableState, mut next: DurableState) -> Result<(), String> {
-    if next == *current {
-        return Ok(());
-    }
+fn commit_state(current: &DurableState, next: DurableState) -> Result<(), String> {
     let mut guard = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if *guard != *current {
+    if let Some(error) = &guard.restore_error {
+        return Err(format!("durable branch restore failed: {error}"));
+    }
+    if guard.state != *current {
         return Err("durable state changed concurrently; retry the operation".into());
     }
-    next.revision = current.revision.saturating_add(1);
-    if let Some(run) = next.run.as_mut() {
-        run.updated_revision = next.revision;
+    let committed = commit_candidate(current, &guard.meta, next, append_entry);
+    match committed {
+        Ok((state, meta)) => {
+            guard.state = state;
+            guard.meta = meta;
+            Ok(())
+        }
+        Err(error) => {
+            if error.starts_with("durable append acknowledgement is unknown:") {
+                // The native append may have committed even though its response was
+                // unusable. Do not retry against the old anchor; require an explicit
+                // branch reload to reconcile the chain.
+                guard.initialized = true;
+                guard.restore_error = Some(error.clone());
+            }
+            Err(error)
+        }
     }
-    persist_state(&next)?;
-    *guard = next;
-    Ok(())
 }
 
 fn mutate_state<F>(mutator: F) -> Result<(), String>
 where
     F: FnOnce(&mut DurableState),
 {
+    ensure_initialized()?;
     let current = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .state
         .clone();
     let mut next = current.clone();
     mutator(&mut next);
@@ -334,14 +1170,6 @@ fn mark_interrupted(mut next: DurableState) -> DurableState {
         }
     }
     next
-}
-
-fn recover_from_branch(mut restored: DurableState) -> DurableState {
-    let recovered = mark_interrupted(restored.clone());
-    if recovered != restored && persist_state(&recovered).is_ok() {
-        restored = recovered;
-    }
-    restored
 }
 
 fn text(value: Option<&Value>, field: &str, max_chars: usize) -> Result<String, String> {
@@ -812,22 +1640,45 @@ fn result(action: &str, state: &DurableState, error: Option<&str>) -> String {
     .to_string()
 }
 
+fn error_result(action: &str, error: &str) -> String {
+    json!({
+        "content": [{"type": "text", "text": format!("Error: {error}")}],
+        "details": {"action": action, "error": error}
+    })
+    .to_string()
+}
+
 fn durable(params: &Value) -> Result<String, String> {
     let action = params
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("status");
-    let current = state()
+    if let Err(error) = ensure_initialized() {
+        return Ok(error_result(action, &error));
+    }
+    let store = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
+    if let Some(error) = &store.restore_error {
+        return Ok(error_result(
+            action,
+            &format!("durable branch restore failed: {error}"),
+        ));
+    }
+    let current = store.state;
     let next = match apply_action(&current, params) {
         Ok(next) => next,
         Err(error) => return Ok(result(action, &current, Some(&error))),
     };
 
-    commit_state(&current, next.clone())?;
-    Ok(result(action, &next, None))
+    commit_state(&current, next)?;
+    let committed = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .state
+        .clone();
+    Ok(result(action, &committed, None))
 }
 
 static HANDLES: ToolHandles<Drive> = ToolHandles::new();
@@ -891,10 +1742,17 @@ fn command(args, out, _user_data) {
         return 1;
     }
     let _ = args;
-    let snapshot = state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
+    let snapshot = match ensure_initialized() {
+        Ok(()) => state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .state
+            .clone(),
+        Err(error) => {
+            out.write(json!({"kind":"message","text":format!("Error: {error}")}).to_string());
+            return 0;
+        }
+    };
     out.write(json!({"kind":"message","text":render(&snapshot)}).to_string());
     0
 }
@@ -903,7 +1761,12 @@ fn command(args, out, _user_data) {
 rpi_plugin_sdk::event_handler! {
 fn handle_event(event, _user_data) {
     match event.tag() {
-        EventTag::SessionStart | EventTag::SessionTree => restore_state(),
+        EventTag::SessionStart | EventTag::SessionTree => {
+            if let Err(error) = restore_state() {
+                fail_restore(error);
+                return 1;
+            }
+        }
         EventTag::AgentStart => {
             if mutate_state(start_run).is_err() {
                 return 1;
@@ -1196,6 +2059,540 @@ mod tests {
         )
         .is_err());
         assert!(apply_action(&state, &json!({"action":"cancel","item":"missing"})).is_err());
+    }
+
+    fn append_logged(
+        log: &mut Vec<Value>,
+        fail: bool,
+    ) -> impl FnOnce(Value) -> Result<String, String> + '_ {
+        move |payload| {
+            if fail {
+                return Err("mock AppendEntry failure".into());
+            }
+            let id = format!("entry-{}", log.len() + 1);
+            log.push(json!({
+                "type": "custom",
+                "customType": ENTRY_TYPE,
+                "id": id,
+                "data": payload["data"].clone(),
+            }));
+            Ok(id)
+        }
+    }
+
+    fn commit_logged(
+        state: &DurableState,
+        meta: &JournalMeta,
+        next: DurableState,
+        log: &mut Vec<Value>,
+    ) -> Result<(DurableState, JournalMeta), String> {
+        commit_candidate(state, meta, next, append_logged(log, false))
+    }
+
+    #[test]
+    fn ambiguous_result_before_start_replays_through_settle() {
+        let mut log = Vec::new();
+        let mut state = DurableState::default();
+        let mut meta = JournalMeta::default();
+        let call_id = "ambiguous-call";
+        let params = "参数".repeat(400);
+        let result = "结果".repeat(400);
+
+        let mut candidate = state.clone();
+        start_run(&mut candidate);
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+
+        let mut candidate = state.clone();
+        record_tool_end(&mut candidate, call_id, "tool", &result, false);
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+
+        let mut candidate = state.clone();
+        record_tool_start(&mut candidate, call_id, "tool", &params);
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+
+        let mut candidate = state.clone();
+        if let Some(run) = candidate.run.as_mut() {
+            run.status = RunStatus::Settled;
+            run.outcome = "settled".into();
+            for tool in &mut run.tools {
+                if tool.status == ToolExecutionStatus::Started {
+                    tool.status = ToolExecutionStatus::Interrupted;
+                    tool.result = "run settled without a durable tool result".into();
+                }
+            }
+        }
+        let (committed, _) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        state = committed;
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+    }
+
+    #[test]
+    fn summarized_long_tool_ids_fall_back_to_a_replayable_tool_set() {
+        let mut log = Vec::new();
+        let mut state = DurableState::default();
+        let mut meta = JournalMeta::default();
+        let prefix = "x".repeat(MAX_SUMMARY_CHARS);
+        let first_id = format!("{prefix}a");
+        let second_id = format!("{prefix}b");
+
+        let mut candidate = state.clone();
+        start_run(&mut candidate);
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+
+        let mut candidate = state.clone();
+        record_tool_start(&mut candidate, &first_id, "tool", "first");
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+
+        let mut candidate = state.clone();
+        record_tool_start(&mut candidate, &second_id, "tool", "second");
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+
+        let mut candidate = state.clone();
+        if let Some(run) = candidate.run.as_mut() {
+            run.status = RunStatus::Settled;
+            run.outcome = "settled".into();
+            for tool in &mut run.tools {
+                if tool.status == ToolExecutionStatus::Started {
+                    tool.status = ToolExecutionStatus::Interrupted;
+                    tool.result = "run settled without a durable tool result".into();
+                }
+            }
+        }
+        let (committed, _) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        state = committed;
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+    }
+
+    fn append_action(
+        state: DurableState,
+        meta: &JournalMeta,
+        params: &Value,
+        log: &mut Vec<Value>,
+    ) -> (DurableState, JournalMeta) {
+        let next = apply_action(&state, params).unwrap();
+        commit_logged(&state, meta, next, log).unwrap()
+    }
+
+    #[test]
+    fn legacy_and_versioned_entries_restore_without_losing_the_branch_anchor() {
+        let legacy = json!({
+            "type":"custom", "customType":ENTRY_TYPE, "id":"legacy-1",
+            "data":{"workflow":null}
+        });
+        let mut log = vec![legacy];
+        let current = DurableState::default();
+        let meta = JournalMeta {
+            anchor_entry_id: Some("legacy-1".into()),
+            force_snapshot: true,
+            commits_since_snapshot: 0,
+        };
+        let (state, _) = commit_logged(&current, &meta, started(), &mut log).unwrap();
+        let (restored, restored_meta) = decode_branch(&log).unwrap();
+        assert_eq!(restored, state);
+        assert_eq!(restored_meta.anchor_entry_id, Some("entry-2".into()));
+        assert_eq!(
+            serde_json::to_value(&log[1]["data"]).unwrap()["format"],
+            JOURNAL_FORMAT
+        );
+    }
+
+    #[test]
+    fn journal_round_trip_keeps_all_100_tools_and_is_smaller_than_snapshots() {
+        let mut log = Vec::new();
+        let mut state = DurableState::default();
+        let mut meta = JournalMeta::default();
+        let mut full_snapshot_bytes = 0usize;
+        let mut next = state.clone();
+        start_run(&mut next);
+        let (committed, next_meta) = commit_logged(&state, &meta, next, &mut log).unwrap();
+        state = committed;
+        meta = next_meta;
+        full_snapshot_bytes += serde_json::to_vec(&state).unwrap().len();
+
+        for index in 0..100 {
+            let id = format!("call-{index}");
+            let mut candidate = state.clone();
+            record_tool_start(&mut candidate, &id, "tool", &"参数".repeat(400));
+            let (committed, next_meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+            state = committed;
+            meta = next_meta;
+            full_snapshot_bytes += serde_json::to_vec(&state).unwrap().len();
+
+            let mut candidate = state.clone();
+            record_tool_end(&mut candidate, &id, "tool", &"结果".repeat(400), false);
+            let (committed, next_meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+            state = committed;
+            meta = next_meta;
+            full_snapshot_bytes += serde_json::to_vec(&state).unwrap().len();
+        }
+        let journal_bytes: usize = log
+            .iter()
+            .map(|entry| serde_json::to_vec(&entry["data"]).unwrap().len())
+            .sum();
+        let (restored, _) = decode_branch(&log).unwrap();
+        assert_eq!(restored, state);
+        assert!(log.iter().any(|entry| entry["data"]["kind"] == "delta"));
+        let snapshot_count = log
+            .iter()
+            .filter(|entry| entry["data"]["kind"] == "snapshot")
+            .count();
+        assert!(snapshot_count >= 2, "cadence did not emit later snapshots");
+        assert!(journal_bytes < full_snapshot_bytes / 3);
+        assert_eq!(state.run.as_ref().unwrap().tools.len(), MAX_JOURNAL_ENTRIES);
+        assert_eq!(state.run.as_ref().unwrap().tools[0].call_id, "call-36");
+    }
+
+    #[test]
+    fn workflow_queue_reset_and_forget_run_replay_exactly() {
+        let mut log = Vec::new();
+        let mut state = DurableState::default();
+        let mut meta = JournalMeta::default();
+        for action in [
+            json!({"action":"start","name":"Ship","steps":[{"id":"one","title":"One"}]}),
+            json!({"action":"checkpoint","step":"one","status":"completed"}),
+            json!({"action":"enqueue","text":"test"}),
+            json!({"action":"claim","item":"item-1"}),
+            json!({"action":"finish","item":"item-1","status":"failed","note":"no"}),
+        ] {
+            (state, meta) = append_action(state, &meta, &action, &mut log);
+        }
+        let mut candidate = state.clone();
+        start_run(&mut candidate);
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        let mut candidate = state.clone();
+        candidate = apply_action(&candidate, &json!({"action":"reset"})).unwrap();
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        let mut candidate = state.clone();
+        candidate = apply_action(&candidate, &json!({"action":"forget_run"})).unwrap();
+        let (final_state, _) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        state = final_state;
+        let (restored, _) = decode_branch(&log).unwrap();
+        assert_eq!(restored, state);
+        assert!(restored.workflow.is_none());
+        assert!(restored.run.is_none());
+        assert_eq!(restored.queue[0].status, QueueItemStatus::Failed);
+    }
+
+    #[test]
+    fn no_op_and_append_failure_do_not_advance_state_or_cadence() {
+        let current = started();
+        let meta = JournalMeta::default();
+        let mut log = Vec::new();
+        let before = (current.clone(), meta.clone());
+        let (same, same_meta) = commit_candidate(&current, &meta, current.clone(), |_| {
+            panic!("no-op must not append")
+        })
+        .unwrap();
+        assert_eq!(same, before.0);
+        assert_eq!(same_meta, before.1);
+
+        let mut next = current.clone();
+        next.workflow.as_mut().unwrap().reason = Some("later".into());
+        assert!(
+            commit_candidate(&current, &meta, next.clone(), append_logged(&mut log, true),)
+                .is_err()
+        );
+        assert!(log.is_empty());
+        assert_eq!(meta.anchor_entry_id, None);
+        let (retry, retry_meta) =
+            commit_candidate(&current, &meta, next, append_logged(&mut log, false)).unwrap();
+        assert_eq!(retry.revision, 1);
+        assert_eq!(retry_meta.anchor_entry_id, Some("entry-1".into()));
+    }
+
+    #[test]
+    fn legacy_recognition_requires_workflow_and_rejects_journal_shapes() {
+        let native = |data: Value| {
+            json!({
+                "id": "native-entry",
+                "type": "custom",
+                "customType": ENTRY_TYPE,
+                "data": data,
+            })
+        };
+
+        let missing_discriminators = native(json!({
+            "kind": "snapshot",
+            "baseRevision": 0,
+            "revision": 1,
+            "state": {"workflow": null},
+            "changes": []
+        }));
+        assert!(decode_branch(&[missing_discriminators]).is_err());
+        assert!(decode_branch(&[native(json!({}))]).is_err());
+        assert!(decode_branch(&[native(json!({"unknown": true}))]).is_err());
+
+        let valid = native(json!({"workflow": null}));
+        let (state, meta) = decode_branch(&[valid]).unwrap();
+        assert_eq!(state, DurableState::default());
+        assert_eq!(meta.anchor_entry_id, Some("native-entry".into()));
+    }
+
+    #[test]
+    fn legacy_after_versioned_record_is_rejected() {
+        let mut log = Vec::new();
+        let (state, meta) = commit_logged(
+            &DurableState::default(),
+            &JournalMeta::default(),
+            started(),
+            &mut log,
+        )
+        .unwrap();
+        let mut next = state.clone();
+        next.workflow.as_mut().unwrap().reason = Some("new".into());
+        let _ = commit_logged(&state, &meta, next, &mut log).unwrap();
+        log.push(json!({
+            "id": "downgrade",
+            "type": "custom",
+            "customType": ENTRY_TYPE,
+            "data": {"workflow": null}
+        }));
+        assert!(decode_branch(&log).is_err());
+    }
+
+    #[test]
+    fn malformed_gap_wrong_anchor_and_wrong_version_fail_closed() {
+        let mut log = Vec::new();
+        let current = DurableState::default();
+        let meta = JournalMeta::default();
+        let (state, meta) = commit_logged(&current, &meta, started(), &mut log).unwrap();
+        let mut next = state.clone();
+        start_run(&mut next);
+        let (_state, _meta) = commit_logged(&state, &meta, next, &mut log).unwrap();
+        let mut wrong_anchor = log.clone();
+        wrong_anchor[1]["data"]["baseEntryId"] = json!("wrong-branch");
+        assert!(decode_branch(&wrong_anchor).is_err());
+
+        let mut wrong_version = log.clone();
+        wrong_version[1]["data"]["version"] = json!(999);
+        assert!(decode_branch(&wrong_version).is_err());
+
+        let mut missing = log.clone();
+        missing.remove(0);
+        assert!(decode_branch(&missing).is_err());
+        let mut malformed = log;
+        malformed[0]["data"]["format"] = json!(JOURNAL_FORMAT);
+        malformed[0]["data"]["kind"] = json!("delta");
+        assert!(decode_branch(&malformed).is_err());
+    }
+
+    #[test]
+    fn fork_prefix_and_navigation_do_not_cross_branch_deltas() {
+        let mut prefix = Vec::new();
+        let current = DurableState::default();
+        let meta = JournalMeta::default();
+        let (prefix_state, prefix_meta) =
+            commit_logged(&current, &meta, started(), &mut prefix).unwrap();
+        let mut left = prefix.clone();
+        let mut right = prefix.clone();
+        let mut left_next = prefix_state.clone();
+        left_next.workflow.as_mut().unwrap().name = "left".into();
+        let (left_state, _) =
+            commit_logged(&prefix_state, &prefix_meta, left_next, &mut left).unwrap();
+        let mut right_next = prefix_state.clone();
+        right_next.workflow.as_mut().unwrap().name = "right".into();
+        let (right_state, _) =
+            commit_logged(&prefix_state, &prefix_meta, right_next, &mut right).unwrap();
+        assert_eq!(decode_branch(&left).unwrap().0, left_state);
+        assert_eq!(decode_branch(&right).unwrap().0, right_state);
+        assert_ne!(
+            decode_branch(&left).unwrap().0,
+            decode_branch(&right).unwrap().0
+        );
+    }
+
+    #[test]
+    fn interruption_checkpoint_is_commit_before_publish_and_retries_after_failure() {
+        let mut log = Vec::new();
+        let current = DurableState::default();
+        let meta = JournalMeta::default();
+        let mut running = current.clone();
+        start_run(&mut running);
+        let (running, meta) = commit_logged(&current, &meta, running, &mut log).unwrap();
+        let interrupted = mark_interrupted(running.clone());
+        assert!(commit_candidate(
+            &running,
+            &meta,
+            interrupted.clone(),
+            append_logged(&mut log, true)
+        )
+        .is_err());
+        assert_eq!(decode_branch(&log).unwrap().0, running);
+        let (recovered, _) =
+            commit_candidate(&running, &meta, interrupted, append_logged(&mut log, false)).unwrap();
+        assert_eq!(
+            recovered.run.as_ref().unwrap().status,
+            RunStatus::Interrupted
+        );
+        assert_eq!(decode_branch(&log).unwrap().0, recovered);
+    }
+
+    #[test]
+    fn native_entry_identity_uses_context_specific_string_fields() {
+        assert_eq!(
+            append_entry_identity(&json!({"entryId":"append-1"})),
+            Some("append-1".into())
+        );
+        assert_eq!(
+            branch_entry_identity(&json!({
+                "type":"custom",
+                "id":"branch-1",
+                "customType":ENTRY_TYPE,
+                "data":{"workflow":null}
+            })),
+            Some("branch-1".into())
+        );
+        assert_eq!(branch_entry_identity(&json!({"entryId":"wrong"})), None);
+        assert_eq!(branch_entry_identity(&json!({"id":7})), None);
+        assert_eq!(append_entry_identity(&json!({"entryId":7})), None);
+    }
+
+    #[test]
+    fn complete_snapshot_is_a_self_contained_replay_base() {
+        let mut log = Vec::new();
+        let (state, meta) = commit_logged(
+            &DurableState::default(),
+            &JournalMeta::default(),
+            started(),
+            &mut log,
+        )
+        .unwrap();
+        let first_delta = apply_action(
+            &state,
+            &json!({"action":"checkpoint","step":"build","status":"completed"}),
+        )
+        .unwrap();
+        let (state, meta) = commit_logged(&state, &meta, first_delta, &mut log).unwrap();
+        let mut snapshot_meta = meta;
+        snapshot_meta.force_snapshot = true;
+        let second_delta = apply_action(
+            &state,
+            &json!({"action":"checkpoint","step":"test","status":"completed"}),
+        )
+        .unwrap();
+        let (snapshot_state, snapshot_meta) =
+            commit_logged(&state, &snapshot_meta, second_delta, &mut log).unwrap();
+        assert_eq!(log[2]["data"]["kind"], "snapshot");
+
+        let final_state = apply_action(
+            &snapshot_state,
+            &json!({"action":"checkpoint","step":"build","status":"in_progress","note":"recheck"}),
+        )
+        .unwrap();
+        let (final_state, _) =
+            commit_logged(&snapshot_state, &snapshot_meta, final_state, &mut log).unwrap();
+
+        let truncated = log[2..].to_vec();
+        assert_eq!(decode_branch(&truncated).unwrap().0, final_state);
+        assert_eq!(decode_branch(&truncated[..1]).unwrap().0, snapshot_state);
+    }
+
+    #[test]
+    fn suffix_after_snapshot_still_requires_exact_delta_chain() {
+        let mut log = Vec::new();
+        let (state, meta) = commit_logged(
+            &DurableState::default(),
+            &JournalMeta::default(),
+            started(),
+            &mut log,
+        )
+        .unwrap();
+        let next = apply_action(
+            &state,
+            &json!({"action":"checkpoint","step":"build","status":"completed"}),
+        )
+        .unwrap();
+        let (state, meta) = commit_logged(&state, &meta, next, &mut log).unwrap();
+        let next = apply_action(
+            &state,
+            &json!({"action":"checkpoint","step":"test","status":"in_progress"}),
+        )
+        .unwrap();
+        let (_, _) = commit_logged(&state, &meta, next, &mut log).unwrap();
+        let mut gap = log.clone();
+        gap[2]["data"]["revision"] = json!(99);
+        assert!(decode_branch(&gap).is_err());
+        let mut reordered = log.clone();
+        reordered.swap(1, 2);
+        assert!(decode_branch(&reordered).is_err());
+        let mut wrong_base = log;
+        wrong_base[2]["data"]["baseEntryId"] = json!("wrong-base");
+        assert!(decode_branch(&wrong_base).is_err());
+    }
+
+    #[test]
+    fn checkpoint_with_a_large_workflow_serializes_only_the_changed_step() {
+        let steps = (0..MAX_STEPS)
+            .map(|index| json!({"id":format!("step-{index}"),"title":format!("Step {index}")}))
+            .collect::<Vec<_>>();
+        let mut state = apply_action(
+            &DurableState::default(),
+            &json!({"action":"start","name":"Large","steps":steps}),
+        )
+        .unwrap();
+        for step in state.workflow.as_mut().unwrap().steps.iter_mut().take(64) {
+            step.note = Some("existing note".into());
+        }
+        let mut log = Vec::new();
+        let (committed, meta) = commit_logged(
+            &DurableState::default(),
+            &JournalMeta::default(),
+            state,
+            &mut log,
+        )
+        .unwrap();
+        state = committed;
+        let next = apply_action(
+            &state,
+            &json!({"action":"checkpoint","step":"step-127","status":"completed","note":"last"}),
+        )
+        .unwrap();
+        let (_, _) = commit_logged(&state, &meta, next, &mut log).unwrap();
+        let record = &log[1]["data"];
+        assert_eq!(record["kind"], "delta");
+        assert_eq!(record["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(record["changes"][0]["op"], "updateStep");
+        assert_eq!(record["changes"][0]["step_id"], "step-127");
+        assert!(
+            serde_json::to_vec(record).unwrap().len()
+                < serde_json::to_vec(&log[0]["data"]).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn workflow_metadata_has_a_typed_delta() {
+        let mut state = started();
+        let mut log = Vec::new();
+        let (committed, meta) = commit_logged(
+            &DurableState::default(),
+            &JournalMeta::default(),
+            state,
+            &mut log,
+        )
+        .unwrap();
+        state = committed;
+        let next = apply_action(&state, &json!({"action":"pause","reason":"waiting"})).unwrap();
+        let (_, _) = commit_logged(&state, &meta, next, &mut log).unwrap();
+        assert_eq!(log[1]["data"]["kind"], "delta");
+        assert_eq!(log[1]["data"]["changes"][0]["op"], "setWorkflowMeta");
+    }
+
+    #[test]
+    fn restore_errors_are_not_rendered_as_a_healthy_empty_state() {
+        let rendered = error_result("status", "GetSessionBranch failed");
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(value["details"]["error"], "GetSessionBranch failed");
+        assert!(value["details"].get("workflow").is_none());
+        assert!(value["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Error:"));
     }
 
     #[test]

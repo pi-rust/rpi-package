@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Persist versioned incremental workflow, tool, and queue changes with periodic
+  complete checkpoints instead of rewriting the complete state after every event.
+- Read existing plain checkpoints when upgrading. New journals require a
+  journal-aware extension; downgrading to a plain-snapshot reader is unsupported.
+
+### Fixed
+
+- Restore the current branch before the first tool, command, or lifecycle event
+  in non-interactive modes that do not emit `SessionStart`.
+- Validate native entry IDs, contiguous delta anchors, legacy envelopes, and
+  restore failures before permitting further state changes.
+- Preserve commit-before-publish behavior after failed or unusable append
+  acknowledgements, and reconcile unknown commits through an explicit reload.
+- Keep journals replayable for out-of-order tool events and summarized tool ID
+  collisions by falling back to a complete bounded tool list.
+
 ### Added
 
 - Record bounded Agent and tool lifecycle checkpoints in the native session branch.
