@@ -126,6 +126,8 @@ enum JournalChange {
     },
     UpdateTool {
         call_id: String,
+        #[serde(default)]
+        call_key: Option<String>,
         status: ToolExecutionStatus,
         result: String,
     },
@@ -241,6 +243,8 @@ impl ToolExecutionStatus {
 #[serde(rename_all = "camelCase")]
 struct ToolExecution {
     call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_key: Option<String>,
     name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     params: String,
@@ -424,6 +428,9 @@ fn validate_state(value: &DurableState) -> Result<(), String> {
         }
         for tool in &run.tools {
             if tool.call_id.chars().count() > MAX_SUMMARY_CHARS + 1
+                || tool.call_key.as_ref().is_some_and(|key| {
+                    key.is_empty() || key.chars().count() > MAX_SUMMARY_CHARS + 8
+                })
                 || tool.name.chars().count() > MAX_SUMMARY_CHARS + 1
                 || tool.params.chars().count() > MAX_SUMMARY_CHARS + 1
                 || tool.result.chars().count() > MAX_SUMMARY_CHARS + 1
@@ -525,6 +532,7 @@ fn apply_change(state: &mut DurableState, change: &JournalChange) -> Result<(), 
         }
         JournalChange::UpdateTool {
             call_id,
+            call_key,
             status,
             result,
         } => {
@@ -532,7 +540,9 @@ fn apply_change(state: &mut DurableState, change: &JournalChange) -> Result<(), 
                 .run
                 .as_mut()
                 .ok_or("durable journal tool path has no run")?;
-            let matches = run.tools.iter_mut().filter(|tool| tool.call_id == *call_id);
+            let matches = run.tools.iter_mut().filter(|tool| {
+                tool.call_key == *call_key && (call_key.is_some() || tool.call_id == *call_id)
+            });
             let mut count = 0;
             for tool in matches {
                 tool.status = status.clone();
@@ -831,19 +841,29 @@ fn tool_changes(current: &[ToolExecution], next: &[ToolExecution]) -> Option<Vec
         let mut changes = Vec::new();
         for (before, after) in current.iter().zip(next) {
             if before != after {
-                if before.call_id != after.call_id
+                let same_identity =
+                    before.call_key == after.call_key && before.call_id == after.call_id;
+                let unique = current
+                    .iter()
+                    .filter(|tool| {
+                        if let Some(key) = &before.call_key {
+                            tool.call_key.as_ref() == Some(key)
+                        } else {
+                            tool.call_key.is_none() && tool.call_id == before.call_id
+                        }
+                    })
+                    .count()
+                    == 1;
+                if !same_identity
                     || before.name != after.name
                     || before.params != after.params
-                    || current
-                        .iter()
-                        .filter(|tool| tool.call_id == before.call_id)
-                        .count()
-                        != 1
+                    || !unique
                 {
                     return None;
                 }
                 changes.push(JournalChange::UpdateTool {
                     call_id: after.call_id.clone(),
+                    call_key: after.call_key.clone(),
                     status: after.status.clone(),
                     result: after.result.clone(),
                 });
@@ -1199,6 +1219,38 @@ fn mark_unresolvable_legacy_tools(mut next: DurableState) -> DurableState {
     next
 }
 
+fn tool_call_key(value: &str) -> String {
+    if value.chars().count() <= MAX_SUMMARY_CHARS {
+        format!("raw:{value}")
+    } else {
+        format!("hash:{}", tool_call_id(value))
+    }
+}
+
+fn looks_like_generated_tool_id(value: &str) -> bool {
+    let chars = value.chars().collect::<Vec<_>>();
+    chars.len() == MAX_SUMMARY_CHARS
+        && chars[MAX_SUMMARY_CHARS - 17] == '…'
+        && chars[MAX_SUMMARY_CHARS - 16..]
+            .iter()
+            .all(|character| character.is_ascii_hexdigit())
+}
+
+fn legacy_tool_matches(tool: &ToolExecution, call_id: &str, stable_id: &str) -> bool {
+    if tool.call_key.is_some() {
+        return false;
+    }
+    if call_id.chars().count() <= MAX_SUMMARY_CHARS {
+        tool.call_id == call_id && !looks_like_generated_tool_id(&tool.call_id)
+    } else {
+        tool.call_id == stable_id
+    }
+}
+
+fn tool_matches(tool: &ToolExecution, call_id: &str, stable_id: &str, key: &str) -> bool {
+    tool.call_key.as_deref() == Some(key) || legacy_tool_matches(tool, call_id, stable_id)
+}
+
 fn summary(value: &str) -> String {
     let mut result: String = value.chars().take(MAX_SUMMARY_CHARS).collect();
     if value.chars().count() > MAX_SUMMARY_CHARS {
@@ -1207,7 +1259,7 @@ fn summary(value: &str) -> String {
     result
 }
 
-fn commit_state(current: &DurableState, next: DurableState) -> Result<(), String> {
+fn commit_state(current: &DurableState, next: DurableState) -> Result<DurableState, String> {
     // SessionStart/SessionTree restore uses the same gate. Hold it through
     // the native append so a mutation cannot commit against the branch that
     // is being replaced underneath it.
@@ -1226,9 +1278,9 @@ fn commit_state(current: &DurableState, next: DurableState) -> Result<(), String
     let committed = commit_candidate(current, &guard.meta, next, append_entry);
     match committed {
         Ok((state, meta)) => {
-            guard.state = state;
+            guard.state = state.clone();
             guard.meta = meta;
-            Ok(())
+            Ok(state)
         }
         Err(error) => {
             if error.starts_with("durable append acknowledgement is unknown:") {
@@ -1255,7 +1307,7 @@ where
         .clone();
     let mut next = current.clone();
     mutator(&mut next);
-    commit_state(&current, next)
+    commit_state(&current, next).map(|_| ())
 }
 
 fn mark_interrupted(mut next: DurableState) -> DurableState {
@@ -1497,15 +1549,15 @@ fn record_tool_start(next: &mut DurableState, call_id: &str, name: &str, params:
         return;
     };
     let stable_id = tool_call_id(call_id);
-    if run
-        .tools
-        .iter()
-        .any(|tool| tool.call_id == stable_id && tool.status != ToolExecutionStatus::Unknown)
-    {
+    let key = tool_call_key(call_id);
+    if run.tools.iter().any(|tool| {
+        tool_matches(tool, call_id, &stable_id, &key) && tool.status != ToolExecutionStatus::Unknown
+    }) {
         return;
     }
     run.tools.push(ToolExecution {
         call_id: stable_id,
+        call_key: Some(key),
         name: summary(name),
         params: summary(params),
         status: ToolExecutionStatus::Started,
@@ -1528,11 +1580,12 @@ fn record_tool_end(
         return;
     };
     let stable_id = tool_call_id(call_id);
+    let key = tool_call_key(call_id);
     let matching = run
         .tools
         .iter()
         .enumerate()
-        .filter(|(_, tool)| tool.call_id == stable_id)
+        .filter(|(_, tool)| tool_matches(tool, call_id, &stable_id, &key))
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     if matching.len() == 1 {
@@ -1559,6 +1612,7 @@ fn record_tool_end(
     // first matching tool.
     run.tools.push(ToolExecution {
         call_id: stable_id,
+        call_key: Some(key),
         name: summary(name),
         params: String::new(),
         status: ToolExecutionStatus::Unknown,
@@ -1778,8 +1832,7 @@ fn durable(params: &Value) -> Result<String, String> {
         Err(error) => return Ok(result(action, &current, Some(&error))),
     };
 
-    commit_state(&current, next)?;
-    let committed = snapshot_state()?;
+    let committed = commit_state(&current, next)?;
     Ok(result(action, &committed, None))
 }
 
@@ -2277,11 +2330,42 @@ mod tests {
     }
 
     #[test]
+    fn encoded_long_tool_ids_do_not_collide_with_short_native_ids() {
+        let long_id = format!("{}tail", "x".repeat(MAX_SUMMARY_CHARS));
+        let short_id = tool_call_id(&long_id);
+        assert_eq!(short_id.chars().count(), MAX_SUMMARY_CHARS);
+
+        let mut state = DurableState::default();
+        start_run(&mut state);
+        record_tool_start(&mut state, &long_id, "tool", "long");
+        record_tool_start(&mut state, &short_id, "tool", "short");
+        record_tool_end(&mut state, &short_id, "tool", "short result", false);
+
+        let tools = &state.run.unwrap().tools;
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].status, ToolExecutionStatus::Started);
+        assert_eq!(tools[1].status, ToolExecutionStatus::Completed);
+        assert_eq!(tools[1].result, "short result");
+        assert_ne!(tools[0].call_key, tools[1].call_key);
+
+        let value = serde_json::to_value(tools).unwrap();
+        assert!(value[0]["callKey"].is_string());
+        let legacy: Vec<ToolExecution> = serde_json::from_value(json!([{
+            "callId": "legacy",
+            "name": "tool",
+            "status": "started"
+        }]))
+        .unwrap();
+        assert_eq!(legacy[0].call_key, None);
+    }
+
+    #[test]
     fn legacy_truncated_tool_ids_are_not_left_active_after_restore() {
         let mut state = DurableState::default();
         start_run(&mut state);
         state.run.as_mut().unwrap().tools.push(ToolExecution {
             call_id: format!("{}…", "x".repeat(MAX_SUMMARY_CHARS)),
+            call_key: None,
             name: "tool".into(),
             params: String::new(),
             status: ToolExecutionStatus::Started,
@@ -2303,6 +2387,7 @@ mod tests {
         start_run(&mut state);
         state.run.as_mut().unwrap().tools.push(ToolExecution {
             call_id: summary(&old_id),
+            call_key: None,
             name: "tool".into(),
             params: "old".into(),
             status: ToolExecutionStatus::Started,

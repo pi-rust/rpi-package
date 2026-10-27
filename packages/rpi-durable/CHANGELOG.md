@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrent callbacks cannot append against a replaced branch.
 - Keep restore failures published while the restore gate is held, and make
   durable status snapshots wait for branch reloads.
+- Persist an explicit tool-call key namespace so encoded long IDs cannot collide
+  with naturally short native IDs, and return the state committed by a mutation
+  rather than a later branch snapshot.
 - Persist a stable tool-call identity so bounded display IDs cannot associate a
   long tool result with the wrong execution, including when legacy entries are
   present; mark unrecoverable legacy truncations as unknown during restore.
