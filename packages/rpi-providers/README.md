@@ -1,6 +1,6 @@
 # rpi-providers
 
-一个可安装的原生扩展包，统一维护 DeepSeek、OpenRouter、llama.cpp 和 Proxy。
+一个可安装的原生扩展包，统一维护 DeepSeek、OpenRouter、llama.cpp、Proxy 和 Antigravity。
 只有一个 Cargo package、一个动态库和一个插件入口；供应商实现分别放在模块中。
 核心继续保留 OpenAI / Anthropic 通用协议，CLI 不依赖供应商包。
 
@@ -10,8 +10,9 @@
 | `openrouter` | `openrouter/auto` | 必须认证，`OPENROUTER_API_KEY` |
 | `llama-cpp` | `local` | 可匿名，可选 `LLAMA_CPP_API_KEY` |
 | `proxy` | `default` | 可匿名，可选 `PROXY_API_KEY` |
+| `antigravity` | `antigravity-gemini-3.8-flash` 等 6 个目录模型 | 必须认证，仅 OAuth 登录，无 API key 环境变量 |
 
-包名 `rpi-providers` 与 provider ID 不同。一次安装注册四份目录，认证仍按 provider ID
+包名 `rpi-providers` 与 provider ID 不同。一次安装注册五份目录，认证仍按 provider ID
 隔离，不能借用 `OPENAI_API_KEY` 或其他供应商的 key。已有 models.json、auth.json 的
 provider ID 不变，无需合并凭据。匿名目录就绪不代表本地服务已经启动，使用时指定 provider。
 
@@ -63,7 +64,44 @@ rpi --provider proxy --model default --base-url http://localhost:8080/v1
 
 也可以直接设置相应环境变量。`auth check` 只检查本地就绪状态，不发网络请求。
 默认凭据优先级仍由宿主管理：显式 `--api-key` → auth.json → models.json → 专属 env。
-本包不注册 OAuth 登录流程；宿主已有的有效 OAuth access token 可作为 Bearer 凭据使用。
+仅 `antigravity` 注册 OAuth 登录流程（见下文）；其他供应商不注册 OAuth，宿主已有的
+有效 OAuth access token 仍可作为 Bearer 凭据使用。
+
+## Antigravity 行为与登录
+
+目录与路由改编自 [cortexkit/antigravity-auth](https://github.com/cortexkit/antigravity-auth)
+（MIT，Copyright (c) 2025 Jens），许可文本见 `src/antigravity/LICENSE`。Pi 参考实现的请求
+端点为 `https://daily-cloudcode-pa.googleapis.com`，模型上的 `baseUrl` 仍登记为
+`https://cloudcode-pa.googleapis.com`；本包发送到 Pi 的实际端点。模型 `baseUrl` 若被覆盖，
+请求与项目发现都改用该地址（测试与自建路由使用）。
+
+登录使用 PKCE 授权 URL。宿主打印 URL 后，在浏览器完成授权，把回调地址或 code 粘贴回终端。
+授权 URL 只带随机 `state` 与 S256 挑战，PKCE verifier 仅保存在进程内。粘贴的回调地址必须携带
+本次登录的 `state`，否则直接拒绝且不发起网络请求；裸 code 使用最近一次发起的登录。每次登录
+10 分钟内有效，最多保留 8 次未完成的登录，使用后（无论换取成功与否）立即失效：
+
+```sh
+rpi auth login --provider antigravity
+rpi auth refresh --provider antigravity
+rpi auth logout --provider antigravity
+```
+
+OAuth 客户端 ID 与密钥不随源码提供。构建时设置 `RPI_ANTIGRAVITY_OAUTH_CLIENT_ID` 与
+`RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET`；或在运行时环境中设置同名变量（构建期值优先）。
+两者缺一或为空时，`login`、`refresh`、`logout` 返回“未配置”错误，其他供应商照常加载。
+发布流程从仓库 secrets 读取同名变量，缺失时只输出 `::warning::`，不会失败。
+
+Antigravity 不支持 Gemini API key：Pi 的同一供应商同样只接受 OAuth access token（`stream.ts`
+中 `Missing Antigravity OAuth access token`）。请求中的 `apiKey` 即 access token，本包不读取
+任何 API key 环境变量。过期凭据不会在请求前自动刷新，需要先执行 `rpi auth refresh`。
+
+本地测试通过 loopback 服务覆盖目录与路由、PKCE、令牌交换与刷新（端点注入只在单元测试内部）、
+Gemini SSE 增量、取消、HTTP 错误、生命周期与凭据隔离；运行方式与其他供应商相同：
+
+```sh
+cargo test -p rpi-providers --test antigravity
+cargo test -p rpi-providers --lib antigravity
+```
 
 如果之前分别 link 了旧 DeepSeek / OpenRouter / llama.cpp / Proxy 包，先用
 `rpi package unlink <原安装名>` 移除旧安装记录，再 link `providers`。不要同时加载旧包与
@@ -82,6 +120,7 @@ src/deepseek.rs        # DeepSeek 目录、思考和工具续轮
 src/openrouter.rs      # OpenRouter 目录及 HTTP-Referer / X-Title
 src/llama_cpp/         # 本地推理、模型查询、服务管理
 src/proxy/             # 通用代理推理
+src/antigravity/       # Antigravity 目录、Gemini 转换、SSE、项目发现与 OAuth
 src/bin/rpi-llama.rs   # 原有本地服务管理程序
 ```
 

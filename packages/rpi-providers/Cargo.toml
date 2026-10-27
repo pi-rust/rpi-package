@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Unified DeepSeek, OpenRouter, llama.cpp and proxy provider extension for rpi"
+description = "Unified DeepSeek, OpenRouter, llama.cpp, proxy and Antigravity provider extension for rpi"
 readme = "README.md"
 
 # Publish native archives alongside the crates.io package.
@@ -23,9 +23,20 @@ rpi-ai = { version = "=0.8.3", features = ["providers"] }
 rpi-plugin-sdk = { version = "=0.8.3", features = ["provider"] }
 async-trait.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# Ordered JSON maps: the Antigravity transcript and metadata rules depend on insertion order.
+serde_json = { workspace = true, features = ["preserve_order"] }
 reqwest.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "process"] }
+# Antigravity module: OAuth PKCE, SSE decoding, schema rules and redaction. All are already
+# in the workspace lock through the host SDK; these are direct, additive edges.
+base64 = "0.22"
+encoding_rs = "0.8"
+getrandom = "0.2"
+indexmap = "2"
+regex = "1"
+sha2 = "0.10"
+tokio-util = "0.7"
+url = "2"
 
 [dev-dependencies]
 rpi-extensions = { version = "=0.8.3" }
