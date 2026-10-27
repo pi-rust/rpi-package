@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add the Google Antigravity provider as a module: six catalog models, Gemini SSE streaming with cancellation, managed project discovery and PKCE OAuth login (`rpi auth login --provider antigravity`). The login URL carries a random state, and a pasted callback must return it; the PKCE verifier never leaves the process. The OAuth client comes from `RPI_ANTIGRAVITY_OAUTH_CLIENT_ID` and `RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET` at build or run time; release workflows warn when they are unset and never fail. Ported from cortexkit/antigravity-auth (MIT).
+
 ## [0.1.4](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.3...rpi-providers-v0.1.4) - 2026-10-23
 
 ### Fixed
