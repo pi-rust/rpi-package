@@ -564,7 +564,7 @@ impl HostSession {
             json!({
                 "type": "ready",
                 "protocol": "rpi",
-                "supportedCommands": ["get_session_branch", "append_entry"]
+                "supportedCommands": ["get_session_branch", "append_entry", "execute_command"]
             }),
         )
     }
@@ -805,6 +805,22 @@ impl HostSession {
             _ = closed.wait_for(|closed| *closed) => Err("native rpi host closed".into()),
             response = dispatch(&self.commands, &self.runtime.pending, value, timeout) => response,
         }
+    }
+
+    pub async fn execute_extension_command(
+        &self,
+        command: &str,
+        args: Value,
+    ) -> Result<Value, String> {
+        self.command(
+            "execute_command",
+            json!({
+                "command": command,
+                "args": args.to_string(),
+            }),
+            Duration::from_secs(30),
+        )
+        .await
     }
 
     pub async fn command(

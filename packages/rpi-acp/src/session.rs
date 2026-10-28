@@ -181,15 +181,6 @@ impl Session {
         }))
     }
 
-    async fn observe_durable(&self, session_id: &str, event: &Value) -> Option<Value> {
-        let runtime = self.durable.as_ref()?;
-        if runtime.observe(event).await.ok()? {
-            self.durable_update(session_id).await
-        } else {
-            None
-        }
-    }
-
     /// Ask the child to abort the current run (`session/cancel`).
     pub async fn abort(&self) -> Result<(), String> {
         self.rpc.abort_run().await
@@ -223,9 +214,6 @@ impl Session {
             };
             match event {
                 Ok(value) => {
-                    if let Some(update) = self.observe_durable(acp_session_id, &value).await {
-                        writer.notify("session/durable_update", update).await;
-                    }
                     let progress = run.tracker.observe(&value, cancelled);
                     for delta in progress.deltas {
                         writer
@@ -974,34 +962,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn durable_lifecycle_event_builds_update_notification_payload() {
-        let (session, commands) = test_session();
-        let mut commands = BufReader::new(commands).lines();
-        let observed = tokio::spawn({
-            let session = session.clone();
-            async move {
-                session
-                    .observe_durable("acp-session", &json!({"type":"agent_start"}))
-                    .await
-            }
-        });
-        let command = read_json(&mut commands).await;
-        assert_eq!(command["type"], "append_entry");
-        session
-            .events
-            .as_ref()
-            .unwrap()
-            .send(json!({
-                "type": "response",
-                "id": command["id"],
-                "success": true,
-                "data": {"entryId": "durable-entry"}
-            }))
-            .unwrap();
-        let update = observed.await.unwrap().unwrap();
-        assert_eq!(update["sessionId"], "acp-session");
-        assert_eq!(update["revision"], 1);
-        assert_eq!(update["state"]["run"]["status"], "running");
+    async fn durable_lifecycle_event_does_not_mutate_the_projection() {
+        let (session, _commands) = test_session();
+        let update = session.durable_update("acp-session").await.unwrap();
+        assert_eq!(update["revision"], 0);
+        assert!(update["state"]["run"].is_null());
     }
 
     #[tokio::test]
@@ -1022,7 +987,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn durable_mutation_appends_native_branch_entry() {
+    async fn durable_mutation_uses_the_extension_command_bridge() {
         let (session, commands) = test_session();
         let mut commands = BufReader::new(commands).lines();
         let mutation = tokio::spawn({
@@ -1030,8 +995,8 @@ mod tests {
             async move { session.mutate_durable(DurableMutation::StartRun).await }
         });
         let command = read_json(&mut commands).await;
-        assert_eq!(command["type"], "append_entry");
-        assert_eq!(command["customType"], ENTRY_TYPE);
+        assert_eq!(command["type"], "execute_command");
+        assert_eq!(command["command"], "durable");
         session
             .events
             .as_ref()
@@ -1040,7 +1005,24 @@ mod tests {
                 "type": "response",
                 "id": command["id"],
                 "success": true,
-                "data": {"entryId": "durable-entry"}
+                "data": {"changed": true, "run": {"id":"run-1", "status":"running", "tools":[]}}
+            }))
+            .unwrap();
+        let branch = read_json(&mut commands).await;
+        assert_eq!(branch["type"], "get_session_branch");
+        session
+            .events
+            .as_ref()
+            .unwrap()
+            .send(json!({
+                "type": "response",
+                "id": branch["id"],
+                "success": true,
+                "data": {"entries": [{"type":"custom","customType":ENTRY_TYPE,"data":{
+                    "revision": 1, "nextRunId": 1,
+                    "run": {"id":"run-1", "status":"running", "tools":[]},
+                    "queue": []
+                }}]}
             }))
             .unwrap();
         let result = mutation.await.unwrap().unwrap();

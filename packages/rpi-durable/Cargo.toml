@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rpi-plugin-sdk = { workspace = true }
+rpi-durable-core = { path = "../rpi-durable-core", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
