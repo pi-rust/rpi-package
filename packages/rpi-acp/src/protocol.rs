@@ -692,6 +692,9 @@ pub async fn run(
                                     Ok(config) => result["configOptions"] = config["configOptions"].clone(),
                                     Err(error) => diagln!("[rpi-acp] session {session_id}: config options unavailable: {error}"),
                                 }
+                                if let Some(watcher) = durable_watchers.remove(session_id) {
+                                    watcher.abort();
+                                }
                                 let watcher = spawn_durable_update_watcher(
                                     session.clone(),
                                     writer.clone(),
