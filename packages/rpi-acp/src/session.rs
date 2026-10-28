@@ -157,6 +157,7 @@ impl Session {
             "durable_unavailable: native host does not support durable branch operations"
                 .to_string()
         })?;
+        runtime.refresh_branch().await?;
         Ok(serde_json::to_value(runtime.state().await).unwrap_or(Value::Null))
     }
 
