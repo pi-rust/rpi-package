@@ -20,6 +20,10 @@ same.
   incrementally after earlier edits, and is spliced only if every edit resolves.
 - Exact text first; then `normalize_for_fuzzy_match` (NFKC plus per-line
   trailing-whitespace trim and typographic quotes/dashes/spaces) on both sides.
+  Only the bytes an edit matched are replaced: a normalized match is mapped back
+  onto the original bytes, so the rest of its line and every other edit's line
+  stay byte-identical. A match that starts or ends inside one character's NFKC
+  expansion (half of `ﬁ`) rewrites its own lines from the normalized text.
   Different indentation, different escapes, or a different middle line are *not*
   tolerated and are reported as such.
 - An `oldText` that occurs more than once is never resolved by guessing an

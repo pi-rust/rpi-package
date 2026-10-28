@@ -138,42 +138,6 @@ pub fn fuzzy_find_text(content: &str, old_text: &str) -> FuzzyMatchResult {
     }
 }
 
-/// Split content into lines, each preserving its trailing `\n` (or the final
-/// line without one). Mirrors `splitLinesWithEndings`. Shared with
-/// [`crate::edit_apply`], which copies untouched lines from the original
-/// content when an edit only matched after normalization.
-pub fn split_lines_with_endings(content: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut acc = String::new();
-    for c in content.chars() {
-        acc.push(c);
-        if c == '\n' {
-            out.push(std::mem::take(&mut acc));
-        }
-    }
-    if !acc.is_empty() {
-        out.push(acc);
-    }
-    out
-}
-
-/// `(start, end)` byte-offset spans per line. Mirrors `getLineSpans`. Shared
-/// with [`crate::edit_apply`].
-pub fn get_line_spans(content: &str) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
-    let mut start = 0usize;
-    for (i, c) in content.char_indices() {
-        if c == '\n' {
-            spans.push((start, i + 1));
-            start = i + 1;
-        }
-    }
-    if start < content.len() {
-        spans.push((start, content.len()));
-    }
-    spans
-}
-
 /// `{ diff, first_changed_line }`. Mirrors `generateDiffString`.
 pub struct DiffResult {
     pub diff: String,

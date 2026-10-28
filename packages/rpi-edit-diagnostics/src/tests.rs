@@ -428,8 +428,8 @@ fn normalized_match_succeeds_with_a_note() {
     );
     assert_eq!(
         fs::read(&file).unwrap(),
-        "it is a file\nkeep\n".as_bytes(),
-        "untouched lines keep their trailing spaces"
+        "it is a file  \nkeep\n".as_bytes(),
+        "only the matched bytes change; the trailing spaces after them stay"
     );
 }
 
@@ -527,7 +527,7 @@ fn trailing_whitespace_only_difference_matches_and_notes_it() {
         text.contains("note: edits[0] matched after normalizing"),
         "{text}"
     );
-    assert_eq!(fs::read(&file).unwrap(), "ok\nx\nok\n".as_bytes());
+    assert_eq!(fs::read(&file).unwrap(), "ok  \nx\nok  \n".as_bytes());
 }
 
 // --- Argument handling ------------------------------------------------------
