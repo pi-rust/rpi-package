@@ -281,12 +281,18 @@ mod tests {
         let fixture = tokio::spawn(async move {
             let mut lines = BufReader::new(peer).lines();
             let mut started = false;
+            let mut refreshes = 0;
             while let Some(line) = lines.next_line().await.unwrap() {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let data = match request["type"].as_str() {
                     Some("get_session_branch") => {
                         if started {
-                            json!({"entries": [{"type":"custom","customType":ENTRY_TYPE,"data":{
+                            assert_eq!(
+                                request["afterSeq"].as_u64(),
+                                Some(if refreshes == 0 { 0 } else { 7 })
+                            );
+                            refreshes += 1;
+                            json!({"entries": [{"seq":7,"type":"custom","customType":ENTRY_TYPE,"data":{
                                 "revision":1,"nextRunId":1,
                                 "run":{"id":"run-1","status":"running","tools":[]},
                                 "queue":[]
@@ -318,6 +324,7 @@ mod tests {
             .unwrap();
         let mut subscription = runtime.subscribe_changes(None).await;
         runtime.mutate(DurableMutation::StartRun).await.unwrap();
+        assert!(!runtime.refresh_branch().await.unwrap());
         let changes = replay_changes(
             subscription.replay,
             subscription.receiver,
