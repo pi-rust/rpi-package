@@ -786,8 +786,48 @@ impl HostSession {
 
     /// Read only custom entries after an optional native entry sequence.
     /// Initial reads omit `after_seq`; incremental reads use it to avoid
-    /// replaying the durable journal prefix.
+    /// replaying the durable journal prefix. When the host supports filtered
+    /// reads, both the canonical and legacy durable discriminators are loaded
+    /// so migration entries can provide the replay base.
     pub async fn branch_entries_of_type(
+        &self,
+        custom_type: &str,
+        after_seq: Option<u64>,
+    ) -> Result<(Vec<Value>, bool), String> {
+        self.branch_entries_of_types(&[custom_type], after_seq)
+            .await
+    }
+
+    pub async fn branch_entries_of_types(
+        &self,
+        custom_types: &[&str],
+        after_seq: Option<u64>,
+    ) -> Result<(Vec<Value>, bool), String> {
+        let first_type = custom_types.first().copied().ok_or_else(|| {
+            "get_session_branch: at least one custom type is required".to_string()
+        })?;
+        let (mut entries, filtered) = self.branch_entries_request(first_type, after_seq).await?;
+        if !filtered || custom_types.len() == 1 {
+            // An old host ignores customType and returns the complete branch.
+            // Do not issue a second expensive full-transcript request.
+            return Ok((entries, filtered));
+        }
+
+        for custom_type in &custom_types[1..] {
+            let (mut extra, extra_filtered) =
+                self.branch_entries_request(custom_type, after_seq).await?;
+            if !extra_filtered {
+                // The host stopped honoring filters; this response is already
+                // the authoritative complete branch.
+                return Ok((extra, false));
+            }
+            entries.append(&mut extra);
+        }
+        entries.sort_by_key(|entry| entry.get("seq").and_then(Value::as_u64));
+        Ok((entries, true))
+    }
+
+    async fn branch_entries_request(
         &self,
         custom_type: &str,
         after_seq: Option<u64>,
