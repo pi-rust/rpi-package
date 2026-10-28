@@ -249,16 +249,28 @@ function matchModel(models: ModelDescriptor[], query: string) {
   return undefined;
 }
 
+const FAST_SNAPSHOT_OPTIONS = {
+  limit: 40,
+  includeHistory: false,
+} as const;
+
 /**
  * Read the native snapshot, reopening the session first when its host is not
  * running (a bridge restart leaves only the registry entry behind).
+ *
+ * Keep the first paint small and defer history to the diagnostics refresh. The
+ * transcript can request older messages on demand, so loading 80 messages plus
+ * 100 history records is unnecessary on every session switch.
  */
-async function snapshotOf(sessionId: string) {
+async function snapshotOf(
+  sessionId: string,
+  options: { limit?: number; includeHistory?: boolean } = FAST_SNAPSHOT_OPTIONS,
+) {
   try {
-    return await api.snapshot(sessionId);
+    return await api.snapshot(sessionId, options);
   } catch {
     await api.openSession(sessionId);
-    return api.snapshot(sessionId);
+    return api.snapshot(sessionId, options);
   }
 }
 
@@ -1447,7 +1459,7 @@ export default function App() {
       if (refreshingTranscript || cancelled) return;
       refreshingTranscript = true;
       try {
-        const snapshot = await snapshotOf(sessionId);
+        const snapshot = await snapshotOf(sessionId, FAST_SNAPSHOT_OPTIONS);
         if (cancelled) return;
         restoreSnapshotStatus(snapshot);
         currentAssistant.current = null;
@@ -1560,7 +1572,7 @@ export default function App() {
         const snapshotPromise = capabilities.supportedCommands.includes(
           "get_messages",
         )
-          ? snapshotOf(sessionId)
+          ? snapshotOf(sessionId, FAST_SNAPSHOT_OPTIONS)
           : Promise.resolve(null);
         const [state, snapshot] = await Promise.all([
           api.runtimeState(sessionId),

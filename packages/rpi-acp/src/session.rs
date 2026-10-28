@@ -820,7 +820,7 @@ fn kind_for_tool(tool: &str) -> &'static str {
     match tool {
         "read" => "read",
         "write" | "edit" => "edit",
-        "bash" => "execute",
+        "bash" => "other",
         "grep" | "glob" | "search" | "codegraph" | "codegraph_search" => "search",
         "webfetch" | "websearch" => "fetch",
         _ => "other",
@@ -1752,6 +1752,20 @@ mod tests {
         assert_eq!(update["kind"], "read");
         assert_eq!(update["status"], "in_progress");
         assert_eq!(update["title"], "read src/main.rs");
+    }
+
+    #[test]
+    fn bash_tool_call_uses_other_kind_for_zed_progress() {
+        let event = json!({
+            "type": "tool_execution_start",
+            "toolCallId": "bash-call",
+            "toolName": "bash",
+            "args": {"command": "sleep 1 && echo done"},
+        });
+        let update = translate_event(&event).unwrap();
+        assert_eq!(update["sessionUpdate"], "tool_call");
+        assert_eq!(update["kind"], "other");
+        assert_eq!(update["title"], "bash: sleep 1 && echo done");
     }
 
     #[test]

@@ -784,6 +784,32 @@ impl HostSession {
             .ok_or_else(|| "get_session_branch: invalid entries data".into())
     }
 
+    /// Read only the custom entries of `custom_type`.
+    ///
+    /// A full branch read serializes the whole transcript, which reaches
+    /// hundreds of megabytes on long sessions, so pollers must never ask for
+    /// it. Hosts that ignore the filter answer with the full branch, which stays
+    /// correct but expensive; the flag reports whether the cheap path is
+    /// available.
+    pub async fn branch_entries_of_type(
+        &self,
+        custom_type: &str,
+    ) -> Result<(Vec<Value>, bool), String> {
+        let data = self
+            .runtime_command("get_session_branch", json!({"customType": custom_type}))
+            .await?;
+        let entries = data
+            .get("entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| "get_session_branch: invalid entries data".to_string())?;
+        let filtered = data
+            .get("filtered")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Ok((entries, filtered))
+    }
+
     /// Append a protocol-neutral custom entry to the native session branch.
     pub async fn append_custom_entry(
         &self,

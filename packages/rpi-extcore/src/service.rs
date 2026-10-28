@@ -240,21 +240,18 @@ async fn attach_durable(
         .await
         .insert(id.to_owned(), runtime.clone());
     let event_capable = session.supports_event("session_entry_committed");
-    state.durable_watchers.lock().await.insert(
-        id.to_owned(),
-        if event_capable {
-            runtime.spawn_branch_watcher_with_backoff(
-                std::time::Duration::from_secs(5),
-                std::time::Duration::from_secs(30),
-            )
-        } else {
-            runtime.spawn_branch_watcher()
-        },
-    );
+    state
+        .durable_watchers
+        .lock()
+        .await
+        .insert(id.to_owned(), runtime.spawn_branch_watcher());
 
     // New hosts publish generic commit metadata at the Session commit
-    // boundary. It is only an invalidation signal; the polling watcher remains
-    // as a compatibility fallback for older hosts or dropped events.
+    // boundary. It is the fast path; the polling watcher remains as a
+    // compatibility fallback for older hosts, dropped events, or external
+    // writers. Its cadence is selected from the branch-read cost, not merely
+    // from event support, so an unfiltered legacy host is never polled every
+    // few seconds.
     if event_capable {
         let mut events = session.subscribe_raw();
         let event_runtime = runtime.clone();
@@ -262,7 +259,13 @@ async fn attach_durable(
             loop {
                 let event = match events.recv().await {
                     Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // A lag means at least one commit notification was
+                        // dropped. Reconcile immediately instead of waiting
+                        // for the slow polling fallback.
+                        let _ = event_runtime.refresh_branch().await;
+                        continue;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
                 if event["type"] != "session_entry_committed"
@@ -1195,6 +1198,10 @@ pub async fn command(state: &Service, id: String, command: ApiCommand) -> (Reply
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct SnapshotOptions {
     pub limit: Option<usize>,
+    /// Skip the diagnostic history read on latency-sensitive transcript loads.
+    /// The web client fetches this shortly after the conversation is visible.
+    #[serde(rename = "includeHistory")]
+    pub include_history: Option<bool>,
 }
 
 /// A read-only transcript snapshot plus the events that landed while it was
@@ -1223,11 +1230,24 @@ pub async fn snapshot_with_options(
         "id": uuid::Uuid::new_v4().to_string(),
         "limit": options.limit.unwrap_or(80).clamp(1, 400),
     }));
-    let history_request = session.send(json!({
-        "type": "get_history",
-        "id": uuid::Uuid::new_v4().to_string(),
-        "limit": 100,
-    }));
+    // History is useful for the diagnostics panel, but it is not required to
+    // paint the conversation. Allow latency-sensitive clients to defer it while
+    // keeping the legacy default for other callers.
+    let history_request = async {
+        if options.include_history != Some(false) {
+            Some(
+                session
+                    .send(json!({
+                        "type": "get_history",
+                        "id": uuid::Uuid::new_v4().to_string(),
+                        "limit": 100,
+                    }))
+                    .await,
+            )
+        } else {
+            None
+        }
+    };
     let (response, history_response) = tokio::join!(messages_request, history_request);
     let response = match response {
         Ok(response) => response,
@@ -1251,7 +1271,7 @@ pub async fn snapshot_with_options(
     }
     let data = &response["data"];
     let history = history_response
-        .ok()
+        .and_then(Result::ok)
         .filter(|value| value["success"] == Value::Bool(true))
         .and_then(|value| value.get("data").cloned())
         .unwrap_or_else(|| json!({"records": [], "hasMore": false}));
@@ -1587,8 +1607,15 @@ mod tests {
             }
         });
         for (limit, expected) in [(None, 80), (Some(10), 10), (Some(0), 1), (Some(999), 400)] {
-            let result =
-                snapshot_with_options(&service, "history".into(), SnapshotOptions { limit }).await;
+            let result = snapshot_with_options(
+                &service,
+                "history".into(),
+                SnapshotOptions {
+                    limit,
+                    include_history: None,
+                },
+            )
+            .await;
             assert_eq!(result.kind, ReplyKind::Success);
             assert_eq!(result.value["messages"].as_array().unwrap().len(), expected);
             assert_eq!(result.value["firstId"], (1000 - expected).to_string());
