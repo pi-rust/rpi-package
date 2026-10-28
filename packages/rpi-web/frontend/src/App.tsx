@@ -125,6 +125,43 @@ type Attachment = {
   previewUrl?: string;
 };
 
+const DRAFT_STORAGE_KEY = "rpi-session-drafts";
+
+function loadDrafts(): Map<string, string> {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return new Map();
+    return new Map(
+      Object.entries(parsed as Record<string, unknown>).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[0] === "string" &&
+          typeof entry[1] === "string" &&
+          entry[1].length > 0,
+      ),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function saveDrafts(drafts: Map<string, string>) {
+  try {
+    if (drafts.size === 0) {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(drafts)),
+    );
+  } catch {
+    /* optional browser persistence */
+  }
+}
+
 const EVENT_TYPES = [
   "ready",
   "agent_start",
@@ -552,7 +589,7 @@ export default function App() {
     null,
   );
   const sessionListValue = useRef<SessionSummary[] | null>(null);
-  const draftBySession = useRef(new Map<string, string>());
+  const draftBySession = useRef(loadDrafts());
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const [following, setFollowing] = useState(true);
@@ -587,8 +624,8 @@ export default function App() {
   } | null>(null);
   const [historyData, setHistory] = useState<HistoryResponse | null>(null);
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
-  const [queueOpen, setQueueOpen] = useState(false);
-  const [queueNotice, setQueueNotice] = useState("");
+  const [queueOpen, setQueueOpen] = useState(true);
+  const [queueRunning, setQueueRunning] = useState(false);
   const pendingQueueItems = queueItems.filter((item) =>
     isEditableQueueItem(item),
   );
@@ -599,6 +636,23 @@ export default function App() {
   const [queueKind, setQueueKind] = useState("followUp");
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  function updateDraft(value: string, targetSession = activeSessionRef.current) {
+    setDraft(value);
+    if (!targetSession) return;
+    if (value.length > 0) draftBySession.current.set(targetSession, value);
+    else draftBySession.current.delete(targetSession);
+    saveDrafts(draftBySession.current);
+  }
+
+  const clearDrafts = useCallback(() => {
+    draftBySession.current.clear();
+    saveDrafts(draftBySession.current);
+  }, []);
+
+  const draftSessionIds = useMemo(
+    () => new Set(draftBySession.current.keys()),
+    [draft],
+  );
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -665,7 +719,7 @@ export default function App() {
   const credentialRevision = useRef(0);
   const dialogRevision = useRef(0);
   const queueSubmission = useRef(new Set<string>());
-  const queueNoticeTimer = useRef<number | null>(null);
+  const queueRunSubmission = useRef(new Set<string>());
   const queueDraftRevision = useRef(0);
   const metadataQueues = useRef(new Map<string, Promise<void>>());
   const metadataRevisions = useRef(new Map<string, number>());
@@ -1095,8 +1149,8 @@ export default function App() {
     setRenameTarget(null);
     setSettingsOpen(false);
     setDraft("");
-    draftBySession.current.clear();
-  }, []);
+    clearDrafts();
+  }, [clearDrafts]);
 
   const refreshSessions = useCallback(
     (force = true) => {
@@ -1302,7 +1356,6 @@ export default function App() {
     setRuntime(null);
     setHistory(null);
     setQueueItems([]);
-    setQueueOpen(false);
     setAuthProviders([]);
     setAuthProvider("");
     setApiKeyDraft("");
@@ -1747,41 +1800,9 @@ export default function App() {
     if (sessionId) await refreshDiagnostics(sessionId);
   }
 
-  useEffect(() => {
-    return () => {
-      if (queueNoticeTimer.current !== null)
-        window.clearTimeout(queueNoticeTimer.current);
-    };
-  }, []);
-
-  function showQueueNotice(message: string) {
-    if (queueNoticeTimer.current !== null)
-      window.clearTimeout(queueNoticeTimer.current);
-    setQueueNotice(`${t("queued")}: ${message}`);
-    queueNoticeTimer.current = window.setTimeout(() => {
-      queueNoticeTimer.current = null;
-      setQueueNotice("");
-    }, 3200);
-  }
-
   function setPersistedHistory(value: HistoryResponse | null) {
     setHistory(value);
     setHistoryHasMore(Boolean(value?.hasMore));
-    if (value) {
-      setRows((previous) => {
-        if (
-          previous.some(
-            (row) =>
-              row.kind === "note" &&
-              (row.translation?.key === "restoredRun" ||
-                row.translation?.key === "liveRun"),
-          )
-        ) {
-          return previous;
-        }
-        return [...previous, ...persistedSettlementRows(value)];
-      });
-    }
   }
 
   useEffect(() => {
@@ -1863,8 +1884,7 @@ export default function App() {
     const priorActive = runActive;
     const [name = "", ...rest] = raw.trim().split(/\s+/);
     const arg = rest.join(" ").trim();
-    setDraft("");
-    draftBySession.current.delete(targetSession);
+    updateDraft("");
     setError("");
     try {
       if (name === "/help") {
@@ -1976,9 +1996,8 @@ export default function App() {
       note(`Unknown command ${name}. Try /help.`);
     } catch (cause) {
       if (!draftBySession.current.get(targetSession))
-        draftBySession.current.set(targetSession, raw);
+        updateDraft(raw, targetSession);
       if (navigation !== navigationRevision.current) return;
-      setDraft((current) => current || raw);
       if (name === "/compact" && cursor === lastSeq.current) {
         setStatus((current) =>
           current === "reconnecting" ? current : priorStatus,
@@ -2055,8 +2074,7 @@ export default function App() {
     };
     sendingRef.current = true;
     setSending(true);
-    setDraft("");
-    draftBySession.current.delete(sessionId);
+    updateDraft("");
     setError("");
     setInterrupted(false);
     const key = `local-${++localMessageSeq.current}`;
@@ -2090,7 +2108,6 @@ export default function App() {
             },
           ]);
           setQueueEditId(null);
-          showQueueNotice(message);
           void refreshDiagnostics(targetSession);
         }
         clearAttachments();
@@ -2102,7 +2119,7 @@ export default function App() {
       }
     } catch (cause) {
       if (!draftBySession.current.get(targetSession))
-        draftBySession.current.set(targetSession, message);
+        updateDraft(message, targetSession);
       if (navigation === navigationRevision.current) {
         if (!wasBusy && !editingQueueId) {
           setStatus((current) =>
@@ -2111,7 +2128,6 @@ export default function App() {
           setRunActive(false);
         }
         setRows((previous) => previous.filter((row) => row.id !== key));
-        setDraft((current) => current || message);
         setError(errorText(cause));
       }
     } finally {
@@ -2327,6 +2343,55 @@ export default function App() {
     }
   }
 
+  async function sendQueuedNow(entryId: string) {
+    const targetSession = sessionId;
+    const item = pendingQueueItems.find((queued) => queued.entryId === entryId);
+    if (
+      !targetSession ||
+      busy ||
+      queueRunning ||
+      !item?.text?.trim() ||
+      !supported.has("prompt") ||
+      !supported.has("cancel_queued") ||
+      queueRunSubmission.current.has(targetSession)
+    )
+      return;
+    const navigation = navigationRevision.current;
+    const priorStatus = status;
+    const priorActive = runActive;
+    queueRunSubmission.current.add(targetSession);
+    setQueueRunning(true);
+    setStatus("starting");
+    setRunActive(true);
+    setInterrupted(false);
+    setError("");
+    try {
+      // The host owns queue delivery. Send only the selected item now and
+      // leave all other queue entries in their existing durable order.
+      await api.cancelQueued(targetSession, item.entryId);
+      if (navigation !== navigationRevision.current) return;
+      setQueueItems((current) =>
+        current.filter((queued) => queued.entryId !== item.entryId),
+      );
+      await commandData(targetSession, "prompt", { message: item.text.trim() });
+      if (navigation === navigationRevision.current) {
+        setQueueOpen(true);
+        await refreshDiagnostics(targetSession);
+      }
+    } catch (cause) {
+      if (navigation !== navigationRevision.current) return;
+      setStatus((current) =>
+        current === "reconnecting" ? current : priorStatus,
+      );
+      setRunActive(priorActive);
+      setError(errorText(cause));
+      await refreshDiagnostics(targetSession);
+    } finally {
+      queueRunSubmission.current.delete(targetSession);
+      if (navigation === navigationRevision.current) setQueueRunning(false);
+    }
+  }
+
   async function queuePrompt() {
     if (!sessionId || !queueDraft.trim() || !supported.has("queue_message"))
       return;
@@ -2375,8 +2440,7 @@ export default function App() {
     queueDraftRevision.current++;
     setQueueEditId(item.entryId);
     setQueueDraft("");
-    setDraft(item.text);
-    draftBySession.current.set(sessionId, item.text);
+    updateDraft(item.text);
     setQueueKind(item.queue);
     setQueueOpen(false);
     setInspector(false);
@@ -2387,8 +2451,7 @@ export default function App() {
     queueDraftRevision.current++;
     setQueueEditId(null);
     setQueueDraft("");
-    setDraft("");
-    draftBySession.current.delete(sessionId);
+    updateDraft("");
   }
 
   async function cancelQueued(entryId: string) {
@@ -2586,24 +2649,18 @@ export default function App() {
   }
 
   function selectProject(selected: Project) {
-    const next = sessions
-      .filter((entry) => entry.projectId === selected.id && !entry.archived)
-      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (next) select(next.sessionId, selected.id);
-    else {
-      if (activeSessionRef.current || projectRef.current !== selected.id) {
-        navigationRevision.current++;
-        diagnosticsRevision.current++;
-      }
-      projectRef.current = selected.id;
-      setProjectId(selected.id);
-      activeSessionRef.current = "";
-      setSessionId("");
-      const url = new URL(location.href);
-      url.searchParams.delete("session");
-      history.replaceState(null, "", url);
-      if (window.innerWidth < 768) setSidebar(false);
+    if (projectRef.current === selected.id && activeSessionRef.current) return;
+    if (activeSessionRef.current || projectRef.current !== selected.id) {
+      navigationRevision.current++;
+      diagnosticsRevision.current++;
     }
+    projectRef.current = selected.id;
+    setProjectId(selected.id);
+    activeSessionRef.current = "";
+    setSessionId("");
+    const url = new URL(location.href);
+    url.searchParams.delete("session");
+    history.replaceState(null, "", url);
   }
 
   async function updateSessionMetadata(
@@ -2843,6 +2900,7 @@ export default function App() {
             <ProjectSidebar
               projects={projects}
               sessions={sidebarSessions}
+              draftSessionIds={draftSessionIds}
               activeProjectId={projectId}
               sessionId={sessionId}
               language={language}
@@ -3275,16 +3333,22 @@ export default function App() {
                     )}
                     <div className="suggestions">
                       <button
-                        onClick={() => setDraft(t("explainProjectPrompt"))}
+                        onClick={() =>
+                          updateDraft(t("explainProjectPrompt"))
+                        }
                       >
                         <Sparkles size={17} /> {t("explainProject")}
                       </button>
                       <button
-                        onClick={() => setDraft(t("reviewChangesPrompt"))}
+                        onClick={() =>
+                          updateDraft(t("reviewChangesPrompt"))
+                        }
                       >
                         <Code2 size={17} /> {t("reviewChanges")}
                       </button>
-                      <button onClick={() => setDraft(t("findTodoPrompt"))}>
+                      <button
+                        onClick={() => updateDraft(t("findTodoPrompt"))}
+                      >
                         <Bot size={17} /> {t("findTodo")}
                       </button>
                     </div>
@@ -3362,13 +3426,33 @@ export default function App() {
                     </span>
                     <ChevronDown size={14} aria-hidden="true" />
                   </button>
-                  {queueOpen && (
-                    <div className="composer-queue-list">
+                  <div className="composer-queue-list">
                       {pendingQueueItems.map((item) => (
                         <div className="composer-queue-item" key={item.entryId}>
                           <span>{item.text || t("nonTextMessage")}</span>
                           {isEditableQueueItem(item) && (
                             <span className="queue-item-actions">
+                              {item.text?.trim() &&
+                                !busy &&
+                                supported.has("prompt") &&
+                                supported.has("cancel_queued") && (
+                                  <button
+                                    type="button"
+                                    className="icon-button queue-send-now"
+                                    aria-label={`${t("sendNow")}: ${item.text}`}
+                                    title={t("sendNow")}
+                                    onClick={() =>
+                                      void sendQueuedNow(item.entryId)
+                                    }
+                                    disabled={queueRunning}
+                                  >
+                                    {queueRunning ? (
+                                      <Loader2 size={13} className="spin" />
+                                    ) : (
+                                      <Play size={13} />
+                                    )}
+                                  </button>
+                                )}
                               <button
                                 type="button"
                                 className="icon-button"
@@ -3392,7 +3476,6 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-                  )}
                 </div>
               )}
               <div className="composer">
@@ -3449,8 +3532,7 @@ export default function App() {
                   ref={composerInputRef}
                   value={draft}
                   onChange={(event) => {
-                    setDraft(event.target.value);
-                    draftBySession.current.set(sessionId, event.target.value);
+                    updateDraft(event.target.value, sessionId);
                   }}
                   onKeyDown={(event) => {
                     if (
@@ -3528,33 +3610,8 @@ export default function App() {
                         {t("editQueued")} <X size={11} />
                       </button>
                     )}
-                    {queueNotice && (
-                      <span className="composer-queue-notice" role="status">
-                        {queueNotice}
-                      </span>
-                    )}
-                    {busy && (
-                      <span className="composer-queue-hint">
-                        {t("queueHint")}
-                      </span>
-                    )}
                   </div>
                   <div className="composer-controls">
-                    {actions.has("queue") &&
-                      supported.has("get_queue") &&
-                      pendingQueueItems.length > 0 && (
-                        <button
-                          type="button"
-                          className="composer-queue-button"
-                          aria-label={`${t("queue")}: ${pendingQueueItems.length}`}
-                          aria-expanded={queueOpen}
-                          title={t("viewQueue")}
-                          onClick={() => setQueueOpen((value) => !value)}
-                        >
-                          <ListTodo size={14} />
-                          <strong>{queueItems.length}</strong>
-                        </button>
-                      )}
                     <button
                       type={
                         busy && supported.has("abort") ? "button" : "submit"
@@ -4039,6 +4096,27 @@ export default function App() {
                       </div>
                       {isEditableQueueItem(item) && (
                         <span className="queue-item-actions">
+                          {item.text?.trim() &&
+                            !busy &&
+                            supported.has("prompt") &&
+                            supported.has("cancel_queued") && (
+                              <button
+                                type="button"
+                                className="icon-button queue-send-now"
+                                title={t("sendNow")}
+                                aria-label={`${t("sendNow")}: ${item.text}`}
+                                onClick={() =>
+                                  void sendQueuedNow(item.entryId)
+                                }
+                                disabled={queueRunning}
+                              >
+                                {queueRunning ? (
+                                  <Loader2 size={13} className="spin" />
+                                ) : (
+                                  <Play size={13} />
+                                )}
+                              </button>
+                            )}
                           <button
                             type="button"
                             className="icon-button"
@@ -4855,13 +4933,13 @@ function MessageRow({
   language: Language;
 }) {
   const t = (key: MessageKey) => translate(language, key);
-  const [copied, setCopied] = useState(false);
+  const [copiedMarkdown, setCopiedMarkdown] = useState(false);
 
-  async function copyMessage() {
+  async function copyMarkdown() {
     try {
       await navigator.clipboard.writeText(row.text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      setCopiedMarkdown(true);
+      window.setTimeout(() => setCopiedMarkdown(false), 1600);
     } catch {
       // Clipboard access can be denied; the message remains selectable.
     }
@@ -4876,16 +4954,6 @@ function MessageRow({
           <span className="user-avatar">{t("you").slice(0, 1)}</span>
         )}
         <strong>{row.role === "assistant" ? "rpi" : t("you")}</strong>
-        <button
-          type="button"
-          className="message-copy"
-          onClick={() => void copyMessage()}
-          aria-label={copied ? t("copied") : t("copyMessage")}
-          title={copied ? t("copied") : t("copyMessage")}
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-          <span>{copied ? t("copied") : t("copyMessage")}</span>
-        </button>
       </div>
       <div className="message-body">
         {row.role === "assistant" ? (
@@ -4896,6 +4964,20 @@ function MessageRow({
           </div>
         )}
       </div>
+      {row.role === "assistant" && (
+        <div className="message-actions">
+          <button
+            type="button"
+            className="message-copy message-copy-markdown"
+            onClick={() => void copyMarkdown()}
+            aria-label={copiedMarkdown ? t("copied") : t("copyMarkdown")}
+            title={copiedMarkdown ? t("copied") : t("copyMarkdown")}
+          >
+            {copiedMarkdown ? <Check size={12} /> : <Copy size={12} />}
+            <span>{copiedMarkdown ? t("copied") : t("copyMarkdown")}</span>
+          </button>
+        </div>
+      )}
     </article>
   );
 }

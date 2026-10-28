@@ -3,13 +3,14 @@
 //! `rpi-extcore` is the protocol-neutral layer used by the Web and ACP
 //! adapters. It owns native `rpi --mode rpc` child processes, request
 //! correlation, prompt run settlement, event replay, bounded transcript
-//! snapshots, workspace services and durable runtime state semantics.
+//! snapshots, workspace services and durable projection semantics.
 //!
 //! The crate deliberately has no Axum, ACP, frontend or plugin-ABI dependency.
 //! Native session files remain owned by the native rpi host; this crate reads,
 //! validates and bounds that data rather than creating a second transcript. The
 //! durable service integration optionally uses the native `get_session_branch`
-//! and `append_entry` RPC commands to persist coordinator state in that branch.
+//! RPC plus the host `execute_command` bridge. The `rpi-durable` extension is
+//! the only writer of durable business entries.
 //! Hosts without those optional commands continue to support ordinary sessions.
 //!
 //! # Versioning

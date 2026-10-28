@@ -1,9 +1,7 @@
 //! Session and workspace operations shared by protocol adapters.
-#[cfg(test)]
-use crate::durable::ENTRY_TYPE;
 use crate::{
     durable::{
-        DurableCoordinator, DurableError, DurableMutation, DurableRuntime, DurableSubscription,
+        DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE, LEGACY_ENTRY_TYPE,
     },
     host::HostSession,
     projects::Projects,
@@ -51,7 +49,8 @@ pub struct Service {
     default_project_id: String,
     sessions: Arc<RwLock<HashMap<String, Arc<HostSession>>>>,
     durable: Arc<RwLock<HashMap<String, Arc<DurableRuntime>>>>,
-    durable_observers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    durable_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    durable_event_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
 }
@@ -86,7 +85,8 @@ impl Service {
             default_project_id,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             durable: Arc::new(RwLock::new(HashMap::new())),
-            durable_observers: Arc::new(Mutex::new(HashMap::new())),
+            durable_watchers: Arc::new(Mutex::new(HashMap::new())),
+            durable_event_watchers: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             registry: Arc::new(RwLock::new(registry)),
         }))
@@ -106,21 +106,31 @@ impl Service {
         let _lifecycle = self.session_lifecycle.lock().await;
         let sessions: Vec<_> = self.sessions.read().await.values().cloned().collect();
         futures_util::future::join_all(sessions.iter().map(|session| session.shutdown())).await;
-        let observers: Vec<_> = self
-            .durable_observers
+        let watchers: Vec<_> = self
+            .durable_watchers
             .lock()
             .await
             .drain()
             .map(|(_, handle)| handle)
             .collect();
-        for observer in observers {
-            observer.abort();
+        for watcher in watchers {
+            watcher.abort();
+        }
+        let event_watchers: Vec<_> = self
+            .durable_event_watchers
+            .lock()
+            .await
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect();
+        for watcher in event_watchers {
+            watcher.abort();
         }
         self.durable.write().await.clear();
     }
 
-    /// Return the durable runtime for a live native session.
-    pub async fn durable_runtime(&self, id: &str) -> Option<Arc<DurableRuntime>> {
+    /// Return the in-memory projection for a live native session.
+    pub async fn durable_projection(&self, id: &str) -> Option<Arc<DurableRuntime>> {
         self.durable.read().await.get(id).cloned()
     }
 
@@ -129,31 +139,8 @@ impl Service {
         id: &str,
         after: Option<u64>,
     ) -> Option<DurableSubscription> {
-        let runtime = self.durable_runtime(id).await?;
+        let runtime = self.durable_projection(id).await?;
         Some(runtime.subscribe_changes(after).await)
-    }
-
-    /// Return the durable coordinator for a live native session.
-    pub async fn durable_coordinator(&self, id: &str) -> Option<Arc<Mutex<DurableCoordinator>>> {
-        self.durable_runtime(id)
-            .await
-            .map(|runtime| runtime.coordinator())
-    }
-
-    /// Apply one protocol-neutral durable mutation and persist it as a native
-    /// custom entry. The in-memory mutation is rolled back if the append fails.
-    pub async fn update_durable<F, T>(&self, id: &str, update: F) -> Result<T, String>
-    where
-        F: FnOnce(&mut DurableCoordinator) -> Result<T, DurableError>,
-    {
-        if self.live_session(id).await.is_none() {
-            return Err("session not found".to_string());
-        }
-        let runtime = self
-            .durable_runtime(id)
-            .await
-            .ok_or_else(|| "durable coordinator is not initialized".to_string())?;
-        runtime.update(update).await
     }
 
     /// Return the current durable state for a live session.
@@ -164,11 +151,11 @@ impl Service {
                 json!({"error": "session not found", "code": "session_not_found"}),
             ));
         }
-        let runtime = self.durable_runtime(id).await.ok_or_else(|| {
+        let runtime = self.durable_projection(id).await.ok_or_else(|| {
             (
                 ReplyKind::Unavailable,
                 json!({
-                    "error": "durable coordinator is not initialized",
+                    "error": "durable projection is not initialized",
                     "code": "durable_unavailable"
                 }),
             )
@@ -176,25 +163,23 @@ impl Service {
         Ok(json!({"sessionId": id, "state": runtime.state().await}))
     }
 
-    /// Apply one durable control-plane mutation and return the resulting state.
+    /// Forward one durable control-plane mutation to the `rpi-durable`
+    /// command. `rpi-extcore` never appends durable entries itself.
     pub async fn mutate_durable(&self, id: &str, mutation: DurableMutation) -> ServiceResult {
-        let result = self
-            .update_durable(id, |coordinator| coordinator.apply(mutation))
-            .await;
-        let result = match result {
+        if self.live_session(id).await.is_none() {
+            return Err((ReplyKind::NotFound, json!({"error": "session not found"})));
+        }
+        let runtime = self.durable_projection(id).await.ok_or_else(|| {
+            (
+                ReplyKind::Unavailable,
+                json!({
+                    "error": "durable projection is not initialized",
+                    "code": "durable_unavailable"
+                }),
+            )
+        })?;
+        let result = match runtime.mutate(mutation).await {
             Ok(result) => result,
-            Err(error) if error == "session not found" => {
-                return Err((ReplyKind::NotFound, json!({"error": error})))
-            }
-            Err(error) if error == "durable coordinator is not initialized" => {
-                return Err((
-                    ReplyKind::Unavailable,
-                    json!({
-                        "error": error,
-                        "code": "durable_unavailable"
-                    }),
-                ))
-            }
             Err(error) => {
                 let kind = if error.contains("queue item")
                     || error.contains("only an interrupted run")
@@ -211,17 +196,10 @@ impl Service {
                 return Err((kind, json!({"error": error})));
             }
         };
-        let coordinator = self.durable_coordinator(id).await.ok_or_else(|| {
-            (
-                ReplyKind::Unavailable,
-                json!({"error": "durable coordinator disappeared"}),
-            )
-        })?;
-        let state = coordinator.lock().await.state().clone();
         Ok(json!({
             "sessionId": id,
             "result": result,
-            "state": state,
+            "state": runtime.state().await,
         }))
     }
 }
@@ -243,12 +221,15 @@ async fn attach_durable(
     id: &str,
     session: Arc<HostSession>,
 ) -> Result<(), String> {
-    if let Some(previous) = state.durable_observers.lock().await.remove(id) {
-        previous.abort();
-    }
     state.durable.write().await.remove(id);
+    if let Some(watcher) = state.durable_watchers.lock().await.remove(id) {
+        watcher.abort();
+    }
+    if let Some(watcher) = state.durable_event_watchers.lock().await.remove(id) {
+        watcher.abort();
+    }
 
-    let Some(runtime) = DurableRuntime::try_attach(session).await? else {
+    let Some(runtime) = DurableRuntime::try_attach(session.clone()).await? else {
         // Durable is an optional native capability. Keep the ordinary session
         // alive when an older host does not expose branch RPCs.
         return Ok(());
@@ -258,18 +239,58 @@ async fn attach_durable(
         .write()
         .await
         .insert(id.to_owned(), runtime.clone());
-    let observer = runtime.spawn_observer();
-    state
-        .durable_observers
-        .lock()
-        .await
-        .insert(id.to_owned(), observer);
+    let event_capable = session.supports_event("session_entry_committed");
+    state.durable_watchers.lock().await.insert(
+        id.to_owned(),
+        if event_capable {
+            runtime.spawn_branch_watcher_with_backoff(
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(30),
+            )
+        } else {
+            runtime.spawn_branch_watcher()
+        },
+    );
+
+    // New hosts publish generic commit metadata at the Session commit
+    // boundary. It is only an invalidation signal; the polling watcher remains
+    // as a compatibility fallback for older hosts or dropped events.
+    if event_capable {
+        let mut events = session.subscribe_raw();
+        let event_runtime = runtime.clone();
+        let event_watcher = tokio::spawn(async move {
+            loop {
+                let event = match events.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if event["type"] != "session_entry_committed"
+                    || !matches!(
+                        event["customType"].as_str(),
+                        Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE)
+                    )
+                {
+                    continue;
+                }
+                let _ = event_runtime.refresh_branch().await;
+            }
+        });
+        state
+            .durable_event_watchers
+            .lock()
+            .await
+            .insert(id.to_owned(), event_watcher);
+    }
     Ok(())
 }
 
 async fn detach_durable(state: &Service, id: &str) {
-    if let Some(observer) = state.durable_observers.lock().await.remove(id) {
-        observer.abort();
+    if let Some(watcher) = state.durable_watchers.lock().await.remove(id) {
+        watcher.abort();
+    }
+    if let Some(watcher) = state.durable_event_watchers.lock().await.remove(id) {
+        watcher.abort();
     }
     state.durable.write().await.remove(id);
 }
@@ -492,7 +513,7 @@ pub async fn create_session(
                     ReplyKind::HostUnavailable,
                     json!({
                         "error": error,
-                        "code": "durable_runtime_unavailable"
+                        "code": "durable_projection_unavailable"
                     }),
                 );
             }
@@ -786,7 +807,7 @@ async fn fork_session_impl(
             ReplyKind::HostUnavailable,
             json!({
                 "error": error,
-                "code": "durable_runtime_unavailable"
+                "code": "durable_projection_unavailable"
             }),
         )
             .into_reply();
@@ -850,7 +871,7 @@ pub async fn open_session(state: &Service, id: String) -> (ReplyKind, Value) {
                     ReplyKind::HostUnavailable,
                     json!({
                         "error": error,
-                        "code": "durable_runtime_unavailable"
+                        "code": "durable_projection_unavailable"
                     }),
                 );
             }
@@ -1311,7 +1332,6 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn durable_service_recovers_branch_and_persists_live_mutations() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncBufReadExt, BufReader};
 
         let root =
@@ -1326,8 +1346,6 @@ mod tests {
         let (writer, peer) = tokio::io::duplex(4096);
         let (session, injector) = HostSession::test_connection(writer, 16);
         let injector_for_fixture = injector.clone();
-        let appends = Arc::new(AtomicUsize::new(0));
-        let appends_for_fixture = appends.clone();
         let fixture = tokio::spawn(async move {
             let mut lines = BufReader::new(peer).lines();
             while let Some(line) = lines.next_line().await.unwrap() {
@@ -1344,7 +1362,6 @@ mod tests {
                         }
                     }]})
                 } else {
-                    appends_for_fixture.fetch_add(1, Ordering::SeqCst);
                     json!({"entryId": "entry-durable"})
                 };
                 injector_for_fixture
@@ -1366,33 +1383,19 @@ mod tests {
         attach_durable(&service, "durable", session.clone())
             .await
             .unwrap();
-        let recovered = service.durable_coordinator("durable").await.unwrap();
+        let projected = service.durable_projection("durable").await.unwrap();
         assert_eq!(
-            recovered.lock().await.state().run.as_ref().unwrap().status,
-            crate::durable::RunStatus::Interrupted
+            projected.state().await.run.as_ref().unwrap().status,
+            crate::durable::RunStatus::Running
         );
 
-        let item_id = service
-            .update_durable("durable", |coordinator| {
-                Ok(coordinator.enqueue("persist this")?.id.clone())
-            })
+        let forwarded = service
+            .mutate_durable("durable", DurableMutation::StartRun)
             .await
             .unwrap();
-        assert_eq!(item_id, "item-1");
-        assert!(appends.load(Ordering::SeqCst) >= 2);
-
-        let claimed = service
-            .mutate_durable(
-                "durable",
-                DurableMutation::Claim {
-                    id: item_id.clone(),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(claimed["result"]["changed"], true);
+        assert_eq!(forwarded["result"]["entryId"], "entry-durable");
         let snapshot = service.durable_state("durable").await.unwrap();
-        assert_eq!(snapshot["state"]["queue"][0]["status"], "claimed");
+        assert_eq!(snapshot["state"]["run"]["status"], "running");
 
         detach_durable(&service, "durable").await;
         fixture.abort();
@@ -1402,7 +1405,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn durable_observer_folds_native_lifecycle_events() {
+    async fn durable_event_refreshes_projection_without_waiting_for_polling() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let root = std::env::temp_dir().join(format!(
+            "rpi-durable-event-refresh-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let service = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("sessions.json"),
+            ..BackendConfig::default()
+        })
+        .unwrap();
+        let (writer, peer) = tokio::io::duplex(4096);
+        let ready = json!({
+            "type": "ready",
+            "protocol": "rpi",
+            "supportedCommands": ["get_session_branch", "append_entry", "execute_command"],
+            "supportedEvents": ["session_entry_committed"]
+        });
+        let (session, injector) = HostSession::test_connection_with_ready(writer, 16, ready);
+        let revision = Arc::new(AtomicU64::new(1));
+        let fixture_revision = revision.clone();
+        let injector_for_fixture = injector.clone();
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let current = fixture_revision.load(Ordering::Acquire);
+                let data = json!({"entries": [{
+                    "type": "custom",
+                    "customType": ENTRY_TYPE,
+                    "data": {
+                        "revision": current,
+                        "nextRunId": 1,
+                        "run": {"id": "run-1", "status": "running", "tools": []},
+                        "queue": []
+                    }
+                }]});
+                injector_for_fixture
+                    .send(json!({
+                        "type": "response",
+                        "id": request["id"],
+                        "success": true,
+                        "data": data
+                    }))
+                    .unwrap();
+            }
+        });
+        service
+            .sessions
+            .write()
+            .await
+            .insert("event-refresh".into(), session.clone());
+
+        attach_durable(&service, "event-refresh", session.clone())
+            .await
+            .unwrap();
+        let projected = service.durable_projection("event-refresh").await.unwrap();
+        assert_eq!(projected.state().await.revision, 1);
+
+        revision.store(2, Ordering::Release);
+        injector
+            .send(json!({
+                "type": "session_entry_committed",
+                "entryId": "durable-entry-2",
+                "entryType": "custom",
+                "customType": ENTRY_TYPE,
+                "lane": "main"
+            }))
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if projected.state().await.revision == 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("commit event should refresh durable projection");
+
+        detach_durable(&service, "event-refresh").await;
+        fixture.abort();
+        service.shutdown().await;
+        drop(service);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn durable_projection_ignores_noncanonical_entries() {
         use tokio::io::{AsyncBufReadExt, BufReader};
 
         let root =
@@ -1444,13 +1540,8 @@ mod tests {
         attach_durable(&service, "events", session.clone())
             .await
             .unwrap();
-        injector.send(json!({"type": "agent_start"})).unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        let state = service.durable_coordinator("events").await.unwrap();
-        assert_eq!(
-            state.lock().await.state().run.as_ref().unwrap().status,
-            crate::durable::RunStatus::Running
-        );
+        let state = service.durable_projection("events").await.unwrap();
+        assert!(state.state().await.run.is_none());
 
         detach_durable(&service, "events").await;
         fixture.abort();

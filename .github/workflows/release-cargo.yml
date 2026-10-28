@@ -170,6 +170,9 @@ jobs:
       source_ref: ${{ needs.release.outputs.source_ref }}
       package_releases: ${{ needs.release.outputs.package_releases }}
       bundle_tag: ${{ needs.release.outputs.bundle_tag }}
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
 
   web-assets:
     needs: release

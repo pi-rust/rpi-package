@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.1...rpi-durable-v0.2.2) - 2026-10-28
+
+### Added
+
+- consolidate durable state and publish commit updates ([#91](https://github.com/pi-rust/rpi-package/pull/91))
+
+### Fixed
+
+- Serialize first-use branch restoration and mutations during branch reload so
+  concurrent callbacks cannot append against a replaced branch.
+- Keep restore failures published while the restore gate is held, and make
+  durable status snapshots wait for branch reloads.
+- Persist an explicit tool-call key namespace so encoded long IDs cannot collide
+  with naturally short native IDs, and return the state committed by a mutation
+  rather than a later branch snapshot.
+- Use the newest valid self-contained snapshot as a replay base, ignoring
+  malformed obsolete journal prefixes while still failing closed on suffix
+  corruption.
+- Persist a stable tool-call identity so bounded display IDs cannot associate a
+  long tool result with the wrong execution, including when legacy entries are
+  present; mark unrecoverable legacy truncations as unknown during restore.
+- Use a cryptographic SHA-256 digest for new bounded long tool IDs while still
+  recognizing the previous FNV-based IDs during migration.
+
+## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.0...rpi-durable-v0.2.1) - 2026-10-27
+
+### Fixed
+
+- *(durable)* complete PR #85 review fixes ([#87](https://github.com/pi-rust/rpi-package/pull/87))
+
 ## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.1.0...rpi-durable-v0.2.0) - 2026-10-27
 
 ### Other

@@ -35,9 +35,12 @@ versioned prebuilt manifests for catalog extensions.
 | [rpi-server](packages/rpi-server/README.md) | Serve TCP JSONL requests and streaming subscriptions with `--server` |
 | [rpi-acp](packages/rpi-acp/README.md) | Connect ACP clients, including Zed and Open WebUI Computer |
 | [rpi-ui-adapter](packages/rpi-ui-adapter/README.md) | Connect Open WebUI directly through `--webui=openwebui` |
+| [rpi-edit-diagnostics](packages/rpi-edit-diagnostics/README.md) | Replace `edit` with exact matching and compiler-style failure reports |
 
 Extensions inspired by Pi packages are independent Rust implementations, not
-ports of upstream source code.
+ports of upstream source code, except the candidate search in
+`rpi-edit-diagnostics`, which is ported from pi-semantic-edit (MIT; see its
+`NOTICE`).
 
 `rpi-voice` embeds sherpa-onnx + SenseVoice for offline speech recognition by
 default. OpenAI-compatible STT is also available; see the

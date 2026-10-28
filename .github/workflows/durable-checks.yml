@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'packages/rpi-durable/**'
+      - 'packages/rpi-durable-core/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/durable-checks.yml'
@@ -36,4 +37,4 @@ jobs:
       - name: Build the release library
         run: cargo build --release --locked -p rpi-durable
       - name: Verify the registry package
-        run: cargo package --locked -p rpi-durable
+        run: cargo package --locked -p rpi-durable --config 'patch.crates-io.rpi-durable-core.path="packages/rpi-durable-core"'

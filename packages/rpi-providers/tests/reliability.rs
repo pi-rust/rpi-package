@@ -42,8 +42,20 @@ fn providers() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
         &session,
         tokio::runtime::Handle::current(),
     );
-    assert_eq!(providers.len(), 4);
+    assert_eq!(providers.len(), 5);
     (session, providers)
+}
+
+/// The OpenAI-chat fixtures below cannot serve Antigravity, which speaks Cloud Code's
+/// Gemini SSE protocol. Its lifecycle, streaming and cancellation coverage lives in
+/// tests/antigravity.rs; every other provider keeps the shared assertions unchanged.
+fn chat_providers() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
+    let (session, providers) = providers();
+    let chat = providers
+        .into_iter()
+        .filter(|provider| provider.id() != rpi_providers::antigravity::PROVIDER_ID)
+        .collect();
+    (session, chat)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -325,7 +337,7 @@ fn options(idle: Duration) -> SimpleStreamOptions {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_loaded_provider_reuses_connections_without_reusing_credentials() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -381,7 +393,7 @@ async fn every_loaded_provider_reuses_connections_without_reusing_credentials() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lifecycle_shutdown_cancels_all_accounts_and_rejects_new_requests() {
-    let (session, providers) = providers();
+    let (session, providers) = chat_providers();
     let mut active = Vec::new();
     for provider in &providers {
         let mut fixture =
@@ -428,7 +440,7 @@ async fn lifecycle_shutdown_cancels_all_accounts_and_rejects_new_requests() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_loaded_provider_reports_invalid_transport_configuration() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         let mut model = provider.models()[0].clone();
         model.base_url = ":invalid".into();
@@ -473,7 +485,7 @@ async fn native_provider_constructors_report_transport_errors_without_panicking(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_loaded_provider_interrupts_stalled_streams_before_the_total_deadline() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         let mut fixture =
             Fixture::new(vec![(Duration::ZERO, frame("partial", false))], false).await;
@@ -504,7 +516,7 @@ async fn every_loaded_provider_interrupts_stalled_streams_before_the_total_deadl
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_loaded_provider_keeps_active_fragmented_streams_alive() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         let data = frame("healthy", true);
         let split = data.len() / 2;
@@ -534,7 +546,7 @@ async fn every_loaded_provider_keeps_active_fragmented_streams_alive() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_loaded_provider_preserves_the_first_frame_after_a_leading_bom() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         let mut fixture = Fixture::new(
             vec![
@@ -568,7 +580,7 @@ async fn every_loaded_provider_preserves_the_first_frame_after_a_leading_bom() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_loaded_provider_dispatches_cr_delimited_frames_while_response_stays_open() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         // Exceed delta batching so this checks frame delivery independently of
         // the provider's text coalescing policy.
@@ -619,7 +631,7 @@ async fn every_loaded_provider_dispatches_cr_delimited_frames_while_response_sta
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loaded_provider_allows_disabling_and_cancelling_the_idle_watchdog() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         let mut fixture = Fixture::new(
             vec![(Duration::from_millis(150), frame("late", true))],
@@ -666,7 +678,7 @@ async fn loaded_provider_allows_disabling_and_cancelling_the_idle_watchdog() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_loaded_provider_preserves_compat_and_replayed_reasoning() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         let mut fixture = Fixture::new(vec![(Duration::ZERO, frame("done", true))], true).await;
         let mut model = model(provider.as_ref(), &fixture);
@@ -726,7 +738,7 @@ async fn every_loaded_provider_preserves_compat_and_replayed_reasoning() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deepseek_preserves_explicit_thinking_format_and_effort_mapping() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     let provider = providers
         .iter()
         .find(|provider| provider.id() == "deepseek")
@@ -758,7 +770,7 @@ async fn deepseek_preserves_explicit_thinking_format_and_effort_mapping() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deepseek_disables_thinking_for_custom_non_reasoning_models() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     let provider = providers
         .iter()
         .find(|provider| provider.id() == "deepseek")
@@ -831,7 +843,7 @@ async fn proxy_config_timeout_is_a_fallback_and_request_options_take_precedence(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_loaded_provider_keeps_the_total_deadline_independent_of_idle_timeout() {
-    let (_session, providers) = providers();
+    let (_session, providers) = chat_providers();
     for provider in providers {
         let mut fixture =
             Fixture::new(vec![(Duration::ZERO, frame("partial", false))], false).await;

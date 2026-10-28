@@ -7,6 +7,7 @@ members = [
     "packages/rpi-lens",
     "packages/rpi-orchestrator",
     "packages/rpi-durable",
+    "packages/rpi-durable-core",
     "packages/rpi-todo",
     "packages/rpi-goal",
     "packages/rpi-plan-mode",
@@ -15,6 +16,7 @@ members = [
     "packages/rpi-permissions",
     "packages/rpi-websearch",
     "packages/rpi-webfetch",
+    "packages/rpi-edit-diagnostics",
     "packages/rpi-im-message",
     "packages/rpi-server",
     "packages/rpi-acp",
@@ -54,6 +56,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 url = "2"
 wait-timeout = "0.2"
 async-trait = "0.1"
+sha2 = "0.10"
 
 [profile.release]
 lto = "thin"

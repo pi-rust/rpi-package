@@ -7,6 +7,10 @@
 //! a decoded copy in memory and appends a compact custom entry after each
 //! mutation; it does not create a second transcript or project database.
 
+use rpi_durable_core::{
+    DurableState, QueueItem, QueueStatus, RunCheckpoint, RunStatus, Step, StepStatus,
+    ToolCheckpoint, ToolStatus, Workflow, WorkflowStatus, MAX_QUEUE_ITEMS, MAX_SUMMARY_CHARS,
+};
 use rpi_plugin_sdk::handles::ToolHandles;
 use rpi_plugin_sdk::{
     EventHandlerFn, EventTag, FreeStringFn, PluginApi, RuntimeActionId, StableToolSchema,
@@ -14,28 +18,34 @@ use rpi_plugin_sdk::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
 const TOOL: &str = "durable";
-const ENTRY_TYPE: &str = "durable-state";
+const ENTRY_TYPE: &str = rpi_durable_core::ENTRY_TYPE;
+const LEGACY_ENTRY_TYPE: &str = rpi_durable_core::LEGACY_ENTRY_TYPE;
 const MAX_STEPS: usize = 128;
 const MAX_NAME_CHARS: usize = 500;
 const MAX_STEP_ID_CHARS: usize = 128;
 const MAX_STEP_TITLE_CHARS: usize = 1_000;
 const MAX_NOTE_CHARS: usize = 4_000;
 const MAX_JOURNAL_ENTRIES: usize = 64;
-const MAX_SUMMARY_CHARS: usize = 1_000;
-const MAX_QUEUE_ITEMS: usize = 32;
+const TOOL_ID_HASH_HEX_CHARS: usize = 64;
 const MAX_QUEUE_TEXT_CHARS: usize = 4_000;
-const JOURNAL_FORMAT: &str = "rpi-durable-journal";
-const JOURNAL_VERSION: u64 = 1;
+const JOURNAL_FORMAT: &str = rpi_durable_core::JOURNAL_FORMAT;
+const JOURNAL_VERSION: u64 = rpi_durable_core::JOURNAL_VERSION;
 const SNAPSHOT_INTERVAL: u64 = 32;
 
 type Runtime = PluginApi;
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 static STATE: OnceLock<Mutex<Store>> = OnceLock::new();
+static RESTORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn restore_lock() -> &'static Mutex<()> {
+    RESTORE_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct JournalMeta {
@@ -121,6 +131,8 @@ enum JournalChange {
     },
     UpdateTool {
         call_id: String,
+        #[serde(default)]
+        call_key: Option<String>,
         status: ToolExecutionStatus,
         result: String,
     },
@@ -142,184 +154,10 @@ fn state() -> &'static Mutex<Store> {
     STATE.get_or_init(|| Mutex::new(Store::default()))
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DurableState {
-    workflow: Option<Workflow>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    run: Option<RunState>,
-    #[serde(default)]
-    next_run_id: u64,
-    #[serde(default)]
-    next_queue_id: u64,
-    #[serde(default)]
-    queue: Vec<QueueItem>,
-    #[serde(default)]
-    revision: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Workflow {
-    name: String,
-    status: WorkflowStatus,
-    steps: Vec<Step>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum WorkflowStatus {
-    Running,
-    Paused,
-    Completed,
-    Failed,
-}
-
-impl WorkflowStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Paused => "paused",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum RunStatus {
-    Queued,
-    Running,
-    Settled,
-    Failed,
-    Interrupted,
-}
-
-impl RunStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Running => "running",
-            Self::Settled => "settled",
-            Self::Failed => "failed",
-            Self::Interrupted => "interrupted",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ToolExecutionStatus {
-    Started,
-    Completed,
-    Failed,
-    Interrupted,
-    Unknown,
-}
-
-impl ToolExecutionStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Started => "started",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Interrupted => "interrupted",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolExecution {
-    call_id: String,
-    name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    params: String,
-    status: ToolExecutionStatus,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    result: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RunState {
-    id: String,
-    status: RunStatus,
-    started_revision: u64,
-    updated_revision: u64,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    outcome: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    recovery_of: String,
-    #[serde(default)]
-    tools: Vec<ToolExecution>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum QueueItemStatus {
-    Queued,
-    Claimed,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl QueueItemStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Claimed => "claimed",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct QueueItem {
-    id: String,
-    text: String,
-    status: QueueItemStatus,
-    created_revision: u64,
-    updated_revision: u64,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    note: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Step {
-    id: String,
-    title: String,
-    status: StepStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum StepStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-impl StepStatus {
-    fn marker(&self) -> &'static str {
-        match self {
-            Self::Pending => " ",
-            Self::InProgress => "•",
-            Self::Completed => "✓",
-        }
-    }
-}
+type RunState = RunCheckpoint;
+type ToolExecution = ToolCheckpoint;
+type ToolExecutionStatus = ToolStatus;
+type QueueItemStatus = QueueStatus;
 
 fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     let runtime = *RUNTIME.get().ok_or("durable runtime is unavailable")?;
@@ -378,7 +216,8 @@ fn append_entry(payload: Value) -> Result<String, String> {
 
 fn validate_state(value: &DurableState) -> Result<(), String> {
     if let Some(workflow) = &value.workflow {
-        if workflow.name.chars().count() > MAX_NAME_CHARS
+        if workflow.name.trim().is_empty()
+            || workflow.name.chars().count() > MAX_NAME_CHARS
             || workflow.steps.is_empty()
             || workflow.steps.len() > MAX_STEPS
         {
@@ -410,11 +249,17 @@ fn validate_state(value: &DurableState) -> Result<(), String> {
         }
     }
     if let Some(run) = &value.run {
-        if run.tools.len() > MAX_JOURNAL_ENTRIES {
+        if run.id.trim().is_empty()
+            || run.id.chars().count() > MAX_STEP_ID_CHARS
+            || run.tools.len() > MAX_JOURNAL_ENTRIES
+        {
             return Err("durable journal contains too many tool entries".into());
         }
         for tool in &run.tools {
             if tool.call_id.chars().count() > MAX_SUMMARY_CHARS + 1
+                || tool.call_key.as_ref().is_some_and(|key| {
+                    key.is_empty() || key.chars().count() > MAX_SUMMARY_CHARS + 8
+                })
                 || tool.name.chars().count() > MAX_SUMMARY_CHARS + 1
                 || tool.params.chars().count() > MAX_SUMMARY_CHARS + 1
                 || tool.result.chars().count() > MAX_SUMMARY_CHARS + 1
@@ -425,7 +270,8 @@ fn validate_state(value: &DurableState) -> Result<(), String> {
     }
     if value.queue.len() > MAX_QUEUE_ITEMS
         || value.queue.iter().any(|item| {
-            item.id.chars().count() > MAX_STEP_ID_CHARS
+            item.id.trim().is_empty()
+                || item.id.chars().count() > MAX_STEP_ID_CHARS
                 || item.text.chars().count() > MAX_QUEUE_TEXT_CHARS
                 || item.note.chars().count() > MAX_NOTE_CHARS
         })
@@ -515,6 +361,7 @@ fn apply_change(state: &mut DurableState, change: &JournalChange) -> Result<(), 
         }
         JournalChange::UpdateTool {
             call_id,
+            call_key,
             status,
             result,
         } => {
@@ -522,7 +369,9 @@ fn apply_change(state: &mut DurableState, change: &JournalChange) -> Result<(), 
                 .run
                 .as_mut()
                 .ok_or("durable journal tool path has no run")?;
-            let matches = run.tools.iter_mut().filter(|tool| tool.call_id == *call_id);
+            let matches = run.tools.iter_mut().filter(|tool| {
+                tool.call_key == *call_key && (call_key.is_some() || tool.call_id == *call_id)
+            });
             let mut count = 0;
             for tool in matches {
                 tool.status = status.clone();
@@ -650,60 +499,141 @@ fn decode_legacy_state(data: &Value) -> Result<DurableState, String> {
     Ok(state)
 }
 
+fn decode_legacy_runtime_state(data: &Value) -> Result<DurableState, String> {
+    let mut object = data
+        .as_object()
+        .cloned()
+        .ok_or("invalid legacy runtime state: expected an object")?;
+    object.entry("workflow").or_insert(Value::Null);
+    let revision = object.get("revision").and_then(Value::as_u64).unwrap_or(0);
+    if let Some(run) = object.get_mut("run").and_then(Value::as_object_mut) {
+        run.entry("startedRevision").or_insert(json!(revision));
+        run.entry("updatedRevision").or_insert(json!(revision));
+        if let Some(tools) = run.get_mut("tools").and_then(Value::as_array_mut) {
+            for tool in tools {
+                if let Some(tool) = tool.as_object_mut() {
+                    tool.entry("callKey").or_insert(Value::Null);
+                }
+            }
+        }
+    }
+    if let Some(queue) = object.get_mut("queue").and_then(Value::as_array_mut) {
+        for item in queue {
+            if let Some(item) = item.as_object_mut() {
+                item.entry("createdRevision").or_insert(json!(revision));
+                item.entry("updatedRevision").or_insert(json!(revision));
+            }
+        }
+    }
+    let state = serde_json::from_value(Value::Object(object))
+        .map_err(|error| format!("invalid legacy runtime state: {error}"))?;
+    validate_state(&state)?;
+    Ok(state)
+}
+
 fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), String> {
     let mut records = Vec::new();
-    for entry in entries {
+    let mut invalid_records = Vec::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        let custom_type = entry.get("customType").and_then(Value::as_str);
         if entry.get("type").and_then(Value::as_str) != Some("custom")
-            || entry.get("customType").and_then(Value::as_str) != Some(ENTRY_TYPE)
+            || !matches!(custom_type, Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE))
         {
             continue;
         }
-        let data = entry
-            .get("data")
-            .ok_or("durable custom entry has no data")?;
-        let has_format = data.get("format").is_some();
-        let has_version = data.get("version").is_some();
-        if !has_format && !has_version {
-            let state = decode_legacy_state(data)?;
-            let entry_id = branch_entry_identity(entry);
-            records.push(BranchRecord::Legacy { state, entry_id });
-            continue;
-        }
-        let record: JournalRecord = serde_json::from_value(data.clone())
-            .map_err(|error| format!("invalid durable journal record: {error}"))?;
-        if record.format != JOURNAL_FORMAT || record.version != JOURNAL_VERSION {
-            return Err("unsupported durable journal format or version".into());
-        }
-        match record.kind {
-            JournalKind::Snapshot => {
-                if record.state.is_none() || record.changes.is_some() {
-                    return Err("durable snapshot must contain only a complete state".into());
+        let parsed = (|| -> Result<BranchRecord, String> {
+            let data = entry
+                .get("data")
+                .ok_or("durable custom entry has no data")?;
+            if custom_type == Some(LEGACY_ENTRY_TYPE) {
+                return Ok(BranchRecord::Legacy {
+                    state: decode_legacy_runtime_state(data)?,
+                    entry_id: branch_entry_identity(entry),
+                });
+            }
+            let has_format = data.get("format").is_some();
+            let has_version = data.get("version").is_some();
+            if !has_format && !has_version {
+                let state = decode_legacy_state(data)?;
+                let entry_id = branch_entry_identity(entry);
+                return Ok(BranchRecord::Legacy { state, entry_id });
+            }
+            let record: JournalRecord = serde_json::from_value(data.clone())
+                .map_err(|error| format!("invalid durable journal record: {error}"))?;
+            if record.format != JOURNAL_FORMAT || record.version != JOURNAL_VERSION {
+                return Err("unsupported durable journal format or version".into());
+            }
+            match record.kind {
+                JournalKind::Snapshot => {
+                    if record.state.is_none() || record.changes.is_some() {
+                        return Err("durable snapshot must contain only a complete state".into());
+                    }
+                }
+                JournalKind::Delta => {
+                    if record.state.is_some() || record.changes.as_ref().map_or(true, Vec::is_empty)
+                    {
+                        return Err("durable delta must contain non-empty changes only".into());
+                    }
                 }
             }
-            JournalKind::Delta => {
-                if record.state.is_some() || record.changes.as_ref().map_or(true, Vec::is_empty) {
-                    return Err("durable delta must contain non-empty changes only".into());
+            if record.revision < record.base_revision {
+                return Err("durable journal revision moves backwards".into());
+            }
+            if matches!(record.kind, JournalKind::Snapshot) {
+                let snapshot = record
+                    .state
+                    .as_ref()
+                    .ok_or("durable snapshot has no complete state")?;
+                if snapshot.revision != record.revision {
+                    return Err("durable snapshot state has the wrong revision".into());
                 }
+                validate_state(snapshot)?;
             }
+            let entry_id =
+                branch_entry_identity(entry).ok_or("versioned durable entry has no native id")?;
+            Ok(BranchRecord::Journal { record, entry_id })
+        })();
+        match parsed {
+            Ok(record) => records.push((entry_index, record)),
+            Err(error) => invalid_records.push((entry_index, error)),
         }
-        if record.revision < record.base_revision {
-            return Err("durable journal revision moves backwards".into());
-        }
-        if matches!(record.kind, JournalKind::Snapshot) {
-            let snapshot = record
-                .state
-                .as_ref()
-                .ok_or("durable snapshot has no complete state")?;
-            if snapshot.revision != record.revision {
-                return Err("durable snapshot state has the wrong revision".into());
-            }
-            validate_state(snapshot)?;
-        }
-        let entry_id =
-            branch_entry_identity(entry).ok_or("versioned durable entry has no native id")?;
-        records.push(BranchRecord::Journal { record, entry_id });
     }
 
+    // A complete snapshot is self-contained. Ignore malformed durable entries
+    // before the newest valid snapshot, but fail closed for anything after it.
+    // This keeps obsolete journal prefixes from making a later recovery base
+    // unusable while preserving strict suffix validation.
+    let latest_snapshot = records.iter().rposition(|(_, record)| {
+        matches!(
+            record,
+            BranchRecord::Journal {
+                record: JournalRecord {
+                    kind: JournalKind::Snapshot,
+                    ..
+                },
+                ..
+            }
+        )
+    });
+    let records = if let Some(snapshot) = latest_snapshot {
+        let snapshot_entry = records[snapshot].0;
+        if let Some((_, error)) = invalid_records
+            .iter()
+            .find(|(entry_index, _)| *entry_index > snapshot_entry)
+        {
+            return Err(error.clone());
+        }
+        records.into_iter().skip(snapshot).collect()
+    } else {
+        if let Some((_, error)) = invalid_records.first() {
+            return Err(error.clone());
+        }
+        records
+    };
+    let records = records
+        .into_iter()
+        .map(|(_, record)| record)
+        .collect::<Vec<_>>();
     let first_journal = records
         .iter()
         .position(|record| matches!(record, BranchRecord::Journal { .. }));
@@ -821,19 +751,29 @@ fn tool_changes(current: &[ToolExecution], next: &[ToolExecution]) -> Option<Vec
         let mut changes = Vec::new();
         for (before, after) in current.iter().zip(next) {
             if before != after {
-                if before.call_id != after.call_id
+                let same_identity =
+                    before.call_key == after.call_key && before.call_id == after.call_id;
+                let unique = current
+                    .iter()
+                    .filter(|tool| {
+                        if let Some(key) = &before.call_key {
+                            tool.call_key.as_ref() == Some(key)
+                        } else {
+                            tool.call_key.is_none() && tool.call_id == before.call_id
+                        }
+                    })
+                    .count()
+                    == 1;
+                if !same_identity
                     || before.name != after.name
                     || before.params != after.params
-                    || current
-                        .iter()
-                        .filter(|tool| tool.call_id == before.call_id)
-                        .count()
-                        != 1
+                    || !unique
                 {
                     return None;
                 }
                 changes.push(JournalChange::UpdateTool {
                     call_id: after.call_id.clone(),
+                    call_key: after.call_key.clone(),
                     status: after.status.clone(),
                     result: after.result.clone(),
                 });
@@ -1043,13 +983,14 @@ where
     ))
 }
 
-fn restore_state() -> Result<(), String> {
+fn restore_state_inner() -> Result<(), String> {
     let value = call_runtime(RuntimeActionId::GetSessionBranch, json!({}))?;
     let entries = value
         .get("entries")
         .and_then(Value::as_array)
         .ok_or("GetSessionBranch returned no valid entries array")?;
     let (restored, meta) = decode_branch(entries)?;
+    let restored = mark_unresolvable_legacy_tools(restored);
     let interrupted = mark_interrupted(restored.clone());
     let (restored, meta) = if interrupted != restored {
         commit_candidate(&restored, &meta, interrupted, |payload| {
@@ -1069,6 +1010,26 @@ fn restore_state() -> Result<(), String> {
     Ok(())
 }
 
+fn restore_state_locked() -> Result<(), String> {
+    match restore_state_inner() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Keep the failure state under RESTORE_LOCK. Otherwise a mutation
+            // can pass the restore_error check between this function returning
+            // and the caller publishing the failure.
+            fail_restore(error.clone());
+            Err(error)
+        }
+    }
+}
+
+fn restore_state() -> Result<(), String> {
+    let _restore_guard = restore_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    restore_state_locked()
+}
+
 fn fail_restore(error: String) {
     *state()
         .lock()
@@ -1081,24 +1042,143 @@ fn fail_restore(error: String) {
 }
 
 fn ensure_initialized() -> Result<(), String> {
-    let status = state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(error) = &status.restore_error {
-        return Err(format!("durable branch restore failed: {error}"));
-    }
-    if status.initialized {
-        return Ok(());
-    }
-    drop(status);
-
-    match restore_state() {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            fail_restore(error.clone());
-            Err(format!("durable branch restore failed: {error}"))
+    {
+        let status = state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(error) = &status.restore_error {
+            return Err(format!("durable branch restore failed: {error}"));
+        }
+        if status.initialized {
+            return Ok(());
         }
     }
+
+    let _restore_guard = restore_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Another caller may have completed the restore while this caller waited.
+    // Re-check under the restore gate before touching the native branch.
+    {
+        let status = state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(error) = &status.restore_error {
+            return Err(format!("durable branch restore failed: {error}"));
+        }
+        if status.initialized {
+            return Ok(());
+        }
+    }
+
+    match restore_state_locked() {
+        Ok(()) => Ok(()),
+        Err(error) => Err(format!("durable branch restore failed: {error}")),
+    }
+}
+
+fn snapshot_state() -> Result<DurableState, String> {
+    ensure_initialized()?;
+    let _restore_guard = restore_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let store = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(error) = &store.restore_error {
+        return Err(format!("durable branch restore failed: {error}"));
+    }
+    Ok(store.state.clone())
+}
+
+fn tool_call_id(value: &str) -> String {
+    if value.chars().count() <= MAX_SUMMARY_CHARS {
+        return value.to_string();
+    }
+    // Keep the persisted/displayed ID bounded while making long IDs stable
+    // with a cryptographic digest. This avoids adding a second public field
+    // to the durable state schema.
+    let digest = Sha256::digest(value.as_bytes());
+    let digest_hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let suffix = format!("…{digest_hex}");
+    let prefix_len = MAX_SUMMARY_CHARS - suffix.chars().count();
+    let prefix: String = value.chars().take(prefix_len).collect();
+    format!("{prefix}{suffix}")
+}
+
+fn legacy_hashed_tool_id(value: &str) -> Option<String> {
+    if value.chars().count() <= MAX_SUMMARY_CHARS {
+        return None;
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let suffix = format!("…{hash:016x}");
+    let prefix_len = MAX_SUMMARY_CHARS - suffix.chars().count();
+    let prefix: String = value.chars().take(prefix_len).collect();
+    Some(format!("{prefix}{suffix}"))
+}
+
+fn legacy_tool_call_id(value: &str) -> bool {
+    value.chars().count() == MAX_SUMMARY_CHARS + 1 && value.ends_with('…')
+}
+
+fn mark_unresolvable_legacy_tools(mut next: DurableState) -> DurableState {
+    if let Some(run) = next.run.as_mut() {
+        for tool in &mut run.tools {
+            if legacy_tool_call_id(&tool.call_id) && tool.status == ToolExecutionStatus::Started {
+                tool.status = ToolExecutionStatus::Unknown;
+                if tool.result.is_empty() {
+                    tool.result =
+                        "tool identity was truncated before durable identity migration".into();
+                }
+            }
+        }
+    }
+    next
+}
+
+fn tool_call_key(value: &str) -> String {
+    if value.chars().count() <= MAX_SUMMARY_CHARS {
+        format!("raw:{value}")
+    } else {
+        format!("hash:{}", tool_call_id(value))
+    }
+}
+
+fn looks_like_generated_tool_id(value: &str) -> bool {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() != MAX_SUMMARY_CHARS {
+        return false;
+    }
+    [TOOL_ID_HASH_HEX_CHARS, 16].into_iter().any(|hash_chars| {
+        chars[MAX_SUMMARY_CHARS - (hash_chars + 1)] == '…'
+            && chars[MAX_SUMMARY_CHARS - hash_chars..]
+                .iter()
+                .all(|character| character.is_ascii_hexdigit())
+    })
+}
+
+fn legacy_tool_matches(tool: &ToolExecution, call_id: &str, stable_id: &str) -> bool {
+    if tool.call_key.is_some() {
+        return false;
+    }
+    if call_id.chars().count() <= MAX_SUMMARY_CHARS {
+        tool.call_id == call_id && !looks_like_generated_tool_id(&tool.call_id)
+    } else {
+        tool.call_id == stable_id
+            || legacy_hashed_tool_id(call_id).as_deref() == Some(tool.call_id.as_str())
+    }
+}
+
+fn tool_matches(tool: &ToolExecution, call_id: &str, stable_id: &str, key: &str) -> bool {
+    tool.call_key.as_deref() == Some(key) || legacy_tool_matches(tool, call_id, stable_id)
 }
 
 fn summary(value: &str) -> String {
@@ -1109,7 +1189,13 @@ fn summary(value: &str) -> String {
     result
 }
 
-fn commit_state(current: &DurableState, next: DurableState) -> Result<(), String> {
+fn commit_state(current: &DurableState, next: DurableState) -> Result<DurableState, String> {
+    // SessionStart/SessionTree restore uses the same gate. Hold it through
+    // the native append so a mutation cannot commit against the branch that
+    // is being replaced underneath it.
+    let _restore_guard = restore_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut guard = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1122,9 +1208,9 @@ fn commit_state(current: &DurableState, next: DurableState) -> Result<(), String
     let committed = commit_candidate(current, &guard.meta, next, append_entry);
     match committed {
         Ok((state, meta)) => {
-            guard.state = state;
+            guard.state = state.clone();
             guard.meta = meta;
-            Ok(())
+            Ok(state)
         }
         Err(error) => {
             if error.starts_with("durable append acknowledgement is unknown:") {
@@ -1151,7 +1237,7 @@ where
         .clone();
     let mut next = current.clone();
     mutator(&mut next);
-    commit_state(&current, next)
+    commit_state(&current, next).map(|_| ())
 }
 
 fn mark_interrupted(mut next: DurableState) -> DurableState {
@@ -1392,15 +1478,16 @@ fn record_tool_start(next: &mut DurableState, call_id: &str, name: &str, params:
     let Some(run) = next.run.as_mut() else {
         return;
     };
-    if run
-        .tools
-        .iter()
-        .any(|tool| tool.call_id == call_id && tool.status != ToolExecutionStatus::Unknown)
-    {
+    let stable_id = tool_call_id(call_id);
+    let key = tool_call_key(call_id);
+    if run.tools.iter().any(|tool| {
+        tool_matches(tool, call_id, &stable_id, &key) && tool.status != ToolExecutionStatus::Unknown
+    }) {
         return;
     }
     run.tools.push(ToolExecution {
-        call_id: summary(call_id),
+        call_id: stable_id,
+        call_key: Some(key),
         name: summary(name),
         params: summary(params),
         status: ToolExecutionStatus::Started,
@@ -1422,8 +1509,17 @@ fn record_tool_end(
     let Some(run) = next.run.as_mut() else {
         return;
     };
-    let call_id = summary(call_id);
-    if let Some(tool) = run.tools.iter_mut().find(|tool| tool.call_id == call_id) {
+    let stable_id = tool_call_id(call_id);
+    let key = tool_call_key(call_id);
+    let matching = run
+        .tools
+        .iter()
+        .enumerate()
+        .filter(|(_, tool)| tool_matches(tool, call_id, &stable_id, &key))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if matching.len() == 1 {
+        let tool = &mut run.tools[matching[0]];
         if matches!(
             tool.status,
             ToolExecutionStatus::Completed
@@ -1441,8 +1537,12 @@ fn record_tool_end(
         tool.result = summary(result);
         return;
     }
+    // A legacy journal may contain colliding truncated IDs. Preserve this
+    // result as an explicitly ambiguous entry instead of attaching it to the
+    // first matching tool.
     run.tools.push(ToolExecution {
-        call_id,
+        call_id: stable_id,
+        call_key: Some(key),
         name: summary(name),
         params: String::new(),
         status: ToolExecutionStatus::Unknown,
@@ -1465,6 +1565,22 @@ fn apply_action(current: &DurableState, params: &Value) -> Result<DurableState, 
 
     match action {
         "status" => {}
+        "start_run" => start_run(&mut next),
+        "settle_run" => {
+            if let Some(run) = next.run.as_mut() {
+                if run.status == RunStatus::Running {
+                    run.status = RunStatus::Settled;
+                    run.outcome = "settled".into();
+                    for tool in &mut run.tools {
+                        if tool.status == ToolExecutionStatus::Started {
+                            tool.status = ToolExecutionStatus::Interrupted;
+                            tool.result = "run settled without a durable tool result".into();
+                        }
+                    }
+                }
+            }
+        }
+        "recover_run" => recover_run(&mut next)?,
         "start" => {
             let name = text(params.get("name"), "name", MAX_NAME_CHARS)?;
             next.workflow = Some(Workflow {
@@ -1653,31 +1769,16 @@ fn durable(params: &Value) -> Result<String, String> {
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("status");
-    if let Err(error) = ensure_initialized() {
-        return Ok(error_result(action, &error));
-    }
-    let store = state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    if let Some(error) = &store.restore_error {
-        return Ok(error_result(
-            action,
-            &format!("durable branch restore failed: {error}"),
-        ));
-    }
-    let current = store.state;
+    let current = match snapshot_state() {
+        Ok(state) => state,
+        Err(error) => return Ok(error_result(action, &error)),
+    };
     let next = match apply_action(&current, params) {
         Ok(next) => next,
         Err(error) => return Ok(result(action, &current, Some(&error))),
     };
 
-    commit_state(&current, next)?;
-    let committed = state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .state
-        .clone();
+    let committed = commit_state(&current, next)?;
     Ok(result(action, &committed, None))
 }
 
@@ -1741,19 +1842,40 @@ fn command(args, out, _user_data) {
     if !out.is_available() {
         return 1;
     }
-    let _ = args;
-    let snapshot = match ensure_initialized() {
-        Ok(()) => state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .state
-            .clone(),
+    let request: Value = match serde_json::from_str(args) {
+        Ok(request) => request,
         Err(error) => {
-            out.write(json!({"kind":"message","text":format!("Error: {error}")}).to_string());
+            out.write(json!({"error": format!("invalid command request: {error}")}).to_string());
             return 0;
         }
     };
-    out.write(json!({"kind":"message","text":render(&snapshot)}).to_string());
+    let raw = request.get("args").and_then(Value::as_str).unwrap_or("").trim();
+    if raw.is_empty() {
+        let snapshot = match snapshot_state() {
+            Ok(state) => state,
+            Err(error) => {
+                out.write(json!({"kind":"message","text":format!("Error: {error}")}).to_string());
+                return 0;
+            }
+        };
+        out.write(json!({"kind":"message","text":render(&snapshot)}).to_string());
+        return 0;
+    }
+    let params: Value = match serde_json::from_str::<Value>(raw) {
+        Ok(params) if params.is_object() => params,
+        Ok(_) => {
+            out.write(json!({"error":"durable command args must be a JSON object"}).to_string());
+            return 0;
+        }
+        Err(error) => {
+            out.write(json!({"error": format!("invalid durable command args: {error}")}).to_string());
+            return 0;
+        }
+    };
+    match durable(&params) {
+        Ok(result) => out.write(result),
+        Err(error) => out.write(json!({"error": error}).to_string()),
+    };
     0
 }
 }
@@ -1762,8 +1884,7 @@ rpi_plugin_sdk::event_handler! {
 fn handle_event(event, _user_data) {
     match event.tag() {
         EventTag::SessionStart | EventTag::SessionTree => {
-            if let Err(error) = restore_state() {
-                fail_restore(error);
+            if restore_state().is_err() {
                 return 1;
             }
         }
@@ -2130,7 +2251,7 @@ mod tests {
     }
 
     #[test]
-    fn summarized_long_tool_ids_fall_back_to_a_replayable_tool_set() {
+    fn long_tool_ids_use_distinct_stable_ids_and_replay_cleanly() {
         let mut log = Vec::new();
         let mut state = DurableState::default();
         let mut meta = JournalMeta::default();
@@ -2154,6 +2275,16 @@ mod tests {
         assert_eq!(decode_branch(&log).unwrap().0, state);
 
         let mut candidate = state.clone();
+        record_tool_end(&mut candidate, &second_id, "tool", "second result", false);
+        (state, meta) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
+        let tools = &state.run.as_ref().unwrap().tools;
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].status, ToolExecutionStatus::Started);
+        assert_eq!(tools[1].status, ToolExecutionStatus::Completed);
+        assert_eq!(tools[1].result, "second result");
+        assert_eq!(decode_branch(&log).unwrap().0, state);
+
+        let mut candidate = state.clone();
         if let Some(run) = candidate.run.as_mut() {
             run.status = RunStatus::Settled;
             run.outcome = "settled".into();
@@ -2167,6 +2298,103 @@ mod tests {
         let (committed, _) = commit_logged(&state, &meta, candidate, &mut log).unwrap();
         state = committed;
         assert_eq!(decode_branch(&log).unwrap().0, state);
+    }
+
+    #[test]
+    fn encoded_long_tool_ids_do_not_collide_with_short_native_ids() {
+        let long_id = format!("{}tail", "x".repeat(MAX_SUMMARY_CHARS));
+        let short_id = tool_call_id(&long_id);
+        assert_eq!(short_id.chars().count(), MAX_SUMMARY_CHARS);
+
+        let mut state = DurableState::default();
+        start_run(&mut state);
+        record_tool_start(&mut state, &long_id, "tool", "long");
+        record_tool_start(&mut state, &short_id, "tool", "short");
+        record_tool_end(&mut state, &short_id, "tool", "short result", false);
+
+        let tools = &state.run.unwrap().tools;
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].status, ToolExecutionStatus::Started);
+        assert_eq!(tools[1].status, ToolExecutionStatus::Completed);
+        assert_eq!(tools[1].result, "short result");
+        assert_ne!(tools[0].call_key, tools[1].call_key);
+
+        let value = serde_json::to_value(tools).unwrap();
+        assert!(value[0]["callKey"].is_string());
+        let legacy: Vec<ToolExecution> = serde_json::from_value(json!([{
+            "callId": "legacy",
+            "name": "tool",
+            "status": "started"
+        }]))
+        .unwrap();
+        assert_eq!(legacy[0].call_key, None);
+    }
+
+    #[test]
+    fn old_hashed_long_tool_ids_remain_replayable_after_hash_upgrade() {
+        let long_id = format!("{}tail", "x".repeat(MAX_SUMMARY_CHARS));
+        let old_id = legacy_hashed_tool_id(&long_id).unwrap();
+        let mut state = DurableState::default();
+        start_run(&mut state);
+        state.run.as_mut().unwrap().tools.push(ToolExecution {
+            call_id: old_id,
+            call_key: None,
+            name: "tool".into(),
+            params: String::new(),
+            status: ToolExecutionStatus::Started,
+            result: String::new(),
+        });
+
+        record_tool_end(&mut state, &long_id, "tool", "legacy result", false);
+        let tool = &state.run.unwrap().tools[0];
+        assert_eq!(tool.status, ToolExecutionStatus::Completed);
+        assert_eq!(tool.result, "legacy result");
+    }
+
+    #[test]
+    fn legacy_truncated_tool_ids_are_not_left_active_after_restore() {
+        let mut state = DurableState::default();
+        start_run(&mut state);
+        state.run.as_mut().unwrap().tools.push(ToolExecution {
+            call_id: format!("{}…", "x".repeat(MAX_SUMMARY_CHARS)),
+            call_key: None,
+            name: "tool".into(),
+            params: String::new(),
+            status: ToolExecutionStatus::Started,
+            result: String::new(),
+        });
+
+        let restored = mark_unresolvable_legacy_tools(state);
+        let tool = &restored.run.unwrap().tools[0];
+        assert_eq!(tool.status, ToolExecutionStatus::Unknown);
+        assert!(!tool.result.is_empty());
+    }
+
+    #[test]
+    fn legacy_long_tool_ids_do_not_fallback_to_a_new_colliding_id() {
+        let prefix = "x".repeat(MAX_SUMMARY_CHARS);
+        let old_id = format!("{prefix}old");
+        let new_id = format!("{prefix}new");
+        let mut state = DurableState::default();
+        start_run(&mut state);
+        state.run.as_mut().unwrap().tools.push(ToolExecution {
+            call_id: summary(&old_id),
+            call_key: None,
+            name: "tool".into(),
+            params: "old".into(),
+            status: ToolExecutionStatus::Started,
+            result: String::new(),
+        });
+
+        record_tool_start(&mut state, &new_id, "tool", "new");
+        record_tool_end(&mut state, &new_id, "tool", "new result", false);
+
+        let tools = &state.run.as_ref().unwrap().tools;
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].status, ToolExecutionStatus::Started);
+        assert_eq!(tools[1].status, ToolExecutionStatus::Completed);
+        assert_eq!(tools[1].result, "new result");
+        assert_ne!(tools[0].call_id, tools[1].call_id);
     }
 
     fn append_action(
@@ -2327,6 +2555,25 @@ mod tests {
         assert!(decode_branch(&[missing_discriminators]).is_err());
         assert!(decode_branch(&[native(json!({}))]).is_err());
         assert!(decode_branch(&[native(json!({"unknown": true}))]).is_err());
+        assert!(decode_branch(&[native(json!({
+            "workflow": {
+                "name": "",
+                "status": "running",
+                "steps": [{"id": "s", "title": "S", "status": "pending"}]
+            }
+        }))])
+        .is_err());
+        assert!(decode_branch(&[native(json!({
+            "workflow": null,
+            "queue": [{
+                "id": "",
+                "text": "work",
+                "status": "queued",
+                "createdRevision": 0,
+                "updatedRevision": 0
+            }]
+        }))])
+        .is_err());
 
         let valid = native(json!({"workflow": null}));
         let (state, meta) = decode_branch(&[valid]).unwrap();
@@ -2491,6 +2738,10 @@ mod tests {
         let truncated = log[2..].to_vec();
         assert_eq!(decode_branch(&truncated).unwrap().0, final_state);
         assert_eq!(decode_branch(&truncated[..1]).unwrap().0, snapshot_state);
+
+        let mut corrupt_prefix = log;
+        corrupt_prefix[1]["data"]["version"] = json!(999);
+        assert_eq!(decode_branch(&corrupt_prefix).unwrap().0, final_state);
     }
 
     #[test]

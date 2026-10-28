@@ -734,6 +734,7 @@ function shortTime(time: number, language: Language) {
 interface SidebarProps {
   projects: Project[];
   sessions: SessionSummary[];
+  draftSessionIds: ReadonlySet<string>;
   activeProjectId: string;
   sessionId: string;
   language: Language;
@@ -756,6 +757,7 @@ interface SidebarProps {
 export function ProjectSidebar({
   projects,
   sessions,
+  draftSessionIds,
   activeProjectId,
   sessionId,
   language,
@@ -882,6 +884,14 @@ export function ProjectSidebar({
             {session.relation && <span className="fork-label">↳ </span>}
             {title}
           </span>
+          {draftSessionIds.has(session.sessionId) && (
+            <span
+              className="session-draft"
+              title={translate(language, "draft")}
+            >
+              {translate(language, "draft")}
+            </span>
+          )}
           {(session.tags ?? []).length > 0 && (
             <span className="session-tags" aria-label={translate(language, "tags")}>
               {(session.tags ?? []).slice(0, 2).map((tag) => (
@@ -1076,16 +1086,12 @@ export function ProjectSidebar({
                 </button>
                 <button
                   className="project-name"
-                  aria-label={`${zh ? "打开项目" : "Open project"}: ${project.name}`}
+                  aria-label={`${zh ? "展开项目" : "Expand project"}: ${project.name}`}
                   title={project.path}
+                  aria-expanded={expanded}
                   onClick={() => {
+                    toggle(project.id);
                     onSelectProject(project);
-                    setCollapsed((current) => {
-                      const next = new Set(current);
-                      next.delete(project.id);
-                      return next;
-                    });
-                    setArchived(false);
                   }}
                 >
                   {project.id === activeProjectId ? (
