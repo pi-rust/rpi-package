@@ -559,6 +559,7 @@ export default function App() {
     useState<Project | null>(null);
   const [renameTarget, setRenameTarget] = useState<SessionSummary | null>(null);
   const [tagsTarget, setTagsTarget] = useState<SessionSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileSessionPicker, setMobileSessionPicker] = useState(false);
   const [mobileSessionQuery, setMobileSessionQuery] = useState("");
@@ -1312,6 +1313,7 @@ export default function App() {
   useEffect(() => {
     if (!authChecked || (authRequired && !authenticated)) return;
     let cancelled = false;
+    let availableProjects: Project[] = [];
     setLoadingSession(true);
     void (async () => {
       try {
@@ -1321,16 +1323,26 @@ export default function App() {
         if (caps.supportedActions?.includes("projects")) {
           const result = await api.projects();
           if (cancelled) return;
+          availableProjects = result.projects;
           setProjects(result.projects);
-          setProjectsRoot(result.projectsRoot ?? "");
-          projectRef.current = result.defaultProjectId;
-          setProjectId(result.defaultProjectId);
+          const defaultProject =
+            result.projects.find(
+              (item) => item.id === result.defaultProjectId && !item.archived,
+            ) ?? result.projects.find((item) => !item.archived);
+          projectRef.current = defaultProject?.id ?? result.defaultProjectId;
+          setProjectId(projectRef.current);
         }
         const list = await refreshSessions();
         if (cancelled || !list) return;
         const requested = new URLSearchParams(location.search).get("session");
         const reusable = list.filter(
-          (session) => session.status !== "closed" && !session.archived,
+          (session) =>
+            session.status !== "closed" &&
+            !session.archived &&
+            (!session.projectId ||
+              availableProjects.some((project) =>
+                project.id === session.projectId && !project.archived,
+              )),
         );
         const match =
           list.find((session) => session.sessionId === requested) ??
@@ -2447,16 +2459,30 @@ export default function App() {
     );
   }
 
-  function editQueued(item: QueueItem) {
-    if (!isEditableQueueItem(item)) return;
+  async function editQueued(item: QueueItem) {
+    if (!isEditableQueueItem(item) || !sessionId) return;
+    const navigation = navigationRevision.current;
+    const previous = queueItems;
+    const previousDraft = draft;
     queueDraftRevision.current++;
-    setQueueEditId(item.entryId);
+    setQueueEditId(null);
     setQueueDraft("");
+    setQueueItems((items) => items.filter((queued) => queued.entryId !== item.entryId));
     updateDraft(item.text);
     setQueueKind(item.queue);
     setQueueOpen(false);
     setInspector(false);
     requestAnimationFrame(() => composerInputRef.current?.focus());
+    try {
+      await api.cancelQueued(sessionId, item.entryId);
+      if (navigation === navigationRevision.current) await refreshSessionDiagnostics();
+    } catch (cause) {
+      if (navigation !== navigationRevision.current) return;
+      setQueueItems(previous);
+      setQueueOpen(true);
+      updateDraft(previousDraft);
+      setError(errorText(cause));
+    }
   }
 
   function cancelQueueEdit() {
@@ -2727,6 +2753,61 @@ export default function App() {
     }
   }
 
+  async function permanentlyDeleteSession(session: SessionSummary) {
+    const id = session.sessionId;
+    const wasActive = activeSessionRef.current === id;
+    try {
+      await api.deleteSession(id);
+      draftBySession.current.delete(id);
+      saveDrafts(draftBySession.current);
+      rowsBySession.current.delete(id);
+      const list = await refreshSessions();
+      if (!wasActive) return;
+      const next = list?.find(
+        (entry) => entry.projectId === session.projectId && !entry.archived,
+      );
+      if (next) select(next.sessionId, next.projectId);
+      else {
+        activeSessionRef.current = "";
+        setSessionId("");
+        setRows([]);
+        const url = new URL(location.href);
+        url.searchParams.delete("session");
+        history.replaceState(null, "", url);
+      }
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }
+
+  async function updateProjectMetadata(project: Project, archived: boolean) {
+    try {
+      const result = await api.projectMetadata(project.id, { archived });
+      setProjects((previous) =>
+        previous.map((item) =>
+          item.id === result.project.id ? result.project : item,
+        ),
+      );
+      if (archived && projectRef.current === project.id) {
+        const next = projects.find(
+          (item) => item.id !== project.id && !item.archived,
+        );
+        if (next) selectProject(next);
+        else {
+          projectRef.current = "";
+          setProjectId("");
+          activeSessionRef.current = "";
+          setSessionId("");
+          const url = new URL(location.href);
+          url.searchParams.delete("session");
+          history.replaceState(null, "", url);
+        }
+      }
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }
+
   if (!authChecked || (authRequired && !authenticated)) {
     return (
       <LoginScreen
@@ -2788,6 +2869,24 @@ export default function App() {
           message={textRequest.message}
           onClose={() => resolveTextRequest(null)}
           onConfirm={() => resolveTextRequest("confirmed")}
+        />
+      )}
+      {deleteTarget && (
+        <ConfirmDialog
+          language={language}
+          title={language === "zh" ? "永久删除会话" : "Delete session permanently"}
+          message={
+            language === "zh"
+              ? `确定要永久删除“${deleteTarget.title || "新会话"}”吗？此操作无法撤销。`
+              : `Permanently delete “${deleteTarget.title || "New session"}”? This cannot be undone.`
+          }
+          confirmLabel={language === "zh" ? "永久删除" : "Delete permanently"}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            const target = deleteTarget;
+            setDeleteTarget(null);
+            void permanentlyDeleteSession(target);
+          }}
         />
       )}
       {projectDialog && (
@@ -2927,7 +3026,9 @@ export default function App() {
               onNewProject={() => setProjectDialog(true)}
               onRename={setRenameTarget}
               onRenameProject={setProjectRenameTarget}
+              onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}
+              onDelete={setDeleteTarget}
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom">

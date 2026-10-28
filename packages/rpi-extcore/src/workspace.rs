@@ -21,6 +21,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
+    pub archived: bool,
     #[serde(skip)]
     pub root: PathBuf,
 }
@@ -51,6 +52,7 @@ impl Project {
                 .to_string_lossy()
                 .into(),
             path: display,
+            archived: false,
             root,
         })
     }

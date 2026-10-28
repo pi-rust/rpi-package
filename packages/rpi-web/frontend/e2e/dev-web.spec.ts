@@ -62,8 +62,8 @@ function response(data: unknown, command = "mock") {
 
 async function mockHost(page: Page) {
   const projects = [
-    { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust" },
-    { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package" },
+    { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust", archived: false },
+    { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package", archived: false },
   ];
   const sessions: Array<
     typeof session & { pinned?: boolean; archived?: boolean }
@@ -111,6 +111,15 @@ async function mockHost(page: Page) {
       if (!project)
         return route.fulfill({ status: 404, json: { error: "missing" } });
       project.name = body.name;
+      return route.fulfill({ json: { project } });
+    }
+    if (/\/projects\/[^/]+\/metadata$/.test(path)) {
+      const body = request.postDataJSON() as { archived: boolean };
+      const id = path.split("/")[4];
+      const project = projects.find((entry) => entry.id === id);
+      if (!project)
+        return route.fulfill({ status: 404, json: { error: "missing" } });
+      project.archived = body.archived;
       return route.fulfill({ json: { project } });
     }
     if (/\/projects\/[^/]+\/files$/.test(path)) {
@@ -192,6 +201,12 @@ async function mockHost(page: Page) {
           status: "ready",
         },
       });
+    }
+    if (/\/sessions\/[^/]+$/.test(path) && request.method() === "DELETE") {
+      const id = path.split("/")[4];
+      const index = sessions.findIndex((entry) => entry.sessionId === id);
+      if (index >= 0) sessions.splice(index, 1);
+      return route.fulfill({ status: 204, body: "" });
     }
     if (/\/sessions\/[^/]+\/metadata$/.test(path)) {
       const entry = sessions.find((s) => s.sessionId === path.split("/")[4]);
@@ -376,14 +391,22 @@ test("capabilities gate the history and queue inspector", async ({ page }) => {
       .locator(".inspector .queue-item")
       .getByRole("button", { name: "Send now: pending", exact: true }),
   ).toBeVisible();
+  const cancel = page.waitForRequest(
+    (request) =>
+      request.url().endsWith(`/sessions/${sessionId}/commands`) &&
+      request.method() === "POST" &&
+      request.postDataJSON()?.type === "cancel_queued",
+  );
   await page
     .locator(".inspector .queue-item")
     .getByRole("button", { name: "Edit queued message" })
     .click();
+  await expect((await cancel).postDataJSON()).toMatchObject({
+    entryId: "queue-2",
+  });
   await expect(page.locator(".composer textarea")).toHaveValue("pending");
-  await expect(page.locator(".composer-queue-editing")).toContainText(
-    "Edit queued message",
-  );
+  await expect(page.locator(".composer-queue-editing")).toHaveCount(0);
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(0);
 });
 
 test("a stopped session can send a selected queued message now", async ({
@@ -601,11 +624,35 @@ test("projects can be renamed from the project actions menu", async ({
     }),
   ).not.toBeVisible();
 });
-test("opening an existing folder is searchable and fills its project name", async ({
+test("projects can be archived and restored from the project actions menu", async ({
   page,
 }) => {
   await mockHost(page);
-  let createdBody: Record<string, unknown> | undefined;
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Project actions: pi-rust", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Archive project", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Project actions: pi-rust", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Restore project", exact: true }).click();
+  await page.getByRole("button", { name: "Show projects", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toBeVisible();
+});
+
+test("opening an existing folder is searchable and fills its project name", async ({
+  page,
+}) => {
   await page.route("**/api/v1/projects", async (route) => {
     if (route.request().method() === "POST") {
       createdBody = route.request().postDataJSON();
@@ -720,6 +767,24 @@ test("session tags can be edited without sidebar filters", async ({ page }) => {
   await expect(
     page.locator(".session-tag", { hasText: "urgent" }),
   ).toBeVisible();
+});
+test("sessions can be permanently deleted from the session actions menu", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Session actions: Mock session", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Delete permanently", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Delete session permanently" }),
+  ).toContainText("This cannot be undone.");
+  await page
+    .getByRole("dialog", { name: "Delete session permanently" })
+    .getByRole("button", { name: "Delete permanently", exact: true })
+    .click();
+  await expect(page.getByRole("heading", { name: "Mock session" })).toHaveCount(0);
 });
 test("project navigation collapses and remembers appearance", async ({
   page,
