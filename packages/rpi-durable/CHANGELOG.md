@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.1...rpi-durable-v0.2.2) - 2026-10-28
+
+### Added
+
+- consolidate durable state and publish commit updates ([#91](https://github.com/pi-rust/rpi-package/pull/91))
+
 ### Fixed
 
 - Serialize first-use branch restoration and mutations during branch reload so
