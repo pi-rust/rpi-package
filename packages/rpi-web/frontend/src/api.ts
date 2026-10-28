@@ -387,7 +387,17 @@ export const api = {
   deleteSession: (id: string) =>
     request<void>(`/sessions/${id}`, { method: "DELETE" }),
   getSession: (id: string) => request<SessionSummary>(`/sessions/${id}`),
-  snapshot: (id: string) => request<SnapshotFrame>(`/sessions/${id}/snapshot`),
+  snapshot: (
+    id: string,
+    params: { limit?: number; includeHistory?: boolean } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.includeHistory !== undefined)
+      query.set("includeHistory", String(params.includeHistory));
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<SnapshotFrame>(`/sessions/${id}/snapshot${suffix}`);
+  },
   messages: (id: string, params: { beforeId?: string; limit?: number }) =>
     commandData<{
       messages: unknown[];

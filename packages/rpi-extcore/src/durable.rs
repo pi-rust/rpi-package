@@ -91,6 +91,9 @@ pub struct DurableRuntime {
     refresh_lock: Mutex<()>,
     changes: tokio::sync::broadcast::Sender<DurableChange>,
     history: Arc<Mutex<VecDeque<DurableChange>>>,
+    /// True when the native host answers branch reads with only the durable
+    /// entries, which is what makes frequent polling affordable.
+    filtered_reads: std::sync::atomic::AtomicBool,
 }
 
 impl DurableRuntime {
@@ -108,15 +111,17 @@ impl DurableRuntime {
         {
             return Ok(None);
         }
-        let entries = match session.session_branch().await {
-            Ok(entries) => entries,
+        let (entries, filtered) = match session.branch_entries_of_type(ENTRY_TYPE).await {
+            Ok(reply) => reply,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self::new(
+        let runtime = Self::new(
             session,
             DurableState::try_from_branch(&entries)
                 .map_err(|error| format!("durable branch replay: {error}"))?,
-        )))
+        );
+        runtime.set_filtered_reads(filtered);
+        Ok(Some(runtime))
     }
 
     /// Create an empty runtime for deterministic adapter tests.
@@ -132,13 +137,27 @@ impl DurableRuntime {
             refresh_lock: Mutex::new(()),
             changes,
             history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_CHANGE_ENTRIES))),
+            filtered_reads: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
+    fn set_filtered_reads(&self, filtered: bool) {
+        self.filtered_reads
+            .store(filtered, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether branch polling only transfers durable entries.
+    pub fn has_filtered_reads(&self) -> bool {
+        self.filtered_reads
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     async fn load(session: Arc<HostSession>, _strict_recovery: bool) -> Result<Arc<Self>, String> {
-        let entries = session.session_branch().await?;
+        let (entries, filtered) = session.branch_entries_of_type(ENTRY_TYPE).await?;
         let state = DurableState::try_from_branch(&entries)?;
-        Ok(Self::new(session, state))
+        let runtime = Self::new(session, state);
+        runtime.set_filtered_reads(filtered);
+        Ok(runtime)
     }
 
     pub async fn state(&self) -> DurableState {
@@ -187,14 +206,31 @@ impl DurableRuntime {
         let _ = self.changes.send(change);
     }
 
+    fn branch_watcher_backoff(filtered_reads: bool) -> (std::time::Duration, std::time::Duration) {
+        if filtered_reads {
+            // Commit events are the normal fast path. A short filtered poll is
+            // still useful for dropped events and external writers.
+            (
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(30),
+            )
+        } else {
+            // Legacy hosts serialize the complete transcript even when the
+            // customType argument is present. Never poll those hosts at the
+            // old 500ms cadence; local mutations already refresh immediately.
+            (
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(300),
+            )
+        }
+    }
+
     /// Poll the native branch for commits made by another adapter/process.
     /// This watches canonical entries only and never derives durable state from
     /// ordinary Agent lifecycle events.
     pub fn spawn_branch_watcher(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
-        self.spawn_branch_watcher_with_backoff(
-            std::time::Duration::from_millis(500),
-            std::time::Duration::from_secs(5),
-        )
+        let (base, max) = Self::branch_watcher_backoff(self.has_filtered_reads());
+        self.spawn_branch_watcher_with_backoff(base, max)
     }
 
     /// Poll with a slower compatibility cadence when generic commit events are
@@ -239,7 +275,8 @@ impl DurableRuntime {
 
     pub async fn refresh_branch(&self) -> Result<bool, String> {
         let _refresh = self.refresh_lock.lock().await;
-        let entries = self.session.session_branch().await?;
+        let (entries, filtered) = self.session.branch_entries_of_type(ENTRY_TYPE).await?;
+        self.set_filtered_reads(filtered);
         let next = DurableState::try_from_branch(&entries)?;
         let mut projection = self.projection.lock().await;
         if *projection == next {
@@ -358,13 +395,13 @@ mod tests {
                 let data = if request["type"] == "get_session_branch"
                     && committed_for_fixture.load(Ordering::SeqCst)
                 {
-                    json!({"entries": [{"type":"custom","customType":ENTRY_TYPE,"data":{
+                    json!({"filtered": true, "entries": [{"type":"custom","customType":ENTRY_TYPE,"data":{
                         "revision": 1, "nextRunId": 1,
                         "run": {"id":"run-1", "status":"running", "tools":[]},
                         "queue": []
                     }}]})
                 } else if request["type"] == "get_session_branch" {
-                    json!({"entries": []})
+                    json!({"filtered": true, "entries": []})
                 } else {
                     json!({"entryId": "entry-durable"})
                 };
@@ -384,7 +421,10 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut subscription = runtime.subscribe_changes(None).await;
-        let watcher = runtime.spawn_branch_watcher();
+        let watcher = runtime.spawn_branch_watcher_with_backoff(
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_secs(1),
+        );
         committed.store(true, Ordering::SeqCst);
         let change = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -399,6 +439,24 @@ mod tests {
         watcher.abort();
         fixture.abort();
         session.shutdown().await;
+    }
+
+    #[test]
+    fn branch_watcher_uses_safe_cadences_for_filtered_and_legacy_hosts() {
+        assert_eq!(
+            DurableRuntime::branch_watcher_backoff(true),
+            (
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(30)
+            )
+        );
+        assert_eq!(
+            DurableRuntime::branch_watcher_backoff(false),
+            (
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(300)
+            )
+        );
     }
 
     #[tokio::test]
