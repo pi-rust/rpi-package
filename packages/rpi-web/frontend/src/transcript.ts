@@ -508,7 +508,7 @@ export function rowsFromAssistant(
           text: block.text,
         });
       }
-    } else if (block.type === "image") {
+    } else if (block.type === "image" || block.type === "image_url") {
       const image = imageBlocksOf({ content: [block] })[0];
       if (image) rows.push({ kind: "image", id: `${prefix}:b${index}`, role: "assistant", image });
     } else if (block.type === "thinking") {

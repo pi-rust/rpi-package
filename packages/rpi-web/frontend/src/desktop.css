@@ -358,6 +358,14 @@
   white-space: nowrap;
   color: var(--muted);
 }
+.session-draft {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--yellow-soft, var(--soft));
+  color: var(--yellow-text, var(--muted));
+  font-size: 9px;
+}
 .session-tags {
   display: inline-flex;
   align-items: center;
