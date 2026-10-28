@@ -120,6 +120,11 @@ model run, or claim exactly-once tool execution after process termination.
 
 ## Journal format and compatibility
 
+> **Deprecation notice:** `rpi-durable` `0.2.x` and `rpi-durable-core` `0.1.x`
+> continue to read `rpi-durable-runtime` entries for existing sessions. New
+> writes use only `durable-state`. This read compatibility is planned for
+> removal starting with `rpi-durable` `0.3.0` / `rpi-durable-core` `0.2.0`.
+
 New writes use a versioned `rpi-durable-journal` record in the native session
 branch. The first write on a branch (and the first write after a legacy
 snapshot) is a complete `snapshot`; later writes are typed `delta` records,

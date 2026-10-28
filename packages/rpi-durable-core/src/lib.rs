@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 pub const ENTRY_TYPE: &str = "durable-state";
+/// Deprecated read-only compatibility for sessions written before the
+/// canonical discriminator was introduced. Planned removal target:
+/// `rpi-durable-core` 0.2.0 / `rpi-durable` 0.3.0.
 pub const LEGACY_ENTRY_TYPE: &str = "rpi-durable-runtime";
 pub const JOURNAL_FORMAT: &str = "rpi-durable-journal";
 pub const JOURNAL_VERSION: u64 = 1;

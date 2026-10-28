@@ -15,8 +15,9 @@ use tokio::sync::Mutex;
 
 /// Canonical native custom-entry discriminator owned by `rpi-durable`.
 pub const ENTRY_TYPE: &str = rpi_durable_core::ENTRY_TYPE;
-/// Legacy discriminator retained for ACP event compatibility; durable replay
-/// itself only reads the canonical entry type.
+/// Deprecated read-only compatibility for sessions written before the
+/// canonical discriminator was introduced. Planned removal target:
+/// `rpi-extcore` 0.2.0 / `rpi-durable` 0.3.0.
 pub const LEGACY_ENTRY_TYPE: &str = rpi_durable_core::LEGACY_ENTRY_TYPE;
 /// Maximum number of durable state changes retained for reconnect replay.
 pub const MAX_CHANGE_ENTRIES: usize = 128;
