@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.6...rpi-extcore-v0.1.7) - 2026-10-28
+
+### Other
+
+- Merge pull request #99 from pi-rust/feature-1028
+- *(durable)* remove background polling
+
 ## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.5...rpi-extcore-v0.1.6) - 2026-10-28
 
 ### Other
