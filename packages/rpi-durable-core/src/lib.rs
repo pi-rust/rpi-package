@@ -250,15 +250,9 @@ impl DurableState {
     }
 }
 
-/// Apply only the durable journal entries that follow an already materialized
-/// state. Entries must be in ascending native sequence order. Duplicate or
-/// older revisions are ignored; a missing revision/base anchor is reported so
-/// callers can fall back to a complete branch replay.
-pub fn apply_entries(state: &mut DurableState, entries: &[Value]) -> Result<(), String> {
-    let mut value =
-        serde_json::to_value(&*state).map_err(|error| format!("encode durable state: {error}"))?;
-    let mut revision = state.revision;
-
+pub fn replay_entries(entries: &[Value]) -> Result<Option<Value>, String> {
+    let mut state: Option<Value> = None;
+    let mut revision = 0_u64;
     for entry in entries {
         let custom_type = entry.get("customType").and_then(Value::as_str);
         if custom_type != Some(ENTRY_TYPE) && custom_type != Some(LEGACY_ENTRY_TYPE) {
@@ -272,81 +266,67 @@ pub fn apply_entries(state: &mut DurableState, entries: &[Value]) -> Result<(), 
             if version > JOURNAL_VERSION {
                 return Err(format!("unsupported durable journal version: {version}"));
             }
-            let next_revision = data
-                .get("revision")
-                .and_then(Value::as_u64)
-                .ok_or("durable journal entry has no revision")?;
-            if next_revision <= revision {
-                continue;
-            }
+            let kind = data
+                .get("kind")
+                .and_then(Value::as_str)
+                .ok_or("durable journal entry has no kind")?;
             let base_revision = data
                 .get("baseRevision")
                 .and_then(Value::as_u64)
                 .ok_or("durable journal entry has no base revision")?;
-            if base_revision != revision {
+            let next_revision = data
+                .get("revision")
+                .and_then(Value::as_u64)
+                .ok_or("durable journal entry has no revision")?;
+            if next_revision != revision.saturating_add(1) || base_revision != revision {
                 return Err(format!(
-                    "durable journal revision gap: expected base {revision}, got {base_revision}"
+                    "durable journal revision gap: expected base {revision}, got {base_revision} -> {next_revision}"
                 ));
             }
-            if let Some(snapshot) = data.get("state").filter(|value| !value.is_null()) {
-                value = snapshot.clone();
-            }
-            if let Some(changes) = data.get("changes").and_then(Value::as_array) {
-                for change in changes {
-                    apply_change(&mut value, change)?;
+            match kind {
+                "snapshot" => {
+                    let snapshot = data
+                        .get("state")
+                        .filter(|value| !value.is_null())
+                        .ok_or("durable snapshot must contain a state")?;
+                    if data
+                        .get("changes")
+                        .is_some_and(|changes| !changes.is_null())
+                    {
+                        return Err("durable snapshot must not contain changes".into());
+                    }
+                    state = Some(snapshot.clone());
                 }
+                "delta" => {
+                    if data
+                        .get("state")
+                        .is_some_and(|snapshot| !snapshot.is_null())
+                    {
+                        return Err("durable delta must not contain a state".into());
+                    }
+                    let changes = data
+                        .get("changes")
+                        .and_then(Value::as_array)
+                        .filter(|changes| !changes.is_empty())
+                        .ok_or("durable delta must contain changes")?;
+                    let current = state.as_mut().ok_or("durable delta has no snapshot base")?;
+                    for change in changes {
+                        apply_change(current, change)?;
+                    }
+                }
+                _ => return Err(format!("unsupported durable journal kind: {kind}")),
             }
-            let object = value
-                .as_object_mut()
-                .ok_or("durable journal state is not an object")?;
-            object.insert("revision".into(), json!(next_revision));
+            if let Some(object) = state.as_mut().and_then(Value::as_object_mut) {
+                object.insert("revision".into(), json!(next_revision));
+            }
             revision = next_revision;
         } else if data.is_object() {
             let next: DurableState = serde_json::from_value(data.clone())
                 .map_err(|error| format!("decode durable state: {error}"))?;
-            if next.revision > revision {
-                value = data.clone();
+            if state.is_none() || next.revision > revision {
+                state = Some(data.clone());
                 revision = next.revision;
             }
-        }
-    }
-
-    *state =
-        serde_json::from_value(value).map_err(|error| format!("decode durable state: {error}"))?;
-    Ok(())
-}
-
-pub fn replay_entries(entries: &[Value]) -> Result<Option<Value>, String> {
-    let mut state: Option<Value> = None;
-    for entry in entries {
-        let custom_type = entry.get("customType").and_then(Value::as_str);
-        if custom_type != Some(ENTRY_TYPE) && custom_type != Some(LEGACY_ENTRY_TYPE) {
-            continue;
-        }
-        let Some(data) = entry.get("data") else {
-            continue;
-        };
-        if data.get("format").and_then(Value::as_str) == Some(JOURNAL_FORMAT) {
-            let version = data.get("version").and_then(Value::as_u64).unwrap_or(0);
-            if version > JOURNAL_VERSION {
-                return Err(format!("unsupported durable journal version: {version}"));
-            }
-            if let Some(snapshot) = data.get("state").filter(|value| !value.is_null()) {
-                state = Some(snapshot.clone());
-            }
-            if let Some(changes) = data.get("changes").and_then(Value::as_array) {
-                let current = state.get_or_insert_with(|| json!({}));
-                for change in changes {
-                    apply_change(current, change)?;
-                }
-            }
-            if let Some(revision) = data.get("revision").and_then(Value::as_u64) {
-                if let Some(object) = state.as_mut().and_then(Value::as_object_mut) {
-                    object.insert("revision".into(), json!(revision));
-                }
-            }
-        } else if data.is_object() {
-            state = Some(data.clone());
         }
     }
     Ok(state)
@@ -551,49 +531,44 @@ mod tests {
     #[test]
     fn replays_snapshot_and_delta_entries() {
         let entries = vec![
-            json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"kind":"snapshot","revision":1,"state":{"revision":1,"queue":[]}}}),
-            json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"kind":"delta","revision":2,"state":null,"changes":[{"op":"appendQueue","item":{"id":"item-1","text":"compile","status":"queued"}}]}}),
+            json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"kind":"snapshot","baseRevision":0,"revision":1,"state":{"revision":1,"queue":[]}}}),
+            json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"kind":"delta","baseRevision":1,"revision":2,"state":null,"changes":[{"op":"appendQueue","item":{"id":"item-1","text":"compile","status":"queued"}}]}}),
         ];
         let state = DurableState::from_branch(&entries);
         assert_eq!(state.revision, 2);
         assert_eq!(state.queue[0].text, "compile");
     }
     #[test]
-    fn applies_incremental_delta_and_rejects_revision_gaps() {
-        let mut state = DurableState {
-            revision: 1,
-            ..DurableState::default()
-        };
-        let delta = json!({
+    fn rejects_invalid_snapshot_and_delta_shapes() {
+        let invalid_snapshot = json!({
             "type": "custom",
             "customType": ENTRY_TYPE,
             "data": {
                 "format": JOURNAL_FORMAT,
                 "version": JOURNAL_VERSION,
-                "kind": "delta",
-                "baseRevision": 1,
-                "revision": 2,
+                "kind": "snapshot",
+                "baseRevision": 0,
+                "revision": 1,
                 "state": null,
-                "changes": [{"op":"appendQueue","item":{"id":"item-1","text":"compile","status":"queued"}}]
+                "changes": null
             }
         });
-        apply_entries(&mut state, &[delta]).unwrap();
-        assert_eq!(state.revision, 2);
-        assert_eq!(state.queue[0].id, "item-1");
+        assert!(replay_entries(&[invalid_snapshot]).is_err());
 
-        let gap = json!({
+        let invalid_delta = json!({
             "type": "custom",
             "customType": ENTRY_TYPE,
             "data": {
                 "format": JOURNAL_FORMAT,
                 "version": JOURNAL_VERSION,
                 "kind": "delta",
-                "baseRevision": 4,
-                "revision": 5,
+                "baseRevision": 0,
+                "revision": 1,
+                "state": null,
                 "changes": []
             }
         });
-        assert!(apply_entries(&mut state, &[gap]).is_err());
+        assert!(replay_entries(&[invalid_delta]).is_err());
     }
 
     #[test]
@@ -610,7 +585,7 @@ mod tests {
             json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"changes":[{"revision":2}]}}),
         ];
         let error = replay_entries(&entries).unwrap_err();
-        assert!(error.contains("has no op"));
+        assert!(error.contains("has no kind"));
         assert!(DurableState::try_from_branch(&entries).is_err());
         assert_eq!(DurableState::from_branch(&entries), DurableState::default());
     }
