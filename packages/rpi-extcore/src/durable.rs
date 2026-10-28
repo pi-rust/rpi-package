@@ -184,6 +184,21 @@ impl DurableRuntime {
         let _ = self.changes.send(change);
     }
 
+    /// Poll the native branch for commits made by another adapter/process.
+    /// This watches canonical entries only and never derives durable state from
+    /// ordinary Agent lifecycle events.
+    pub fn spawn_branch_watcher(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let _ = runtime.refresh_branch().await;
+            }
+        })
+    }
+
     /// Forward a business mutation to `rpi-durable`, the only durable writer.
     pub async fn mutate(&self, mutation: DurableMutation) -> Result<Value, String> {
         let command = mutation_command(&mutation);
@@ -199,11 +214,11 @@ impl DurableRuntime {
         }) {
             return Err(error.to_string());
         }
-        self.refresh().await?;
+        self.refresh_branch().await?;
         Ok(result)
     }
 
-    async fn refresh(&self) -> Result<bool, String> {
+    pub async fn refresh_branch(&self) -> Result<bool, String> {
         let entries = self.session.session_branch().await?;
         let next = DurableState::from_branch(&entries);
         let mut projection = self.projection.lock().await;
@@ -303,6 +318,65 @@ mod tests {
         assert!(!subscription.gap);
         assert!(subscription.replay.is_empty());
 
+        fixture.abort();
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn branch_watcher_publishes_external_canonical_commits() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        let committed = Arc::new(AtomicBool::new(false));
+        let committed_for_fixture = committed.clone();
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let data = if request["type"] == "get_session_branch"
+                    && committed_for_fixture.load(Ordering::SeqCst)
+                {
+                    json!({"entries": [{"type":"custom","customType":ENTRY_TYPE,"data":{
+                        "revision": 1, "nextRunId": 1,
+                        "run": {"id":"run-1", "status":"running", "tools":[]},
+                        "queue": []
+                    }}]})
+                } else if request["type"] == "get_session_branch" {
+                    json!({"entries": []})
+                } else {
+                    json!({"entryId": "entry-durable"})
+                };
+                injector
+                    .send(json!({
+                        "type": "response",
+                        "id": request["id"],
+                        "success": true,
+                        "data": data
+                    }))
+                    .unwrap();
+            }
+        });
+
+        let runtime = DurableRuntime::try_attach(session.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut subscription = runtime.subscribe_changes(None).await;
+        let watcher = runtime.spawn_branch_watcher();
+        committed.store(true, Ordering::SeqCst);
+        let change = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            subscription.receiver.recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(change.revision, 1);
+        assert_eq!(change.state.run.unwrap().id, "run-1");
+
+        watcher.abort();
         fixture.abort();
         session.shutdown().await;
     }

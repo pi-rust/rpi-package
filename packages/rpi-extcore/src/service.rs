@@ -49,6 +49,7 @@ pub struct Service {
     default_project_id: String,
     sessions: Arc<RwLock<HashMap<String, Arc<HostSession>>>>,
     durable: Arc<RwLock<HashMap<String, Arc<DurableRuntime>>>>,
+    durable_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
 }
@@ -83,6 +84,7 @@ impl Service {
             default_project_id,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             durable: Arc::new(RwLock::new(HashMap::new())),
+            durable_watchers: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             registry: Arc::new(RwLock::new(registry)),
         }))
@@ -102,6 +104,16 @@ impl Service {
         let _lifecycle = self.session_lifecycle.lock().await;
         let sessions: Vec<_> = self.sessions.read().await.values().cloned().collect();
         futures_util::future::join_all(sessions.iter().map(|session| session.shutdown())).await;
+        let watchers: Vec<_> = self
+            .durable_watchers
+            .lock()
+            .await
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect();
+        for watcher in watchers {
+            watcher.abort();
+        }
         self.durable.write().await.clear();
     }
 
@@ -198,17 +210,32 @@ async fn attach_durable(
     session: Arc<HostSession>,
 ) -> Result<(), String> {
     state.durable.write().await.remove(id);
+    if let Some(watcher) = state.durable_watchers.lock().await.remove(id) {
+        watcher.abort();
+    }
 
     let Some(runtime) = DurableRuntime::try_attach(session).await? else {
         // Durable is an optional native capability. Keep the ordinary session
         // alive when an older host does not expose branch RPCs.
         return Ok(());
     };
-    state.durable.write().await.insert(id.to_owned(), runtime);
+    state
+        .durable
+        .write()
+        .await
+        .insert(id.to_owned(), runtime.clone());
+    state
+        .durable_watchers
+        .lock()
+        .await
+        .insert(id.to_owned(), runtime.spawn_branch_watcher());
     Ok(())
 }
 
 async fn detach_durable(state: &Service, id: &str) {
+    if let Some(watcher) = state.durable_watchers.lock().await.remove(id) {
+        watcher.abort();
+    }
     state.durable.write().await.remove(id);
 }
 

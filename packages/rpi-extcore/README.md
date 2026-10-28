@@ -69,8 +69,9 @@ replay. `durable::DurableRuntime` is only a branch-backed projection: it reads
 `rpi-durable` command, and publishes bounded in-memory changes. It never
 appends durable entries and never performs interrupted-run recovery. Lifecycle
 events are not folded into this projection; adapters refresh at attach and
-after a command commit, so ordinary Agent events cannot become a second
-durable fact source. The native harness owns Agent execution recovery;
+after a command commit, while a bounded branch watcher observes canonical
+commits made by another adapter/process. This prevents ordinary Agent events
+from becoming a second durable fact source. The native harness owns Agent execution recovery;
 `rpi-durable` owns workflow/business state. The native host must advertise
 `get_session_branch` and `execute_command`; hosts without those capabilities
 safely remain ordinary non-durable sessions. The branch remains the only
