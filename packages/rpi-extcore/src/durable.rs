@@ -88,6 +88,7 @@ pub use rpi_durable_core::{
 pub struct DurableRuntime {
     session: Arc<HostSession>,
     projection: Arc<Mutex<DurableState>>,
+    refresh_lock: Mutex<()>,
     changes: tokio::sync::broadcast::Sender<DurableChange>,
     history: Arc<Mutex<VecDeque<DurableChange>>>,
 }
@@ -113,7 +114,8 @@ impl DurableRuntime {
         };
         Ok(Some(Self::new(
             session,
-            DurableState::from_branch(&entries),
+            DurableState::try_from_branch(&entries)
+                .map_err(|error| format!("durable branch replay: {error}"))?,
         )))
     }
 
@@ -127,6 +129,7 @@ impl DurableRuntime {
         Arc::new(Self {
             session,
             projection: Arc::new(Mutex::new(state)),
+            refresh_lock: Mutex::new(()),
             changes,
             history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_CHANGE_ENTRIES))),
         })
@@ -134,7 +137,7 @@ impl DurableRuntime {
 
     async fn load(session: Arc<HostSession>, _strict_recovery: bool) -> Result<Arc<Self>, String> {
         let entries = session.session_branch().await?;
-        let state = DurableState::from_branch(&entries);
+        let state = DurableState::try_from_branch(&entries)?;
         Ok(Self::new(session, state))
     }
 
@@ -219,8 +222,9 @@ impl DurableRuntime {
     }
 
     pub async fn refresh_branch(&self) -> Result<bool, String> {
+        let _refresh = self.refresh_lock.lock().await;
         let entries = self.session.session_branch().await?;
-        let next = DurableState::from_branch(&entries);
+        let next = DurableState::try_from_branch(&entries)?;
         let mut projection = self.projection.lock().await;
         if *projection == next {
             return Ok(false);

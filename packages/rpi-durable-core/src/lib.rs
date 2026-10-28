@@ -227,6 +227,20 @@ impl DurableState {
     pub fn entry(&self) -> Value {
         json!({"customType": ENTRY_TYPE, "data": self})
     }
+    /// Decode a branch and fail on malformed journal or state data.
+    pub fn try_from_branch(entries: &[Value]) -> Result<Self, String> {
+        replay_entries(entries)?
+            .map(|value| {
+                serde_json::from_value(value)
+                    .map_err(|error| format!("decode durable state: {error}"))
+            })
+            .transpose()
+            .map(|state| state.unwrap_or_default())
+    }
+
+    /// Decode a branch for compatibility callers that intentionally treat an
+    /// absent or malformed durable projection as the empty state. Runtime
+    /// attachment and refresh paths should use `try_from_branch` instead.
     pub fn from_branch(entries: &[Value]) -> Self {
         replay_entries(entries)
             .ok()
@@ -493,6 +507,7 @@ mod tests {
         ];
         let error = replay_entries(&entries).unwrap_err();
         assert!(error.contains("has no op"));
+        assert!(DurableState::try_from_branch(&entries).is_err());
         assert_eq!(DurableState::from_branch(&entries), DurableState::default());
     }
     #[test]
