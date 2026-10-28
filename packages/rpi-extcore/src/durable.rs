@@ -110,7 +110,10 @@ impl DurableRuntime {
         {
             return Ok(None);
         }
-        let (entries, _filtered) = match session.branch_entries_of_type(ENTRY_TYPE).await {
+        let (entries, _filtered) = match session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE])
+            .await
+        {
             Ok(reply) => reply,
             Err(_) => return Ok(None),
         };
@@ -139,7 +142,9 @@ impl DurableRuntime {
     }
 
     async fn load(session: Arc<HostSession>, _strict_recovery: bool) -> Result<Arc<Self>, String> {
-        let (entries, _filtered) = session.branch_entries_of_type(ENTRY_TYPE).await?;
+        let (entries, _filtered) = session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE])
+            .await?;
         let state = DurableState::try_from_branch(&entries)?;
         Ok(Self::new(session, state))
     }
@@ -211,7 +216,10 @@ impl DurableRuntime {
 
     pub async fn refresh_branch(&self) -> Result<bool, String> {
         let _refresh = self.refresh_lock.lock().await;
-        let (entries, _filtered) = self.session.branch_entries_of_type(ENTRY_TYPE).await?;
+        let (entries, _filtered) = self
+            .session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE])
+            .await?;
         let next = DurableState::try_from_branch(&entries)?;
         let mut projection = self.projection.lock().await;
         if *projection == next {
@@ -258,14 +266,18 @@ mod tests {
             while let Some(line) = lines.next_line().await.unwrap() {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let data = match request["type"].as_str() {
-                    Some("get_session_branch") if started => json!({
-                        "filtered": true,
-                        "entries": [{"seq":7,"type":"custom","customType":ENTRY_TYPE,"data":{
-                            "revision":1,"nextRunId":1,
-                            "run":{"id":"run-1","status":"running","tools":[]},
-                            "queue":[]
-                        }}]
-                    }),
+                    Some("get_session_branch")
+                        if started && request["customType"].as_str() == Some(ENTRY_TYPE) =>
+                    {
+                        json!({
+                            "filtered": true,
+                            "entries": [{"seq":7,"type":"custom","customType":ENTRY_TYPE,"data":{
+                                "revision":1,"nextRunId":1,
+                                "run":{"id":"run-1","status":"running","tools":[]},
+                                "queue":[]
+                            }}]
+                        })
+                    }
                     Some("get_session_branch") => json!({"filtered":true,"entries":[]}),
                     Some("execute_command") => {
                         started = true;
