@@ -147,12 +147,14 @@ export function ConfirmDialog({
   message,
   onClose,
   onConfirm,
+  confirmLabel,
 }: {
   language: Language;
   title: string;
   message: string;
   onClose: () => void;
   onConfirm: () => void;
+  confirmLabel?: string;
 }) {
   return (
     <Modal language={language} title={title} onClose={onClose}>
@@ -163,7 +165,7 @@ export function ConfirmDialog({
             {translate(language, "cancel")}
           </button>
           <button type="button" className="danger" onClick={onConfirm}>
-            {translate(language, "submit")}
+            {confirmLabel ?? translate(language, "submit")}
           </button>
         </div>
       </div>
@@ -749,6 +751,7 @@ interface SidebarProps {
   onRenameProject: (project: Project) => void;
   onProjectMetadata: (project: Project, archived: boolean) => Promise<void>;
   onEditTags: (session: SessionSummary) => void;
+  onDelete: (session: SessionSummary) => void;
   onMetadata: (
     session: SessionSummary,
     patch: { pinned?: boolean; archived?: boolean; tags?: string[] },
@@ -773,6 +776,7 @@ export function ProjectSidebar({
   onRenameProject,
   onProjectMetadata,
   onEditTags,
+  onDelete,
   onMetadata,
 }: SidebarProps) {
   const zh = language === "zh";
@@ -1002,6 +1006,17 @@ export function ProjectSidebar({
                         ? "归档"
                         : "Archive"}
                   </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu("");
+                      onDelete(session);
+                    }}
+                  >
+                    <X size={14} />
+                    {zh ? "永久删除" : "Delete permanently"}
+                  </button>
+
                 </div>,
                 document.body,
               )}

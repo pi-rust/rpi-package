@@ -202,6 +202,12 @@ async function mockHost(page: Page) {
         },
       });
     }
+    if (/\/sessions\/[^/]+$/.test(path) && request.method() === "DELETE") {
+      const id = path.split("/")[4];
+      const index = sessions.findIndex((entry) => entry.sessionId === id);
+      if (index >= 0) sessions.splice(index, 1);
+      return route.fulfill({ status: 204, body: "" });
+    }
     if (/\/sessions\/[^/]+\/metadata$/.test(path)) {
       const entry = sessions.find((s) => s.sessionId === path.split("/")[4]);
       Object.assign(entry ?? {}, request.postDataJSON());
@@ -761,6 +767,24 @@ test("session tags can be edited without sidebar filters", async ({ page }) => {
   await expect(
     page.locator(".session-tag", { hasText: "urgent" }),
   ).toBeVisible();
+});
+test("sessions can be permanently deleted from the session actions menu", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Session actions: Mock session", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Delete permanently", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Delete session permanently" }),
+  ).toContainText("This cannot be undone.");
+  await page
+    .getByRole("dialog", { name: "Delete session permanently" })
+    .getByRole("button", { name: "Delete permanently", exact: true })
+    .click();
+  await expect(page.getByRole("heading", { name: "Mock session" })).toHaveCount(0);
 });
 test("project navigation collapses and remembers appearance", async ({
   page,

@@ -547,6 +547,7 @@ export default function App() {
     useState<Project | null>(null);
   const [renameTarget, setRenameTarget] = useState<SessionSummary | null>(null);
   const [tagsTarget, setTagsTarget] = useState<SessionSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileSessionPicker, setMobileSessionPicker] = useState(false);
   const [mobileSessionQuery, setMobileSessionQuery] = useState("");
@@ -2740,6 +2741,33 @@ export default function App() {
     }
   }
 
+  async function permanentlyDeleteSession(session: SessionSummary) {
+    const id = session.sessionId;
+    const wasActive = activeSessionRef.current === id;
+    try {
+      await api.deleteSession(id);
+      draftBySession.current.delete(id);
+      saveDrafts(draftBySession.current);
+      rowsBySession.current.delete(id);
+      const list = await refreshSessions();
+      if (!wasActive) return;
+      const next = list?.find(
+        (entry) => entry.projectId === session.projectId && !entry.archived,
+      );
+      if (next) select(next.sessionId, next.projectId);
+      else {
+        activeSessionRef.current = "";
+        setSessionId("");
+        setRows([]);
+        const url = new URL(location.href);
+        url.searchParams.delete("session");
+        history.replaceState(null, "", url);
+      }
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }
+
   async function updateProjectMetadata(project: Project, archived: boolean) {
     try {
       const result = await api.projectMetadata(project.id, { archived });
@@ -2829,6 +2857,24 @@ export default function App() {
           message={textRequest.message}
           onClose={() => resolveTextRequest(null)}
           onConfirm={() => resolveTextRequest("confirmed")}
+        />
+      )}
+      {deleteTarget && (
+        <ConfirmDialog
+          language={language}
+          title={language === "zh" ? "永久删除会话" : "Delete session permanently"}
+          message={
+            language === "zh"
+              ? `确定要永久删除“${deleteTarget.title || "新会话"}”吗？此操作无法撤销。`
+              : `Permanently delete “${deleteTarget.title || "New session"}”? This cannot be undone.`
+          }
+          confirmLabel={language === "zh" ? "永久删除" : "Delete permanently"}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            const target = deleteTarget;
+            setDeleteTarget(null);
+            void permanentlyDeleteSession(target);
+          }}
         />
       )}
       {projectDialog && (
@@ -2970,6 +3016,7 @@ export default function App() {
               onRenameProject={setProjectRenameTarget}
               onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}
+              onDelete={setDeleteTarget}
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom">
