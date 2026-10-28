@@ -208,6 +208,17 @@ pub fn apply_edits(
             });
             continue;
         }
+        if spans
+            .iter()
+            .all(|span| content[span.start..span.end] == span.text)
+        {
+            failures.push(Failure {
+                index,
+                code: FailureCode::Invalid,
+                message: diag::no_op(path, index),
+            });
+            continue;
+        }
         plans.push(Plan {
             index,
             needle,

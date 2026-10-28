@@ -626,6 +626,133 @@ fn invalid_input_is_rejected_before_touching_the_file() {
 // --- Filesystem behavior ----------------------------------------------------
 
 #[test]
+fn normalized_no_op_is_rejected_on_its_own() {
+    let message = failed_edit(
+        "normalized-no-op",
+        "f.txt",
+        "it’s fine\n".as_bytes(),
+        json!([{ "oldText": "it's fine", "newText": "it’s fine" }]),
+    );
+    assert_eq!(message, crate::edit_diagnostics::no_op("f.txt", 0));
+}
+
+#[test]
+fn normalized_no_op_mixed_with_real_edit_reports_all_failures_without_writing() {
+    let message = failed_edit(
+        "mixed-normalized-no-op",
+        "f.txt",
+        "it’s fine\none\n".as_bytes(),
+        json!([
+            { "oldText": "one", "newText": "two" },
+            { "oldText": "it's fine", "newText": "it’s fine" },
+            { "oldText": "missing", "newText": "replacement" }
+        ]),
+    );
+    assert!(message.contains(&crate::edit_diagnostics::no_op("f.txt", 1)));
+    assert!(message.contains("edits[2].oldText not found"), "{message}");
+}
+
+#[test]
+fn replace_all_is_no_op_only_if_every_resolved_span_is_unchanged() {
+    let dir = TempDir::new("partly-no-op");
+    let file = dir.file("f.txt", "it’s fine\nit's fine\n".as_bytes());
+    result_text(json!({
+        "path": file.to_string_lossy(),
+        "edits": [{ "oldText": "it＇s fine", "newText": "it’s fine", "replaceAll": true }]
+    }));
+    assert_eq!(
+        fs::read(&file).unwrap(),
+        "it’s fine\nit’s fine\n".as_bytes()
+    );
+
+    let message = failed_edit(
+        "all-no-op",
+        "f.txt",
+        "it’s fine\nit’s fine\n".as_bytes(),
+        json!([{ "oldText": "it's fine", "newText": "it’s fine", "replaceAll": true }]),
+    );
+    assert_eq!(message, crate::edit_diagnostics::no_op("f.txt", 0));
+}
+
+#[test]
+fn concurrent_edits_of_the_same_snapshot_cannot_silently_overwrite() {
+    use std::sync::Barrier;
+
+    let dir = TempDir::new("concurrent");
+    let file = dir.file("f.txt", b"one\n");
+    let target = fs::canonicalize(&file).unwrap();
+    let lock = crate::target_lock(&target);
+    let guard = lock.lock().unwrap();
+    let start = Barrier::new(3);
+    let call = |replacement: &str, path: &Path| {
+        let params = json!({
+            "path": path.to_string_lossy(),
+            "edits": [{ "oldText": "one", "newText": replacement }]
+        });
+        start.wait();
+        run_tool(&params)
+    };
+    // Different spellings must resolve to the same target lock.
+    let alias = dir.path().join(".").join("f.txt");
+    let results = std::thread::scope(|scope| {
+        let first = scope.spawn(|| call("two", &file));
+        let second = scope.spawn(|| call("three", &alias));
+        start.wait();
+        drop(guard);
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    let (success, failure, expected) = match results {
+        (Ok(success), Err(failure)) => (success, failure, b"two\n".as_slice()),
+        (Err(failure), Ok(success)) => (success, failure, b"three\n".as_slice()),
+        other => panic!("expected exactly one successful edit, got {other:?}"),
+    };
+    assert!(success.contains("Successfully replaced 1 block(s)"));
+    assert!(failure.contains("oldText not found"), "{failure}");
+    assert_eq!(fs::read(&file).unwrap(), expected);
+    assert_eq!(dir.entries(), vec!["f.txt"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_and_canonical_target_share_the_same_lock() {
+    let dir = TempDir::new("symlink-lock");
+    let target = dir.file("f.txt", b"one\n");
+    let link = dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let first = crate::target_lock(&fs::canonicalize(target).unwrap());
+    let second = crate::target_lock(&fs::canonicalize(link).unwrap());
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+}
+
+#[test]
+fn stale_snapshot_is_rejected_before_rename_and_staging_file_is_removed() {
+    let dir = TempDir::new("stale-atomic");
+    let file = dir.file("f.txt", b"external\n");
+    let failure = crate::write_file(&file, "replacement\n", b"original\n").unwrap_err();
+    assert_eq!(failure.code, crate::edit_apply::FailureCode::Invalid);
+    assert!(failure.message.contains("file changed after it was read"));
+    assert!(failure.message.contains("read it again, then retry edit"));
+    assert_eq!(failure.message.lines().count(), 1);
+    assert_eq!(fs::read(&file).unwrap(), b"external\n");
+    assert_eq!(dir.entries(), vec!["f.txt"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn stale_snapshot_is_rejected_before_in_place_hard_link_write() {
+    let dir = TempDir::new("stale-hardlink");
+    let file = dir.file("f.txt", b"external\n");
+    let other = dir.path().join("g.txt");
+    fs::hard_link(&file, &other).unwrap();
+    let failure = crate::write_file(&file, "replacement\n", b"original\n").unwrap_err();
+    assert_eq!(failure.code, crate::edit_apply::FailureCode::Invalid);
+    assert!(failure.message.contains("read it again, then retry edit"));
+    assert_eq!(fs::read(&file).unwrap(), b"external\n");
+    assert_eq!(fs::read(&other).unwrap(), b"external\n");
+    assert_eq!(dir.entries(), vec!["f.txt", "g.txt"]);
+}
+
+#[test]
 fn the_write_leaves_no_temporary_file_behind() {
     let dir = TempDir::new("atomic");
     let file = dir.file("f.txt", b"one\n");

@@ -29,7 +29,8 @@ same.
 - An `oldText` that occurs more than once is never resolved by guessing an
   occurrence; set `replaceAll: true` to change all of them.
 - Every failing edit is reported in one round trip and the file is left
-  byte-identical.
+  byte-identical. An edit whose resolved replacements all leave the original
+  bytes unchanged is a no-op failure, even when submitted alongside real edits.
 - A successful edit appends a `note:` when its `oldText` only matched after
   normalization (so the model knows its text was not literal), and a `warning:`
   when the replacement changes the net `{}`/`()`/`[]` balance of that edit.
@@ -83,6 +84,14 @@ links keep the old content. A relative `path` is resolved against the
 host-injected `__rpi.cwd`, falling back to the process working directory; an
 absolute path follows the platform's rules (on Windows it needs a drive or UNC
 prefix). Unknown argument keys are ignored.
+
+Concurrent calls in this process serialize the entire read/match/write operation
+by canonical target path (including symlink aliases). Immediately before rename
+or in-place writing, the original bytes are checked again; if they changed, the
+edit fails without writing and asks the caller to read again before retrying.
+This optimistic check is not a cross-process atomic compare-and-swap: an external
+writer can still race the final check and write, and different hard-link paths
+do not share an in-process lock.
 
 ## Installation
 

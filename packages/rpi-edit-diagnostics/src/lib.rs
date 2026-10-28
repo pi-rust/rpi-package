@@ -22,20 +22,22 @@
 //! Per call the pipeline is the fork's:
 //!
 //! ```text
-//! read file → strip BOM → detect line ending → normalize to LF
+//! lock canonical target → read file → strip BOM → detect line ending → normalize to LF
 //!           → apply_edits (match all, all-or-nothing) → restore line endings + BOM
-//!           → temp file + rename
+//!           → temp file + snapshot check + rename (or checked in-place hard-link write)
 //! ```
 //!
 //! Success text is `Successfully replaced N block(s) in <path>.`, followed by one
 //! `note:` line per edit that only matched after normalization and one
 //! `warning:` line per edit that changes the net bracket balance.
 //!
-//! Differences from the fork's built-in tool, both visible in this file: a
-//! relative `path` is resolved against the host-injected `__rpi.cwd` (see
+//! Differences from the fork's built-in tool: a relative `path` is resolved
+//! against the host-injected `__rpi.cwd` (see
 //! [`rpi_plugin_sdk::HOST_CONTEXT_KEY`]) with the process working directory as
 //! fallback, and the write goes to a temporary file in the same directory that
 //! is renamed over the target, so an interrupted write cannot truncate a file.
+//! Calls serialize by canonical target path and check the original bytes again
+//! immediately before committing, rejecting stale snapshots.
 #![forbid(unsafe_code)]
 // The SDK's `export_plugin!` macro expands to a `pub extern "C"` entry point that
 // dereferences the host's `*const PluginApi`. That is the ABI contract of
@@ -53,13 +55,15 @@ use rpi_plugin_sdk::{
     FreeStringFn, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use edit_apply::{apply_edits, EditRequest};
+use edit_apply::{apply_edits, ApplyFailure, EditRequest, FailureCode};
 use edit_diff::{
     detect_line_ending, generate_diff_string, generate_unified_patch, normalize_to_lf,
     restore_line_endings, strip_bom,
@@ -244,17 +248,55 @@ fn resolve_path(cwd: Option<&Path>, path: &str) -> PathBuf {
 // File IO
 // ---------------------------------------------------------------------------
 
-/// Write the edited text to the file `path` names, keeping link semantics the
-/// way the built-in edit does: a symlink is followed and its target is
-/// replaced, and a file with other hard links is rewritten in place so every
-/// link sees the change. Other files are replaced through a temporary file, so
-/// a reader sees either the old content or the new, never a partial write.
-fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    if has_other_hard_links(&target) {
-        return fs::write(&target, content);
+/// Locks are keyed by canonical target paths, so relative paths and symlinks
+/// to the same target serialize too. Weak entries do not keep idle locks alive.
+fn target_lock(target: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(target).and_then(Weak::upgrade) {
+        return lock;
     }
-    write_atomically(&target, content)
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(target.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
+fn write_error(path: &Path, error: std::io::Error) -> ApplyFailure {
+    ApplyFailure {
+        code: FailureCode::Invalid,
+        message: format!("Could not write file: {}. {error}", path.display()),
+    }
+}
+
+/// Compare the original bytes directly (no hash collisions), immediately before
+/// committing. This detects outside writers, but is not a filesystem CAS: an
+/// uncooperative writer can still race the check and the rename/in-place write.
+fn check_snapshot(path: &Path, expected: &[u8]) -> Result<(), ApplyFailure> {
+    let current = fs::read(path).map_err(|error| write_error(path, error))?;
+    if current != expected {
+        return Err(ApplyFailure {
+            code: FailureCode::Invalid,
+            message: format!(
+                "error: file changed after it was read: {}; read it again, then retry edit",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Write the edited text to the canonical target, preserving hard-link behavior.
+/// The caller holds the target lock throughout reading, matching and writing.
+fn write_file(path: &Path, content: &str, expected: &[u8]) -> Result<(), ApplyFailure> {
+    if has_other_hard_links(path) {
+        check_snapshot(path, expected)?;
+        return fs::write(path, content).map_err(|error| write_error(path, error));
+    }
+    write_atomically(path, content, expected)
 }
 
 #[cfg(unix)]
@@ -272,7 +314,7 @@ fn has_other_hard_links(_path: &Path) -> bool {
 
 /// Replace `path`'s contents through a temporary file in the same directory, so
 /// the target is either the old file or the new one — never a partial write.
-fn write_atomically(path: &Path, content: &str) -> std::io::Result<()> {
+fn write_atomically(path: &Path, content: &str, expected: &[u8]) -> Result<(), ApplyFailure> {
     let directory = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
@@ -283,7 +325,7 @@ fn write_atomically(path: &Path, content: &str) -> std::io::Result<()> {
         .unwrap_or_else(|| "file".to_string());
     let temp = directory.join(temp_name(&name));
 
-    let written = (|| {
+    let staged = (|| {
         let mut file = fs::File::create(&temp)?;
         file.write_all(content.as_bytes())?;
         file.flush()?;
@@ -293,8 +335,14 @@ fn write_atomically(path: &Path, content: &str) -> std::io::Result<()> {
         if let Ok(metadata) = fs::metadata(path) {
             let _ = fs::set_permissions(&temp, metadata.permissions());
         }
-        fs::rename(&temp, path)
+        Ok::<_, std::io::Error>(())
     })();
+    let written = staged
+        .map_err(|error| write_error(path, error))
+        .and_then(|()| {
+            check_snapshot(path, expected)?;
+            fs::rename(&temp, path).map_err(|error| write_error(path, error))
+        });
 
     if written.is_err() {
         let _ = fs::remove_file(&temp);
@@ -322,8 +370,12 @@ fn temp_name(name: &str) -> String {
 fn run_tool(params: &Value) -> Result<String, String> {
     let input = parse_input(params)?;
     let absolute = resolve_path(host_cwd(params).as_deref(), &input.path);
+    let target = fs::canonicalize(&absolute)
+        .map_err(|error| format!("Could not read file: {}. {error}", input.path))?;
+    let lock = target_lock(&target);
+    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let raw = fs::read_to_string(&absolute)
+    let raw = fs::read_to_string(&target)
         .map_err(|error| format!("Could not read file: {}. {error}", input.path))?;
 
     let stripped = strip_bom(&raw);
@@ -340,8 +392,7 @@ fn run_tool(params: &Value) -> Result<String, String> {
         "{bom}{}",
         restore_line_endings(&applied.new_content, ending)
     );
-    write_file(&absolute, &final_content)
-        .map_err(|error| format!("Could not write file: {}. {error}", input.path))?;
+    write_file(&target, &final_content, raw.as_bytes()).map_err(|failure| failure.message)?;
 
     let diff = generate_diff_string(&applied.base_content, &applied.new_content, 4);
     let patch = generate_unified_patch(&input.path, &applied.base_content, &applied.new_content);
