@@ -193,11 +193,15 @@ impl DurableRuntime {
     pub fn spawn_branch_watcher(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let runtime = self.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
-            interval.tick().await;
+            let base = std::time::Duration::from_millis(500);
+            let max = std::time::Duration::from_secs(5);
+            let mut delay = base;
             loop {
-                interval.tick().await;
-                let _ = runtime.refresh_branch().await;
+                tokio::time::sleep(delay).await;
+                match runtime.refresh_branch().await {
+                    Ok(_) => delay = base,
+                    Err(_) => delay = (delay * 2).min(max),
+                }
             }
         })
     }
