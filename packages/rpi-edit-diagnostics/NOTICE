@@ -1,0 +1,53 @@
+Third-party notices for rpi-edit-diagnostics
+============================================
+
+Copied source: rpi (the `--fork` / `aia` line)
+----------------------------------------------
+
+    rpi — https://github.com/pi-rust/rpi (tag v0.9.4-aia.2)
+    Copyright (c) 2026 pi-rust contributors
+    Licensed under the MIT License.
+
+`src/edit_apply.rs`, `src/edit_diagnostics.rs` and `src/edit_diff.rs` are copies
+of `crates/rpi-tools/src/tools/{edit_apply,edit_diagnostics,edit_diff}.rs`, and
+the tool description and parameter schema in `src/lib.rs` come from
+`crates/rpi-tools/src/tools/edit.rs`. Each copied file keeps the source note in
+its module docs. The only adaptations are crate-internal `use` paths and the
+replacement of the host's `FileError`/`FileErrorCode` with the plugin-local
+`FailureCode`, because a plugin reports failure text rather than a host error.
+
+Ported candidate finder: pi-semantic-edit
+-----------------------------------------
+
+    pi-semantic-edit — https://github.com/k3-2o/pi-semantic-edit
+    Copyright (c) 2026 K2
+    Licensed under the MIT License.
+
+`src/semantic_edit/` is the candidate-finding subset of `pi-semantic-edit`'s
+domain layer (`src/domain/{passes,chain,closest,similarity}.ts`), taken from the
+copy in `rpi` (`crates/rpi-tools/src/tools/semantic_edit/`). It only proposes
+the regions a failure report quotes; it never decides that an edit matches.
+
+The pi-semantic-edit MIT License text follows.
+
+MIT License
+
+Copyright (c) 2026 K2
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

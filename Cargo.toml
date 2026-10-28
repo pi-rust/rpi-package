@@ -16,6 +16,7 @@ members = [
     "packages/rpi-permissions",
     "packages/rpi-websearch",
     "packages/rpi-webfetch",
+    "packages/rpi-edit-diagnostics",
     "packages/rpi-im-message",
     "packages/rpi-server",
     "packages/rpi-acp",
