@@ -65,7 +65,7 @@ pub fn replay_changes(
                         return Some((
                             DurableStreamItem::ResyncRequired { dropped },
                             (receiver, cursor),
-                        ))
+                        ));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
@@ -75,7 +75,7 @@ pub fn replay_changes(
 }
 
 pub use rpi_durable_core::{
-    DurableMutation, DurableState, QueueItem, QueueStatus, RunCheckpoint, RunStatus,
+    apply_entries, DurableMutation, DurableState, QueueItem, QueueStatus, RunCheckpoint, RunStatus,
     ToolCheckpoint, ToolStatus, MAX_QUEUE_ITEMS, MAX_SUMMARY_CHARS, MAX_TOOL_ENTRIES,
 };
 
@@ -91,6 +91,7 @@ pub struct DurableRuntime {
     refresh_lock: Mutex<()>,
     changes: tokio::sync::broadcast::Sender<DurableChange>,
     history: Arc<Mutex<VecDeque<DurableChange>>>,
+    last_entry_seq: Mutex<u64>,
 }
 
 impl DurableRuntime {
@@ -108,7 +109,10 @@ impl DurableRuntime {
         {
             return Ok(None);
         }
-        let (entries, _filtered) = match session.branch_entries_of_type(ENTRY_TYPE).await {
+        let (entries, _filtered) = match session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE], None)
+            .await
+        {
             Ok(reply) => reply,
             Err(_) => return Ok(None),
         };
@@ -116,16 +120,17 @@ impl DurableRuntime {
             session,
             DurableState::try_from_branch(&entries)
                 .map_err(|error| format!("durable branch replay: {error}"))?,
+            max_entry_seq(&entries),
         );
         Ok(Some(runtime))
     }
 
     /// Create an empty runtime for deterministic adapter tests.
     pub fn empty(session: Arc<HostSession>) -> Arc<Self> {
-        Self::new(session, DurableState::default())
+        Self::new(session, DurableState::default(), 0)
     }
 
-    fn new(session: Arc<HostSession>, state: DurableState) -> Arc<Self> {
+    fn new(session: Arc<HostSession>, state: DurableState, last_entry_seq: u64) -> Arc<Self> {
         let (changes, _) = tokio::sync::broadcast::channel(MAX_CHANGE_ENTRIES);
         Arc::new(Self {
             session,
@@ -133,13 +138,16 @@ impl DurableRuntime {
             refresh_lock: Mutex::new(()),
             changes,
             history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_CHANGE_ENTRIES))),
+            last_entry_seq: Mutex::new(last_entry_seq),
         })
     }
 
     async fn load(session: Arc<HostSession>, _strict_recovery: bool) -> Result<Arc<Self>, String> {
-        let (entries, _filtered) = session.branch_entries_of_type(ENTRY_TYPE).await?;
+        let (entries, _filtered) = session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE], None)
+            .await?;
         let state = DurableState::try_from_branch(&entries)?;
-        Ok(Self::new(session, state))
+        Ok(Self::new(session, state, max_entry_seq(&entries)))
     }
 
     pub async fn state(&self) -> DurableState {
@@ -209,17 +217,42 @@ impl DurableRuntime {
 
     pub async fn refresh_branch(&self) -> Result<bool, String> {
         let _refresh = self.refresh_lock.lock().await;
-        let (entries, _filtered) = self.session.branch_entries_of_type(ENTRY_TYPE).await?;
-        let next = DurableState::try_from_branch(&entries)?;
-        let mut projection = self.projection.lock().await;
-        if *projection == next {
+        let after_seq = *self.last_entry_seq.lock().await;
+        let (entries, _filtered) = self
+            .session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE], Some(after_seq))
+            .await?;
+        let current = self.projection.lock().await.clone();
+        let mut next = current.clone();
+        let mut next_entry_seq = after_seq.max(max_entry_seq(&entries));
+
+        if let Err(_incremental_error) = apply_entries(&mut next, &entries) {
+            // A missing journal delta, unsupported legacy shape, or a native
+            // host that ignored the cursor requires one authoritative replay.
+            let (full_entries, _filtered) = self
+                .session
+                .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE], None)
+                .await?;
+            next = DurableState::try_from_branch(&full_entries)?;
+            next_entry_seq = max_entry_seq(&full_entries);
+        }
+        *self.last_entry_seq.lock().await = next_entry_seq;
+
+        if current == next {
             return Ok(false);
         }
-        *projection = next.clone();
-        drop(projection);
+        *self.projection.lock().await = next.clone();
         self.publish(next).await;
         Ok(true)
     }
+}
+
+fn max_entry_seq(entries: &[Value]) -> u64 {
+    entries
+        .iter()
+        .filter_map(|entry| entry.get("seq").and_then(Value::as_u64))
+        .max()
+        .unwrap_or_default()
 }
 
 fn mutation_command(mutation: &DurableMutation) -> Value {
@@ -253,12 +286,26 @@ mod tests {
         let fixture = tokio::spawn(async move {
             let mut lines = BufReader::new(peer).lines();
             let mut started = false;
+            let mut refreshes = 0;
             while let Some(line) = lines.next_line().await.unwrap() {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let data = match request["type"].as_str() {
                     Some("get_session_branch") => {
                         if started {
-                            json!({"entries": [{"type":"custom","customType":ENTRY_TYPE,"data":{
+                            assert_eq!(
+                                request["customType"].as_str(),
+                                Some(if refreshes % 2 == 0 {
+                                    ENTRY_TYPE
+                                } else {
+                                    LEGACY_ENTRY_TYPE
+                                })
+                            );
+                            assert_eq!(
+                                request["afterSeq"].as_u64(),
+                                Some(if refreshes < 2 { 0 } else { 7 })
+                            );
+                            refreshes += 1;
+                            json!({"filtered":true,"entries": [{"seq":7,"type":"custom","customType":ENTRY_TYPE,"data":{
                                 "revision":1,"nextRunId":1,
                                 "run":{"id":"run-1","status":"running","tools":[]},
                                 "queue":[]
@@ -290,6 +337,7 @@ mod tests {
             .unwrap();
         let mut subscription = runtime.subscribe_changes(None).await;
         runtime.mutate(DurableMutation::StartRun).await.unwrap();
+        assert!(!runtime.refresh_branch().await.unwrap());
         let changes = replay_changes(
             subscription.replay,
             subscription.receiver,

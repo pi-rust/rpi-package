@@ -784,20 +784,59 @@ impl HostSession {
             .ok_or_else(|| "get_session_branch: invalid entries data".into())
     }
 
-    /// Read only the custom entries of `custom_type`.
-    ///
-    /// A full branch read serializes the whole transcript, which reaches
-    /// hundreds of megabytes on long sessions, so pollers must never ask for
-    /// it. Hosts that ignore the filter answer with the full branch, which stays
-    /// correct but expensive; the flag reports whether the cheap path is
-    /// available.
+    /// Read only custom entries after an optional native entry sequence.
+    /// Initial reads omit `after_seq`; incremental reads use it to avoid
+    /// replaying the durable journal prefix. When the host supports filtered
+    /// reads, both the canonical and legacy durable discriminators are loaded
+    /// so migration entries can provide the replay base.
     pub async fn branch_entries_of_type(
         &self,
         custom_type: &str,
+        after_seq: Option<u64>,
     ) -> Result<(Vec<Value>, bool), String> {
-        let data = self
-            .runtime_command("get_session_branch", json!({"customType": custom_type}))
-            .await?;
+        self.branch_entries_of_types(&[custom_type], after_seq)
+            .await
+    }
+
+    pub async fn branch_entries_of_types(
+        &self,
+        custom_types: &[&str],
+        after_seq: Option<u64>,
+    ) -> Result<(Vec<Value>, bool), String> {
+        let first_type = custom_types.first().copied().ok_or_else(|| {
+            "get_session_branch: at least one custom type is required".to_string()
+        })?;
+        let (mut entries, filtered) = self.branch_entries_request(first_type, after_seq).await?;
+        if !filtered || custom_types.len() == 1 {
+            // An old host ignores customType and returns the complete branch.
+            // Do not issue a second expensive full-transcript request.
+            return Ok((entries, filtered));
+        }
+
+        for custom_type in &custom_types[1..] {
+            let (mut extra, extra_filtered) =
+                self.branch_entries_request(custom_type, after_seq).await?;
+            if !extra_filtered {
+                // The host stopped honoring filters; this response is already
+                // the authoritative complete branch.
+                return Ok((extra, false));
+            }
+            entries.append(&mut extra);
+        }
+        entries.sort_by_key(|entry| entry.get("seq").and_then(Value::as_u64));
+        Ok((entries, true))
+    }
+
+    async fn branch_entries_request(
+        &self,
+        custom_type: &str,
+        after_seq: Option<u64>,
+    ) -> Result<(Vec<Value>, bool), String> {
+        let mut params = json!({"customType": custom_type});
+        if let Some(after_seq) = after_seq {
+            params["afterSeq"] = json!(after_seq);
+        }
+        let data = self.runtime_command("get_session_branch", params).await?;
         let entries = data
             .get("entries")
             .and_then(Value::as_array)
