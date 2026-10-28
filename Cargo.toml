@@ -7,6 +7,7 @@ members = [
     "packages/rpi-lens",
     "packages/rpi-orchestrator",
     "packages/rpi-durable",
+    "packages/rpi-durable-core",
     "packages/rpi-todo",
     "packages/rpi-goal",
     "packages/rpi-plan-mode",

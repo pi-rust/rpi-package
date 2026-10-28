@@ -564,7 +564,7 @@ impl HostSession {
             json!({
                 "type": "ready",
                 "protocol": "rpi",
-                "supportedCommands": ["get_session_branch", "append_entry"]
+                "supportedCommands": ["get_session_branch", "append_entry", "execute_command"]
             }),
         )
     }
@@ -626,6 +626,13 @@ impl HostSession {
             .is_some_and(|commands| commands.iter().any(|value| value.as_str() == Some(command)))
     }
 
+    /// Whether the native ready frame advertises an optional event stream.
+    pub fn supports_event(&self, event: &str) -> bool {
+        self.ready
+            .get("supportedEvents")
+            .and_then(Value::as_array)
+            .is_some_and(|events| events.iter().any(|value| value.as_str() == Some(event)))
+    }
     pub fn subscribe(&self) -> broadcast::Receiver<BufferedEvent> {
         self.runtime.events.subscribe()
     }
@@ -805,6 +812,22 @@ impl HostSession {
             _ = closed.wait_for(|closed| *closed) => Err("native rpi host closed".into()),
             response = dispatch(&self.commands, &self.runtime.pending, value, timeout) => response,
         }
+    }
+
+    pub async fn execute_extension_command(
+        &self,
+        command: &str,
+        args: Value,
+    ) -> Result<Value, String> {
+        self.command(
+            "execute_command",
+            json!({
+                "command": command,
+                "args": args.to_string(),
+            }),
+            Duration::from_secs(30),
+        )
+        .await
     }
 
     pub async fn command(

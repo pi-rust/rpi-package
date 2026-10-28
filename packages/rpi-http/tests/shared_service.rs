@@ -38,6 +38,49 @@ async fn http_and_rust_share_project_state_without_frontend_or_plugin_runtime() 
         .build()
         .unwrap();
     let base = format!("http://{address}");
+    let auth_status: Value = client
+        .get(format!("{base}/api/v1/auth"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let client = if auth_status["required"] == true {
+        let password = std::env::var("RPI_HTTP_PASSWORD")
+            .or_else(|_| std::env::var("RPI_WEB_PASSWORD"))
+            .expect("an enabled HTTP test server requires its configured password");
+        let response = client
+            .post(format!("{base}/api/v1/auth"))
+            .header("X-Rpi-Web", "1")
+            .json(&json!({"password": password}))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let cookie = response
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .expect("HTTP login should return a session cookie");
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::COOKIE,
+            reqwest::header::HeaderValue::from_str(cookie).unwrap(),
+        );
+        reqwest::Client::builder()
+            .default_headers(headers)
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+    } else {
+        client
+    };
     let outcome = service::create_project(
         &core,
         CreateProjectRequest {

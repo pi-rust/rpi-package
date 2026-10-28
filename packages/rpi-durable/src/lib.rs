@@ -7,6 +7,10 @@
 //! a decoded copy in memory and appends a compact custom entry after each
 //! mutation; it does not create a second transcript or project database.
 
+use rpi_durable_core::{
+    DurableState, QueueItem, QueueStatus, RunCheckpoint, RunStatus, Step, StepStatus,
+    ToolCheckpoint, ToolStatus, Workflow, WorkflowStatus, MAX_QUEUE_ITEMS, MAX_SUMMARY_CHARS,
+};
 use rpi_plugin_sdk::handles::ToolHandles;
 use rpi_plugin_sdk::{
     EventHandlerFn, EventTag, FreeStringFn, PluginApi, RuntimeActionId, StableToolSchema,
@@ -19,19 +23,18 @@ use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
 const TOOL: &str = "durable";
-const ENTRY_TYPE: &str = "durable-state";
+const ENTRY_TYPE: &str = rpi_durable_core::ENTRY_TYPE;
+const LEGACY_ENTRY_TYPE: &str = rpi_durable_core::LEGACY_ENTRY_TYPE;
 const MAX_STEPS: usize = 128;
 const MAX_NAME_CHARS: usize = 500;
 const MAX_STEP_ID_CHARS: usize = 128;
 const MAX_STEP_TITLE_CHARS: usize = 1_000;
 const MAX_NOTE_CHARS: usize = 4_000;
 const MAX_JOURNAL_ENTRIES: usize = 64;
-const MAX_SUMMARY_CHARS: usize = 1_000;
 const TOOL_ID_HASH_HEX_CHARS: usize = 64;
-const MAX_QUEUE_ITEMS: usize = 32;
 const MAX_QUEUE_TEXT_CHARS: usize = 4_000;
-const JOURNAL_FORMAT: &str = "rpi-durable-journal";
-const JOURNAL_VERSION: u64 = 1;
+const JOURNAL_FORMAT: &str = rpi_durable_core::JOURNAL_FORMAT;
+const JOURNAL_VERSION: u64 = rpi_durable_core::JOURNAL_VERSION;
 const SNAPSHOT_INTERVAL: u64 = 32;
 
 type Runtime = PluginApi;
@@ -151,186 +154,10 @@ fn state() -> &'static Mutex<Store> {
     STATE.get_or_init(|| Mutex::new(Store::default()))
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DurableState {
-    workflow: Option<Workflow>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    run: Option<RunState>,
-    #[serde(default)]
-    next_run_id: u64,
-    #[serde(default)]
-    next_queue_id: u64,
-    #[serde(default)]
-    queue: Vec<QueueItem>,
-    #[serde(default)]
-    revision: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Workflow {
-    name: String,
-    status: WorkflowStatus,
-    steps: Vec<Step>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum WorkflowStatus {
-    Running,
-    Paused,
-    Completed,
-    Failed,
-}
-
-impl WorkflowStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Paused => "paused",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum RunStatus {
-    Queued,
-    Running,
-    Settled,
-    Failed,
-    Interrupted,
-}
-
-impl RunStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Running => "running",
-            Self::Settled => "settled",
-            Self::Failed => "failed",
-            Self::Interrupted => "interrupted",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ToolExecutionStatus {
-    Started,
-    Completed,
-    Failed,
-    Interrupted,
-    Unknown,
-}
-
-impl ToolExecutionStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Started => "started",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Interrupted => "interrupted",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolExecution {
-    call_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    call_key: Option<String>,
-    name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    params: String,
-    status: ToolExecutionStatus,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    result: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RunState {
-    id: String,
-    status: RunStatus,
-    started_revision: u64,
-    updated_revision: u64,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    outcome: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    recovery_of: String,
-    #[serde(default)]
-    tools: Vec<ToolExecution>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum QueueItemStatus {
-    Queued,
-    Claimed,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl QueueItemStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Claimed => "claimed",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct QueueItem {
-    id: String,
-    text: String,
-    status: QueueItemStatus,
-    created_revision: u64,
-    updated_revision: u64,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    note: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Step {
-    id: String,
-    title: String,
-    status: StepStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum StepStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-impl StepStatus {
-    fn marker(&self) -> &'static str {
-        match self {
-            Self::Pending => " ",
-            Self::InProgress => "•",
-            Self::Completed => "✓",
-        }
-    }
-}
+type RunState = RunCheckpoint;
+type ToolExecution = ToolCheckpoint;
+type ToolExecutionStatus = ToolStatus;
+type QueueItemStatus = QueueStatus;
 
 fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     let runtime = *RUNTIME.get().ok_or("durable runtime is unavailable")?;
@@ -672,12 +499,45 @@ fn decode_legacy_state(data: &Value) -> Result<DurableState, String> {
     Ok(state)
 }
 
+fn decode_legacy_runtime_state(data: &Value) -> Result<DurableState, String> {
+    let mut object = data
+        .as_object()
+        .cloned()
+        .ok_or("invalid legacy runtime state: expected an object")?;
+    object.entry("workflow").or_insert(Value::Null);
+    let revision = object.get("revision").and_then(Value::as_u64).unwrap_or(0);
+    if let Some(run) = object.get_mut("run").and_then(Value::as_object_mut) {
+        run.entry("startedRevision").or_insert(json!(revision));
+        run.entry("updatedRevision").or_insert(json!(revision));
+        if let Some(tools) = run.get_mut("tools").and_then(Value::as_array_mut) {
+            for tool in tools {
+                if let Some(tool) = tool.as_object_mut() {
+                    tool.entry("callKey").or_insert(Value::Null);
+                }
+            }
+        }
+    }
+    if let Some(queue) = object.get_mut("queue").and_then(Value::as_array_mut) {
+        for item in queue {
+            if let Some(item) = item.as_object_mut() {
+                item.entry("createdRevision").or_insert(json!(revision));
+                item.entry("updatedRevision").or_insert(json!(revision));
+            }
+        }
+    }
+    let state = serde_json::from_value(Value::Object(object))
+        .map_err(|error| format!("invalid legacy runtime state: {error}"))?;
+    validate_state(&state)?;
+    Ok(state)
+}
+
 fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), String> {
     let mut records = Vec::new();
     let mut invalid_records = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
+        let custom_type = entry.get("customType").and_then(Value::as_str);
         if entry.get("type").and_then(Value::as_str) != Some("custom")
-            || entry.get("customType").and_then(Value::as_str) != Some(ENTRY_TYPE)
+            || !matches!(custom_type, Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE))
         {
             continue;
         }
@@ -685,6 +545,12 @@ fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), Strin
             let data = entry
                 .get("data")
                 .ok_or("durable custom entry has no data")?;
+            if custom_type == Some(LEGACY_ENTRY_TYPE) {
+                return Ok(BranchRecord::Legacy {
+                    state: decode_legacy_runtime_state(data)?,
+                    entry_id: branch_entry_identity(entry),
+                });
+            }
             let has_format = data.get("format").is_some();
             let has_version = data.get("version").is_some();
             if !has_format && !has_version {
@@ -1699,6 +1565,22 @@ fn apply_action(current: &DurableState, params: &Value) -> Result<DurableState, 
 
     match action {
         "status" => {}
+        "start_run" => start_run(&mut next),
+        "settle_run" => {
+            if let Some(run) = next.run.as_mut() {
+                if run.status == RunStatus::Running {
+                    run.status = RunStatus::Settled;
+                    run.outcome = "settled".into();
+                    for tool in &mut run.tools {
+                        if tool.status == ToolExecutionStatus::Started {
+                            tool.status = ToolExecutionStatus::Interrupted;
+                            tool.result = "run settled without a durable tool result".into();
+                        }
+                    }
+                }
+            }
+        }
+        "recover_run" => recover_run(&mut next)?,
         "start" => {
             let name = text(params.get("name"), "name", MAX_NAME_CHARS)?;
             next.workflow = Some(Workflow {
@@ -1960,15 +1842,40 @@ fn command(args, out, _user_data) {
     if !out.is_available() {
         return 1;
     }
-    let _ = args;
-    let snapshot = match snapshot_state() {
-        Ok(state) => state,
+    let request: Value = match serde_json::from_str(args) {
+        Ok(request) => request,
         Err(error) => {
-            out.write(json!({"kind":"message","text":format!("Error: {error}")}).to_string());
+            out.write(json!({"error": format!("invalid command request: {error}")}).to_string());
             return 0;
         }
     };
-    out.write(json!({"kind":"message","text":render(&snapshot)}).to_string());
+    let raw = request.get("args").and_then(Value::as_str).unwrap_or("").trim();
+    if raw.is_empty() {
+        let snapshot = match snapshot_state() {
+            Ok(state) => state,
+            Err(error) => {
+                out.write(json!({"kind":"message","text":format!("Error: {error}")}).to_string());
+                return 0;
+            }
+        };
+        out.write(json!({"kind":"message","text":render(&snapshot)}).to_string());
+        return 0;
+    }
+    let params: Value = match serde_json::from_str::<Value>(raw) {
+        Ok(params) if params.is_object() => params,
+        Ok(_) => {
+            out.write(json!({"error":"durable command args must be a JSON object"}).to_string());
+            return 0;
+        }
+        Err(error) => {
+            out.write(json!({"error": format!("invalid durable command args: {error}")}).to_string());
+            return 0;
+        }
+    };
+    match durable(&params) {
+        Ok(result) => out.write(result),
+        Err(error) => out.write(json!({"error": error}).to_string()),
+    };
     0
 }
 }

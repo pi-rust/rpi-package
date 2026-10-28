@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.19...rpi-acp-v0.1.20) - 2026-10-28
+
+### Added
+
+- consolidate durable state and publish commit updates ([#91](https://github.com/pi-rust/rpi-package/pull/91))
+
 ## [0.1.19](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.18...rpi-acp-v0.1.19) - 2026-10-26
 
 ### Other

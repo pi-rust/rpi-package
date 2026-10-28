@@ -24,11 +24,16 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     allowedHosts: true,
-    port: 18088,
+    port: 18087,
     strictPort: true,
+    hmr: {
+      host: "work-dev.bigfisharc.cn",
+      protocol: "wss",
+      clientPort: 443,
+    },
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:3031",
+        target: "http://127.0.0.1:18088",
         changeOrigin: true,
         configure(proxy) {
           proxy.on("proxyReq", (request) => {

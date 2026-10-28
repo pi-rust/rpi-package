@@ -1,0 +1,295 @@
+{
+  "provider": "google",
+  "name": "Google Antigravity (CortexKit OAuth)",
+  "api": "google-generative-ai",
+  "baseUrl": "https://cloudcode-pa.googleapis.com",
+  "catalog": [
+    {
+      "id": "antigravity-gemini-4-argon",
+      "name": "Gemini 4 Argon (Antigravity)",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 1048576,
+      "maxTokens": 65536
+    },
+    {
+      "id": "antigravity-gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash (Antigravity)",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 1048576,
+      "maxTokens": 65536
+    },
+    {
+      "id": "antigravity-gemini-3.5-flash",
+      "name": "Gemini 3.5 Flash (Antigravity)",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 1048576,
+      "maxTokens": 65536
+    },
+    {
+      "id": "antigravity-claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5 (Antigravity)",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 1000000,
+      "maxTokens": 128000
+    },
+    {
+      "id": "antigravity-claude-opus-5-5",
+      "name": "Claude Opus 5.5 (Antigravity)",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 1000000,
+      "maxTokens": 128000
+    },
+    {
+      "id": "antigravity-gpt-oss-120b-medium",
+      "name": "GPT-OSS 120B Medium (Antigravity)",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 131072,
+      "maxTokens": 32768
+    }
+  ],
+  "native": {
+    "gemini-4-argon-low": {
+      "displayName": "Gemini 4 Argon (Low)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M419",
+      "thinkingLevel": 1,
+      "thinkingBudget": -1,
+      "supportsThinking": true
+    },
+    "gemini-4-argon-medium": {
+      "displayName": "Gemini 4 Argon (Medium)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M418",
+      "thinkingLevel": 2,
+      "thinkingBudget": -1,
+      "supportsThinking": true
+    },
+    "gemini-4-argon-high": {
+      "displayName": "Gemini 4 Argon (High)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M417",
+      "thinkingLevel": 3,
+      "thinkingBudget": -1,
+      "supportsThinking": true
+    },
+    "gemini-3.8-flash-high": {
+      "displayName": "Gemini 3.8 Flash (High)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M318",
+      "thinkingBudget": -1,
+      "supportsThinking": true
+    },
+    "gemini-3.8-flash-medium": {
+      "displayName": "Gemini 3.8 Flash (Medium)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M319",
+      "thinkingBudget": 4000,
+      "supportsThinking": true
+    },
+    "gemini-3.8-flash-low": {
+      "displayName": "Gemini 3.8 Flash (Low)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M320",
+      "thinkingBudget": 1000,
+      "supportsThinking": true
+    },
+    "claude-opus-5-5-low": {
+      "displayName": "Claude Opus 5.5 (Low)",
+      "maxTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "model": "MODEL_PLACEHOLDER_M400",
+      "thinkingLevel": 1,
+      "supportsThinking": true,
+      "supportsAdaptiveThinking": true,
+      "vertexModelId": "claude-opus-5-5@default"
+    },
+    "claude-opus-5-5-medium": {
+      "displayName": "Claude Opus 5.5 (Medium)",
+      "maxTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "model": "MODEL_PLACEHOLDER_M401",
+      "thinkingLevel": 2,
+      "supportsThinking": true,
+      "supportsAdaptiveThinking": true,
+      "vertexModelId": "claude-opus-5-5@default"
+    },
+    "claude-opus-5-5-high": {
+      "displayName": "Claude Opus 5.5 (High)",
+      "maxTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "model": "MODEL_PLACEHOLDER_M402",
+      "thinkingLevel": 3,
+      "supportsThinking": true,
+      "supportsAdaptiveThinking": true,
+      "vertexModelId": "claude-opus-5-5@default"
+    },
+    "claude-sonnet-5-5-low": {
+      "displayName": "Claude Sonnet 5.5 (Low)",
+      "maxTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "model": "MODEL_PLACEHOLDER_M403",
+      "thinkingLevel": 1,
+      "supportsThinking": true,
+      "supportsAdaptiveThinking": true,
+      "vertexModelId": "claude-sonnet-5-5@default"
+    },
+    "claude-sonnet-5-5-medium": {
+      "displayName": "Claude Sonnet 5.5 (Medium)",
+      "maxTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "model": "MODEL_PLACEHOLDER_M404",
+      "thinkingLevel": 2,
+      "supportsThinking": true,
+      "supportsAdaptiveThinking": true,
+      "vertexModelId": "claude-sonnet-5-5@default"
+    },
+    "claude-sonnet-5-5-high": {
+      "displayName": "Claude Sonnet 5.5 (High)",
+      "maxTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "model": "MODEL_PLACEHOLDER_M405",
+      "thinkingLevel": 3,
+      "supportsThinking": true,
+      "supportsAdaptiveThinking": true,
+      "vertexModelId": "claude-sonnet-5-5@default"
+    },
+    "gpt-oss-120b-medium": {
+      "displayName": "GPT-OSS 120B (Medium)",
+      "maxTokens": 131072,
+      "maxOutputTokens": 32768,
+      "model": "MODEL_OPENAI_GPT_OSS_120B_MEDIUM",
+      "thinkingBudget": 8192,
+      "supportsThinking": true,
+      "vertexModelId": "openai/gpt-oss-120b-maas"
+    },
+    "gemini-3.5-flash-extra-low": {
+      "displayName": "Gemini 3.5 Flash (Low)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M187",
+      "thinkingBudget": 1000,
+      "supportsThinking": true
+    },
+    "gemini-3.5-flash-low": {
+      "displayName": "Gemini 3.5 Flash (Medium)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M20",
+      "thinkingBudget": 4000,
+      "supportsThinking": true
+    },
+    "gemini-3-flash-agent": {
+      "displayName": "Gemini 3.5 Flash (High)",
+      "maxTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "model": "MODEL_PLACEHOLDER_M84",
+      "thinkingBudget": -1,
+      "supportsThinking": true
+    },
+    "gemini-3.1-flash-image": {
+      "displayName": "Gemini 3.1 Flash Image",
+      "model": "MODEL_PLACEHOLDER_M21"
+    }
+  },
+  "aliases": {
+    "gemini-4-argon-low": "gemini-4-argon",
+    "gemini-4-argon-medium": "gemini-4-argon",
+    "gemini-4-argon-high": "gemini-4-argon",
+    "gemini-3.1-pro-low": "gemini-3.1-pro",
+    "gemini-3.1-pro-high": "gemini-3.1-pro",
+    "gemini-3-flash-low": "gemini-3-flash",
+    "gemini-3-flash-medium": "gemini-3-flash",
+    "gemini-3-flash-high": "gemini-3-flash",
+    "gemini-3.5-flash-low": "gemini-3.5-flash",
+    "gemini-3.5-flash-medium": "gemini-3.5-flash",
+    "gemini-3.5-flash-high": "gemini-3.5-flash",
+    "gemini-3.6-flash-low": "gemini-3.6-flash",
+    "gemini-3.6-flash-medium": "gemini-3.6-flash",
+    "gemini-3.6-flash-high": "gemini-3.6-flash",
+    "gemini-3.7-flash-low": "gemini-3.7-flash",
+    "gemini-3.7-flash-medium": "gemini-3.7-flash",
+    "gemini-3.7-flash-high": "gemini-3.7-flash",
+    "gemini-3.8-flash-low": "gemini-3.8-flash",
+    "gemini-3.8-flash-medium": "gemini-3.8-flash",
+    "gemini-3.8-flash-high": "gemini-3.8-flash",
+    "gemini-claude-opus-4-6-thinking-low": "claude-opus-4-6-thinking",
+    "gemini-claude-opus-4-6-thinking-medium": "claude-opus-4-6-thinking",
+    "gemini-claude-opus-4-6-thinking-high": "claude-opus-4-6-thinking",
+    "gemini-claude-sonnet-4-6-thinking-low": "claude-sonnet-4-6",
+    "gemini-claude-sonnet-4-6-thinking-medium": "claude-sonnet-4-6",
+    "gemini-claude-sonnet-4-6-thinking-high": "claude-sonnet-4-6",
+    "gemini-claude-sonnet-4-6": "claude-sonnet-4-6",
+    "claude-sonnet-4-6-thinking": "claude-sonnet-4-6",
+    "claude-sonnet-4-6-thinking-low": "claude-sonnet-4-6",
+    "claude-sonnet-4-6-thinking-medium": "claude-sonnet-4-6",
+    "claude-sonnet-4-6-thinking-high": "claude-sonnet-4-6",
+    "gpt-oss-120b": "gpt-oss-120b-medium"
+  },
+  "retiredMessage": "This Antigravity model is no longer offered. Choose another model."
+}
