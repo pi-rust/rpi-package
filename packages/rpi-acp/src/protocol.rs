@@ -400,50 +400,35 @@ fn spawn_durable_update_watcher(
     writer: Arc<Writer>,
     session_id: String,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    if !session.durable_available() {
-        return None;
-    }
-    let mut events = session.subscribe_durable_events();
-    let poll_delay = if events.is_some() {
-        std::time::Duration::from_secs(5)
-    } else {
-        std::time::Duration::from_millis(500)
-    };
+    let mut events = session.subscribe_durable_events()?;
     Some(tokio::spawn(async move {
-        let mut poll = tokio::time::interval(poll_delay);
         loop {
-            let has_events = events.is_some();
-            let event = async {
-                match events.as_mut() {
-                    Some(events) => Some(events.recv().await),
-                    None => None,
-                }
-            };
-            tokio::select! {
-                received = event, if has_events => {
-                    match received {
-                        Some(Ok(event)) => {
-                            if event["type"] != "session_entry_committed"
-                                || !matches!(
-                                    event["customType"].as_str(),
-                                    Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE)
-                                ) {
-                                continue;
-                            }
-                        }
-                        Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-                        Some(Err(tokio::sync::broadcast::error::RecvError::Closed)) | None => {
-                            events = None;
-                            continue;
+            match events.recv().await {
+                Ok(event)
+                    if event["type"] == "session_entry_committed"
+                        && matches!(
+                            event["customType"].as_str(),
+                            Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE)
+                        ) =>
+                {
+                    if session.refresh_durable().await.unwrap_or(false) {
+                        if let Some(notification) = session.durable_update(&session_id).await {
+                            writer.notify("session/durable_update", notification).await;
                         }
                     }
                 }
-                _ = poll.tick() => {}
-            }
-            if session.refresh_durable().await.unwrap_or(false) {
-                if let Some(notification) = session.durable_update(&session_id).await {
-                    writer.notify("session/durable_update", notification).await;
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // A lost notification is reconciled immediately. There is
+                    // intentionally no timer fallback: current native hosts
+                    // provide the commit event capability.
+                    if session.refresh_durable().await.unwrap_or(false) {
+                        if let Some(notification) = session.durable_update(&session_id).await {
+                            writer.notify("session/durable_update", notification).await;
+                        }
+                    }
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     }))
