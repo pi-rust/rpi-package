@@ -34,7 +34,7 @@ manage credentials, or provide an HTTP/ACP transport.
 | --- | --- |
 | `host` | Native child launch, ready validation, isolated requests, raw/projected subscriptions, runtime settings and shutdown |
 | `run`, `message` | Prompt acceptance, authoritative settlement, cancellation and cumulative text/thinking reconciliation |
-| `service` | Project/session operations, forks, clones, organization metadata, transcript snapshots, durable coordinator lifecycle and OAuth refresh |
+| `service` | Project/session operations, forks, clones, organization metadata, transcript snapshots, session lifecycle and OAuth refresh |
 | `events` | Replay boundary, event ordering, duplicate suppression and explicit resync requirements |
 | `history` | Native transcript validation and active-branch recovery without client formatting |
 | `dialogs` | Question deadlines and validated answers, including multiple choices and comments |
@@ -63,16 +63,19 @@ Ok(())
 
 `HostSession::subscribe_raw` is an internal adapter feed, including native response frames. Request callers receive their original IDs; native request IDs are isolated internally. Slow live subscribers receive an explicit resync requirement rather than silently truncated success. ACP treats overflow of its prompt stream as a failed run and stops that backend, retaining its established behavior.
 
-`durable::DurableCoordinator` contains the protocol-neutral state machine, while
-`durable::DurableRuntime` owns its native branch-backed lifecycle. `Service` and
-ACP both use the runtime for branch recovery, interrupted-run handling, event
-observation, mutation persistence and append-failure rollback. Durable changes
-also expose a bounded revision-based replay stream for adapters. It keeps tool
-summaries and queue transitions bounded and never replays side effects. The
-native host must advertise the two RPC commands in its ready capability list;
-hosts without an explicit capability list safely remain ordinary non-durable
-sessions. The branch remains the only durable source and no parallel database
-or scheduler is created.
+`rpi-durable-core` contains the protocol-neutral canonical schema and journal
+replay. `durable::DurableRuntime` is only a branch-backed projection: it reads
+`durable-state`/`rpi-durable-journal`, forwards mutations through the registered
+`rpi-durable` command, and publishes bounded in-memory changes. It never
+appends durable entries and never performs interrupted-run recovery. Lifecycle
+events are not folded into this projection; adapters refresh at attach and
+after a command commit, while a periodic branch watcher observes canonical
+commits made by another adapter/process. This prevents ordinary Agent events
+from becoming a second durable fact source. The native harness owns Agent execution recovery;
+`rpi-durable` owns workflow/business state. The native host must advertise
+`get_session_branch` and `execute_command`; hosts without those capabilities
+safely remain ordinary non-durable sessions. The branch remains the only
+durable source and no parallel database or scheduler is created.
 
 Sharing this library does not share memory between separate OS processes. Multiple clients must connect to the same service to share live sessions. Keep one backend writer per registry; independent service processes should use separate registry files.
 

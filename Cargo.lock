@@ -2490,6 +2490,7 @@ dependencies = [
 name = "rpi-durable"
 version = "0.2.1"
 dependencies = [
+ "rpi-durable-core",
  "rpi-plugin-sdk 0.3.20",
  "serde",
  "serde_json",
@@ -2497,10 +2498,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpi-durable-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rpi-extcore"
 version = "0.1.4"
 dependencies = [
  "futures-util",
+ "rpi-durable-core",
  "serde",
  "serde_json",
  "sha2",
