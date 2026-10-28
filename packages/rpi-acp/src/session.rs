@@ -170,6 +170,24 @@ impl Session {
         Ok(json!({"result": result, "state": runtime.state().await}))
     }
 
+    pub async fn refresh_durable(&self) -> Result<bool, String> {
+        let runtime = self.durable.as_ref().ok_or_else(|| {
+            "durable_unavailable: native host does not support durable branch operations"
+                .to_string()
+        })?;
+        runtime.refresh_branch().await
+    }
+
+    pub fn durable_available(&self) -> bool {
+        self.durable.is_some()
+    }
+    pub fn subscribe_durable_events(&self) -> Option<broadcast::Receiver<Value>> {
+        self.durable
+            .as_ref()
+            .filter(|_| self.rpc.supports_event("session_entry_committed"))?;
+        Some(self.rpc.subscribe_raw())
+    }
+
     /// Build the optional ACP notification payload from the runtime's
     /// authoritative persisted state. ACP does not maintain a second ledger.
     pub async fn durable_update(&self, session_id: &str) -> Option<Value> {

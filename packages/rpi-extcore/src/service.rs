@@ -1,8 +1,8 @@
 //! Session and workspace operations shared by protocol adapters.
-#[cfg(test)]
-use crate::durable::ENTRY_TYPE;
 use crate::{
-    durable::{DurableMutation, DurableRuntime, DurableSubscription},
+    durable::{
+        DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE, LEGACY_ENTRY_TYPE,
+    },
     host::HostSession,
     projects::Projects,
     protocol::{self, ApiCommand},
@@ -50,6 +50,7 @@ pub struct Service {
     sessions: Arc<RwLock<HashMap<String, Arc<HostSession>>>>,
     durable: Arc<RwLock<HashMap<String, Arc<DurableRuntime>>>>,
     durable_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    durable_event_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
 }
@@ -85,6 +86,7 @@ impl Service {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             durable: Arc::new(RwLock::new(HashMap::new())),
             durable_watchers: Arc::new(Mutex::new(HashMap::new())),
+            durable_event_watchers: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             registry: Arc::new(RwLock::new(registry)),
         }))
@@ -112,6 +114,16 @@ impl Service {
             .map(|(_, handle)| handle)
             .collect();
         for watcher in watchers {
+            watcher.abort();
+        }
+        let event_watchers: Vec<_> = self
+            .durable_event_watchers
+            .lock()
+            .await
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect();
+        for watcher in event_watchers {
             watcher.abort();
         }
         self.durable.write().await.clear();
@@ -213,8 +225,11 @@ async fn attach_durable(
     if let Some(watcher) = state.durable_watchers.lock().await.remove(id) {
         watcher.abort();
     }
+    if let Some(watcher) = state.durable_event_watchers.lock().await.remove(id) {
+        watcher.abort();
+    }
 
-    let Some(runtime) = DurableRuntime::try_attach(session).await? else {
+    let Some(runtime) = DurableRuntime::try_attach(session.clone()).await? else {
         // Durable is an optional native capability. Keep the ordinary session
         // alive when an older host does not expose branch RPCs.
         return Ok(());
@@ -229,11 +244,45 @@ async fn attach_durable(
         .lock()
         .await
         .insert(id.to_owned(), runtime.spawn_branch_watcher());
+
+    // New hosts publish generic commit metadata at the Session commit
+    // boundary. It is only an invalidation signal; the polling watcher remains
+    // as a compatibility fallback for older hosts or dropped events.
+    if session.supports_event("session_entry_committed") {
+        let mut events = session.subscribe_raw();
+        let event_runtime = runtime.clone();
+        let event_watcher = tokio::spawn(async move {
+            loop {
+                let event = match events.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if event["type"] != "session_entry_committed"
+                    || !matches!(
+                        event["customType"].as_str(),
+                        Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE)
+                    )
+                {
+                    continue;
+                }
+                let _ = event_runtime.refresh_branch().await;
+            }
+        });
+        state
+            .durable_event_watchers
+            .lock()
+            .await
+            .insert(id.to_owned(), event_watcher);
+    }
     Ok(())
 }
 
 async fn detach_durable(state: &Service, id: &str) {
     if let Some(watcher) = state.durable_watchers.lock().await.remove(id) {
+        watcher.abort();
+    }
+    if let Some(watcher) = state.durable_event_watchers.lock().await.remove(id) {
         watcher.abort();
     }
     state.durable.write().await.remove(id);

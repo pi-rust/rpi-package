@@ -626,6 +626,13 @@ impl HostSession {
             .is_some_and(|commands| commands.iter().any(|value| value.as_str() == Some(command)))
     }
 
+    /// Whether the native ready frame advertises an optional event stream.
+    pub fn supports_event(&self, event: &str) -> bool {
+        self.ready
+            .get("supportedEvents")
+            .and_then(Value::as_array)
+            .is_some_and(|events| events.iter().any(|value| value.as_str() == Some(event)))
+    }
     pub fn subscribe(&self) -> broadcast::Receiver<BufferedEvent> {
         self.runtime.events.subscribe()
     }

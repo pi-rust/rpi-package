@@ -17,7 +17,7 @@
 //! terminal agent.
 
 use crate::diagln;
-use rpi_extcore::durable::{DurableMutation, QueueStatus};
+use rpi_extcore::durable::{DurableMutation, QueueStatus, ENTRY_TYPE, LEGACY_ENTRY_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -395,6 +395,60 @@ fn client_supports_terminal_auth(params: &Value) -> bool {
         .any(|value| matches!(value, Some(Value::Bool(true)) | Some(Value::Object(_))))
 }
 
+fn spawn_durable_update_watcher(
+    session: Arc<Session>,
+    writer: Arc<Writer>,
+    session_id: String,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !session.durable_available() {
+        return None;
+    }
+    let mut events = session.subscribe_durable_events();
+    let poll_delay = if events.is_some() {
+        std::time::Duration::from_secs(5)
+    } else {
+        std::time::Duration::from_millis(500)
+    };
+    Some(tokio::spawn(async move {
+        let mut poll = tokio::time::interval(poll_delay);
+        loop {
+            let has_events = events.is_some();
+            let event = async {
+                match events.as_mut() {
+                    Some(events) => Some(events.recv().await),
+                    None => None,
+                }
+            };
+            tokio::select! {
+                received = event, if has_events => {
+                    match received {
+                        Some(Ok(event)) => {
+                            if event["type"] != "session_entry_committed"
+                                || !matches!(
+                                    event["customType"].as_str(),
+                                    Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE)
+                                ) {
+                                continue;
+                            }
+                        }
+                        Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                        Some(Err(tokio::sync::broadcast::error::RecvError::Closed)) | None => {
+                            events = None;
+                            continue;
+                        }
+                    }
+                }
+                _ = poll.tick() => {}
+            }
+            if session.refresh_durable().await.unwrap_or(false) {
+                if let Some(notification) = session.durable_update(&session_id).await {
+                    writer.notify("session/durable_update", notification).await;
+                }
+            }
+        }
+    }))
+}
+
 /// Run the ACP server until the client closes stdin, then return an exit code.
 ///
 /// The owner reports the returned code to the host's stdio lifecycle. The
@@ -406,6 +460,7 @@ pub async fn run(
 ) -> i32 {
     let writer = Arc::new(Writer::new());
     let sessions: Arc<Mutex<HashMap<String, Arc<Session>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let mut durable_watchers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(10));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -505,7 +560,15 @@ pub async fn run(
                             Ok(config) => result["configOptions"] = config["configOptions"].clone(),
                             Err(error) => diagln!("[rpi-acp] session {session_id}: config options unavailable: {error}"),
                         }
+                        let watcher = spawn_durable_update_watcher(
+                            session.clone(),
+                            writer.clone(),
+                            session_id.clone(),
+                        );
                         sessions.lock().await.insert(session_id.clone(), session);
+                        if let Some(watcher) = watcher {
+                            durable_watchers.insert(session_id.clone(), watcher);
+                        }
                         writer.respond(&id, result).await;
                     }
                     Err(error) => writer.session_error(&id, "session/new", &error).await,
@@ -629,7 +692,15 @@ pub async fn run(
                                     Ok(config) => result["configOptions"] = config["configOptions"].clone(),
                                     Err(error) => diagln!("[rpi-acp] session {session_id}: config options unavailable: {error}"),
                                 }
+                                let watcher = spawn_durable_update_watcher(
+                                    session.clone(),
+                                    writer.clone(),
+                                    session_id.to_owned(),
+                                );
                                 sessions.lock().await.insert(session_id.to_owned(), session);
+                                if let Some(watcher) = watcher {
+                                    durable_watchers.insert(session_id.to_owned(), watcher);
+                                }
                                 for update in updates {
                                     writer
                                         .notify(
@@ -725,6 +796,9 @@ pub async fn run(
                 // Detach a live backend first, then drop its persisted files.
                 // Deleting is idempotent: a session that is no longer running
                 // (or was never saved) still answers successfully.
+                if let Some(watcher) = durable_watchers.remove(&session_id) {
+                    watcher.abort();
+                }
                 if let Some(session) = sessions.lock().await.remove(&session_id) {
                     session.kill().await;
                 }
@@ -775,6 +849,9 @@ pub async fn run(
     // Resolve pending client requests before tearing down every child.
     writer.close();
     // Client closed stdin or host requested shutdown.
+    for (_, watcher) in durable_watchers {
+        watcher.abort();
+    }
     for (_, session) in sessions.lock().await.drain() {
         session.kill().await;
     }
