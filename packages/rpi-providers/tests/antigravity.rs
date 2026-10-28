@@ -1,9 +1,10 @@
 //! Antigravity through the real cdylib: loading, OAuth begin, Gemini SSE streaming,
-//! cancellation, HTTP errors, lifecycle shutdown and credential isolation.
+//! cancellation, HTTP errors, lifecycle shutdown, credential isolation and the project
+//! binding across a restart.
 //! Token and project endpoints are unit-tested inside the module; this file never reaches
 //! Google. Every loopback server here answers project discovery itself.
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -47,9 +48,13 @@ fn library_path() -> PathBuf {
 }
 
 fn load() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
+    load_from(library_path())
+}
+
+fn load_from(path: PathBuf) -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
     let session = rpi_extensions::load_session_mixed(
         &[],
-        &[library_path()],
+        &[path],
         Arc::new(rpi_extensions::NullDiagnostics),
         None,
     );
@@ -58,6 +63,14 @@ fn load() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
         tokio::runtime::Handle::current(),
     );
     (session, providers)
+}
+
+/// A byte-identical copy of the library at a new path. Loading it gives a separate image with
+/// its own statics, so a restart starts with an empty credential bridge and project cache.
+fn restarted_library(dir: &Path) -> PathBuf {
+    let copy = dir.join(library_path().file_name().unwrap());
+    std::fs::copy(library_path(), &copy).expect("copy the library for a restart");
+    copy
 }
 
 fn antigravity(providers: &[Arc<dyn Provider>]) -> Arc<dyn Provider> {
@@ -205,6 +218,39 @@ async fn next_stream(listener: &TcpListener) -> (TcpStream, Seen) {
     }
 }
 
+/// Answers each project-discovery or onboarding call with `discovery`, or refuses it with 503
+/// when `None`, then streams one reply to the first streaming request. Returns that request
+/// and how many discovery calls arrived before it.
+async fn serve_stream(listener: &TcpListener, discovery: Option<&str>) -> (Seen, usize) {
+    let mut calls = 0;
+    loop {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let seen = read_request(&mut socket).await;
+        if seen.path.ends_with(":loadCodeAssist") || seen.path.ends_with(":onboardUser") {
+            calls += 1;
+            match discovery {
+                Some(project) => {
+                    let body = json!({"cloudaicompanionProject": project});
+                    respond_json(&mut socket, 200, &body.to_string()).await;
+                }
+                None => respond_json(&mut socket, 503, r#"{"error":"discovery is down"}"#).await,
+            }
+            continue;
+        }
+        assert_eq!(seen.path, STREAM_PATH);
+        start_stream(&mut socket).await;
+        send_chunk(
+            &mut socket,
+            &event(
+                json!({"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}),
+            ),
+        )
+        .await;
+        finish_chunks(&mut socket).await;
+        return (seen, calls);
+    }
+}
+
 fn kind(event: &AssistantMessageEvent) -> &'static str {
     match event {
         AssistantMessageEvent::Start { .. } => "start",
@@ -333,6 +379,71 @@ async fn oauth_begin_requires_configuration_then_issues_an_s256_pkce_url() {
     // digest is checked against it in the module's unit tests.
     assert_eq!(URL_SAFE_NO_PAD.decode(&query["state"]).unwrap().len(), 32);
     assert_eq!(query["code_challenge"].len(), 43, "S256 digest, base64url");
+}
+
+/// The access value a login stores for a project-bound account, `<token>|<project>`. The
+/// module's unit tests pin how the login produces it.
+const BOUND_ACCESS: &str = "restart-token|bound-project";
+
+/// A project bound at login survives a restart. After the restart the stored access supplies
+/// the project: the stream makes no discovery call, even while discovery is refusing, and only
+/// the plain token reaches Google.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_reuses_the_project_bound_at_login() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_session, providers) = load_from(restarted_library(dir.path()));
+    let cloud = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", cloud.local_addr().unwrap());
+    let server = tokio::spawn(async move { serve_stream(&cloud, None).await });
+    let mut stream = antigravity(&providers)
+        .stream_simple(&model(&base), &context(), &options(BOUND_ACCESS))
+        .await;
+    let (events, terminals) = drain(&mut stream, |_| {}).await;
+    let (seen, discovery_calls) = server.await.unwrap();
+
+    assert_eq!(terminals, 1);
+    assert!(
+        matches!(events.last(), Some(AssistantMessageEvent::Done { .. })),
+        "{events:?}"
+    );
+    assert_eq!(
+        seen.body["project"], "bound-project",
+        "the bound project, not the default project"
+    );
+    assert_eq!(discovery_calls, 0, "no project discovery after the restart");
+    assert_eq!(
+        seen.authorization, "Bearer restart-token",
+        "only the plain token reaches Google"
+    );
+}
+
+/// A credential stored before the binding existed has a plain access token. After a restart
+/// it keeps the fallback: project discovery decides the project.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_access_without_a_binding_still_uses_discovery_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_session, providers) = load_from(restarted_library(dir.path()));
+    let cloud = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", cloud.local_addr().unwrap());
+    let server =
+        tokio::spawn(async move { serve_stream(&cloud, Some("discovered-project")).await });
+    let mut stream = antigravity(&providers)
+        .stream_simple(&model(&base), &context(), &options("legacy-token"))
+        .await;
+    let (events, terminals) = drain(&mut stream, |_| {}).await;
+    let (seen, discovery_calls) = server.await.unwrap();
+
+    assert_eq!(terminals, 1);
+    assert!(
+        matches!(events.last(), Some(AssistantMessageEvent::Done { .. })),
+        "{events:?}"
+    );
+    assert_eq!(
+        discovery_calls, 1,
+        "a plain token still discovers its project"
+    );
+    assert_eq!(seen.body["project"], "discovered-project");
+    assert_eq!(seen.authorization, "Bearer legacy-token");
 }
 
 #[tokio::test]

@@ -158,6 +158,30 @@ pub fn format_refresh(parts: &RefreshParts) -> String {
         None => base,
     }
 }
+/// The access value the host stores: the bare token, plus `|<project>` once a login or refresh
+/// has bound a project. Credentials stored before the binding are bare tokens.
+pub fn format_access(token: &str, project: &str) -> String {
+    if project.is_empty() {
+        token.into()
+    } else {
+        format!("{token}|{project}")
+    }
+}
+/// The bare token that is sent to Google, and the project bound to it when one is stored.
+pub fn parse_access(value: &str) -> (&str, Option<&str>) {
+    match value.split_once('|') {
+        Some((token, project)) => (token, Some(project).filter(|project| !project.is_empty())),
+        None => (value, None),
+    }
+}
+/// The project a packed refresh resolves to: the managed project when one is recorded.
+pub fn bound_project(packed: &str) -> String {
+    let parts = parse_refresh(packed);
+    parts
+        .managed_project_id
+        .or(parts.project_id)
+        .unwrap_or_default()
+}
 /// Pi stores expiry in milliseconds; the host envelope carries whole seconds.
 pub fn expires_at(request_ms: f64, seconds: &Value) -> f64 {
     let seconds = seconds.as_f64().unwrap_or(3600.0);
@@ -168,8 +192,10 @@ pub fn expires_at(request_ms: f64, seconds: &Value) -> f64 {
     }
 }
 
-/// Access-token to packed-refresh bridge. Pi's provider framework passes only the access
-/// token to the stream, so the stream recovers the project context from here.
+/// Access-token to packed-refresh bridge, keyed by the bare token. Pi's provider framework passes
+/// only the access value to the stream. A bound access value names its project itself, so the
+/// bridge only supplies the refresh-token context for a plain (unbound) access, and it is lost on
+/// restart.
 #[derive(Default)]
 pub struct CredentialCache(IndexMap<String, String>);
 impl CredentialCache {
