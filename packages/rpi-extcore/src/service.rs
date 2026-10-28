@@ -1405,6 +1405,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_event_refreshes_projection_without_waiting_for_polling() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let root = std::env::temp_dir().join(format!(
+            "rpi-durable-event-refresh-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let service = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("sessions.json"),
+            ..BackendConfig::default()
+        })
+        .unwrap();
+        let (writer, peer) = tokio::io::duplex(4096);
+        let ready = json!({
+            "type": "ready",
+            "protocol": "rpi",
+            "supportedCommands": ["get_session_branch", "append_entry", "execute_command"],
+            "supportedEvents": ["session_entry_committed"]
+        });
+        let (session, injector) = HostSession::test_connection_with_ready(writer, 16, ready);
+        let revision = Arc::new(AtomicU64::new(1));
+        let fixture_revision = revision.clone();
+        let injector_for_fixture = injector.clone();
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let current = fixture_revision.load(Ordering::Acquire);
+                let data = json!({"entries": [{
+                    "type": "custom",
+                    "customType": ENTRY_TYPE,
+                    "data": {
+                        "revision": current,
+                        "nextRunId": 1,
+                        "run": {"id": "run-1", "status": "running", "tools": []},
+                        "queue": []
+                    }
+                }]});
+                injector_for_fixture
+                    .send(json!({
+                        "type": "response",
+                        "id": request["id"],
+                        "success": true,
+                        "data": data
+                    }))
+                    .unwrap();
+            }
+        });
+        service
+            .sessions
+            .write()
+            .await
+            .insert("event-refresh".into(), session.clone());
+
+        attach_durable(&service, "event-refresh", session.clone())
+            .await
+            .unwrap();
+        let projected = service.durable_projection("event-refresh").await.unwrap();
+        assert_eq!(projected.state().await.revision, 1);
+
+        revision.store(2, Ordering::Release);
+        injector
+            .send(json!({
+                "type": "session_entry_committed",
+                "entryId": "durable-entry-2",
+                "entryType": "custom",
+                "customType": ENTRY_TYPE,
+                "lane": "main"
+            }))
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if projected.state().await.revision == 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("commit event should refresh durable projection");
+
+        detach_durable(&service, "event-refresh").await;
+        fixture.abort();
+        service.shutdown().await;
+        drop(service);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn durable_projection_ignores_noncanonical_entries() {
         use tokio::io::{AsyncBufReadExt, BufReader};
 
