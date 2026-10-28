@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.13...rpi-web-v0.1.14) - 2026-10-28
+
+### Fixed
+
+- *(web)* add send-now queue action and expand projects ([#92](https://github.com/pi-rust/rpi-package/pull/92))
+
 ## [0.1.13](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.12...rpi-web-v0.1.13) - 2026-10-28
 
 ### Other
