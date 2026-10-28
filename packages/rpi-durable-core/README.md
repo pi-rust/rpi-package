@@ -8,7 +8,8 @@ This crate owns:
 - the canonical `durable-state` discriminator;
 - `rpi-durable-journal` replay;
 - the canonical typed workflow, run, tool and queue schema;
-- the shared durable command vocabulary used by adapters.
+- the shared durable command vocabulary used by adapters;
+- compatibility decoding for `rpi-durable-runtime`.
 
 It deliberately does **not** own a session, storage backend, worker, scheduler,
 or mutation writer. It provides model types and replay only; the `rpi-durable`

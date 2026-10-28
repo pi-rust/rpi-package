@@ -24,6 +24,7 @@ use std::sync::{Mutex, OnceLock};
 
 const TOOL: &str = "durable";
 const ENTRY_TYPE: &str = rpi_durable_core::ENTRY_TYPE;
+const LEGACY_ENTRY_TYPE: &str = rpi_durable_core::LEGACY_ENTRY_TYPE;
 const MAX_STEPS: usize = 128;
 const MAX_NAME_CHARS: usize = 500;
 const MAX_STEP_ID_CHARS: usize = 128;
@@ -498,12 +499,45 @@ fn decode_legacy_state(data: &Value) -> Result<DurableState, String> {
     Ok(state)
 }
 
+fn decode_legacy_runtime_state(data: &Value) -> Result<DurableState, String> {
+    let mut object = data
+        .as_object()
+        .cloned()
+        .ok_or("invalid legacy runtime state: expected an object")?;
+    object.entry("workflow").or_insert(Value::Null);
+    let revision = object.get("revision").and_then(Value::as_u64).unwrap_or(0);
+    if let Some(run) = object.get_mut("run").and_then(Value::as_object_mut) {
+        run.entry("startedRevision").or_insert(json!(revision));
+        run.entry("updatedRevision").or_insert(json!(revision));
+        if let Some(tools) = run.get_mut("tools").and_then(Value::as_array_mut) {
+            for tool in tools {
+                if let Some(tool) = tool.as_object_mut() {
+                    tool.entry("callKey").or_insert(Value::Null);
+                }
+            }
+        }
+    }
+    if let Some(queue) = object.get_mut("queue").and_then(Value::as_array_mut) {
+        for item in queue {
+            if let Some(item) = item.as_object_mut() {
+                item.entry("createdRevision").or_insert(json!(revision));
+                item.entry("updatedRevision").or_insert(json!(revision));
+            }
+        }
+    }
+    let state = serde_json::from_value(Value::Object(object))
+        .map_err(|error| format!("invalid legacy runtime state: {error}"))?;
+    validate_state(&state)?;
+    Ok(state)
+}
+
 fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), String> {
     let mut records = Vec::new();
     let mut invalid_records = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
+        let custom_type = entry.get("customType").and_then(Value::as_str);
         if entry.get("type").and_then(Value::as_str) != Some("custom")
-            || entry.get("customType").and_then(Value::as_str) != Some(ENTRY_TYPE)
+            || !matches!(custom_type, Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE))
         {
             continue;
         }
@@ -511,6 +545,12 @@ fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), Strin
             let data = entry
                 .get("data")
                 .ok_or("durable custom entry has no data")?;
+            if custom_type == Some(LEGACY_ENTRY_TYPE) {
+                return Ok(BranchRecord::Legacy {
+                    state: decode_legacy_runtime_state(data)?,
+                    entry_id: branch_entry_identity(entry),
+                });
+            }
             let has_format = data.get("format").is_some();
             let has_version = data.get("version").is_some();
             if !has_format && !has_version {

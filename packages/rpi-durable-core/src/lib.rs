@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 pub const ENTRY_TYPE: &str = "durable-state";
+pub const LEGACY_ENTRY_TYPE: &str = "rpi-durable-runtime";
 pub const JOURNAL_FORMAT: &str = "rpi-durable-journal";
 pub const JOURNAL_VERSION: u64 = 1;
 pub const MAX_QUEUE_ITEMS: usize = 32;
@@ -254,7 +255,7 @@ pub fn replay_entries(entries: &[Value]) -> Result<Option<Value>, String> {
     let mut revision = 0_u64;
     for entry in entries {
         let custom_type = entry.get("customType").and_then(Value::as_str);
-        if custom_type != Some(ENTRY_TYPE) {
+        if custom_type != Some(ENTRY_TYPE) && custom_type != Some(LEGACY_ENTRY_TYPE) {
             continue;
         }
         let Some(data) = entry.get("data") else {
@@ -519,6 +520,10 @@ pub fn is_canonical_entry(entry: &Value) -> bool {
     entry.get("type").and_then(Value::as_str) == Some("custom")
         && entry.get("customType").and_then(Value::as_str) == Some(ENTRY_TYPE)
 }
+pub fn is_legacy_entry(entry: &Value) -> bool {
+    entry.get("type").and_then(Value::as_str) == Some("custom")
+        && entry.get("customType").and_then(Value::as_str) == Some(LEGACY_ENTRY_TYPE)
+}
 
 #[cfg(test)]
 mod tests {
@@ -567,6 +572,14 @@ mod tests {
     }
 
     #[test]
+    fn accepts_legacy_runtime_snapshot_without_writing_it() {
+        let entries = vec![
+            json!({"type":"custom","customType":LEGACY_ENTRY_TYPE,"data":{"revision":4,"queue":[]}}),
+        ];
+        assert_eq!(DurableState::from_branch(&entries).revision, 4);
+        assert!(is_legacy_entry(&entries[0]));
+    }
+    #[test]
     fn malformed_journal_fails_closed() {
         let entries = vec![
             json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"changes":[{"revision":2}]}}),
@@ -577,11 +590,14 @@ mod tests {
         assert_eq!(DurableState::from_branch(&entries), DurableState::default());
     }
     #[test]
-    fn entry_classification_is_strict() {
+    fn entry_classification_is_strict_and_migration_is_read_only() {
         let canonical = json!({"type":"custom","customType":ENTRY_TYPE});
+        let legacy = json!({"type":"custom","customType":LEGACY_ENTRY_TYPE});
         let message = json!({"type":"message","customType":ENTRY_TYPE});
         assert!(is_canonical_entry(&canonical));
-        assert!(!is_canonical_entry(&message));
+        assert!(is_legacy_entry(&legacy));
+        assert!(!is_canonical_entry(&legacy));
+        assert!(!is_legacy_entry(&message));
         assert_eq!(DurableState::default().entry()["customType"], ENTRY_TYPE);
     }
 }

@@ -17,7 +17,7 @@
 //! terminal agent.
 
 use crate::diagln;
-use rpi_extcore::durable::{DurableMutation, QueueStatus, ENTRY_TYPE};
+use rpi_extcore::durable::{DurableMutation, QueueStatus, ENTRY_TYPE, LEGACY_ENTRY_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -406,7 +406,10 @@ fn spawn_durable_update_watcher(
             match events.recv().await {
                 Ok(event)
                     if event["type"] == "session_entry_committed"
-                        && event["customType"].as_str() == Some(ENTRY_TYPE) =>
+                        && matches!(
+                            event["customType"].as_str(),
+                            Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE)
+                        ) =>
                 {
                     if session.refresh_durable().await.unwrap_or(false) {
                         if let Some(notification) = session.durable_update(&session_id).await {
