@@ -1,16 +1,16 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex as StdMutex,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::{broadcast, mpsc, oneshot, Mutex, RwLock},
+    sync::{Mutex, RwLock, broadcast, mpsc, oneshot},
 };
 
 /// How many projected events a session keeps so a page reload can rebuild the
@@ -784,20 +784,19 @@ impl HostSession {
             .ok_or_else(|| "get_session_branch: invalid entries data".into())
     }
 
-    /// Read only the custom entries of `custom_type`.
-    ///
-    /// A full branch read serializes the whole transcript, which reaches
-    /// hundreds of megabytes on long sessions, so pollers must never ask for
-    /// it. Hosts that ignore the filter answer with the full branch, which stays
-    /// correct but expensive; the flag reports whether the cheap path is
-    /// available.
+    /// Read only custom entries after an optional native entry sequence.
+    /// Initial reads omit `after_seq`; incremental reads use it to avoid
+    /// replaying the durable journal prefix.
     pub async fn branch_entries_of_type(
         &self,
         custom_type: &str,
+        after_seq: Option<u64>,
     ) -> Result<(Vec<Value>, bool), String> {
-        let data = self
-            .runtime_command("get_session_branch", json!({"customType": custom_type}))
-            .await?;
+        let mut params = json!({"customType": custom_type});
+        if let Some(after_seq) = after_seq {
+            params["afterSeq"] = json!(after_seq);
+        }
+        let data = self.runtime_command("get_session_branch", params).await?;
         let entries = data
             .get("entries")
             .and_then(Value::as_array)
@@ -1035,12 +1034,14 @@ mod tests {
                 session.terminate().await;
             }
             assert!(worker_abort.is_finished());
-            assert!(tokio::time::timeout(Duration::from_secs(1), request)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap_err()
-                .contains("closed"));
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), request)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap_err()
+                    .contains("closed")
+            );
             assert_eq!(raw.recv().await.unwrap()["type"], "host_closed");
             let closed = projected.recv().await.unwrap();
             assert_eq!(closed.value["type"], "host_closed");
@@ -1419,10 +1420,12 @@ mod tests {
             .unwrap();
         let (writer, reader) = tokio::io::duplex(64);
         drop(reader);
-        assert!(write_commands(writer, outbound, pending)
-            .await
-            .unwrap_err()
-            .contains("failed to write"));
+        assert!(
+            write_commands(writer, outbound, pending)
+                .await
+                .unwrap_err()
+                .contains("failed to write")
+        );
     }
 
     #[tokio::test]
@@ -1430,20 +1433,26 @@ mod tests {
         let mut valid = &b"{\"type\":\"ready\",\"protocol\":\"rpi\"}\n"[..];
         assert!(read_ready(&mut valid, Duration::from_secs(1)).await.is_ok());
         let mut invalid = &b"{\"type\":\"ready\",\"protocol\":\"other\"}\n"[..];
-        assert!(read_ready(&mut invalid, Duration::from_secs(1))
-            .await
-            .is_err());
+        assert!(
+            read_ready(&mut invalid, Duration::from_secs(1))
+                .await
+                .is_err()
+        );
         let large = vec![b'x'; 1024 * 1024 + 1];
         let mut oversized = large.as_slice();
-        assert!(read_ready(&mut oversized, Duration::from_secs(1))
-            .await
-            .is_err());
+        assert!(
+            read_ready(&mut oversized, Duration::from_secs(1))
+                .await
+                .is_err()
+        );
         assert_eq!(oversized.len(), 1);
         let (silent, _writer) = tokio::io::duplex(64);
         let mut silent = BufReader::new(silent);
-        assert!(read_ready(&mut silent, Duration::from_millis(20))
-            .await
-            .unwrap_err()
-            .contains("timed out"));
+        assert!(
+            read_ready(&mut silent, Duration::from_millis(20))
+                .await
+                .unwrap_err()
+                .contains("timed out")
+        );
     }
 }
