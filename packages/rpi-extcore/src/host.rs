@@ -810,6 +810,31 @@ impl HostSession {
         Ok((entries, filtered))
     }
 
+    pub async fn branch_entries_of_types(
+        &self,
+        custom_types: &[&str],
+    ) -> Result<(Vec<Value>, bool), String> {
+        let first_type = custom_types.first().copied().ok_or_else(|| {
+            "get_session_branch: at least one custom type is required".to_string()
+        })?;
+        let (mut entries, filtered) = self.branch_entries_of_type(first_type).await?;
+        if !filtered || custom_types.len() == 1 {
+            // An old host ignores customType and returns the complete branch.
+            // Do not issue another expensive full-transcript request.
+            return Ok((entries, filtered));
+        }
+        for custom_type in &custom_types[1..] {
+            let (mut extra, extra_filtered) = self.branch_entries_of_type(custom_type).await?;
+            if !extra_filtered {
+                // This response is already the authoritative complete branch.
+                return Ok((extra, false));
+            }
+            entries.append(&mut extra);
+        }
+        entries.sort_by_key(|entry| entry.get("seq").and_then(Value::as_u64));
+        Ok((entries, true))
+    }
+
     /// Append a protocol-neutral custom entry to the native session branch.
     pub async fn append_custom_entry(
         &self,

@@ -1,8 +1,6 @@
 //! Session and workspace operations shared by protocol adapters.
 use crate::{
-    durable::{
-        DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE, LEGACY_ENTRY_TYPE,
-    },
+    durable::{DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE},
     host::HostSession,
     projects::Projects,
     protocol::{self, ApiCommand},
@@ -246,10 +244,7 @@ async fn attach_durable(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
                 if event["type"] != "session_entry_committed"
-                    || !matches!(
-                        event["customType"].as_str(),
-                        Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE)
-                    )
+                    || event["customType"].as_str() != Some(ENTRY_TYPE)
                 {
                     continue;
                 }
@@ -1161,7 +1156,14 @@ pub async fn command(state: &Service, id: String, command: ApiCommand) -> (Reply
     value["id"] = request_id.clone();
     let result = session.send(value).await;
     match result {
-        Ok(response) => (ReplyKind::Success, response),
+        Ok(response) => {
+            if command.kind == "navigate" && response.get("success") != Some(&Value::Bool(false)) {
+                if let Some(runtime) = state.durable_projection(&id).await {
+                    let _ = runtime.refresh_branch().await;
+                }
+            }
+            (ReplyKind::Success, response)
+        }
         Err(error) => (
             ReplyKind::HostUnavailable,
             protocol::response(Some(request_id), &command.kind, Err(error)),

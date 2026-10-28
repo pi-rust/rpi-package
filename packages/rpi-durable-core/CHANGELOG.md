@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- Mark `rpi-durable-runtime` read compatibility as deprecated. It remains
+  supported through the `0.1.x` line and is planned for removal in `0.2.0`.
+  New writes use only `durable-state`.
+
 ## [0.1.0](https://github.com/pi-rust/rpi-package/releases/tag/rpi-durable-core-v0.1.0) - 2026-10-28
 
 ### Added

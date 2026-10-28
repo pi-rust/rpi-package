@@ -15,7 +15,9 @@ use tokio::sync::Mutex;
 
 /// Canonical native custom-entry discriminator owned by `rpi-durable`.
 pub const ENTRY_TYPE: &str = rpi_durable_core::ENTRY_TYPE;
-/// Old discriminator accepted only by the shared replay/migration layer.
+/// Deprecated read-only compatibility for sessions written before the
+/// canonical discriminator was introduced. Planned removal target:
+/// `rpi-extcore` 0.2.0 / `rpi-durable` 0.3.0.
 pub const LEGACY_ENTRY_TYPE: &str = rpi_durable_core::LEGACY_ENTRY_TYPE;
 /// Maximum number of durable state changes retained for reconnect replay.
 pub const MAX_CHANGE_ENTRIES: usize = 128;
@@ -65,7 +67,7 @@ pub fn replay_changes(
                         return Some((
                             DurableStreamItem::ResyncRequired { dropped },
                             (receiver, cursor),
-                        ))
+                        ));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
@@ -108,7 +110,10 @@ impl DurableRuntime {
         {
             return Ok(None);
         }
-        let (entries, _filtered) = match session.branch_entries_of_type(ENTRY_TYPE).await {
+        let (entries, _filtered) = match session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE])
+            .await
+        {
             Ok(reply) => reply,
             Err(_) => return Ok(None),
         };
@@ -137,7 +142,9 @@ impl DurableRuntime {
     }
 
     async fn load(session: Arc<HostSession>, _strict_recovery: bool) -> Result<Arc<Self>, String> {
-        let (entries, _filtered) = session.branch_entries_of_type(ENTRY_TYPE).await?;
+        let (entries, _filtered) = session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE])
+            .await?;
         let state = DurableState::try_from_branch(&entries)?;
         Ok(Self::new(session, state))
     }
@@ -209,7 +216,10 @@ impl DurableRuntime {
 
     pub async fn refresh_branch(&self) -> Result<bool, String> {
         let _refresh = self.refresh_lock.lock().await;
-        let (entries, _filtered) = self.session.branch_entries_of_type(ENTRY_TYPE).await?;
+        let (entries, _filtered) = self
+            .session
+            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE])
+            .await?;
         let next = DurableState::try_from_branch(&entries)?;
         let mut projection = self.projection.lock().await;
         if *projection == next {
@@ -256,17 +266,19 @@ mod tests {
             while let Some(line) = lines.next_line().await.unwrap() {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let data = match request["type"].as_str() {
-                    Some("get_session_branch") => {
-                        if started {
-                            json!({"entries": [{"type":"custom","customType":ENTRY_TYPE,"data":{
+                    Some("get_session_branch")
+                        if started && request["customType"].as_str() == Some(ENTRY_TYPE) =>
+                    {
+                        json!({
+                            "filtered": true,
+                            "entries": [{"seq":7,"type":"custom","customType":ENTRY_TYPE,"data":{
                                 "revision":1,"nextRunId":1,
                                 "run":{"id":"run-1","status":"running","tools":[]},
                                 "queue":[]
-                            }}]})
-                        } else {
-                            json!({"entries": []})
-                        }
+                            }}]
+                        })
                     }
+                    Some("get_session_branch") => json!({"filtered":true,"entries":[]}),
                     Some("execute_command") => {
                         started = true;
                         json!({"changed":true,"run":{"id":"run-1","status":"running","tools":[]}})
@@ -290,6 +302,7 @@ mod tests {
             .unwrap();
         let mut subscription = runtime.subscribe_changes(None).await;
         runtime.mutate(DurableMutation::StartRun).await.unwrap();
+        assert!(!runtime.refresh_branch().await.unwrap());
         let changes = replay_changes(
             subscription.replay,
             subscription.receiver,
@@ -307,6 +320,48 @@ mod tests {
         subscription = runtime.subscribe_changes(Some(1)).await;
         assert!(!subscription.gap);
         assert!(subscription.replay.is_empty());
+
+        fixture.abort();
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_reads_legacy_entries_without_dropping_the_projection() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let entries = if request["customType"].as_str() == Some(LEGACY_ENTRY_TYPE) {
+                    json!([{
+                        "seq": 4,
+                        "type": "custom",
+                        "customType": LEGACY_ENTRY_TYPE,
+                        "data": {"revision": 4, "queue": []}
+                    }])
+                } else {
+                    json!([])
+                };
+                injector
+                    .send(json!({
+                        "type": "response",
+                        "id": request["id"],
+                        "success": true,
+                        "data": {"filtered": true, "entries": entries}
+                    }))
+                    .unwrap();
+            }
+        });
+
+        let runtime = DurableRuntime::try_attach(session.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(runtime.state().await.revision, 4);
+        assert!(!runtime.refresh_branch().await.unwrap());
 
         fixture.abort();
         session.shutdown().await;
