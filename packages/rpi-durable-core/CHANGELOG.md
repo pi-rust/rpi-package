@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/pi-rust/rpi-package/compare/rpi-durable-core-v0.1.0...rpi-durable-core-v0.1.1) - 2026-10-28
+
+### Fixed
+
+- *(durable)* replay journal deltas and legacy bases
+
+### Other
+
+- mark legacy durable reads for removal
+- Revert "remove legacy durable entry discriminator"
+- remove legacy durable entry discriminator
+- simplify durable replay to canonical branch reads
+
 ### Deprecated
 
 - Mark `rpi-durable-runtime` read compatibility as deprecated. It remains

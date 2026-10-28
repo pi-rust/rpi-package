@@ -1,6 +1,6 @@
 [package]
 name = "rpi-durable"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rpi-plugin-sdk = { workspace = true }
-rpi-durable-core = { path = "../rpi-durable-core", version = "0.1.0" }
+rpi-durable-core = { path = "../rpi-durable-core", version = "0.1.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
