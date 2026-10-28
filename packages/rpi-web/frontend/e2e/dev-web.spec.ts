@@ -385,14 +385,22 @@ test("capabilities gate the history and queue inspector", async ({ page }) => {
       .locator(".inspector .queue-item")
       .getByRole("button", { name: "Send now: pending", exact: true }),
   ).toBeVisible();
+  const cancel = page.waitForRequest(
+    (request) =>
+      request.url().endsWith(`/sessions/${sessionId}/commands`) &&
+      request.method() === "POST" &&
+      request.postDataJSON()?.type === "cancel_queued",
+  );
   await page
     .locator(".inspector .queue-item")
     .getByRole("button", { name: "Edit queued message" })
     .click();
+  await expect((await cancel).postDataJSON()).toMatchObject({
+    entryId: "queue-2",
+  });
   await expect(page.locator(".composer textarea")).toHaveValue("pending");
-  await expect(page.locator(".composer-queue-editing")).toContainText(
-    "Edit queued message",
-  );
+  await expect(page.locator(".composer-queue-editing")).toHaveCount(0);
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(0);
 });
 
 test("a stopped session can send a selected queued message now", async ({

@@ -2446,16 +2446,30 @@ export default function App() {
     );
   }
 
-  function editQueued(item: QueueItem) {
-    if (!isEditableQueueItem(item)) return;
+  async function editQueued(item: QueueItem) {
+    if (!isEditableQueueItem(item) || !sessionId) return;
+    const navigation = navigationRevision.current;
+    const previous = queueItems;
+    const previousDraft = draft;
     queueDraftRevision.current++;
-    setQueueEditId(item.entryId);
+    setQueueEditId(null);
     setQueueDraft("");
+    setQueueItems((items) => items.filter((queued) => queued.entryId !== item.entryId));
     updateDraft(item.text);
     setQueueKind(item.queue);
     setQueueOpen(false);
     setInspector(false);
     requestAnimationFrame(() => composerInputRef.current?.focus());
+    try {
+      await api.cancelQueued(sessionId, item.entryId);
+      if (navigation === navigationRevision.current) await refreshSessionDiagnostics();
+    } catch (cause) {
+      if (navigation !== navigationRevision.current) return;
+      setQueueItems(previous);
+      setQueueOpen(true);
+      updateDraft(previousDraft);
+      setError(errorText(cause));
+    }
   }
 
   function cancelQueueEdit() {
