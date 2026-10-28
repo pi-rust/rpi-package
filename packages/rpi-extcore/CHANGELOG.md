@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.7...rpi-extcore-v0.1.8) - 2026-10-28
+
+### Fixed
+
+- *(durable)* replay journal deltas and legacy bases
+
+### Other
+
+- test durable legacy read compatibility
+- preserve legacy durable reads during refresh
+- mark legacy durable reads for removal
+- Revert "remove legacy durable entry discriminator"
+- remove legacy durable entry discriminator
+- simplify durable replay to canonical branch reads
+
 ## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.6...rpi-extcore-v0.1.7) - 2026-10-28
 
 ### Other

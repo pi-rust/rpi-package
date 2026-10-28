@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.18](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.17...rpi-web-v0.1.18) - 2026-10-28
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
 ## [0.1.17](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.16...rpi-web-v0.1.17) - 2026-10-28
 
 ### Other
