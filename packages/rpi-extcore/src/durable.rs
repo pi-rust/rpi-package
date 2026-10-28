@@ -326,6 +326,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_reads_legacy_entries_without_dropping_the_projection() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let entries = if request["customType"].as_str() == Some(LEGACY_ENTRY_TYPE) {
+                    json!([{
+                        "seq": 4,
+                        "type": "custom",
+                        "customType": LEGACY_ENTRY_TYPE,
+                        "data": {"revision": 4, "queue": []}
+                    }])
+                } else {
+                    json!([])
+                };
+                injector
+                    .send(json!({
+                        "type": "response",
+                        "id": request["id"],
+                        "success": true,
+                        "data": {"filtered": true, "entries": entries}
+                    }))
+                    .unwrap();
+            }
+        });
+
+        let runtime = DurableRuntime::try_attach(session.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(runtime.state().await.revision, 4);
+        assert!(!runtime.refresh_branch().await.unwrap());
+
+        fixture.abort();
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn runtime_rolls_back_when_native_append_fails() {
         use tokio::io::{AsyncBufReadExt, BufReader};
 
