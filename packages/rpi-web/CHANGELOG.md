@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.14...rpi-web-v0.1.15) - 2026-10-28
+
+### Other
+
+- *(web)* align e2e expectations with queue UI ([#95](https://github.com/pi-rust/rpi-package/pull/95))
+
 ## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.13...rpi-web-v0.1.14) - 2026-10-28
 
 ### Fixed
