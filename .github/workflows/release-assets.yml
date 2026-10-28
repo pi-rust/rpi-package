@@ -12,6 +12,11 @@ on:
       bundle_tag:
         type: string
         required: true
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID:
+        required: false
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET:
+        required: false
   workflow_dispatch:
     inputs:
       source_ref:
@@ -45,6 +50,9 @@ jobs:
     with:
       source_ref: ${{ inputs.source_ref }}
       package_releases: ${{ inputs.package_releases }}
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
 
   source:
     if: inputs.packages_only != true
@@ -125,7 +133,14 @@ jobs:
       - name: Test platform packaging
         run: cargo test --locked -p rpi-package-install
       - name: Build extension libraries and installer
-        run: cargo build --release --workspace --locked
+        env:
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+        run: |
+          if [ -z "$RPI_ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET" ]; then
+            echo "::warning::RPI_ANTIGRAVITY_OAUTH_CLIENT_ID or RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET is empty; rpi-providers will build without Antigravity OAuth login."
+          fi
+          cargo build --release --workspace --locked
       - name: Assemble full extension bundle and ACP bridge
         run: |
           cargo run --release --locked -p rpi-package-install -- pack --all

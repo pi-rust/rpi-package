@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use a cryptographic SHA-256 digest for new bounded long tool IDs while still
   recognizing the previous FNV-based IDs during migration.
 
+## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.0...rpi-durable-v0.2.1) - 2026-10-27
+
+### Fixed
+
+- *(durable)* complete PR #85 review fixes ([#87](https://github.com/pi-rust/rpi-package/pull/87))
+
 ## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.1.0...rpi-durable-v0.2.0) - 2026-10-27
 
 ### Other

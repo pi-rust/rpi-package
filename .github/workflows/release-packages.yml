@@ -9,6 +9,11 @@ on:
       package_releases:
         required: true
         type: string
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID:
+        required: false
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET:
+        required: false
   workflow_dispatch:
     inputs:
       source_ref:
@@ -70,7 +75,12 @@ jobs:
           PACKAGE_RELEASES: ${{ inputs.package_releases }}
           TARGET: ${{ matrix.target }}
           SOURCE_REF: ${{ inputs.source_ref }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
         run: |
+          if [ -z "$RPI_ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET" ]; then
+            echo "::warning::RPI_ANTIGRAVITY_OAUTH_CLIENT_ID or RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET is empty; rpi-providers will build without Antigravity OAuth login."
+          fi
           python - <<'PY'
           import json, os, re, subprocess
           tags = json.loads(os.environ['PACKAGE_RELEASES'])
