@@ -49,7 +49,6 @@ pub struct Service {
     default_project_id: String,
     sessions: Arc<RwLock<HashMap<String, Arc<HostSession>>>>,
     durable: Arc<RwLock<HashMap<String, Arc<DurableRuntime>>>>,
-    durable_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     durable_event_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
@@ -85,7 +84,6 @@ impl Service {
             default_project_id,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             durable: Arc::new(RwLock::new(HashMap::new())),
-            durable_watchers: Arc::new(Mutex::new(HashMap::new())),
             durable_event_watchers: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             registry: Arc::new(RwLock::new(registry)),
@@ -106,16 +104,6 @@ impl Service {
         let _lifecycle = self.session_lifecycle.lock().await;
         let sessions: Vec<_> = self.sessions.read().await.values().cloned().collect();
         futures_util::future::join_all(sessions.iter().map(|session| session.shutdown())).await;
-        let watchers: Vec<_> = self
-            .durable_watchers
-            .lock()
-            .await
-            .drain()
-            .map(|(_, handle)| handle)
-            .collect();
-        for watcher in watchers {
-            watcher.abort();
-        }
         let event_watchers: Vec<_> = self
             .durable_event_watchers
             .lock()
@@ -222,9 +210,6 @@ async fn attach_durable(
     session: Arc<HostSession>,
 ) -> Result<(), String> {
     state.durable.write().await.remove(id);
-    if let Some(watcher) = state.durable_watchers.lock().await.remove(id) {
-        watcher.abort();
-    }
     if let Some(watcher) = state.durable_event_watchers.lock().await.remove(id) {
         watcher.abort();
     }
@@ -240,18 +225,10 @@ async fn attach_durable(
         .await
         .insert(id.to_owned(), runtime.clone());
     let event_capable = session.supports_event("session_entry_committed");
-    state
-        .durable_watchers
-        .lock()
-        .await
-        .insert(id.to_owned(), runtime.spawn_branch_watcher());
 
     // New hosts publish generic commit metadata at the Session commit
-    // boundary. It is the fast path; the polling watcher remains as a
-    // compatibility fallback for older hosts, dropped events, or external
-    // writers. Its cadence is selected from the branch-read cost, not merely
-    // from event support, so an unfiltered legacy host is never polled every
-    // few seconds.
+    // boundary. Durable projection updates are event-driven; a lagged event
+    // triggers an immediate branch refresh instead of background polling.
     if event_capable {
         let mut events = session.subscribe_raw();
         let event_runtime = runtime.clone();
@@ -289,9 +266,6 @@ async fn attach_durable(
 }
 
 async fn detach_durable(state: &Service, id: &str) {
-    if let Some(watcher) = state.durable_watchers.lock().await.remove(id) {
-        watcher.abort();
-    }
     if let Some(watcher) = state.durable_event_watchers.lock().await.remove(id) {
         watcher.abort();
     }
