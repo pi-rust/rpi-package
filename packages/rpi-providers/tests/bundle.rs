@@ -3,7 +3,7 @@ use rpi_ai::{
     types::{Content, Message, UserMessage},
     Context, Provider, SimpleStreamOptions,
 };
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -28,7 +28,7 @@ fn load() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
         .expect("first cargo build -p rpi-providers");
     let session = rpi_extensions::load_session_mixed(
         &[],
-        &[PathBuf::from(library)],
+        &[library],
         Arc::new(rpi_extensions::NullDiagnostics),
         None,
     );

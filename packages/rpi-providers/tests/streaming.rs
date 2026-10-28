@@ -5,7 +5,7 @@ use rpi_ai::{
     AssistantMessageEvent, Context, Model, Provider, SimpleStreamOptions,
 };
 use rpi_providers::deepseek::{MODEL_ID, PROVIDER_ID};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -40,7 +40,7 @@ fn load_extension() -> (rpi_extensions::ExtensionSession, Arc<dyn Provider>, Mod
     .expect("build the extension first: cargo build -p rpi-providers");
     let session = rpi_extensions::load_session_mixed(
         &[],
-        &[PathBuf::from(library)],
+        &[library],
         Arc::new(rpi_extensions::NullDiagnostics),
         None,
     );

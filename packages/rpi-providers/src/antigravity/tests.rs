@@ -383,7 +383,6 @@ fn mismatched_state_is_rejected_and_takes_nothing() {
     );
     let login = logins
         .redeem(&callback("code-1", &state), now)
-        .ok()
         .expect("the real login is still pending");
     assert_eq!(login.verifier, verifier);
 }
@@ -433,12 +432,10 @@ fn concurrent_begins_keep_separate_verifiers() {
     assert_ne!(first_verifier, second_verifier);
     let second = logins
         .redeem(&callback("code", &second_state), now)
-        .ok()
         .expect("second login");
     assert_eq!(second.verifier, second_verifier);
     let first = logins
         .redeem(&callback("code", &first_state), now)
-        .ok()
         .expect("first login");
     assert_eq!(first.verifier, first_verifier);
 }
@@ -451,14 +448,10 @@ fn bare_code_redeems_the_most_recent_live_login() {
     let (_, newer) = issue(&mut logins, 3, 4, now);
     let bare = auth::parse_pasted("  4/0AbC-code  ");
     assert!(matches!(&bare, auth::Pasted::Bare(code) if code == "4/0AbC-code"));
-    assert_eq!(
-        logins.redeem(&bare, now).ok().expect("newest").verifier,
-        newer
-    );
+    assert_eq!(logins.redeem(&bare, now).expect("newest").verifier, newer);
     assert_eq!(
         logins
             .redeem(&bare, now)
-            .ok()
             .expect("then the older one")
             .verifier,
         older
@@ -488,7 +481,6 @@ fn pending_table_is_bounded_and_evicts_the_oldest() {
     for (state, verifier) in &issued[1..] {
         let login = logins
             .redeem(&callback("code", state), now)
-            .ok()
             .expect("kept within the limit");
         assert_eq!(&login.verifier, verifier);
     }
@@ -499,8 +491,8 @@ fn pending_table_is_bounded_and_evicts_the_oldest() {
 struct Silent(AtomicUsize);
 struct Unread;
 impl auth::Body for Unread {
-    fn text(self) -> impl Future<Output = Result<String, String>> + Send {
-        async { Err("unread".into()) }
+    async fn text(self) -> Result<String, String> {
+        Err("unread".into())
     }
 }
 impl auth::Port for Silent {

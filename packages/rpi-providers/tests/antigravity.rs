@@ -335,7 +335,7 @@ async fn catalog_and_registrations_load_beside_the_other_providers() {
         .providers()
         .iter()
         .any(|provider| provider.provider_id == PROVIDER_ID && provider.stream_fn.is_some()));
-    let oauth = rpi_extensions::list_oauth_providers(&snapshot);
+    let oauth = rpi_extensions::list_oauth_providers(snapshot);
     assert!(oauth.iter().any(|provider| provider.id == PROVIDER_ID));
     assert_eq!(antigravity(&providers).models().len(), 6);
 }
