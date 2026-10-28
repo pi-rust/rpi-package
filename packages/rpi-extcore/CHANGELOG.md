@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.4...rpi-extcore-v0.1.5) - 2026-10-28
+
+### Added
+
+- consolidate durable state and publish commit updates ([#91](https://github.com/pi-rust/rpi-package/pull/91))
+
 ## [0.1.4](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.3...rpi-extcore-v0.1.4) - 2026-10-26
 
 ### Added
