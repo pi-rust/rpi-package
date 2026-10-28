@@ -5,7 +5,7 @@
 //! and replay of `rpi-durable` journal records.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 pub const ENTRY_TYPE: &str = "durable-state";
 pub const LEGACY_ENTRY_TYPE: &str = "rpi-durable-runtime";
@@ -288,7 +288,7 @@ pub fn apply_entries(state: &mut DurableState, entries: &[Value]) -> Result<(), 
                     "durable journal revision gap: expected base {revision}, got {base_revision}"
                 ));
             }
-            if let Some(snapshot) = data.get("state") {
+            if let Some(snapshot) = data.get("state").filter(|value| !value.is_null()) {
                 value = snapshot.clone();
             }
             if let Some(changes) = data.get("changes").and_then(Value::as_array) {
@@ -331,7 +331,7 @@ pub fn replay_entries(entries: &[Value]) -> Result<Option<Value>, String> {
             if version > JOURNAL_VERSION {
                 return Err(format!("unsupported durable journal version: {version}"));
             }
-            if let Some(snapshot) = data.get("state") {
+            if let Some(snapshot) = data.get("state").filter(|value| !value.is_null()) {
                 state = Some(snapshot.clone());
             }
             if let Some(changes) = data.get("changes").and_then(Value::as_array) {
@@ -552,7 +552,7 @@ mod tests {
     fn replays_snapshot_and_delta_entries() {
         let entries = vec![
             json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"kind":"snapshot","revision":1,"state":{"revision":1,"queue":[]}}}),
-            json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"kind":"delta","revision":2,"changes":[{"op":"appendQueue","item":{"id":"item-1","text":"compile","status":"queued"}}]}}),
+            json!({"type":"custom","customType":ENTRY_TYPE,"data":{"format":JOURNAL_FORMAT,"version":JOURNAL_VERSION,"kind":"delta","revision":2,"state":null,"changes":[{"op":"appendQueue","item":{"id":"item-1","text":"compile","status":"queued"}}]}}),
         ];
         let state = DurableState::from_branch(&entries);
         assert_eq!(state.revision, 2);
@@ -573,6 +573,7 @@ mod tests {
                 "kind": "delta",
                 "baseRevision": 1,
                 "revision": 2,
+                "state": null,
                 "changes": [{"op":"appendQueue","item":{"id":"item-1","text":"compile","status":"queued"}}]
             }
         });
