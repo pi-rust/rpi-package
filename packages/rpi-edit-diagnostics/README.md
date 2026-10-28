@@ -93,6 +93,12 @@ This optimistic check is not a cross-process atomic compare-and-swap: an externa
 writer can still race the final check and write, and different hard-link paths
 do not share an in-process lock.
 
+Atomic replacement preserves only permissions; it does not copy the original
+ownership, ACLs, extended attributes, or platform-specific security metadata.
+These may therefore change or be lost. The in-place path for
+hard links keeps the existing inode and its metadata instead (subject to the
+Windows limitation above).
+
 ## Installation
 
 ```text

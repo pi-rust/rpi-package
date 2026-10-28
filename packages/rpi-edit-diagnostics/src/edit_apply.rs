@@ -104,6 +104,7 @@ struct Plan {
     /// Every occurrence in the original content (ascending, disjoint).
     spans: Vec<Replacement>,
     new_text: String,
+    match_count: usize,
     /// Matched only after normalization, i.e. `oldText` was not literal.
     normalized_match: bool,
 }
@@ -157,18 +158,9 @@ pub fn apply_edits(
         let Some(normalized_match) = probes[index] else {
             continue;
         };
-        let (needle, spans) = match view.as_ref().filter(|_| normalized_match) {
-            None => {
-                let spans = find_all_spans(content, old)
-                    .into_iter()
-                    .map(|(start, end)| Replacement {
-                        start,
-                        end,
-                        text: new.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                (old.clone(), spans)
-            }
+        let normalized_view = view.as_ref().filter(|_| normalized_match);
+        let (needle, matches) = match normalized_view {
+            None => (old.clone(), find_all_spans(content, old)),
             Some(view) => {
                 let matched = fuzzy_find_text(&view.text, old);
                 if !matched.found {
@@ -181,14 +173,11 @@ pub fn apply_edits(
                 }
                 let needle =
                     view.text[matched.index..matched.index + matched.match_length].to_string();
-                let spans = find_all_spans(&view.text, &needle)
-                    .into_iter()
-                    .map(|(start, end)| view.original_replacement(content, start, end, new))
-                    .collect::<Vec<_>>();
-                (needle, spans)
+                let matches = find_all_spans(&view.text, &needle);
+                (needle, matches)
             }
         };
-        if spans.is_empty() {
+        if matches.is_empty() {
             failures.push(Failure {
                 index,
                 code: FailureCode::NotFound,
@@ -196,18 +185,33 @@ pub fn apply_edits(
             });
             continue;
         }
-        if !edits[index].replace_all && spans.len() > 1 {
-            let positions: Vec<usize> = spans
+        if !edits[index].replace_all && matches.len() > 1 {
+            let positions: Vec<usize> = matches
                 .iter()
-                .map(|span| line_of(content, span.start))
+                .map(|&(start, _)| match normalized_view {
+                    Some(view) => view.positions[start].line + 1,
+                    None => line_of(content, start),
+                })
                 .collect();
             failures.push(Failure {
                 index,
                 code: FailureCode::Invalid,
-                message: diag::duplicate(path, index, spans.len(), &positions),
+                message: diag::duplicate(path, index, matches.len(), &positions),
             });
             continue;
         }
+        let match_count = matches.len();
+        let spans = match normalized_view {
+            Some(view) => view.original_replacements(content.len(), &matches, new),
+            None => matches
+                .into_iter()
+                .map(|(start, end)| Replacement {
+                    start,
+                    end,
+                    text: new.clone(),
+                })
+                .collect(),
+        };
         if spans
             .iter()
             .all(|span| content[span.start..span.end] == span.text)
@@ -224,6 +228,7 @@ pub fn apply_edits(
             needle,
             spans,
             new_text: new.clone(),
+            match_count,
             normalized_match,
         });
     }
@@ -236,8 +241,9 @@ pub fn apply_edits(
         return Err(ApplyFailure::new(failures));
     }
 
-    let replacements: Vec<&Replacement> = plans.iter().flat_map(|plan| &plan.spans).collect();
-    let new_content = splice(content, &replacements);
+    let mut replacements: Vec<&Replacement> = plans.iter().flat_map(|plan| &plan.spans).collect();
+    replacements.sort_by_key(|span| span.start);
+    let new_content = splice(content, &replacements)?;
 
     if content == new_content {
         return Err(ApplyFailure::new(vec![Failure {
@@ -264,7 +270,7 @@ pub fn apply_edits(
     Ok(AppliedEdits {
         base_content: content.to_string(),
         new_content,
-        replacements: replacements.len(),
+        replacements: plans.iter().map(|plan| plan.match_count).sum(),
         notes,
         warnings,
     })
@@ -313,7 +319,7 @@ fn brace_warnings(base: &str, plans: &[Plan]) -> Vec<String> {
         let old_balance = bracket_balance(&plan.needle);
         let new_balance = bracket_balance(&plan.new_text);
         for (kind, (open, close)) in BRACKETS.iter().enumerate() {
-            let delta = plan.spans.len() as i64 * (new_balance[kind] - old_balance[kind]);
+            let delta = plan.match_count as i64 * (new_balance[kind] - old_balance[kind]);
             if delta == 0 {
                 continue;
             }
@@ -357,19 +363,23 @@ fn bracket_balance(text: &str) -> [i64; 3] {
 
 /// Line ranges (in the new content) covered by every occurrence of every plan.
 fn new_line_ranges(base: &str, plans: &[Plan]) -> Vec<Vec<(usize, usize)>> {
-    let mut spans: Vec<(usize, usize)> = plans
+    let mut spans: Vec<(usize, &Replacement)> = plans
         .iter()
         .enumerate()
-        .flat_map(|(plan_index, plan)| plan.spans.iter().map(move |span| (plan_index, span.start)))
+        .flat_map(|(plan_index, plan)| plan.spans.iter().map(move |span| (plan_index, span)))
         .collect();
-    spans.sort_by_key(|(_, start)| *start);
+    spans.sort_by_key(|(_, span)| span.start);
     let mut ranges = vec![Vec::new(); plans.len()];
     let mut line_delta: i64 = 0;
-    for (plan_index, start) in spans {
-        let start_line = line_of(base, start) as i64 + line_delta;
-        let new_lines = plans[plan_index].new_text.matches('\n').count() as i64;
+    let mut cursor = 0;
+    let mut base_line = 1;
+    for (plan_index, span) in spans {
+        base_line += base[cursor..span.start].matches('\n').count() as i64;
+        cursor = span.start;
+        let start_line = base_line + line_delta;
+        let new_lines = span.text.matches('\n').count() as i64;
         ranges[plan_index].push((start_line as usize, (start_line + new_lines) as usize));
-        line_delta += new_lines - plans[plan_index].needle.matches('\n').count() as i64;
+        line_delta += new_lines - base[span.start..span.end].matches('\n').count() as i64;
     }
     ranges
 }
@@ -409,19 +419,29 @@ struct Replacement {
     text: String,
 }
 
-/// Splice every replacement in ascending order.
-fn splice(base: &str, replacements: &[&Replacement]) -> String {
-    let mut sorted: Vec<&Replacement> = replacements.to_vec();
-    sorted.sort_by_key(|r| r.start);
+/// Splice ascending, disjoint replacements; reject invalid spans before slicing.
+fn splice(base: &str, replacements: &[&Replacement]) -> Result<String, ApplyFailure> {
     let mut out = String::with_capacity(base.len());
     let mut cursor = 0usize;
-    for replacement in sorted {
-        out.push_str(&base[cursor..replacement.start]);
+    for replacement in replacements {
+        let gap = base.get(cursor..replacement.start);
+        if replacement.start > replacement.end
+            || base.get(replacement.start..replacement.end).is_none()
+            || gap.is_none()
+        {
+            return Err(ApplyFailure {
+                code: FailureCode::Invalid,
+                message:
+                    "error: invalid replacement spans: overlapping, unordered, or out of bounds"
+                        .into(),
+            });
+        }
+        out.push_str(gap.unwrap_or_default());
         out.push_str(&replacement.text);
         cursor = replacement.end;
     }
     out.push_str(&base[cursor..]);
-    out
+    Ok(out)
 }
 
 /// [`normalize_for_fuzzy_match`] of the original content, plus the original
@@ -432,6 +452,23 @@ struct NormalizedView {
     /// One `(start, end)` per char of `text`; `None` when normalizing char by
     /// char does not reproduce `text` (NFKC composed across chars).
     sources: Option<Vec<(usize, usize)>>,
+    /// Constant-time normalized byte -> source-char index and line lookup.
+    positions: Vec<NormalizedPosition>,
+    line_starts: Vec<usize>,
+    original_line_starts: Vec<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct NormalizedPosition {
+    source_index: usize,
+    line: usize,
+}
+
+struct MappedSpan {
+    start: usize,
+    end: usize,
+    normalized_start: usize,
+    normalized_end: usize,
 }
 
 impl NormalizedView {
@@ -469,54 +506,114 @@ impl NormalizedView {
                 .map(|(_, start, end)| (start, end))
                 .collect()
         });
-        Self { text, sources }
+        let mut positions = Vec::with_capacity(text.len() + 1);
+        let mut line_starts = vec![0];
+        for (source_index, (byte, ch)) in text.char_indices().enumerate() {
+            positions.extend(
+                std::iter::repeat(NormalizedPosition {
+                    source_index,
+                    line: line_starts.len() - 1,
+                })
+                .take(ch.len_utf8()),
+            );
+            if ch == '\n' {
+                line_starts.push(byte + 1);
+            }
+        }
+        positions.push(NormalizedPosition {
+            source_index: text.chars().count(),
+            line: line_starts.len() - 1,
+        });
+        let original_line_starts = std::iter::once(0)
+            .chain(content.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        Self {
+            text,
+            sources,
+            positions,
+            line_starts,
+            original_line_starts,
+        }
     }
 
     /// The original-content replacement for the normalized span `[start, end)`.
     /// A span that begins or ends inside one char's expansion (e.g. half of
     /// `ﬁ`), or a view without sources, rewrites the span's whole lines from the
     /// normalized text instead, as upstream Pi does.
-    fn original_replacement(
-        &self,
-        content: &str,
-        start: usize,
-        end: usize,
-        new_text: &str,
-    ) -> Replacement {
+    fn original_span(&self, content_len: usize, start: usize, end: usize) -> MappedSpan {
         if let Some(sources) = &self.sources {
-            let first = self.text[..start].chars().count();
-            let last = first + self.text[start..end].chars().count() - 1;
+            let first = self.positions[start].source_index;
+            let last = self.positions[end].source_index - 1;
             let starts_clean = first == 0 || sources[first - 1].0 != sources[first].0;
             let ends_clean = last + 1 == sources.len() || sources[last + 1].0 != sources[last].0;
             if starts_clean && ends_clean {
-                return Replacement {
+                return MappedSpan {
                     start: sources[first].0,
                     end: sources[last].1,
-                    text: new_text.to_string(),
+                    normalized_start: start,
+                    normalized_end: end,
                 };
             }
         }
-        let line_start = self.text[..start].rfind('\n').map_or(0, |i| i + 1);
-        let line_end = self.text[end..]
-            .find('\n')
-            .map_or(self.text.len(), |i| end + i);
-        let first_line = self.text[..start].matches('\n').count();
-        let last_line = self.text[..line_end].matches('\n').count();
-        let line_starts: Vec<usize> = std::iter::once(0)
-            .chain(content.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
-        let original_end = line_starts
-            .get(last_line + 1)
-            .map_or(content.len(), |next| next - 1);
-        Replacement {
-            start: line_starts[first_line],
-            end: original_end,
-            text: format!(
-                "{}{new_text}{}",
-                &self.text[line_start..start],
-                &self.text[end..line_end]
-            ),
+        let first_line = self.positions[start].line;
+        let last_line = self.positions[end].line;
+        MappedSpan {
+            start: self.original_line_starts[first_line],
+            end: self
+                .original_line_starts
+                .get(last_line + 1)
+                .map_or(content_len, |next| next - 1),
+            normalized_start: self.line_starts[first_line],
+            normalized_end: self
+                .line_starts
+                .get(last_line + 1)
+                .map_or(self.text.len(), |next| next - 1),
         }
+    }
+
+    /// Merge overlapping source spans before rebuilding, so a fallback line is
+    /// normalized only once and includes every match (including clean ones).
+    fn original_replacements(
+        &self,
+        content_len: usize,
+        matches: &[(usize, usize)],
+        new_text: &str,
+    ) -> Vec<Replacement> {
+        let mut groups: Vec<(MappedSpan, usize, usize)> = Vec::new();
+        for (index, &(start, end)) in matches.iter().enumerate() {
+            let mut span = self.original_span(content_len, start, end);
+            let mut from = index;
+            // A later fallback can extend back over previously clean matches.
+            while groups
+                .last()
+                .is_some_and(|(previous, _, _)| previous.end > span.start)
+            {
+                let (previous, first, _) = groups.pop().expect("last span");
+                span.start = span.start.min(previous.start);
+                span.end = span.end.max(previous.end);
+                span.normalized_start = span.normalized_start.min(previous.normalized_start);
+                span.normalized_end = span.normalized_end.max(previous.normalized_end);
+                from = first;
+            }
+            groups.push((span, from, index + 1));
+        }
+        let mut replacements = Vec::with_capacity(groups.len());
+        for (span, from, to) in groups {
+            let mut text = String::new();
+            let mut cursor = span.normalized_start;
+            for &(start, end) in &matches[from..to] {
+                text.push_str(&self.text[cursor..start]);
+                text.push_str(new_text);
+                cursor = end;
+            }
+            text.push_str(&self.text[cursor..span.normalized_end]);
+            replacements.push(Replacement {
+                start: span.start,
+                end: span.end,
+                text,
+            });
+        }
+        replacements
     }
 }
 
@@ -671,6 +768,87 @@ mod tests {
         let outcome =
             apply_edits("de\u{FB01}ne  \nkeep  \n", &[req("def", "DEF")], "/f").expect("ok");
         assert_eq!(outcome.new_content, "DEFine\nkeep  \n");
+    }
+
+    #[test]
+    fn normalized_replace_all_merges_partial_expansions_on_one_line() {
+        let outcome = apply_edits("deﬁne deﬁne\n", &[req_all("def", "DEF")], "/f")
+            .expect("overlapping fallback lines must be rebuilt together");
+        assert_eq!(outcome.new_content, "DEFine DEFine\n");
+        assert_eq!(outcome.replacements, 2);
+    }
+
+    #[test]
+    fn normalized_replace_all_maps_many_matches_in_a_large_file() {
+        let content = "前 deﬁne deﬁne  \nkeep  \n".repeat(4_000);
+        let outcome = apply_edits(&content, &[req_all("def", "DEF")], "/f").expect("ok");
+        assert_eq!(
+            outcome.new_content,
+            "前 DEFine DEFine\nkeep  \n".repeat(4_000)
+        );
+        assert_eq!(outcome.replacements, 8_000);
+
+        // Whole expansions map cleanly, retaining the original trailing spaces.
+        let outcome = apply_edits(&content, &[req_all("define", "DEF")], "/f").expect("ok");
+        assert_eq!(outcome.new_content, "前 DEF DEF  \nkeep  \n".repeat(4_000));
+        assert_eq!(outcome.replacements, 8_000);
+    }
+
+    #[test]
+    fn normalized_replace_all_merges_clean_matches_before_and_after_a_fallback() {
+        let outcome = apply_edits(
+            "def def deﬁne def  \nkeep  \n",
+            &[req_all("ｄｅｆ", "(")],
+            "/f",
+        )
+        .expect("ok");
+        assert_eq!(outcome.new_content, "( ( (ine (\nkeep  \n");
+        assert_eq!(outcome.replacements, 4);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("+4 '(' (line 1)"));
+    }
+
+    #[test]
+    fn normalized_replace_all_merges_composed_fallback_lines() {
+        // Cross-character NFKC composition disables per-character sources.
+        let outcome = apply_edits(
+            "e\u{301} e\u{301}  \nkeep  \n",
+            &[req_all("é", "E\n")],
+            "/f",
+        )
+        .expect("ok");
+        assert_eq!(outcome.new_content, "E\n E\n\nkeep  \n");
+        assert_eq!(outcome.replacements, 2);
+    }
+
+    #[test]
+    fn partial_expansion_without_replace_all_still_reports_every_occurrence() {
+        let failure =
+            apply_edits("deﬁne deﬁne\n", &[req("def", "DEF")], "/f").expect_err("ambiguous");
+        assert!(failure
+            .message
+            .contains("occurs 2 times in /f (line 1 (2 times))"));
+    }
+
+    #[test]
+    fn splice_rejects_overlapping_unordered_and_invalid_spans() {
+        let span = |start, end| Replacement {
+            start,
+            end,
+            text: "X".into(),
+        };
+        for replacements in [
+            vec![span(0, 3), span(2, 4)],
+            vec![span(3, 4), span(0, 2)],
+            vec![span(3, 2)],
+            vec![span(0, 6)],
+            vec![span(1, 2)], // Inside é's UTF-8 encoding.
+        ] {
+            let spans = replacements.iter().collect::<Vec<_>>();
+            let failure = splice("éabc", &spans).expect_err("invalid spans must not panic");
+            assert_eq!(failure.code, FailureCode::Invalid);
+            assert!(failure.message.contains("invalid replacement spans"));
+        }
     }
 
     #[test]

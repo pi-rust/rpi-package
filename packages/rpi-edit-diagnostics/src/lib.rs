@@ -60,7 +60,7 @@ use std::ffi::c_void;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use edit_apply::{apply_edits, ApplyFailure, EditRequest, FailureCode};
@@ -323,10 +323,10 @@ fn write_atomically(path: &Path, content: &str, expected: &[u8]) -> Result<(), A
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".to_string());
-    let temp = directory.join(temp_name(&name));
+    let (temp, mut file) = create_staging_file(directory, || temp_name(&name))
+        .map_err(|error| write_error(path, error))?;
 
     let staged = (|| {
-        let mut file = fs::File::create(&temp)?;
         file.write_all(content.as_bytes())?;
         file.flush()?;
         drop(file);
@@ -350,15 +350,38 @@ fn write_atomically(path: &Path, content: &str, expected: &[u8]) -> Result<(), A
     written
 }
 
-/// `.<file>.rpi-edit-<pid>-<sequence>.tmp` — unique per process and call, so
-/// concurrent edits of the same file do not share a staging path.
-fn temp_name(name: &str) -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    format!(
-        ".{name}.rpi-edit-{}-{}.tmp",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    )
+/// Create a staging file, returning only paths that this call owns.
+fn create_staging_file(
+    directory: &Path,
+    mut next_name: impl FnMut() -> std::io::Result<String>,
+) -> std::io::Result<(PathBuf, fs::File)> {
+    for _ in 0..128 {
+        let path = directory.join(next_name()?);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not create an exclusive edit staging file after 128 attempts",
+    ))
+}
+
+/// Unpredictable 128-bit suffix; exclusive creation also protects collisions.
+fn temp_name(name: &str) -> std::io::Result<String> {
+    let mut random = [0u8; 16];
+    getrandom::getrandom(&mut random)
+        .map_err(|error| std::io::Error::other(format!("staging filename randomness: {error}")))?;
+    Ok(format!(
+        ".{name}.rpi-edit-{:032x}.tmp",
+        u128::from_le_bytes(random)
+    ))
 }
 
 // ---------------------------------------------------------------------------

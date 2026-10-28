@@ -752,6 +752,49 @@ fn stale_snapshot_is_rejected_before_in_place_hard_link_write() {
     assert_eq!(dir.entries(), vec!["f.txt", "g.txt"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn staging_file_collisions_never_follow_symlinks_or_truncate_existing_files() {
+    use std::io::Write;
+
+    let dir = TempDir::new("staging-symlink");
+    let victim = dir.file("victim.txt", b"do not change\n");
+    let link = dir.path().join("occupied.tmp");
+    std::os::unix::fs::symlink(&victim, &link).unwrap();
+    let existing = dir.file("existing.tmp", b"also keep\n");
+    let mut candidates = ["occupied.tmp", "existing.tmp", "fresh.tmp"].into_iter();
+    let (path, mut file) = crate::create_staging_file(dir.path(), || {
+        Ok(candidates.next().expect("bounded retries").into())
+    })
+    .expect("retry collisions");
+    file.write_all(b"staged replacement\n").unwrap();
+    drop(file);
+    assert_eq!(fs::read(&victim).unwrap(), b"do not change\n");
+    assert_eq!(fs::read(&existing).unwrap(), b"also keep\n");
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(path, dir.path().join("fresh.tmp"));
+    assert_eq!(fs::read(&path).unwrap(), b"staged replacement\n");
+}
+
+#[test]
+fn staging_file_collision_exhaustion_leaves_existing_paths_untouched() {
+    let dir = TempDir::new("staging-exhaustion");
+    let existing = dir.file("occupied.tmp", b"keep\n");
+    let mut attempts = 0;
+    let failure = crate::create_staging_file(dir.path(), || {
+        attempts += 1;
+        Ok("occupied.tmp".into())
+    })
+    .expect_err("bounded retries");
+    assert_eq!(failure.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(attempts, 128);
+    assert_eq!(fs::read(existing).unwrap(), b"keep\n");
+    assert_eq!(dir.entries(), vec!["occupied.tmp"]);
+}
+
 #[test]
 fn the_write_leaves_no_temporary_file_behind() {
     let dir = TempDir::new("atomic");
