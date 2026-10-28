@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.16](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.15...rpi-web-v0.1.16) - 2026-10-28
+
+### Other
+
+- *(transcript)* reduce session snapshot and branch polling cost
+
 ## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.14...rpi-web-v0.1.15) - 2026-10-28
 
 ### Other
