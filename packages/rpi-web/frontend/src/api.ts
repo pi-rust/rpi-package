@@ -57,6 +57,7 @@ export interface Project {
   id: string;
   name: string;
   path: string;
+  archived?: boolean;
 }
 export interface FileEntry {
   name: string;
@@ -315,6 +316,11 @@ export const api = {
     request<{ project: Project }>(`/projects/${id}/rename`, {
       method: "POST",
       body: JSON.stringify({ name }),
+    }),
+  projectMetadata: (id: string, metadata: { archived: boolean }) =>
+    request<{ project: Project }>(`/projects/${id}/metadata`, {
+      method: "POST",
+      body: JSON.stringify(metadata),
     }),
   sessionMetadata: (
     id: string,

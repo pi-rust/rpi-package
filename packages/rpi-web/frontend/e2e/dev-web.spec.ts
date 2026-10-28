@@ -62,8 +62,8 @@ function response(data: unknown, command = "mock") {
 
 async function mockHost(page: Page) {
   const projects = [
-    { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust" },
-    { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package" },
+    { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust", archived: false },
+    { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package", archived: false },
   ];
   const sessions: Array<
     typeof session & { pinned?: boolean; archived?: boolean }
@@ -111,6 +111,15 @@ async function mockHost(page: Page) {
       if (!project)
         return route.fulfill({ status: 404, json: { error: "missing" } });
       project.name = body.name;
+      return route.fulfill({ json: { project } });
+    }
+    if (/\/projects\/[^/]+\/metadata$/.test(path)) {
+      const body = request.postDataJSON() as { archived: boolean };
+      const id = path.split("/")[4];
+      const project = projects.find((entry) => entry.id === id);
+      if (!project)
+        return route.fulfill({ status: 404, json: { error: "missing" } });
+      project.archived = body.archived;
       return route.fulfill({ json: { project } });
     }
     if (/\/projects\/[^/]+\/files$/.test(path)) {
@@ -601,11 +610,35 @@ test("projects can be renamed from the project actions menu", async ({
     }),
   ).not.toBeVisible();
 });
-test("opening an existing folder is searchable and fills its project name", async ({
+test("projects can be archived and restored from the project actions menu", async ({
   page,
 }) => {
   await mockHost(page);
-  let createdBody: Record<string, unknown> | undefined;
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Project actions: pi-rust", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Archive project", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Project actions: pi-rust", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Restore project", exact: true }).click();
+  await page.getByRole("button", { name: "Show projects", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toBeVisible();
+});
+
+test("opening an existing folder is searchable and fills its project name", async ({
+  page,
+}) => {
   await page.route("**/api/v1/projects", async (route) => {
     if (route.request().method() === "POST") {
       createdBody = route.request().postDataJSON();

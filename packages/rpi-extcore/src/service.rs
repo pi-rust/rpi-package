@@ -374,6 +374,26 @@ pub async fn rename_project(
     }
 }
 
+pub async fn project_metadata(
+    state: &Service,
+    id: String,
+    request: ProjectMetadataRequest,
+) -> (ReplyKind, Value) {
+    let mut projects = state.projects.write().await;
+    match projects
+        .set_archived(&id, request.archived.unwrap_or(false))
+        .await
+    {
+        Ok(project) => (ReplyKind::Success, json!({"project": project})),
+        Err(error) => (ReplyKind::InvalidInput, json!({"error": error})),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ProjectMetadataRequest {
+    pub archived: Option<bool>,
+}
+
 async fn session_project(state: &Service, id: &str) -> Result<Project, String> {
     let registry = state.registry.read().await;
     let project_id = registry

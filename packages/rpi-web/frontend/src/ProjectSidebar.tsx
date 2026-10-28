@@ -747,6 +747,7 @@ interface SidebarProps {
   onNewProject: () => void;
   onRename: (session: SessionSummary) => void;
   onRenameProject: (project: Project) => void;
+  onProjectMetadata: (project: Project, archived: boolean) => Promise<void>;
   onEditTags: (session: SessionSummary) => void;
   onMetadata: (
     session: SessionSummary,
@@ -770,6 +771,7 @@ export function ProjectSidebar({
   onNewProject,
   onRename,
   onRenameProject,
+  onProjectMetadata,
   onEditTags,
   onMetadata,
 }: SidebarProps) {
@@ -841,6 +843,16 @@ export function ProjectSidebar({
     setMenu("");
     try {
       await onMetadata(session, patch);
+    } finally {
+      setPending("");
+    }
+  }
+  async function projectMetadata(project: Project, archived: boolean) {
+    if (pending) return;
+    setPending(`project:${project.id}`);
+    setMenu("");
+    try {
+      await onProjectMetadata(project, archived);
     } finally {
       setPending("");
     }
@@ -999,7 +1011,9 @@ export function ProjectSidebar({
     );
   }
   const fallback: Project = { id: "", name: zh ? "会话" : "Chats", path: "" };
-  const groups = projects.length ? projects : [fallback];
+  const groups = (projects.length ? projects : [fallback]).filter(
+    (project) => Boolean(project.archived) === archived,
+  );
   return (
     <div className="project-navigation">
       <div className="sidebar-primary-actions">
@@ -1029,7 +1043,15 @@ export function ProjectSidebar({
                   ? "查看已归档"
                   : "Show archived chats"
             }
-            title={zh ? "已归档会话" : "Archived chats"}
+            title={
+              zh
+                ? archived
+                  ? "已归档项目和会话"
+                  : "查看已归档项目和会话"
+                : archived
+                  ? "Archived projects and chats"
+                  : "Show archived projects and chats"
+            }
             onClick={() => setArchived(!archived)}
           >
             <Archive size={14} />
@@ -1057,7 +1079,8 @@ export function ProjectSidebar({
                 (!projects.length ||
                   session.projectId === project.id ||
                   (!session.projectId && project.id === groups[0].id)) &&
-                Boolean(session.archived) === archived,
+                (Boolean(project.archived) ||
+                  Boolean(session.archived) === archived),
             )
             .sort(
               (a, b) =>
@@ -1137,6 +1160,25 @@ export function ProjectSidebar({
                             <SquarePen size={14} />
                             {zh ? "重命名" : "Rename"}
                           </button>
+                          <button
+                            role="menuitem"
+                            onClick={() =>
+                              void projectMetadata(project, !project.archived)
+                            }
+                          >
+                            {project.archived ? (
+                              <ArchiveRestore size={14} />
+                            ) : (
+                              <Archive size={14} />
+                            )}
+                            {project.archived
+                              ? zh
+                                ? "恢复项目"
+                                : "Restore project"
+                              : zh
+                                ? "归档项目"
+                                : "Archive project"}
+                          </button>
                         </div>,
                         document.body,
                       )}
@@ -1154,7 +1196,7 @@ export function ProjectSidebar({
                     });
                     onNewSession(project.id);
                   }}
-                  disabled={creating}
+                  disabled={archived || Boolean(project.archived) || creating}
                 >
                   <Plus size={14} />
                 </button>
@@ -1169,9 +1211,13 @@ export function ProjectSidebar({
                       onClick={() => onNewSession(project.id)}
                     >
                       {archived
-                        ? zh
-                          ? "没有已归档会话"
-                          : "No archived chats"
+                        ? project.archived
+                          ? zh
+                            ? "没有会话"
+                            : "No chats"
+                          : zh
+                            ? "没有已归档会话"
+                            : "No archived chats"
                         : zh
                           ? "开始第一个会话"
                           : "Start your first chat"}

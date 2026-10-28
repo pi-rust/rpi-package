@@ -1300,6 +1300,7 @@ export default function App() {
   useEffect(() => {
     if (!authChecked || (authRequired && !authenticated)) return;
     let cancelled = false;
+    let availableProjects: Project[] = [];
     setLoadingSession(true);
     void (async () => {
       try {
@@ -1309,16 +1310,26 @@ export default function App() {
         if (caps.supportedActions?.includes("projects")) {
           const result = await api.projects();
           if (cancelled) return;
+          availableProjects = result.projects;
           setProjects(result.projects);
-          setProjectsRoot(result.projectsRoot ?? "");
-          projectRef.current = result.defaultProjectId;
-          setProjectId(result.defaultProjectId);
+          const defaultProject =
+            result.projects.find(
+              (item) => item.id === result.defaultProjectId && !item.archived,
+            ) ?? result.projects.find((item) => !item.archived);
+          projectRef.current = defaultProject?.id ?? result.defaultProjectId;
+          setProjectId(projectRef.current);
         }
         const list = await refreshSessions();
         if (cancelled || !list) return;
         const requested = new URLSearchParams(location.search).get("session");
         const reusable = list.filter(
-          (session) => session.status !== "closed" && !session.archived,
+          (session) =>
+            session.status !== "closed" &&
+            !session.archived &&
+            (!session.projectId ||
+              availableProjects.some((project) =>
+                project.id === session.projectId && !project.archived,
+              )),
         );
         const match =
           list.find((session) => session.sessionId === requested) ??
@@ -2715,6 +2726,34 @@ export default function App() {
     }
   }
 
+  async function updateProjectMetadata(project: Project, archived: boolean) {
+    try {
+      const result = await api.projectMetadata(project.id, { archived });
+      setProjects((previous) =>
+        previous.map((item) =>
+          item.id === result.project.id ? result.project : item,
+        ),
+      );
+      if (archived && projectRef.current === project.id) {
+        const next = projects.find(
+          (item) => item.id !== project.id && !item.archived,
+        );
+        if (next) selectProject(next);
+        else {
+          projectRef.current = "";
+          setProjectId("");
+          activeSessionRef.current = "";
+          setSessionId("");
+          const url = new URL(location.href);
+          url.searchParams.delete("session");
+          history.replaceState(null, "", url);
+        }
+      }
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }
+
   if (!authChecked || (authRequired && !authenticated)) {
     return (
       <LoginScreen
@@ -2915,6 +2954,7 @@ export default function App() {
               onNewProject={() => setProjectDialog(true)}
               onRename={setRenameTarget}
               onRenameProject={setProjectRenameTarget}
+              onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}
               onMetadata={updateSessionMetadata}
             />
