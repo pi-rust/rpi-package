@@ -239,16 +239,23 @@ async fn attach_durable(
         .write()
         .await
         .insert(id.to_owned(), runtime.clone());
-    state
-        .durable_watchers
-        .lock()
-        .await
-        .insert(id.to_owned(), runtime.spawn_branch_watcher());
+    let event_capable = session.supports_event("session_entry_committed");
+    state.durable_watchers.lock().await.insert(
+        id.to_owned(),
+        if event_capable {
+            runtime.spawn_branch_watcher_with_backoff(
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(30),
+            )
+        } else {
+            runtime.spawn_branch_watcher()
+        },
+    );
 
     // New hosts publish generic commit metadata at the Session commit
     // boundary. It is only an invalidation signal; the polling watcher remains
     // as a compatibility fallback for older hosts or dropped events.
-    if session.supports_event("session_entry_committed") {
+    if event_capable {
         let mut events = session.subscribe_raw();
         let event_runtime = runtime.clone();
         let event_watcher = tokio::spawn(async move {

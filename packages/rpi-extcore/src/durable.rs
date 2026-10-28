@@ -191,10 +191,22 @@ impl DurableRuntime {
     /// This watches canonical entries only and never derives durable state from
     /// ordinary Agent lifecycle events.
     pub fn spawn_branch_watcher(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        self.spawn_branch_watcher_with_backoff(
+            std::time::Duration::from_millis(500),
+            std::time::Duration::from_secs(5),
+        )
+    }
+
+    /// Poll with a slower compatibility cadence when generic commit events are
+    /// available. Events remain the fast path; polling only repairs dropped
+    /// notifications or supports hosts that publish no event.
+    pub fn spawn_branch_watcher_with_backoff(
+        self: &Arc<Self>,
+        base: std::time::Duration,
+        max: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
         let runtime = self.clone();
         tokio::spawn(async move {
-            let base = std::time::Duration::from_millis(500);
-            let max = std::time::Duration::from_secs(5);
             let mut delay = base;
             loop {
                 tokio::time::sleep(delay).await;
