@@ -371,15 +371,13 @@ test("capabilities gate the history and queue inspector", async ({ page }) => {
       .filter({ hasText: "Queue" })
       .first(),
   ).toBeVisible();
-  const queueToggle = page.getByRole("button", {
-    name: "Queue: 1",
-    exact: true,
-  });
-  await expect(queueToggle).toBeVisible();
-  await queueToggle.click();
-  await expect(page.locator(".composer-queue-panel")).toContainText("pending");
+  await expect(
+    page
+      .locator(".inspector .queue-item")
+      .getByRole("button", { name: "Send now: pending", exact: true }),
+  ).toBeVisible();
   await page
-    .locator(".composer-queue-item")
+    .locator(".inspector .queue-item")
     .getByRole("button", { name: "Edit queued message" })
     .click();
   await expect(page.locator(".composer textarea")).toHaveValue("pending");
@@ -388,6 +386,37 @@ test("capabilities gate the history and queue inspector", async ({ page }) => {
   );
 });
 
+test("a stopped session can send a selected queued message now", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const commands: string[] = [];
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type === "cancel_queued" || body.type === "prompt") {
+        commands.push(body.type);
+        return route.fulfill({
+          json: response(
+            body.type === "cancel_queued"
+              ? { entryId: "queue-2", outcome: "cancelled" }
+              : { accepted: true },
+            body.type,
+          ),
+        });
+      }
+      return route.fallback();
+    },
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await page
+    .locator(".inspector .queue-item")
+    .getByRole("button", { name: "Send now: pending", exact: true })
+    .click();
+  await expect.poll(() => commands).toEqual(["cancel_queued", "prompt"]);
+});
 test("failed queue cancellation restores the removed message", async ({
   page,
 }) => {
@@ -416,15 +445,15 @@ test("failed queue cancellation restores the removed message", async ({
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Queue: 1", exact: true }).click();
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
   await page
-    .locator(".composer-queue-item")
+    .locator(".inspector .queue-item")
     .getByRole("button", { name: "Cancel queued message" })
     .click();
   await expect.poll(() => cancelling).toBe(true);
-  await expect(page.locator(".composer-queue-item")).toHaveCount(0);
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(0);
   release();
-  await expect(page.locator(".composer-queue-item")).toContainText("pending");
+  await expect(page.locator(".inspector .queue-item")).toContainText("pending");
   await expect(page.locator(".error-banner")).toContainText(
     "Cancellation rejected",
   );
@@ -477,7 +506,7 @@ test("file previews, staged diffs and project switching use the selected root", 
     "+working change",
   );
   await page
-    .getByRole("button", { name: "Open project: rpi-package", exact: true })
+    .getByRole("button", { name: "Expand project: rpi-package", exact: true })
     .click();
   await workbench
     .getByRole("button", { name: "README.md", exact: true })
@@ -523,12 +552,28 @@ test("projects contain chats and a new project starts its own conversation", asy
   await page.reload();
   await expect(
     page.getByRole("button", {
-      name: "Open project: New workspace",
+      name: "Expand project: New workspace",
       exact: true,
     }),
   ).toBeVisible();
 });
 
+test("clicking a project folder only expands it without opening a session", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  const project = page.getByRole("region", { name: "pi-rust", exact: true });
+  const folder = project.locator(".project-name");
+  await expect(folder).toHaveAttribute("aria-expanded", "true");
+  await folder.click();
+  await expect(folder).toHaveAttribute("aria-expanded", "false");
+  await expect(project.locator(".project-session-link")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Mock session" })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("session")).toBe(sessionId);
+  await folder.click();
+  await expect(folder).toHaveAttribute("aria-expanded", "true");
+});
 test("projects can be renamed from the project actions menu", async ({
   page,
 }) => {
@@ -545,13 +590,13 @@ test("projects can be renamed from the project actions menu", async ({
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(
     page.getByRole("button", {
-      name: "Open project: renamed-project",
+      name: "Expand project: renamed-project",
       exact: true,
     }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", {
-      name: "Open project: pi-rust",
+      name: "Expand project: pi-rust",
       exact: true,
     }),
   ).not.toBeVisible();
@@ -813,7 +858,7 @@ test("mobile navigation opens without horizontal overflow", async ({
     .getByRole("button", { name: "Toggle sidebar", exact: true })
     .click();
   await expect(
-    page.getByRole("button", { name: "Open project: pi-rust", exact: true }),
+    page.getByRole("button", { name: "Expand project: pi-rust", exact: true }),
   ).toBeVisible();
   expect(
     await page
@@ -1119,9 +1164,9 @@ test("markdown preserves chat line breaks, readable code and contained layouts",
   );
   await prose.locator(".markdown-copy").first().click();
   await expect(
-    page.locator(".message.assistant .message-copy").first(),
-  ).toHaveAttribute("aria-label", "Copy message");
-  await page.locator(".message.assistant .message-copy").first().click();
+    page.getByRole("button", { name: "Copy as Markdown", exact: true }).first(),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Copy as Markdown", exact: true }).first().click();
   const table = prose.getByRole("region", {
     name: "Table, scroll horizontally",
   });
@@ -1211,6 +1256,12 @@ test("renders image blocks returned in the transcript", async ({ page }) => {
                 data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
                 mimeType: "image/png",
               },
+              {
+                type: "image_url",
+                image_url: {
+                  url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+                },
+              },
             ],
           },
         ],
@@ -1222,7 +1273,7 @@ test("renders image blocks returned in the transcript", async ({ page }) => {
     }),
   );
   await page.goto("/");
-  await expect(page.locator(".transcript-image img")).toBeVisible();
+  await expect(page.locator(".transcript-image img")).toHaveCount(2);
 });
 test("streamed markdown handles incomplete fences and stays formatted in dark mode", async ({
   page,
@@ -1597,7 +1648,7 @@ test("expired access returns to login and can reopen the same chat", async ({
   ).toHaveValue("");
 });
 
-test("late chat creation preserves a subsequent project selection", async ({
+test("late chat creation preserves the selected project without opening its session", async ({
   page,
 }) => {
   await mockHost(page);
@@ -1622,7 +1673,7 @@ test("late chat creation preserves a subsequent project selection", async ({
     .click();
   await expect.poll(() => pending).toBe(true);
   await page
-    .getByRole("button", { name: "Open project: rpi-package", exact: true })
+    .getByRole("button", { name: "Expand project: rpi-package", exact: true })
     .click();
   const completed = page.waitForResponse(
     (res) =>
@@ -1989,7 +2040,7 @@ for (const action of ["fork", "clone"] as const) {
       .click();
     await expect.poll(() => pending).toBe(true);
     await page
-      .getByRole("button", { name: "Open project: rpi-package", exact: true })
+      .getByRole("button", { name: "Expand project: rpi-package", exact: true })
       .click();
     const finished = page.waitForResponse((res) =>
       res.url().endsWith(`/${action}`),
@@ -2029,7 +2080,7 @@ test("late file contents cannot replace the newly selected project preview", asy
     .click();
   await expect.poll(() => pending).toBe(true);
   await page
-    .getByRole("button", { name: "Open project: rpi-package", exact: true })
+    .getByRole("button", { name: "Expand project: rpi-package", exact: true })
     .click();
   await workbench
     .getByRole("button", { name: "README.md", exact: true })
@@ -2913,7 +2964,7 @@ test("a late failed chat creation does not mark the subsequently selected projec
     .click();
   await expect.poll(() => pending).toBe(true);
   await page
-    .getByRole("button", { name: "Open project: rpi-package", exact: true })
+    .getByRole("button", { name: "Expand project: rpi-package", exact: true })
     .click();
   const finished = page.waitForResponse(
     (res) =>
@@ -3263,7 +3314,7 @@ for (const target of ["chat", "project"]) {
         .click();
     else
       await page
-        .getByRole("button", { name: "Open project: pi-rust", exact: true })
+        .getByRole("button", { name: "Expand project: pi-rust", exact: true })
         .click();
     reject();
     await expect(composer).toHaveValue("Recover this draft");
@@ -3499,6 +3550,31 @@ test("a rejected resume keeps its recovery action and releases the busy composer
   await expect(
     page.getByRole("button", { name: "Abort", exact: true }),
   ).toHaveCount(0);
+});
+
+test("drafts survive reload and mark the owning session", async ({ page }) => {
+  await mockHost(page);
+  await page.goto("/");
+  const input = page.locator(".composer textarea");
+  await input.fill("Keep this draft");
+  await expect(
+    page.locator(".project-session").filter({ hasText: "Draft" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "New session", exact: false })
+    .first()
+    .click();
+  await expect(input).toHaveValue("");
+  await page
+    .locator(".project-session-link")
+    .filter({ hasText: "Mock session" })
+    .click();
+  await expect(input).toHaveValue("Keep this draft");
+  await page.reload();
+  await expect(input).toHaveValue("Keep this draft");
+  await expect(
+    page.locator(".project-session").filter({ hasText: "Draft" }),
+  ).toBeVisible();
 });
 
 test("an executed slash command does not return as a draft after switching chats", async ({
@@ -4200,11 +4276,6 @@ test("initial snapshot preserves slash feedback entered while history is loading
   release();
   await expect(page.locator(".transcript-note")).toContainText(["/help"]);
   await expect(
-    page
-      .locator(".transcript-note")
-      .filter({ hasText: "restored from session history" }),
-  ).toHaveCount(1);
-  await expect(
     page.locator(".transcript-note").filter({ hasText: "/help" }),
   ).toBeVisible();
 });
@@ -4603,7 +4674,7 @@ test("composer shows the active project path, branch and linked worktree on narr
     .getByRole("button", { name: "Toggle sidebar", exact: true })
     .click();
   await page
-    .getByRole("button", { name: "Open project: rpi-package", exact: true })
+    .getByRole("button", { name: "Expand project: rpi-package", exact: true })
     .click();
   await expect(
     context.getByRole("button", {

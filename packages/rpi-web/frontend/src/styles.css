@@ -699,9 +699,13 @@ code {
   font-size: 11px;
 }
 .composer-attachment img {
-  width: 24px;
-  height: 24px;
+  width: 72px;
+  height: 72px;
+  border-radius: 5px;
   object-fit: cover;
+}
+.composer-attachment:has(img) {
+  align-items: flex-start;
 }
 .composer-attachment > span {
   overflow: hidden;
@@ -879,8 +883,17 @@ code {
   height: 24px;
   border-radius: 7px;
 }
-.message-heading .brand-mark svg {
-  width: 16px;
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 25px;
+  margin-top: -25px;
+  position: relative;
+  top: 25px;
+}
+.message.user .message-actions {
+  width: min(88%, 650px);
 }
 .message-copy {
   display: inline-flex;
