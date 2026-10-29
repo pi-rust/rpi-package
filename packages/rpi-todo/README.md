@@ -12,9 +12,11 @@ restored.
 todo: list | add | update | toggle | clear
 ```
 
-State is stored in each tool result's `details` and reconstructed by replaying
-`todo` tool results on the current session branch. This matches Pi's extension
-model:
+State is stored in each tool result's `details` and mirrored to a `todo-state`
+custom entry. Session restore queries `customTypes: ["todo-state"]` and requires
+`filtered: true`; it never reads a full transcript. Tool-result-only sessions
+from earlier releases cannot be restored through this custom-entry-only API.
+This matches Pi's extension model:
 
 - session restore replays the current branch;
 - forked sessions inherit the fork point and then diverge;

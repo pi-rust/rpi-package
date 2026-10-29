@@ -93,9 +93,15 @@ fn persist_state(active: bool, plan: Option<&str>) {
 }
 
 fn restore_state() {
-    let Ok(value) = call_runtime(RuntimeActionId::GetSessionBranch, json!({})) else {
+    let Ok(value) = call_runtime(
+        RuntimeActionId::GetSessionBranch,
+        json!({"customTypes": [PLAN_ENTRY]}),
+    ) else {
         return;
     };
+    if value.get("filtered").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
     let mut restored = None;
     if let Some(entries) = value.get("entries").and_then(Value::as_array) {
         for entry in entries {
@@ -569,5 +575,65 @@ mod tests {
         assert!(rendered.contains(plan));
         assert_eq!(rendered.matches("Ready").count(), 1);
         assert!(!rendered.contains("Next:"));
+    }
+
+    static BRANCH: Mutex<Value> = Mutex::new(Value::Null);
+
+    rpi_plugin_sdk::string_handler! {
+    fn branch_runtime(action, args, out, _user_data) {
+        let args: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(action, RuntimeActionId::GetSessionBranch as u32);
+        assert_eq!(args, json!({"customTypes": ["plan-mode"]}));
+        out.write(BRANCH.lock().unwrap().to_string());
+        0
+    }
+    }
+
+    #[test]
+    fn filtered_branch_restores_latest_plan_and_rejects_unconfirmed_replies() {
+        let _ = RUNTIME.set(PluginApi {
+            abi_version: rpi_plugin_sdk::RPI_PLUGIN_ABI_VERSION_UNIFIED,
+            struct_size: std::mem::size_of::<PluginApi>() as u32,
+            runtime_action: branch_runtime,
+            free_string,
+            user_data: std::ptr::null_mut(),
+            register_tool: None,
+            register_command: None,
+            register_shortcut: None,
+            register_flag: None,
+            register_provider: None,
+            register_message_renderer: None,
+            register_markdown_transformer: None,
+            register_entry_renderer: None,
+            register_event_handler: None,
+            register_resources_discover: None,
+            dispatch_event: None,
+            declare: None,
+            register_before_agent_start: None,
+            register_oauth_provider: None,
+        });
+        *BRANCH.lock().unwrap() = json!({"filtered":true,"entries":[
+            {"type":"custom","customType":"plan-mode","data":{"active":true,"plan":"older"}},
+            {"type":"custom","customType":"goal-state","data":{"active":true,"plan":"unrelated"}},
+            {"type":"custom","customType":"plan-mode","data":{"active":false,"plan":"latest"}}
+        ]});
+        restore_state();
+        assert_eq!(state().lock().unwrap().plan.as_deref(), Some("latest"));
+        assert!(!state().lock().unwrap().active);
+        for filtered in [Value::Null, json!(false), json!("true")] {
+            *BRANCH.lock().unwrap() = json!({"filtered":filtered,"entries":[
+                {"type":"custom","customType":"plan-mode","data":{"active":true,"plan":"wrong"}}
+            ]});
+            restore_state();
+            assert_eq!(state().lock().unwrap().plan.as_deref(), Some("latest"));
+            assert!(!state().lock().unwrap().active);
+        }
+        *BRANCH.lock().unwrap() = json!({"filtered":true,"entries":[
+            {"type":"custom","customType":"plan-mode","data":{"active":true,"plan":null}}
+        ]});
+        restore_state();
+        assert!(state().lock().unwrap().active);
+        assert!(state().lock().unwrap().plan.is_none());
+        state().lock().unwrap().active = false;
     }
 }

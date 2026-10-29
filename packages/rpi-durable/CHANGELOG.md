@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking preview:** require filtered `GetSessionBranch` reads using `customTypes`; reject unconfirmed host responses instead of accepting a full transcript.
+- Restore only current-version `durable-state` journal snapshots/deltas. Remove legacy discriminator and unversioned state migration; upgrade the native host and plugin together.
+
+### Tests
+
+- Add a real native RPC/DLL smoke for filtering, retired query rejection, canonical journal commits and restart recovery without model calls.
+
 ## [0.2.4](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.3...rpi-durable-v0.2.4) - 2026-10-29
 
 ### Other

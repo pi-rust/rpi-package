@@ -49,10 +49,6 @@ struct PendingInjection {
 
 static PENDING_INJECT: OnceLock<Mutex<Option<PendingInjection>>> = OnceLock::new();
 static PENDING_STATE: OnceLock<Mutex<Option<Goals>>> = OnceLock::new();
-// Tests and older hosts may not implement GetSessionBranch. Live hosts return
-// an `entries` array, which enables session-scoped state; otherwise retain the
-// file fallback for compatibility.
-static SESSION_BRANCH_SUPPORTED: AtomicBool = AtomicBool::new(true);
 // Accessed under the queue mutex, including while its pending slot is empty
 // because a flush has taken the notice into an in-flight host callback.
 static INJECTION_REVISION: AtomicU64 = AtomicU64::new(0);
@@ -275,42 +271,47 @@ fn flush_pending_state() -> bool {
     }
 }
 
-fn read_goals() -> Goals {
-    if RUNTIME.get().is_some() && SESSION_BRANCH_SUPPORTED.load(Ordering::Relaxed) {
+fn read_goals() -> Result<Goals, String> {
+    if RUNTIME.get().is_some() {
         if let Some(goals) = pending_state()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
         {
-            return goals;
+            return Ok(goals);
         }
-        if let Ok(value) = call_runtime(RuntimeActionId::GetSessionBranch, json!({})) {
-            if let Some(entries) = value.get("entries").and_then(Value::as_array) {
-                SESSION_BRANCH_SUPPORTED.store(true, Ordering::Relaxed);
-                for entry in entries.iter().rev() {
-                    if entry.get("type").and_then(Value::as_str) == Some("custom")
-                        && entry.get("customType").and_then(Value::as_str) == Some(GOAL_STATE_ENTRY)
-                    {
-                        if let Some(data) = entry.get("data") {
-                            return serde_json::from_value(data.clone()).unwrap_or_default();
-                        }
-                    }
+        let value = call_runtime(
+            RuntimeActionId::GetSessionBranch,
+            json!({"customTypes": [GOAL_STATE_ENTRY]}),
+        )?;
+        if value.get("filtered").and_then(Value::as_bool) != Some(true) {
+            return Err("GetSessionBranch must confirm filtered: true".into());
+        }
+        let entries = value
+            .get("entries")
+            .and_then(Value::as_array)
+            .ok_or("GetSessionBranch returned no valid entries array")?;
+        for entry in entries.iter().rev() {
+            if entry.get("type").and_then(Value::as_str) == Some("custom")
+                && entry.get("customType").and_then(Value::as_str) == Some(GOAL_STATE_ENTRY)
+            {
+                if let Some(data) = entry.get("data") {
+                    return Ok(serde_json::from_value(data.clone()).unwrap_or_default());
                 }
-                return Goals::default();
             }
         }
-        SESSION_BRANCH_SUPPORTED.store(false, Ordering::Relaxed);
+        return Ok(Goals::default());
     }
 
     let path = goals_path();
     let Ok(text) = fs::read_to_string(&path) else {
-        return Goals::default();
+        return Ok(Goals::default());
     };
-    serde_json::from_str(&text).unwrap_or_else(|_| Goals::default())
+    Ok(serde_json::from_str(&text).unwrap_or_else(|_| Goals::default()))
 }
 
 fn write_goals(goals: &Goals) -> Result<(), String> {
-    if RUNTIME.get().is_some() && SESSION_BRANCH_SUPPORTED.load(Ordering::Relaxed) {
+    if RUNTIME.get().is_some() {
         call_runtime(
             RuntimeActionId::AppendEntry,
             json!({"customType": GOAL_STATE_ENTRY, "data": goals}),
@@ -510,7 +511,7 @@ fn validate_notes(notes: &str) -> Result<String, String> {
 fn persist_and_queue(goals: &Goals, goal: &Goal) -> Result<(), String> {
     let mut goals = goals.clone();
     goals.active = Some(goal.clone());
-    if RUNTIME.get().is_some() && SESSION_BRANCH_SUPPORTED.load(Ordering::Relaxed) {
+    if RUNTIME.get().is_some() {
         queue_state(&goals);
     } else {
         write_goals(&goals)?;
@@ -538,7 +539,7 @@ fn op_start(
         max_turns,
         deadline_ms,
     };
-    let mut goals = read_goals();
+    let mut goals = read_goals()?;
     if let Some(old) = goals.active.take() {
         goals.archived.push(old);
     }
@@ -547,7 +548,7 @@ fn op_start(
 }
 
 fn op_update(notes: Option<&str>, status: Option<&str>) -> Result<Goal, String> {
-    let goals = read_goals();
+    let goals = read_goals()?;
     let mut updated = require_active(&goals)?;
     if let Some(notes) = notes {
         updated.notes = validate_notes(notes)?;
@@ -594,7 +595,7 @@ fn op_set_limits(
     max_turns: Option<Option<u32>>,
     deadline_ms: Option<Option<i64>>,
 ) -> Result<Goal, String> {
-    let goals = read_goals();
+    let goals = read_goals()?;
     let active = require_active(&goals)?;
     let updated = apply_limits(&active, now_ms(), max_turns, deadline_ms);
     persist_and_queue(&goals, &updated)?;
@@ -602,13 +603,13 @@ fn op_set_limits(
 }
 
 fn op_complete() -> Result<Goal, String> {
-    let mut goals = read_goals();
+    let mut goals = read_goals()?;
     let mut done = require_active(&goals)?;
     done.status = "complete".into();
     done.updated_at = now_ms();
     goals.archived.push(done.clone());
     goals.active = None;
-    if RUNTIME.get().is_some() && SESSION_BRANCH_SUPPORTED.load(Ordering::Relaxed) {
+    if RUNTIME.get().is_some() {
         queue_state(&goals);
     } else {
         write_goals(&goals)?;
@@ -691,7 +692,7 @@ fn tool_envelope(action: &str, text: String, active: bool, goal: Option<&Goal>) 
 }
 
 fn show_goal() -> Result<String, String> {
-    let goals = read_goals();
+    let goals = read_goals()?;
     let text = match &goals.active {
         Some(goal) => format!(
             "## 🎯 Current goal\n\n**{}**  ({})\n\n{}\n\n{}",
@@ -715,7 +716,7 @@ fn show_goal() -> Result<String, String> {
 }
 
 fn list_goals() -> Result<String, String> {
-    let goals = read_goals();
+    let goals = read_goals()?;
     let mut lines = vec!["## 🎯 Goals".to_string()];
     match &goals.active {
         Some(goal) => lines.push(format!(
@@ -943,7 +944,9 @@ extern "C" fn on_turn_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
     }
     // Safe boundary: flush any notice queued during this turn's tool batch.
     flush_pending_inject();
-    let mut goals = read_goals();
+    let Ok(mut goals) = read_goals() else {
+        return 0;
+    };
     let Some(mut goal) = goals.active.clone() else {
         // No active goal — nothing to inject.
         remember_injected(None);
@@ -1094,10 +1097,9 @@ fn run_command(args: &str) -> String {
 
     let result: Result<String, String> = match head.as_str() {
         "" | "status" | "show" => {
-            let goals = read_goals();
-            Ok(render_status_text(goals.active.as_ref()))
+            read_goals().map(|goals| render_status_text(goals.active.as_ref()))
         }
-        "list" => Ok(render_list_text(&read_goals())),
+        "list" => read_goals().map(|goals| render_list_text(&goals)),
         "help" => Ok(COMMAND_HELP.to_string()),
         "start" => {
             let (title, notes) = split_title_notes(rest);
@@ -1426,7 +1428,7 @@ mod tests {
         std::env::set_var(rpi_plugin_sdk::SUBAGENT_PARENT_TRACE_ID_ENV, "parent-trace");
         turn_end();
 
-        let goal = read_goals().active.unwrap();
+        let goal = read_goals().unwrap().active.unwrap();
         assert_eq!(goal.turns_used, 1);
         assert_eq!(goal.status, "paused");
         assert!(!APPENDED.lock().unwrap().is_empty());
@@ -1446,7 +1448,7 @@ mod tests {
         op_start("Parent budget", "", Some(1), None).unwrap();
         std::env::remove_var(rpi_plugin_sdk::SUBAGENT_PARENT_TRACE_ID_ENV);
         turn_end();
-        let goal = read_goals().active.unwrap();
+        let goal = read_goals().unwrap().active.unwrap();
         assert_eq!(goal.turns_used, 0);
         assert_eq!(goal.status, "active");
     }
@@ -1472,6 +1474,9 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp cwd");
         let previous = std::env::current_dir().expect("current dir");
         std::env::set_current_dir(&dir).expect("enter temp cwd");
+        *BRANCH.lock().unwrap() = json!({"filtered": true, "entries": []});
+        *pending_state().lock().unwrap() = None;
+        *pending_inject().lock().unwrap() = None;
         CwdGuard { previous, dir }
     }
 
@@ -1499,6 +1504,7 @@ mod tests {
 
         let turns_used = || {
             read_goals()
+                .unwrap()
                 .active
                 .expect("goal is still active")
                 .turns_used
@@ -1536,10 +1542,23 @@ mod tests {
     /// Records the `AppendEntry` payloads the plugin asks the host for, in order.
     static APPENDED: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static FAIL_APPENDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static BRANCH: Mutex<Value> = Mutex::new(Value::Null);
 
     rpi_plugin_sdk::string_handler! {
     fn recording_runtime_action(action, args, out, _user_data) {
+        let payload: Value = serde_json::from_str(args).unwrap();
+        if action == RuntimeActionId::GetSessionBranch as u32 {
+            assert_eq!(payload, json!({"customTypes": ["goal-state"]}));
+            out.write(BRANCH.lock().unwrap().to_string());
+            return 0;
+        }
         if action == RuntimeActionId::AppendEntry as u32 {
+            if payload["customType"] == "goal-state" {
+                *BRANCH.lock().unwrap() = json!({"filtered":true,"entries":[{
+                    "type":"custom","customType":"goal-state","data":payload["data"]
+                }]});
+                return 0;
+            }
             if FAIL_APPENDS.fetch_update(Ordering::SeqCst, Ordering::SeqCst,
                 |remaining| remaining.checked_sub(1)).is_ok() {
                 return 1;
@@ -1549,9 +1568,46 @@ mod tests {
                 .unwrap_or_else(|p| p.into_inner())
                 .push(args.to_owned());
         }
-        let _ = out;
         0
     }
+    }
+
+    #[test]
+    fn filtered_branch_recovery_never_uses_the_project_file() {
+        let _serial = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _cwd = isolated_cwd("filtered-recovery");
+        install_recording_runtime();
+        fs::create_dir_all(".rpi").unwrap();
+        let file_state = Goals {
+            active: Some(goal_with("active")),
+            archived: vec![],
+        };
+        let file = serde_json::to_string(&file_state).unwrap();
+        fs::write(goals_path(), &file).unwrap();
+        for filtered in [Value::Null, json!(false), json!("true")] {
+            *BRANCH.lock().unwrap() = json!({"filtered": filtered, "entries": []});
+            assert!(read_goals().unwrap_err().contains("filtered: true"));
+            assert!(op_start("Must not overwrite", "", None, None).is_err());
+            assert_eq!(fs::read_to_string(goals_path()).unwrap(), file);
+        }
+        *BRANCH.lock().unwrap() = json!({"filtered": true});
+        assert!(read_goals().unwrap_err().contains("entries array"));
+        *BRANCH.lock().unwrap() = json!({"filtered":true,"entries":[]});
+        assert!(read_goals().unwrap().active.is_none());
+        let mut latest = goal_with("paused");
+        latest.title = "Recovered branch".into();
+        *BRANCH.lock().unwrap() = json!({"filtered":true,"entries":[
+            {"type":"custom","customType":"goal-state","data":file_state},
+            {"type":"custom","customType":"goal-state","data":{"active":latest,"archived":[]}}
+        ]});
+        assert_eq!(
+            read_goals().unwrap().active.unwrap().title,
+            "Recovered branch"
+        );
+        op_update(Some("recovered"), None).unwrap();
+        assert!(flush_pending_state());
+        assert_eq!(read_goals().unwrap().active.unwrap().notes, "recovered");
+        assert_eq!(fs::read_to_string(goals_path()).unwrap(), file);
     }
 
     /// Install the recording runtime. `RUNTIME` is a `OnceLock`, so the first
@@ -1677,7 +1733,7 @@ mod tests {
         // Fail both the queued active notice and the subsequent budget notice.
         FAIL_APPENDS.store(2, Ordering::SeqCst);
         turn_end();
-        assert_eq!(read_goals().active.unwrap().status, "paused");
+        assert_eq!(read_goals().unwrap().active.unwrap().status, "paused");
         assert!(APPENDED.lock().unwrap().is_empty());
         assert!(
             pending_inject().lock().unwrap().is_some(),
@@ -1717,7 +1773,7 @@ mod tests {
         assert_eq!(details["status"], "active");
         assert_eq!(details["notes"], "new progress");
         assert!(pending_inject().lock().unwrap().is_none());
-        assert_eq!(read_goals().active.unwrap().turns_used, 1);
+        assert_eq!(read_goals().unwrap().active.unwrap().turns_used, 1);
     }
 
     #[test]
@@ -1745,7 +1801,7 @@ mod tests {
         assert!(delivered[0].contains("new progress"));
         assert_eq!(
             *last_injected().lock().unwrap(),
-            Some(fingerprint(&read_goals().active.unwrap()))
+            Some(fingerprint(&read_goals().unwrap().active.unwrap()))
         );
         turn_end();
         assert_eq!(

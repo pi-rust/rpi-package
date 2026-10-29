@@ -1347,14 +1347,21 @@ mod tests {
             while let Some(line) = lines.next_line().await.unwrap() {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let data = if request["type"] == "get_session_branch" {
-                    json!({"entries": [{
+                    assert_eq!(request["customTypes"], json!([ENTRY_TYPE]));
+                    json!({"filtered":true,"entries": [{
+                        "id": "entry-3",
                         "type": "custom",
                         "customType": ENTRY_TYPE,
                         "data": {
-                            "revision": 3,
-                            "nextRunId": 1,
-                            "run": {"id": "run-1", "status": "running", "tools": []},
-                            "queue": []
+                            "format": rpi_durable_core::JOURNAL_FORMAT,
+                            "version": rpi_durable_core::JOURNAL_VERSION,
+                            "kind":"snapshot","baseRevision":2,"revision":3,
+                            "state": {
+                                "revision": 3,
+                                "nextRunId": 1,
+                                "run": {"id": "run-1", "status": "running", "tools": []},
+                                "queue": []
+                            }
                         }
                     }]})
                 } else {
@@ -1432,14 +1439,21 @@ mod tests {
             while let Some(line) = lines.next_line().await.unwrap() {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let current = fixture_revision.load(Ordering::Acquire);
-                let data = json!({"entries": [{
+                assert_eq!(request["customTypes"], json!([ENTRY_TYPE]));
+                let data = json!({"filtered":true,"entries": [{
+                    "id": format!("entry-{current}"),
                     "type": "custom",
                     "customType": ENTRY_TYPE,
                     "data": {
-                        "revision": current,
-                        "nextRunId": 1,
-                        "run": {"id": "run-1", "status": "running", "tools": []},
-                        "queue": []
+                        "format": rpi_durable_core::JOURNAL_FORMAT,
+                        "version": rpi_durable_core::JOURNAL_VERSION,
+                        "kind":"snapshot","baseRevision":current-1,"revision":current,
+                        "state": {
+                            "revision": current,
+                            "nextRunId": 1,
+                            "run": {"id": "run-1", "status": "running", "tools": []},
+                            "queue": []
+                        }
                     }
                 }]});
                 injector_for_fixture
@@ -1514,7 +1528,7 @@ mod tests {
             while let Some(line) = lines.next_line().await.unwrap() {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let data = if request["type"] == "get_session_branch" {
-                    json!({"entries": []})
+                    json!({"filtered":true,"entries": []})
                 } else {
                     json!({"entryId": "entry-durable"})
                 };

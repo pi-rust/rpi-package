@@ -21,6 +21,9 @@ struct Host {
     entries: Vec<Value>,
     next_id: u32,
     fail_read: bool,
+    reject_filter: bool,
+    branch_reply: Option<Value>,
+    read_requests: Vec<Value>,
     fail_append: bool,
     missing_ack: bool,
     invalid_json_ack: bool,
@@ -77,6 +80,10 @@ extern "C" fn runtime(
     .to_string_lossy();
     let value: Value = serde_json::from_str(&args).unwrap();
     let mut host = host().lock().unwrap();
+    if action == RuntimeActionId::GetSessionBranch as u32 {
+        assert_eq!(value, json!({"customTypes":["durable-state"]}));
+        host.read_requests.push(value.clone());
+    }
     let read_delay = action == RuntimeActionId::GetSessionBranch as u32 && host.read_delay;
     if read_delay {
         std::thread::sleep(Duration::from_millis(100));
@@ -90,8 +97,25 @@ extern "C" fn runtime(
     }
     let mut invalid_json_ack = false;
     let (rc, result) = match RuntimeActionId::try_from(action).unwrap() {
+        RuntimeActionId::GetSessionBranch if host.reject_filter => (
+            1,
+            json!({"error":"unsupported GetSessionBranch customTypes"}),
+        ),
         RuntimeActionId::GetSessionBranch if host.fail_read => (1, json!({"error":"read failed"})),
-        RuntimeActionId::GetSessionBranch => (0, json!({"entries":host.entries})),
+        RuntimeActionId::GetSessionBranch => {
+            let entries: Vec<_> = host
+                .entries
+                .iter()
+                .filter(|entry| entry["type"] == "custom" && entry["customType"] == "durable-state")
+                .cloned()
+                .collect();
+            (
+                0,
+                host.branch_reply
+                    .clone()
+                    .unwrap_or_else(|| json!({"entries":entries,"filtered":true})),
+            )
+        }
         RuntimeActionId::AppendEntry if host.fail_append => {
             host.fail_append = false;
             (1, json!({"error":"append failed"}))
@@ -165,8 +189,48 @@ fn action(params: Value) -> Result<Value, String> {
     (tool.destroy)(handle);
     answer
 }
+fn canonical_snapshot() -> Value {
+    json!({
+        "id":"snapshot", "type":"custom", "customType":"durable-state",
+        "data":{
+            "format":"rpi-durable-journal", "version":1, "kind":"snapshot",
+            "baseRevision":0, "revision":0,
+            "state":{
+                "workflow":{
+                    "name":"canonical loaded before SessionStart", "status":"running",
+                    "steps":[{"id":"s","title":"S","status":"pending"}]
+                },
+                "run":{
+                    "id":"run-1", "status":"running",
+                    "startedRevision":0, "updatedRevision":0, "tools":[]
+                },
+                "nextRunId":1
+            }
+        }
+    })
+}
 fn legacy() -> Value {
     json!({"id":"legacy","type":"custom","customType":"durable-state","data":{"workflow":null}})
+}
+
+fn assert_restore_failure(expected: &str) {
+    let before_entries = host().lock().unwrap().entries.clone();
+    let before_reads = host().lock().unwrap().read_requests.len();
+    assert_ne!(empty(EventTag::SessionTree), 0);
+    assert_eq!(host().lock().unwrap().read_requests.len(), before_reads + 1);
+    for params in [
+        json!({"action":"status"}),
+        json!({"action":"enqueue","text":"blocked"}),
+    ] {
+        let result = action(params).unwrap();
+        let error = result["details"]["error"].as_str().unwrap();
+        assert!(error.contains(expected), "{error}");
+        assert!(result["details"].get("workflow").is_none());
+    }
+    assert_ne!(empty(EventTag::AgentStart), 0);
+    assert_eq!(host().lock().unwrap().entries, before_entries);
+    // Failed stores never lazily retry, let alone retry without the filter.
+    assert_eq!(host().lock().unwrap().read_requests.len(), before_reads + 1);
 }
 
 #[test]
@@ -194,20 +258,7 @@ fn runtime_contract_is_sequential_and_fail_closed() {
     };
     assert_eq!(rpi_durable::rpi_plugin_register(&api), 0);
 
-    let mut old = legacy();
-    old["data"]["workflow"] = json!({
-        "name":"legacy loaded before SessionStart",
-        "status":"running",
-        "steps":[{"id":"s","title":"S","status":"pending"}]
-    });
-    old["data"]["run"] = json!({
-        "id":"run-1",
-        "status":"running",
-        "startedRevision":0,
-        "updatedRevision":0,
-        "tools":[]
-    });
-    host().lock().unwrap().entries = vec![old];
+    host().lock().unwrap().entries = vec![canonical_snapshot()];
     host().lock().unwrap().read_delay = true;
     let first = std::thread::spawn(|| action(json!({"action":"status"})).unwrap());
     let second = std::thread::spawn(|| action(json!({"action":"status"})).unwrap());
@@ -220,7 +271,7 @@ fn runtime_contract_is_sequential_and_fail_closed() {
 
     assert_eq!(
         action(json!({"action":"status"})).unwrap()["details"]["workflow"]["name"],
-        "legacy loaded before SessionStart"
+        "canonical loaded before SessionStart"
     );
     assert_eq!(host().lock().unwrap().entries.len(), 2);
     assert_eq!(empty(EventTag::SessionTree), 0);
@@ -274,15 +325,70 @@ fn runtime_contract_is_sequential_and_fail_closed() {
     let corrupt_failed = action(json!({"action":"enqueue","text":"corrupt"})).unwrap();
     assert!(corrupt_failed["details"]["error"].is_string());
 
+    // Legacy snapshots no longer initialize or upgrade the branch.
     host().lock().unwrap().entries = vec![legacy()];
+    assert_restore_failure("invalid durable journal record");
+    host().lock().unwrap().entries.clear();
     assert_eq!(empty(EventTag::SessionTree), 0);
-    action(json!({"action":"enqueue","text":"upgrade"})).unwrap();
-    let mut downgrade = host().lock().unwrap().entries.clone();
+    action(json!({"action":"enqueue","text":"canonical"})).unwrap();
+    let canonical = host().lock().unwrap().entries.clone();
+    let mut downgrade = canonical.clone();
     downgrade.push(legacy());
     host().lock().unwrap().entries = downgrade;
-    assert_ne!(empty(EventTag::SessionTree), 0);
+    assert_restore_failure("invalid durable journal record");
 
-    host().lock().unwrap().entries = vec![legacy()];
+    host().lock().unwrap().entries = canonical.clone();
+    for filtered in [
+        None,
+        Some(json!(false)),
+        Some(json!("true")),
+        Some(json!(1)),
+        Some(Value::Null),
+    ] {
+        let mut reply = json!({"entries":canonical});
+        if let Some(filtered) = filtered {
+            reply["filtered"] = filtered;
+        }
+        host().lock().unwrap().branch_reply = Some(reply);
+        assert_restore_failure("filtered: true");
+    }
+    host().lock().unwrap().branch_reply = None;
+    host().lock().unwrap().reject_filter = true;
+    assert_restore_failure("unsupported GetSessionBranch customTypes");
+    host().lock().unwrap().reject_filter = false;
+    for reply in [
+        json!({"filtered":true}),
+        json!({"filtered":true,"entries":{}}),
+        json!({"filtered":true,"entries":[null]}),
+        json!({"filtered":true,"entries":[{"type":"message"}]}),
+        json!({"filtered":true,"entries":[{
+            "id":"old-runtime", "type":"custom", "customType":"rpi-durable-runtime",
+            "data":{"run":null,"queue":[]}
+        }]}),
+    ] {
+        host().lock().unwrap().branch_reply = Some(reply);
+        assert_restore_failure("branch restore failed");
+    }
+    host().lock().unwrap().branch_reply = None;
+    assert_eq!(empty(EventTag::SessionStart), 0);
+    assert_eq!(
+        action(json!({"action":"status"})).unwrap()["details"]["queue"][0]["text"],
+        "canonical"
+    );
+
+    // Conforming hosts exclude obsolete runtime entries, with no migration.
+    host().lock().unwrap().entries = vec![json!({
+        "id":"obsolete", "type":"custom", "customType":"rpi-durable-runtime",
+        "data":{"run":{"id":"old"},"queue":[{"text":"not migrated"}]}
+    })];
+    assert_eq!(empty(EventTag::SessionTree), 0);
+    assert!(
+        action(json!({"action":"status"})).unwrap()["details"]["queue"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    host().lock().unwrap().entries = canonical;
     RELEASE_READ.store(false, Ordering::Release);
     host().lock().unwrap().block_read = true;
     let restore = std::thread::spawn(|| empty(EventTag::SessionTree));
@@ -311,7 +417,9 @@ fn runtime_contract_is_sequential_and_fail_closed() {
 
     READ_STARTED.store(false, Ordering::Release);
     RELEASE_READ.store(false, Ordering::Release);
-    host().lock().unwrap().fail_read = true;
+    // A protocol failure must publish the failed store while holding the same
+    // restore lock as a transport failure, before waiting mutations resume.
+    host().lock().unwrap().branch_reply = Some(json!({"entries":[]}));
     host().lock().unwrap().block_read = true;
     let before_failed_restore = host().lock().unwrap().entries.clone();
     let restore = std::thread::spawn(|| empty(EventTag::SessionTree));
@@ -335,7 +443,7 @@ fn runtime_contract_is_sequential_and_fail_closed() {
     assert!(mutation_result.unwrap()["details"]["error"].is_string());
     mutation.join().unwrap();
     assert_eq!(host().lock().unwrap().entries, before_failed_restore);
-    host().lock().unwrap().fail_read = false;
+    host().lock().unwrap().branch_reply = None;
     host().lock().unwrap().block_read = false;
     assert_eq!(empty(EventTag::SessionTree), 0);
 

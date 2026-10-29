@@ -10,6 +10,7 @@ use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
 const TOOL: &str = "todo";
+const TODO_ENTRY: &str = "todo-state";
 
 // Reuse the SDK's host-context lifetime and thread-safety contract.
 type Runtime = PluginApi;
@@ -86,23 +87,27 @@ fn state_json(state: &TodoState) -> Value {
 }
 
 fn restore_from_branch() {
-    let Ok(value) = call_runtime(RuntimeActionId::GetSessionBranch, json!({})) else {
+    let Ok(value) = call_runtime(
+        RuntimeActionId::GetSessionBranch,
+        json!({"customTypes": [TODO_ENTRY]}),
+    ) else {
+        return;
+    };
+    if value.get("filtered").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let Some(entries) = value.get("entries").and_then(Value::as_array) else {
         return;
     };
     let mut restored = TodoState::default();
-    if let Some(entries) = value.get("entries").and_then(Value::as_array) {
-        for entry in entries {
-            let Some(message) = entry.get("message") else {
-                continue;
-            };
-            if message.get("role").and_then(Value::as_str) != Some("toolResult")
-                || message.get("toolName").and_then(Value::as_str) != Some(TOOL)
-            {
-                continue;
-            }
-            if let Some(next) = parse_todos(message.get("details").unwrap_or(&Value::Null)) {
-                restored = next;
-            }
+    for entry in entries {
+        if entry.get("type").and_then(Value::as_str) != Some("custom")
+            || entry.get("customType").and_then(Value::as_str) != Some(TODO_ENTRY)
+        {
+            continue;
+        }
+        if let Some(next) = parse_todos(entry.get("data").unwrap_or(&Value::Null)) {
+            restored = next;
         }
     }
     *state().lock().unwrap_or_else(|p| p.into_inner()) = restored;
@@ -118,6 +123,10 @@ fn handle_event(event, _user_data) {
                 if let Ok(result) = serde_json::from_str::<Value>(&payload.result)
                 {
                     if let Some(next) = parse_todos(result.get("details").unwrap_or(&Value::Null)) {
+                        let _ = call_runtime(
+                            RuntimeActionId::AppendEntry,
+                            json!({"customType": TODO_ENTRY, "data": state_json(&next)}),
+                        );
                         *state().lock().unwrap_or_else(|p| p.into_inner()) = next;
                     }
                 }
@@ -383,5 +392,94 @@ mod tests {
         assert!(text.contains("[✓] #2: Finished task"));
         assert_eq!(state_json(&state)["todos"][2]["done"], true);
         assert_eq!(state_json(&state)["todos"][1]["status"], "in_progress");
+    }
+
+    static BRANCH: Mutex<Value> = Mutex::new(Value::Null);
+
+    rpi_plugin_sdk::string_handler! {
+    fn branch_runtime(action, args, out, _user_data) {
+        let args: Value = serde_json::from_str(args).unwrap();
+        match RuntimeActionId::try_from(action).unwrap() {
+            RuntimeActionId::GetSessionBranch => {
+                assert_eq!(args, json!({"customTypes": ["todo-state"]}));
+                out.write(BRANCH.lock().unwrap().to_string());
+            }
+            RuntimeActionId::AppendEntry => {
+                assert_eq!(args["customType"], "todo-state");
+                *BRANCH.lock().unwrap() = json!({"filtered":true,"entries":[{
+                    "type":"custom","customType":"todo-state","data":args["data"]
+                }]});
+                out.write(json!({"entryId":"todo-snapshot"}).to_string());
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+        0
+    }
+    }
+
+    #[test]
+    fn filtered_snapshots_restore_latest_state_and_reject_unconfirmed_replies() {
+        let _ = RUNTIME.set(PluginApi {
+            abi_version: rpi_plugin_sdk::RPI_PLUGIN_ABI_VERSION_UNIFIED,
+            struct_size: std::mem::size_of::<PluginApi>() as u32,
+            runtime_action: branch_runtime,
+            free_string,
+            user_data: std::ptr::null_mut(),
+            register_tool: None,
+            register_command: None,
+            register_shortcut: None,
+            register_flag: None,
+            register_provider: None,
+            register_message_renderer: None,
+            register_markdown_transformer: None,
+            register_entry_renderer: None,
+            register_event_handler: None,
+            register_resources_discover: None,
+            dispatch_event: None,
+            declare: None,
+            register_before_agent_start: None,
+            register_oauth_provider: None,
+        });
+        let snapshot =
+            json!({"todos":[{"id":7,"text":"Recovered","status":"in_progress"}],"nextId":11});
+        handle_event(
+            rpi_plugin_sdk::StablePluginEvent::tool_result(
+                EventTag::ToolResult,
+                StbString::from_string("call".into()),
+                StbString::from_string("todo".into()),
+                StbString::from_string(json!({"details":snapshot}).to_string()),
+                false,
+            ),
+            std::ptr::null_mut(),
+        );
+        assert_eq!(
+            BRANCH.lock().unwrap()["entries"][0]["data"],
+            snapshot_with_done(&snapshot)
+        );
+        *state().lock().unwrap() = TodoState::default();
+        restore_from_branch();
+        assert_eq!(state().lock().unwrap().next_id, 11);
+        assert!(state().lock().unwrap().todos[0].in_progress);
+        for filtered in [Value::Null, json!(false), json!("true")] {
+            *BRANCH.lock().unwrap() = json!({"filtered":filtered,"entries":[]});
+            restore_from_branch();
+            assert_eq!(state().lock().unwrap().todos[0].id, 7);
+        }
+        *BRANCH.lock().unwrap() = json!({"filtered":true});
+        restore_from_branch();
+        assert_eq!(state().lock().unwrap().next_id, 11);
+        *BRANCH.lock().unwrap() = json!({"filtered":true,"entries":[
+            {"type":"custom","customType":"todo-state","data":snapshot},
+            {"type":"custom","customType":"todo-state","data":{"todos":[],"nextId":0}}
+        ]});
+        restore_from_branch();
+        assert!(state().lock().unwrap().todos.is_empty());
+        *BRANCH.lock().unwrap() = json!({"filtered":true,"entries":[]});
+        restore_from_branch();
+        assert_eq!(state().lock().unwrap().next_id, 0);
+    }
+
+    fn snapshot_with_done(snapshot: &Value) -> Value {
+        state_json(&parse_todos(snapshot).unwrap())
     }
 }
