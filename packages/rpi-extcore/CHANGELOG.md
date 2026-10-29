@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.8...rpi-extcore-v0.2.0) - 2026-10-29
+
+### Other
+
+- *(durable)* [**breaking**] require canonical filtered branch recovery ([#109](https://github.com/pi-rust/rpi-package/pull/109))
+
 ### Changed
 
 - Query native branches once with a non-empty `customTypes` array and require `filtered: true`; remove full-branch/singular APIs, per-type merging and old-host fallback.

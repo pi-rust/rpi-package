@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-durable-core-v0.1.1...rpi-durable-core-v0.2.0) - 2026-10-29
+
+### Other
+
+- *(durable)* [**breaking**] require canonical filtered branch recovery ([#109](https://github.com/pi-rust/rpi-package/pull/109))
+
 ### Changed
 
 - Accept only canonical `durable-state` entries in the current journal format and exact version; remove legacy/raw-state decoding, lossy `from_branch`, and the raw-state `entry()` helper.
