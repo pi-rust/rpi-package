@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.8...rpi-http-v0.1.9) - 2026-10-29
+
+### Added
+
+- *(web)* add project archiving
+
+### Other
+
+- Merge main into feature-1028 and preserve canonical durable recovery
+
 ## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.7...rpi-http-v0.1.8) - 2026-10-29
 
 ### Other

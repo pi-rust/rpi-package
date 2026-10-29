@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.19...rpi-web-v0.1.20) - 2026-10-29
+
+### Added
+
+- *(web)* add permanent session deletion
+- *(web)* add project archiving
+
+### Fixed
+
+- *(web)* restore archived chats and unblock production regression checks
+- *(web)* preview image attachments without mime type
+- *(web)* withdraw queued message when editing
+
+### Other
+
+- Merge main into feature-1028 and preserve canonical durable recovery
+- Merge remote-tracking branch 'origin/feat/project-archive' into HEAD
+- *(web)* align e2e expectations with queue UI
+
 ## [0.1.19](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.18...rpi-web-v0.1.19) - 2026-10-29
 
 ### Other
