@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.4...rpi-durable-v0.3.0) - 2026-10-29
+
+### Other
+
+- *(durable)* [**breaking**] require canonical filtered branch recovery ([#109](https://github.com/pi-rust/rpi-package/pull/109))
+
 ### Changed
 
 - **Breaking preview:** require filtered `GetSessionBranch` reads using `customTypes`; reject unconfirmed host responses instead of accepting a full transcript.
