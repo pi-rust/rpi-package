@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.6...rpi-providers-v0.1.7) - 2026-10-29
+
+### Fixed
+
+- *(antigravity)* normalize union tool schema types
+
 ## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.5...rpi-providers-v0.1.6) - 2026-10-28
 
 ### Fixed
