@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.0...rpi-acp-v0.2.1) - 2026-10-29
+
+### Added
+
+- *(acp)* harden protocol lifecycle and capability coverage
+
+### Other
+
+- Merge main into feature-1028 and preserve canonical durable recovery
+
 ## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.23...rpi-acp-v0.2.0) - 2026-10-29
 
 ### Other

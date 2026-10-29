@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.0...rpi-extcore-v0.2.1) - 2026-10-29
+
+### Added
+
+- *(acp)* harden protocol lifecycle and capability coverage
+- *(durable)* refresh branch state incrementally
+- *(web)* add project archiving
+
+### Other
+
+- Merge main into feature-1028 and preserve canonical durable recovery
+- Merge remote-tracking branch 'origin/feat/project-archive' into HEAD
+- *(durable)* verify branch cursor advances
+
 ## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.8...rpi-extcore-v0.2.0) - 2026-10-29
 
 ### Other
