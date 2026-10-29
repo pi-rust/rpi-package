@@ -301,7 +301,12 @@
   height: 26px;
   width: 26px;
   padding: 0;
+}
+.project-group-header .project-new-session {
   opacity: 0;
+}
+.project-group-header .project-menu-trigger {
+  opacity: 1;
 }
 .project-group-header:hover .project-new-session,
 .project-group-header:focus-within .project-new-session,

@@ -653,6 +653,28 @@ test("projects can be archived and restored from the project actions menu", asyn
   ).toBeVisible();
 });
 
+for (const width of [1280, 390]) {
+  test(`project actions are visible without hover at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await mockHost(page);
+    await page.goto("/");
+    if (width < 768) {
+      await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
+    }
+    await page.mouse.move(width - 1, 843);
+    const actions = page.getByRole("button", {
+      name: "Project actions: pi-rust",
+      exact: true,
+    });
+    await expect(actions).toBeVisible();
+    await expect(actions).toHaveCSS("opacity", "1");
+    await actions.click();
+    await expect(
+      page.getByRole("menuitem", { name: "Archive project", exact: true }),
+    ).toBeVisible();
+  });
+}
+
 test("opening an existing folder is searchable and fills its project name", async ({
   page,
 }) => {
