@@ -21,8 +21,8 @@ use rpi_extcore::{
     reply::{IntoReply, ReplyKind, ServiceReply},
     service::{
         self, AuthRefreshRequest, BackendConfig, CreateProjectRequest, CreateSessionRequest,
-        FileQuery, ForkRequest, MetadataRequest, ProjectFoldersQuery, RenameProjectRequest,
-        RenameRequest, Service, SessionListQuery,
+        FileQuery, ForkRequest, MetadataRequest, ProjectFoldersQuery, ProjectMetadataRequest,
+        RenameProjectRequest, RenameRequest, Service, SessionListQuery,
     },
 };
 use serde::{de::DeserializeOwned, Deserialize};
@@ -214,6 +214,7 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route("/api/v1/project-folders", get(list_project_folders))
         .route("/api/v1/projects/{id}/rename", post(rename_project))
+        .route("/api/v1/projects/{id}/metadata", post(project_metadata))
         .route("/api/v1/projects/{id}/files", get(project_files))
         .route(
             "/api/v1/projects/{id}/upload",
@@ -246,6 +247,18 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/sessions/{id}/durable/events", get(durable_events))
         .route("/api/v1/sessions/{id}/events", get(events))
         .with_state(state)
+}
+
+async fn project_metadata(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<ProjectMetadataRequest>,
+) -> HttpReply {
+    HttpReply(
+        service::project_metadata(&state.backend, id, request)
+            .await
+            .into_reply(),
+    )
 }
 
 async fn upload_project_file(

@@ -171,7 +171,37 @@ pub fn logout() -> Result<(), String> {
     let status = std::process::Command::new(crate::session::resolve_rpi_executable())
         .arg("auth")
         .arg("logout")
+        // ACP owns stdout/stdin. A logout child must never inherit either
+        // descriptor: provider diagnostics on stdout would corrupt JSON-RPC,
+        // and an inherited stdin could consume the client's protocol stream.
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
         .status()
+        .map_err(|error| format!("spawn `rpi auth logout`: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`rpi auth logout` exited {}",
+            status.code().unwrap_or(1)
+        ))
+    }
+}
+
+/// Async logout used by the ACP dispatcher. `kill_on_drop` ensures a
+/// disconnect cannot leave a credential helper running after its request task
+/// is cancelled.
+pub async fn logout_async() -> Result<(), String> {
+    let status = tokio::process::Command::new(crate::session::resolve_rpi_executable())
+        .arg("auth")
+        .arg("logout")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .status()
+        .await
         .map_err(|error| format!("spawn `rpi auth logout`: {error}"))?;
     if status.success() {
         Ok(())

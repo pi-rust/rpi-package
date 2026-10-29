@@ -9,6 +9,17 @@ fn send(message: Value) {
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
+    if args
+        .windows(2)
+        .any(|args| args[0] == "auth" && args[1] == "logout")
+    {
+        // Deliberately try to pollute stdout and consume stdin. The ACP auth
+        // adapter must isolate both descriptors from its JSON-RPC stream.
+        println!("fixture logout stdout pollution");
+        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdin().read_line(&mut String::new());
+        std::process::exit(0);
+    }
     let argument = |name| {
         args.windows(2)
             .find(|args| args[0] == name)
@@ -26,7 +37,7 @@ fn main() {
             std::path::PathBuf::from(argument("--session-dir").unwrap()).join("fixture");
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
-            directory.join("session.jsonl"),
+            directory.join(format!("fixture_{id}.jsonl")),
             format!("{}\n", json!({"kind":"header","version":4,"id":id})),
         )
         .unwrap();

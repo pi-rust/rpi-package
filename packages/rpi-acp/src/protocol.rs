@@ -4,8 +4,9 @@
 //! 2.0 with one message per line on stdin/stdout:
 //!
 //! * client → agent requests we implement: `initialize`, `session/new`,
-//!   `session/prompt`, `session/load`, `session/resume`, and the rpi extension
-//!   `session/durable`; notification `session/cancel`.
+//!   `session/prompt`, `session/load`, `session/resume`, `session/close`,
+//!   `session/delete`, and the rpi extension `session/durable`; notifications
+//!   `session/cancel` and `$/cancel_request`.
 //! * agent → client: `session/update` notifications (streamed text, thinking,
 //!   tool calls), optional `session/durable_update` notifications, and one
 //!   JSON-RPC response per request.
@@ -282,6 +283,15 @@ impl Writer {
         self.pending.lock().unwrap().len()
     }
 
+    /// Cancel an agent-to-client request. Resolving it with `null` lets the
+    /// owning dialog task send the native cancellation frame and retire its
+    /// transport resource without aborting the Rust task.
+    pub(crate) async fn cancel_request(&self, id: u64) {
+        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
+            let _ = tx.send(Value::Null);
+        }
+    }
+
     /// Route a client response (an object with `id` and no `method`) to the
     /// request that produced it.
     pub(crate) async fn resolve(&self, id: u64, result: Value) {
@@ -341,7 +351,7 @@ pub fn initialize_result() -> Value {
             },
             "loadSession": true,
             "auth": {"logout": {}},
-            "sessionCapabilities": {"resume": {}, "delete": {}},
+            "sessionCapabilities": {"resume": {}, "delete": {}, "close": {}},
             "promptCapabilities": {
                 // `--mode rpc` takes a single text prompt; no multimodal input.
                 "image": false,
@@ -431,6 +441,237 @@ fn spawn_durable_update_watcher(
     }))
 }
 
+#[derive(Debug)]
+enum RpcMessage {
+    Request {
+        id: Option<Value>,
+        method: String,
+        params: Value,
+    },
+    Response {
+        id: Value,
+        result: Value,
+    },
+}
+
+fn rpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {"code": code, "message": message.into()},
+    })
+}
+
+fn valid_rpc_id(value: &Value) -> bool {
+    value.is_string() || value.as_i64().is_some() || value.as_u64().is_some()
+}
+
+/// Validate the JSON-RPC envelope before dispatch. In particular, a malformed
+/// prompt block must not disappear through `filter_map`, and a response from
+/// the client must not be mistaken for an unknown request.
+fn parse_rpc_message(message: Value) -> Result<RpcMessage, Value> {
+    let Some(object) = message.as_object() else {
+        return Err(rpc_error(Value::Null, -32600, "invalid request"));
+    };
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return if object.get("id").is_none() {
+            Err(Value::Null)
+        } else {
+            Err(rpc_error(
+                object
+                    .get("id")
+                    .filter(|id| valid_rpc_id(id))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                -32600,
+                "invalid request",
+            ))
+        };
+    }
+    if let Some(method) = object.get("method") {
+        let Some(method) = method.as_str() else {
+            return if object.get("id").is_none() {
+                Err(Value::Null)
+            } else {
+                Err(rpc_error(
+                    object
+                        .get("id")
+                        .filter(|id| valid_rpc_id(id))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                    -32600,
+                    "invalid request",
+                ))
+            };
+        };
+        if object.contains_key("result") || object.contains_key("error") {
+            return if object.get("id").is_none() {
+                Err(Value::Null)
+            } else {
+                Err(rpc_error(
+                    object
+                        .get("id")
+                        .filter(|id| valid_rpc_id(id))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                    -32600,
+                    "invalid request",
+                ))
+            };
+        }
+        let id = match object.get("id") {
+            Some(id) if valid_rpc_id(id) => Some(id.clone()),
+            Some(_) => {
+                return Err(rpc_error(Value::Null, -32600, "invalid request"));
+            }
+            None => None,
+        };
+        let params = object.get("params").cloned().unwrap_or(Value::Null);
+        // Method-specific validation returns -32602. Keep the envelope parser
+        // permissive here so a known method with a scalar params value is
+        // reported as invalid parameters rather than being misclassified as an
+        // invalid JSON-RPC request.
+        return Ok(RpcMessage::Request {
+            id,
+            method: method.to_owned(),
+            params,
+        });
+    }
+
+    // A client response may resolve an agent-to-client request. Malformed
+    // responses have no request to answer, so they are ignored per JSON-RPC.
+    let Some(id) = object.get("id").filter(|id| valid_rpc_id(id)).cloned() else {
+        return Err(Value::Null);
+    };
+    let has_result = object.contains_key("result");
+    let has_error = object.contains_key("error");
+    if !has_result && !has_error {
+        return Err(rpc_error(id, -32600, "invalid request"));
+    }
+    if has_result == has_error || (has_error && !object["error"].is_object()) {
+        return Err(Value::Null);
+    }
+    Ok(RpcMessage::Response {
+        id,
+        result: object.get("result").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn request_params<'a>(
+    params: &'a Value,
+    method: &str,
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    params
+        .as_object()
+        .ok_or_else(|| format!("{method} params must be an object"))
+}
+
+fn required_string<'a>(
+    params: &'a serde_json::Map<String, Value>,
+    name: &str,
+) -> Result<&'a str, String> {
+    params
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{name} must be a non-empty string"))
+}
+
+fn prompt_params(params: &Value) -> Result<Vec<ContentBlock>, String> {
+    let params = request_params(params, "session/prompt")?;
+    let prompt = params
+        .get("prompt")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "prompt must be an array".to_string())?;
+    if prompt.is_empty() {
+        return Err("prompt must contain at least one content block".into());
+    }
+    prompt
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let block: ContentBlock = serde_json::from_value(value.clone())
+                .map_err(|error| format!("prompt[{index}] is invalid: {error}"))?;
+            if matches!(block, ContentBlock::Other) {
+                return Err(format!("prompt[{index}] uses unsupported content type"));
+            }
+            Ok(block)
+        })
+        .collect()
+}
+
+fn request_key(id: &Value) -> String {
+    serde_json::to_string(id).unwrap_or_else(|_| id.to_string())
+}
+
+struct PromptTask {
+    session_id: String,
+    session: Arc<Session>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+async fn wait_prompt_task(task: PromptTask) {
+    let PromptTask {
+        session,
+        mut handle,
+        ..
+    } = task;
+    // Cancellation is a protocol/native operation, not a Rust task abort. Give
+    // the native host time to emit agent_settled and let Session::prompt retire
+    // dialogs and its run lease. A stalled native peer is force-terminated only
+    // after that graceful window.
+    if tokio::time::timeout(std::time::Duration::from_secs(30), &mut handle)
+        .await
+        .is_err()
+    {
+        session.kill().await;
+        let _ = handle.await;
+    }
+}
+
+async fn stop_live_session(
+    session_id: &str,
+    sessions: &Arc<Mutex<HashMap<String, Arc<Session>>>>,
+    durable_watchers: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+    prompt_tasks: &mut HashMap<String, PromptTask>,
+) -> bool {
+    let task_keys: Vec<String> = prompt_tasks
+        .iter()
+        .filter(|(_, task)| task.session_id == session_id)
+        .map(|(key, _)| key.clone())
+        .collect();
+    let mut tasks = Vec::new();
+    for key in task_keys {
+        if let Some(task) = prompt_tasks.remove(&key) {
+            let _ = task.session.abort().await;
+            tasks.push(task);
+        }
+    }
+    for task in tasks {
+        wait_prompt_task(task).await;
+    }
+    if let Some(watcher) = durable_watchers.remove(session_id) {
+        watcher.abort();
+    }
+    if let Some(session) = sessions.lock().await.remove(session_id) {
+        session.kill().await;
+        true
+    } else {
+        false
+    }
+}
+
+/// Run cleanup for in-flight prompts without aborting their Rust tasks first.
+async fn stop_all_prompt_tasks(prompt_tasks: &mut HashMap<String, PromptTask>) {
+    let tasks: Vec<_> = prompt_tasks.drain().map(|(_, task)| task).collect();
+    for task in &tasks {
+        let _ = task.session.abort().await;
+    }
+    for task in tasks {
+        wait_prompt_task(task).await;
+    }
+}
+
 /// Run the ACP server until the client closes stdin, then return an exit code.
 ///
 /// The owner reports the returned code to the host's stdio lifecycle. The
@@ -443,6 +684,8 @@ pub async fn run(
     let writer = Arc::new(Writer::new());
     let sessions: Arc<Mutex<HashMap<String, Arc<Session>>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut durable_watchers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    let mut prompt_tasks: HashMap<String, PromptTask> = HashMap::new();
+    let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(10));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -487,60 +730,144 @@ pub async fn run(
         let message: Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(error) => {
-                diagln!("[rpi-acp] invalid json from client: {error}");
+                // Parse errors are the one JSON-RPC error that has no usable
+                // request id. They still get a response, unlike notifications.
+                writer
+                    .write(&rpc_error(
+                        Value::Null,
+                        -32700,
+                        format!("parse error: {error}"),
+                    ))
+                    .await
+                    .ok();
                 continue;
             }
         };
-
-        let method = message
-            .get("method")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let id = message.get("id").cloned();
+        let rpc = match parse_rpc_message(message) {
+            Ok(message) => message,
+            Err(error) if error.is_null() => continue,
+            Err(error) => {
+                writer.write(&error).await.ok();
+                continue;
+            }
+        };
+        let (id, method, params) = match rpc {
+            RpcMessage::Request { id, method, params } => (id, method, params),
+            RpcMessage::Response { id, result } => {
+                if let Some(numeric_id) = id.as_u64() {
+                    writer.resolve(numeric_id, result).await;
+                }
+                continue;
+            }
+        };
 
         // `RPI_ACP_DEBUG=1` traces the method stream. It costs a line per
         // request, which is how we find out where a client gave up.
         if crate::diag::debug_enabled() {
             match &id {
-                Some(id) => diagln!(
-                    "[rpi-acp] <- {} {id}",
-                    method.as_deref().unwrap_or("(response)")
-                ),
-                None => diagln!(
-                    "[rpi-acp] <- {} (notification)",
-                    method.as_deref().unwrap_or("?")
-                ),
+                Some(id) => diagln!("[rpi-acp] <- {} {id}", method),
+                None => diagln!("[rpi-acp] <- {} (notification)", method),
             }
         }
 
-        match (id, method.as_deref()) {
-            (Some(id), Some("initialize")) => {
-                writer.negotiate_questions(&message["params"]);
-                let terminal_auth = client_supports_terminal_auth(&message["params"]);
+        // Completed prompt tasks only retain their join handles until the next
+        // request. Keeping them briefly makes close/cancel races deterministic,
+        // while avoiding an unbounded task map.
+        prompt_tasks.retain(|_, task| !task.handle.is_finished());
+
+        match (id, method.as_str()) {
+            (Some(id), "initialize") => {
+                let params = match request_params(&params, "initialize") {
+                    Ok(params) => params,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let version = params.get("protocolVersion").and_then(Value::as_u64);
+                if version != Some(PROTOCOL_VERSION) {
+                    writer
+                        .respond_error(
+                            &id,
+                            -32602,
+                            "unsupported protocol version; this agent speaks ACP v1",
+                        )
+                        .await;
+                    continue;
+                }
+                if let Some(capabilities) = params.get("clientCapabilities") {
+                    if !capabilities.is_object() {
+                        writer
+                            .respond_error(&id, -32602, "clientCapabilities must be an object")
+                            .await;
+                        continue;
+                    }
+                }
+                let initialize_params = Value::Object(params.clone());
+                writer.negotiate_questions(&initialize_params);
+                let terminal_auth = client_supports_terminal_auth(&initialize_params);
                 writer
                     .respond(&id, initialize_result_for(terminal_auth))
                     .await;
             }
             // `authenticate` is not advertised (we use terminal auth), but tolerate
             // a stray call.
-            (Some(id), Some("authenticate")) => writer.respond(&id, json!({})).await,
-            (Some(id), Some("logout")) => match crate::auth::logout() {
-                Ok(()) => writer.respond(&id, json!({})).await,
-                Err(error) => writer.respond_error(&id, -32603, &error).await,
-            },
-            (Some(id), Some("session/new")) => {
-                let cwd = message
-                    .pointer("/params/cwd")
-                    .and_then(Value::as_str)
-                    .unwrap_or(".")
-                    .to_string();
+            (Some(id), "authenticate") => {
+                if params.is_null() || params.is_object() {
+                    writer.respond(&id, json!({})).await;
+                } else {
+                    writer
+                        .respond_error(&id, -32602, "params must be an object")
+                        .await;
+                }
+            }
+            (Some(id), "logout") => {
+                if !params.is_null() && !params.is_object() {
+                    writer
+                        .respond_error(&id, -32602, "params must be an object")
+                        .await;
+                    continue;
+                }
+                let writer = writer.clone();
+                logout_tasks.push(tokio::spawn(async move {
+                    match crate::auth::logout_async().await {
+                        Ok(()) => writer.respond(&id, json!({})).await,
+                        Err(error) => writer.respond_error(&id, -32603, &error).await,
+                    }
+                }));
+            }
+            (Some(id), "session/new") => {
+                let params = match request_params(&params, "session/new") {
+                    Ok(params) => params,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let cwd = match required_string(params, "cwd") {
+                    Ok(cwd) => cwd.to_owned(),
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                if let Some(mcp_servers) = params.get("mcpServers") {
+                    if !mcp_servers.is_array() {
+                        writer
+                            .respond_error(&id, -32602, "mcpServers must be an array")
+                            .await;
+                        continue;
+                    }
+                }
                 let session_id = uuid::Uuid::new_v4().to_string();
-                match open_session(&session_id, PathBuf::from(&cwd), None).await {
+                match open_session(&session_id, PathBuf::from(cwd), None).await {
                     Ok((session, state)) => {
                         let mut result = json!({"sessionId": session_id});
                         match config_options_for(&session, &state).await {
                             Ok(config) => result["configOptions"] = config["configOptions"].clone(),
-                            Err(error) => diagln!("[rpi-acp] session {session_id}: config options unavailable: {error}"),
+                            Err(error) => diagln!(
+                                "[rpi-acp] session {session_id}: config options unavailable: {error}"
+                            ),
                         }
                         let watcher = spawn_durable_update_watcher(
                             session.clone(),
@@ -556,9 +883,16 @@ pub async fn run(
                     Err(error) => writer.session_error(&id, "session/new", &error).await,
                 }
             }
-            (Some(id), Some("session/durable")) => {
-                let session_id = message
-                    .pointer("/params/sessionId")
+            (Some(id), "session/durable") => {
+                let params = match request_params(&params, "session/durable") {
+                    Ok(params) => Value::Object(params.clone()),
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let session_id = params
+                    .get("sessionId")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
@@ -567,7 +901,6 @@ pub async fn run(
                     writer.respond_error(&id, -32602, "unknown sessionId").await;
                     continue;
                 };
-                let params = message.get("params").cloned().unwrap_or(Value::Null);
                 if params.get("operation").and_then(Value::as_str) == Some("status") {
                     match session.durable_state().await {
                         Ok(state) => {
@@ -603,52 +936,94 @@ pub async fn run(
                     Err(error) => writer.respond_error(&id, -32603, &error).await,
                 }
             }
-            (Some(id), Some("session/prompt")) => {
-                let session_id = message
-                    .pointer("/params/sessionId")
+            (Some(id), "session/prompt") => {
+                let prompt = match prompt_params(&params) {
+                    Ok(prompt) => prompt,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let session_id = match params
+                    .as_object()
+                    .and_then(|params| params.get("sessionId"))
                     .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let blocks: Vec<ContentBlock> = message
-                    .pointer("/params/prompt")
-                    .and_then(Value::as_array)
-                    .map(|array| {
-                        array
-                            .iter()
-                            .filter_map(|value| serde_json::from_value(value.clone()).ok())
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                    .filter(|id| !id.trim().is_empty())
+                {
+                    Some(session_id) => session_id.to_owned(),
+                    None => {
+                        writer
+                            .respond_error(&id, -32602, "sessionId must be a non-empty string")
+                            .await;
+                        continue;
+                    }
+                };
+                let key = request_key(&id);
+                if prompt_tasks.contains_key(&key) {
+                    writer
+                        .respond_error(&id, -32600, "duplicate request id")
+                        .await;
+                    continue;
+                }
                 let session = sessions.lock().await.get(&session_id).cloned();
                 match session {
                     Some(session) => {
                         let writer = Arc::clone(&writer);
-                        tokio::spawn(async move {
-                            match session.prompt(&writer, &session_id, &blocks).await {
+                        let task_session = session.clone();
+                        let task_session_id = session_id.clone();
+                        let task_id = id.clone();
+                        let handle = tokio::spawn(async move {
+                            match task_session
+                                .prompt(&writer, &task_session_id, &prompt)
+                                .await
+                            {
                                 Ok(stop_reason) => {
-                                    writer.respond(&id, json!({"stopReason":stop_reason})).await
+                                    writer
+                                        .respond(&task_id, json!({"stopReason": stop_reason}))
+                                        .await
                                 }
                                 Err(error) => {
                                     diagln!(
-                                        "[rpi-acp] session {session_id}: prompt failed: {error}"
+                                        "[rpi-acp] session {task_session_id}: prompt failed: {error}"
                                     );
-                                    writer.respond_error(&id, -32603, &error).await;
+                                    writer.respond_error(&task_id, -32603, &error).await;
                                 }
                             }
                         });
+                        prompt_tasks.insert(
+                            key,
+                            PromptTask {
+                                session_id,
+                                session,
+                                handle,
+                            },
+                        );
                     }
                     None => writer.respond_error(&id, -32602, "unknown sessionId").await,
                 }
             }
-            (Some(id), Some(method @ ("session/load" | "session/resume"))) => {
-                let session_id = message
-                    .pointer("/params/sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let cwd = message
-                    .pointer("/params/cwd")
-                    .and_then(Value::as_str)
-                    .unwrap_or(".");
+            (Some(id), method @ ("session/load" | "session/resume")) => {
+                let params = match request_params(&params, method) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let session_id = match required_string(params, "sessionId") {
+                    Ok(session_id) => session_id,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let cwd = match required_string(params, "cwd") {
+                    Ok(cwd) => cwd,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
                 let existing = sessions.lock().await.get(session_id).cloned();
                 let opened = if let Some(session) = existing {
                     session.state().await.map(|state| (session, state))
@@ -671,8 +1046,12 @@ pub async fn run(
                             Ok(updates) => {
                                 let mut result = json!({});
                                 match config_options_for(&session, &state).await {
-                                    Ok(config) => result["configOptions"] = config["configOptions"].clone(),
-                                    Err(error) => diagln!("[rpi-acp] session {session_id}: config options unavailable: {error}"),
+                                    Ok(config) => {
+                                        result["configOptions"] = config["configOptions"].clone()
+                                    }
+                                    Err(error) => diagln!(
+                                        "[rpi-acp] session {session_id}: config options unavailable: {error}"
+                                    ),
                                 }
                                 if let Some(watcher) = durable_watchers.remove(session_id) {
                                     watcher.abort();
@@ -708,21 +1087,29 @@ pub async fn run(
                     Err(error) => writer.session_error(&id, method, &error).await,
                 }
             }
-            (Some(id), Some("session/set_config_option")) => {
-                let session_id = message
-                    .pointer("/params/sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let config_id = message
-                    .pointer("/params/configId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let value = message
-                    .pointer("/params/value")
-                    .cloned()
-                    .unwrap_or(Value::Null);
+            (Some(id), "session/set_config_option") => {
+                let params = match request_params(&params, "session/set_config_option") {
+                    Ok(params) => params,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let session_id = match required_string(params, "sessionId") {
+                    Ok(value) => value.to_owned(),
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let config_id = match required_string(params, "configId") {
+                    Ok(value) => value.to_owned(),
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let value = params.get("value").cloned().unwrap_or(Value::Null);
                 let session = sessions.lock().await.get(&session_id).cloned();
                 match session {
                     Some(session) => {
@@ -772,21 +1159,41 @@ pub async fn run(
                     None => writer.respond_error(&id, -32602, "unknown sessionId").await,
                 }
             }
-            (Some(id), Some("session/delete")) => {
-                let session_id = message
-                    .pointer("/params/sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                // Detach a live backend first, then drop its persisted files.
-                // Deleting is idempotent: a session that is no longer running
-                // (or was never saved) still answers successfully.
-                if let Some(watcher) = durable_watchers.remove(&session_id) {
-                    watcher.abort();
+            (Some(id), method @ ("session/close" | "session/delete")) => {
+                let params = match request_params(&params, method) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let session_id = match required_string(params, "sessionId") {
+                    Ok(value) => value.to_owned(),
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
+                let live = stop_live_session(
+                    &session_id,
+                    &sessions,
+                    &mut durable_watchers,
+                    &mut prompt_tasks,
+                )
+                .await;
+                if method == "session/close" {
+                    // Close deliberately preserves the native transcript so a
+                    // later load/resume can reopen it. Repeating close is safe.
+                    let saved = crate::history::saved_session(&session_id).is_ok();
+                    if live || saved {
+                        writer.respond(&id, json!({})).await;
+                    } else {
+                        writer.respond_error(&id, -32602, "unknown sessionId").await;
+                    }
+                    continue;
                 }
-                if let Some(session) = sessions.lock().await.remove(&session_id) {
-                    session.kill().await;
-                }
+                // Delete shares the same graceful stop path, then removes the
+                // persisted source of truth. It is idempotent for valid UUIDs.
                 match crate::history::session_directory(&session_id) {
                     Ok(directory) => match std::fs::remove_dir_all(&directory) {
                         Ok(()) => writer.respond(&id, json!({})).await,
@@ -802,30 +1209,73 @@ pub async fn run(
                     Err(error) => writer.respond_error(&id, -32602, &error).await,
                 }
             }
-            (Some(id), Some(other)) => {
+            (id, "$/cancel_request") => {
+                let request_id = match params
+                    .as_object()
+                    .and_then(|params| params.get("requestId"))
+                    .filter(|id| valid_rpc_id(id))
+                    .cloned()
+                {
+                    Some(request_id) => request_id,
+                    None => {
+                        if let Some(id) = id {
+                            writer
+                                .respond_error(&id, -32602, "requestId must be a string or number")
+                                .await;
+                        }
+                        continue;
+                    }
+                };
+                let key = request_key(&request_id);
+                let prompt_found = if let Some(task) = prompt_tasks.get(&key) {
+                    let _ = task.session.abort().await;
+                    true
+                } else {
+                    false
+                };
+                if !prompt_found {
+                    if let Some(numeric_id) = request_id.as_u64() {
+                        writer.cancel_request(numeric_id).await;
+                    }
+                }
+                if let Some(id) = id {
+                    writer.respond(&id, json!({})).await;
+                }
+            }
+            (id, "session/cancel") => {
+                let session_id = match params
+                    .as_object()
+                    .and_then(|params| params.get("sessionId"))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                {
+                    Some(session_id) => session_id.to_owned(),
+                    None => {
+                        if let Some(id) = id {
+                            writer
+                                .respond_error(&id, -32602, "sessionId must be a non-empty string")
+                                .await;
+                        }
+                        continue;
+                    }
+                };
+                let sessions_session = sessions.lock().await.get(&session_id).cloned();
+                if let Some(session) = sessions_session {
+                    let _ = session.abort().await;
+                }
+                for task in prompt_tasks.values() {
+                    if task.session_id == session_id {
+                        let _ = task.session.abort().await;
+                    }
+                }
+                if let Some(id) = id {
+                    writer.respond(&id, json!({})).await;
+                }
+            }
+            (Some(id), other) => {
                 writer
                     .respond_error(&id, -32601, &format!("method not found: {other}"))
                     .await
-            }
-            // A client response (an object with `id` and no `method`) answers an
-            // agent → client request, e.g. the `session/request_permission` we
-            // sent for a plugin's UI dialog. Route it to the waiting caller.
-            (Some(id), None) => {
-                if let Some(numeric_id) = id.as_u64() {
-                    let result = message.get("result").cloned().unwrap_or(Value::Null);
-                    writer.resolve(numeric_id, result).await;
-                }
-            }
-            (None, Some("session/cancel")) => {
-                let session_id = message
-                    .pointer("/params/sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let session = sessions.lock().await.get(&session_id).cloned();
-                if let Some(session) = session {
-                    let _ = session.abort().await;
-                }
             }
             (None, _) => {}
         }
@@ -833,6 +1283,11 @@ pub async fn run(
 
     // Resolve pending client requests before tearing down every child.
     writer.close();
+    stop_all_prompt_tasks(&mut prompt_tasks).await;
+    for task in logout_tasks {
+        task.abort();
+        let _ = task.await;
+    }
     // Client closed stdin or host requested shutdown.
     for (_, watcher) in durable_watchers {
         watcher.abort();
@@ -1343,5 +1798,48 @@ mod tests {
             &json!({"modelId": "x", "provider": "y"}),
         );
         assert_eq!(config["configOptions"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn json_rpc_envelope_rejects_malformed_requests_without_losing_notifications() {
+        let parsed = parse_rpc_message(json!({"jsonrpc":"1.0","id":1,"method":"x"}));
+        assert_eq!(parsed.unwrap_err()["error"]["code"], -32600);
+        let parsed = parse_rpc_message(json!({"jsonrpc":"2.0","method":"x","params":1}));
+        assert!(matches!(
+            parsed.unwrap(),
+            RpcMessage::Request { id: None, .. }
+        ));
+        assert!(request_params(&json!(1), "x").is_err());
+        let request = parse_rpc_message(json!({"jsonrpc":"2.0","id":1,"method":"x"})).unwrap();
+        assert!(
+            matches!(request, RpcMessage::Request { id: Some(_), method, .. } if method == "x")
+        );
+        let response = parse_rpc_message(json!({"jsonrpc":"2.0","id":1,"result":{}})).unwrap();
+        assert!(matches!(response, RpcMessage::Response { id, .. } if id == json!(1)));
+    }
+
+    #[test]
+    fn prompt_validation_does_not_silently_drop_bad_or_unsupported_blocks() {
+        let error = prompt_params(&json!({
+            "sessionId":"s",
+            "prompt":[{"type":"text","text":"ok"},{"type":"not-a-block"}]
+        }))
+        .unwrap_err();
+        assert!(error.contains("prompt[1]"));
+        let error = prompt_params(&json!({"sessionId":"s","prompt":[]})).unwrap_err();
+        assert!(error.contains("at least one"));
+    }
+
+    #[test]
+    fn initialize_rejects_unnegotiated_protocol_versions() {
+        let error = parse_rpc_message(json!({
+            "jsonrpc":"2.0", "id":1, "method":"initialize",
+            "params":{"protocolVersion":2}
+        }))
+        .unwrap();
+        assert!(matches!(error, RpcMessage::Request { .. }));
+        // The dispatcher performs the version selection; it never advertises
+        // v2 merely because a client requested it.
+        assert_eq!(initialize_result()["protocolVersion"], 1);
     }
 }
