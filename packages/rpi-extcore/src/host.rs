@@ -773,66 +773,25 @@ impl HostSession {
         Ok(())
     }
 
-    /// Read the complete currently selected native session branch.
-    pub async fn session_branch(&self) -> Result<Vec<Value>, String> {
+    /// Read the selected native branch's custom entries in one filtered request.
+    /// Unfiltered replies are rejected: pollers must never accept a full transcript.
+    pub async fn branch_entries_of_types(
+        &self,
+        custom_types: &[&str],
+    ) -> Result<Vec<Value>, String> {
+        if custom_types.is_empty() || custom_types.iter().any(|kind| kind.trim().is_empty()) {
+            return Err("get_session_branch: non-empty custom types are required".into());
+        }
         let data = self
-            .runtime_command("get_session_branch", json!({}))
+            .runtime_command("get_session_branch", json!({"customTypes": custom_types}))
             .await?;
+        if data.get("filtered").and_then(Value::as_bool) != Some(true) {
+            return Err("get_session_branch: host must return filtered custom entries".into());
+        }
         data.get("entries")
             .and_then(Value::as_array)
             .cloned()
             .ok_or_else(|| "get_session_branch: invalid entries data".into())
-    }
-
-    /// Read only the custom entries of `custom_type`.
-    ///
-    /// A full branch read serializes the whole transcript, which reaches
-    /// hundreds of megabytes on long sessions, so pollers must never ask for
-    /// it. Hosts that ignore the filter answer with the full branch, which stays
-    /// correct but expensive; the flag reports whether the cheap path is
-    /// available.
-    pub async fn branch_entries_of_type(
-        &self,
-        custom_type: &str,
-    ) -> Result<(Vec<Value>, bool), String> {
-        let data = self
-            .runtime_command("get_session_branch", json!({"customType": custom_type}))
-            .await?;
-        let entries = data
-            .get("entries")
-            .and_then(Value::as_array)
-            .cloned()
-            .ok_or_else(|| "get_session_branch: invalid entries data".to_string())?;
-        let filtered = data
-            .get("filtered")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        Ok((entries, filtered))
-    }
-
-    pub async fn branch_entries_of_types(
-        &self,
-        custom_types: &[&str],
-    ) -> Result<(Vec<Value>, bool), String> {
-        let first_type = custom_types.first().copied().ok_or_else(|| {
-            "get_session_branch: at least one custom type is required".to_string()
-        })?;
-        let (mut entries, filtered) = self.branch_entries_of_type(first_type).await?;
-        if !filtered || custom_types.len() == 1 {
-            // An old host ignores customType and returns the complete branch.
-            // Do not issue another expensive full-transcript request.
-            return Ok((entries, filtered));
-        }
-        for custom_type in &custom_types[1..] {
-            let (mut extra, extra_filtered) = self.branch_entries_of_type(custom_type).await?;
-            if !extra_filtered {
-                // This response is already the authoritative complete branch.
-                return Ok((extra, false));
-            }
-            entries.append(&mut extra);
-        }
-        entries.sort_by_key(|entry| entry.get("seq").and_then(Value::as_u64));
-        Ok((entries, true))
     }
 
     /// Append a protocol-neutral custom entry to the native session branch.
@@ -1017,6 +976,74 @@ async fn publish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn branch_query_uses_one_custom_types_request_and_preserves_native_order() {
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        assert!(session.branch_entries_of_types(&[]).await.is_err());
+        assert!(session.branch_entries_of_types(&[" "]).await.is_err());
+        let entries = json!([
+            {"id":"b","seq":8,"type":"custom","customType":"second"},
+            {"id":"a","seq":3,"type":"custom","customType":"first"}
+        ]);
+        let expected = entries.as_array().unwrap().clone();
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            let request: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request["type"], "get_session_branch");
+            assert_eq!(request["customTypes"], json!(["first", "second"]));
+            assert!(request.get("customType").is_none());
+            injector
+                .send(json!({"type":"response","id":request["id"],"success":true,
+                "data":{"filtered":true,"entries":entries}}))
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), lines.next_line())
+                    .await
+                    .is_err(),
+                "multiple types must not cause multiple branch requests"
+            );
+        });
+        assert_eq!(
+            session
+                .branch_entries_of_types(&["first", "second"])
+                .await
+                .unwrap(),
+            expected
+        );
+        fixture.await.unwrap();
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn branch_query_rejects_unfiltered_and_malformed_replies() {
+        for data in [
+            json!({"entries":[]}),
+            json!({"filtered":false,"entries":[]}),
+            json!({"filtered":"true","entries":[]}),
+            json!({"filtered":true}),
+            json!({"filtered":true,"entries":{}}),
+        ] {
+            let (writer, peer) = tokio::io::duplex(4096);
+            let (session, injector) = HostSession::test_connection(writer, 16);
+            let fixture = tokio::spawn(async move {
+                let mut lines = BufReader::new(peer).lines();
+                let request: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                injector
+                    .send(json!({"type":"response","id":request["id"],"success":true,"data":data}))
+                    .unwrap();
+            });
+            assert!(session
+                .branch_entries_of_types(&["durable-state"])
+                .await
+                .is_err());
+            fixture.await.unwrap();
+            session.shutdown().await;
+        }
+    }
 
     #[tokio::test]
     async fn forced_close_and_shutdown_timeout_finalize_all_session_observers_once() {

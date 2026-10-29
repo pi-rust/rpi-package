@@ -18,8 +18,9 @@ fn runtime_action(action, args, out, _user_data) {
     let args: Value = serde_json::from_str(args).unwrap();
     let result = match RuntimeActionId::try_from(action).unwrap() {
         RuntimeActionId::GetSessionBranch => {
+            assert_eq!(args, json!({"customTypes": ["goal-state"]}));
             let state = STATE.lock().unwrap().clone();
-            json!({"entries": [{"type":"custom", "customType":"goal-state", "data":state}]})
+            json!({"filtered": true, "entries": [{"type":"custom", "customType":"goal-state", "data":state}]})
         }
         RuntimeActionId::AppendEntry => {
             if args["customType"] == "goal-state" {

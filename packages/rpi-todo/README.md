@@ -12,9 +12,30 @@ restored.
 todo: list | add | update | toggle | clear
 ```
 
-State is stored in each tool result's `details` and reconstructed by replaying
-`todo` tool results on the current session branch. This matches Pi's extension
-model:
+Successful mutations append a `todo-state` custom entry before publishing the
+new in-memory state or returning success. The append must acknowledge a nonempty
+`entryId`; persistence does not depend on tool-completion events. Each successful
+tool result still includes the full state in `details`. Listing, unchanged
+updates, empty clears, and invalid inputs do not append entries.
+
+Session restore queries `customTypes: ["todo-state"]`, `order: "newestFirst"`,
+`limit: 1` and requires `filtered: true` with at most one valid todo entry; it
+never reads a full transcript. Snapshots are self-contained, so every unblocked
+tool or `/todos` command reads just the latest snapshot on the current branch.
+This also covers hosts that send neither `SessionStart` on first use nor
+`SessionTree` on navigation; cached state is never used to infer the branch.
+A failed restore (including an unexpected response entry) blocks reads and
+mutations until a successful explicit session reload (`SessionStart` or
+`SessionTree`), even on first use. A rejected append leaves the previous state
+and next ID unchanged, and that committed state remains listable. An
+unreadable or missing append acknowledgement may mean the host already wrote the
+snapshot: both reads and mutations return an explicit error until session reload,
+rather than implicitly rereading or retrying from stale state. `/todos` reports
+these errors as visible message results with an `error` field and `Error:` text,
+not a nonzero callback status that would discard the detailed error in the host.
+
+Tool-result-only sessions from earlier releases cannot be restored through this
+custom-entry-only API. This matches Pi's extension model:
 
 - session restore replays the current branch;
 - forked sessions inherit the fork point and then diverge;
@@ -61,3 +82,17 @@ requires the matching updated RPI host; other clients receive a plain checklist.
 ```text
 cargo build --release -p rpi-todo
 ```
+
+## Native regression test
+
+With matching preview host and todo DLL artifacts:
+
+```text
+python packages/rpi-todo/tests/native_todo_smoke.py --rpi /path/to/rpi --extension /path/to/rpi_todo.dll
+```
+
+Use the platform's `.so`/`.dylib` path on Linux/macOS. The test uses an isolated
+profile/session and a deterministic loopback model to execute the real tool,
+then verifies snapshots, no-op reads, restart recovery, branch navigation, IDs,
+statuses and clearing. It makes no external model calls and does not replace
+installed plugins.

@@ -35,7 +35,6 @@ use tokio::process::Command;
 use tokio::sync::broadcast;
 use tokio::task::{AbortHandle, JoinSet};
 
-use crate::diagln;
 use crate::protocol::{ContentBlock, Writer};
 
 static PERMISSION_BYPASS: AtomicBool = AtomicBool::new(false);
@@ -110,13 +109,17 @@ impl Session {
             bypass: PERMISSION_BYPASS.load(Ordering::Acquire),
         })
         .await?;
+        Self::attach(rpc).await
+    }
+
+    async fn attach(rpc: Arc<HostSession>) -> Result<Arc<Self>, String> {
         let durable = match DurableRuntime::try_attach(rpc.clone()).await {
             Ok(runtime) => runtime,
             Err(error) => {
-                // Durable state is optional. A native host without branch RPCs
-                // must not prevent ordinary ACP sessions from starting.
-                diagln!("[rpi-acp] durable branch unavailable: {error}");
-                None
+                // Only absent capabilities permit a non-durable session. Once
+                // advertised, branch RPC and replay failures must fail closed.
+                rpc.terminate().await;
+                return Err(error);
             }
         };
         Ok(Arc::new(Self {
@@ -981,6 +984,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attach_without_capabilities_keeps_the_backend_alive() {
+        for commands in [
+            json!([]),
+            json!(["get_session_branch"]),
+            json!(["execute_command"]),
+        ] {
+            let (stdin, _commands) = tokio::io::duplex(8192);
+            let (rpc, _events) = HostSession::test_connection_with_ready(
+                stdin,
+                64,
+                json!({"type":"ready","protocol":"rpi","supportedCommands":commands}),
+            );
+            let session = Session::attach(rpc.clone()).await.unwrap();
+            assert!(!session.durable_available());
+            assert_eq!(rpc.snapshot().await.status, "ready");
+            session.kill().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn attach_errors_preserve_the_cause_and_close_the_backend() {
+        for (response, expected) in [
+            (
+                json!({"success":true,"data":{"entries":[]}}),
+                "get_session_branch: host must return filtered custom entries",
+            ),
+            (
+                json!({"success":true,"data":{"filtered":false,"entries":[]}}),
+                "get_session_branch: host must return filtered custom entries",
+            ),
+            (
+                json!({"success":false,"error":"fixture branch RPC failed"}),
+                "get_session_branch: fixture branch RPC failed",
+            ),
+            (
+                json!({"success":true,"data":{"filtered":true,"entries":[{
+                    "id":"broken","type":"custom","customType":ENTRY_TYPE,
+                    "data":{"format":"rpi-durable-journal","version":999}
+                }]}}),
+                "durable branch replay:",
+            ),
+        ] {
+            let (stdin, commands) = tokio::io::duplex(8192);
+            let (rpc, events) = HostSession::test_connection(stdin, 64);
+            let mut raw = rpc.subscribe_raw();
+            let attach = tokio::spawn(Session::attach(rpc.clone()));
+            let mut commands = BufReader::new(commands).lines();
+            let branch = read_json(&mut commands).await;
+            assert_eq!(branch["type"], "get_session_branch");
+            assert_eq!(branch["customTypes"], json!([ENTRY_TYPE]));
+            let mut response = response;
+            response["type"] = json!("response");
+            response["id"] = branch["id"].clone();
+            events.send(response).unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), attach)
+                .await
+                .unwrap()
+                .unwrap();
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("invalid durable backend was accepted"),
+            };
+            assert!(error.starts_with(expected), "{error}");
+            // Cleanup completes before the error is returned, even though we
+            // still retain references to the failed host here.
+            loop {
+                let event = tokio::time::timeout(std::time::Duration::from_secs(2), raw.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if event["type"] == "host_closed" {
+                    break;
+                }
+            }
+            assert!(rpc.state().await.is_err());
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), commands.next_line())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn durable_lifecycle_event_does_not_mutate_the_projection() {
         let (session, _commands) = test_session();
         let update = session.durable_update("acp-session").await.unwrap();
@@ -1029,6 +1118,8 @@ mod tests {
             .unwrap();
         let branch = read_json(&mut commands).await;
         assert_eq!(branch["type"], "get_session_branch");
+        assert_eq!(branch["customTypes"], json!([ENTRY_TYPE]));
+        assert!(branch.get("customType").is_none());
         session
             .events
             .as_ref()
@@ -1037,10 +1128,14 @@ mod tests {
                 "type": "response",
                 "id": branch["id"],
                 "success": true,
-                "data": {"entries": [{"type":"custom","customType":ENTRY_TYPE,"data":{
-                    "revision": 1, "nextRunId": 1,
-                    "run": {"id":"run-1", "status":"running", "tools":[]},
-                    "queue": []
+                "data": {"filtered":true,"entries": [{"id":"entry-1","type":"custom","customType":ENTRY_TYPE,"data":{
+                    "format":"rpi-durable-journal","version":1,
+                    "kind":"snapshot","baseRevision":0,"revision":1,
+                    "state": {
+                        "revision": 1, "nextRunId": 1,
+                        "run": {"id":"run-1", "status":"running", "tools":[]},
+                        "queue": []
+                    }
                 }}]}
             }))
             .unwrap();

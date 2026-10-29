@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Query native branches once with a non-empty `customTypes` array and require `filtered: true`; remove full-branch/singular APIs, per-type merging and old-host fallback.
+- Project only canonical durable journals and propagate advertised-capability query/replay failures instead of silently disabling durable state. Sessions without durable capabilities remain supported; HTTP, ACP and Web wire contracts are unchanged.
+
 ## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.7...rpi-extcore-v0.1.8) - 2026-10-28
 
 ### Fixed

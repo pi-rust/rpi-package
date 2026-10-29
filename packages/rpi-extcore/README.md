@@ -74,7 +74,13 @@ commits made by another adapter/process. This prevents ordinary Agent events
 from becoming a second durable fact source. The native harness owns Agent execution recovery;
 `rpi-durable` owns workflow/business state. The native host must advertise
 `get_session_branch` and `execute_command`; hosts without those capabilities
-safely remain ordinary non-durable sessions. The branch remains the only
+safely remain ordinary non-durable sessions. When those capabilities are present,
+branch-query or replay errors propagate instead of silently disabling durable
+state. `HostSession::branch_entries_of_types` makes one native request with a
+non-empty `customTypes` array, requires `filtered: true`, and returns entries
+without an unfiltered/full-transcript fallback. Durable projection queries only
+`durable-state` and decodes the current journal format/version; raw-state and
+legacy-discriminator reads are not supported. The branch remains the only
 durable source and no parallel database or scheduler is created.
 
 Sharing this library does not share memory between separate OS processes. Multiple clients must connect to the same service to share live sessions. Keep one backend writer per registry; independent service processes should use separate registry files.

@@ -61,10 +61,10 @@ paused, turns are not counted.
 
 The live extension stores state as a `goal-state` custom entry in the current
 session branch. This keeps goals isolated between unrelated sessions while
-allowing a resumed/forked branch to retain its own goal history. The legacy
-`.rpi/goals.json` file remains a fallback for library tests and older hosts
-without session-branch support. Hosts supporting session branches use their
-own session history instead of the shared project file.
+allowing a resumed/forked branch to retain its own goal history. Runtime reads
+query `customTypes: ["goal-state"]` and require `filtered: true`; failed or
+unconfirmed reads report an error and never fall back to a shared project file.
+The `.rpi/goals.json` file is used only when no runtime is installed (library tests).
 
 The stored data has this shape:
 
