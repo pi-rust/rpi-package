@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.6...rpi-providers-v0.1.7) - 2026-10-29
+
+### Fixed
+
+- *(antigravity)* normalize union tool schema types
+
+## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.5...rpi-providers-v0.1.6) - 2026-10-28
+
+### Fixed
+
+- *(providers)* keep the Antigravity project binding across restarts
+
+### Other
+
+- *(providers)* make strict clippy pass for the provider package
+
+### Fixed
+
+- Keep the Antigravity project binding after a restart. Login and refresh store the project with the access token, so a stream after a restart uses it without project discovery. Credentials stored before this change keep the discovery fallback until `rpi auth refresh`.
+
 ## [0.1.5](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.4...rpi-providers-v0.1.5) - 2026-10-27
 
 ### Added

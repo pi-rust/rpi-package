@@ -92,11 +92,14 @@ OAuth 客户端 ID 与密钥不随源码提供。构建时设置 `RPI_ANTIGRAVIT
 发布流程从仓库 secrets 读取同名变量，缺失时只输出 `::warning::`，不会失败。
 
 Antigravity 不支持 Gemini API key：Pi 的同一供应商同样只接受 OAuth access token（`stream.ts`
-中 `Missing Antigravity OAuth access token`）。请求中的 `apiKey` 即 access token，本包不读取
-任何 API key 环境变量。过期凭据不会在请求前自动刷新，需要先执行 `rpi auth refresh`。
+中 `Missing Antigravity OAuth access token`）。请求中的 `apiKey` 即宿主保存的 access，本包不读取
+任何 API key 环境变量。登录与刷新保存的 access 为 `<access token>|<项目>`：项目是登录时发现的
+Cloud Code 项目，发往 Google 的只有 token。流式请求直接使用绑定的项目，进程重启后不再发起项目
+发现。没有 `|` 后缀的旧凭据仍按原有方式使用进程内缓存与项目发现；登录时已发现项目的旧凭据，执行
+一次 `rpi auth refresh` 即可写入绑定。过期凭据不会在请求前自动刷新，需要先执行 `rpi auth refresh`。
 
 本地测试通过 loopback 服务覆盖目录与路由、PKCE、令牌交换与刷新（端点注入只在单元测试内部）、
-Gemini SSE 增量、取消、HTTP 错误、生命周期与凭据隔离；运行方式与其他供应商相同：
+项目绑定与重启后的流式请求、Gemini SSE 增量、取消、HTTP 错误、生命周期与凭据隔离；运行方式与其他供应商相同：
 
 ```sh
 cargo test -p rpi-providers --test antigravity

@@ -6,17 +6,15 @@
 //! forwards mutations through the registered extension command, and publishes
 //! an in-memory projection.
 use crate::host::HostSession;
-use futures_util::{Stream, StreamExt, stream};
+use futures_util::{stream, Stream, StreamExt};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Canonical native custom-entry discriminator owned by `rpi-durable`.
 pub const ENTRY_TYPE: &str = rpi_durable_core::ENTRY_TYPE;
-/// Old discriminator accepted only by the shared replay/migration layer.
-pub const LEGACY_ENTRY_TYPE: &str = rpi_durable_core::LEGACY_ENTRY_TYPE;
 /// Maximum number of durable state changes retained for reconnect replay.
 pub const MAX_CHANGE_ENTRIES: usize = 128;
 
@@ -75,8 +73,8 @@ pub fn replay_changes(
 }
 
 pub use rpi_durable_core::{
-    DurableMutation, DurableState, MAX_QUEUE_ITEMS, MAX_SUMMARY_CHARS, MAX_TOOL_ENTRIES, QueueItem,
-    QueueStatus, RunCheckpoint, RunStatus, ToolCheckpoint, ToolStatus, apply_entries,
+    DurableMutation, DurableState, QueueItem, QueueStatus, RunCheckpoint, RunStatus,
+    ToolCheckpoint, ToolStatus, MAX_QUEUE_ITEMS, MAX_SUMMARY_CHARS, MAX_TOOL_ENTRIES,
 };
 
 /// Branch-backed durable projection shared by protocol adapters.
@@ -91,14 +89,13 @@ pub struct DurableRuntime {
     refresh_lock: Mutex<()>,
     changes: tokio::sync::broadcast::Sender<DurableChange>,
     history: Arc<Mutex<VecDeque<DurableChange>>>,
-    last_entry_seq: Mutex<u64>,
 }
 
 impl DurableRuntime {
     /// Load the canonical projection from the native branch. Interrupted-run
     /// recovery is owned by the native harness or `rpi-durable`, never here.
     pub async fn attach(session: Arc<HostSession>) -> Result<Arc<Self>, String> {
-        Self::load(session, true).await
+        Self::load(session).await
     }
 
     /// Load a projection when the host exposes branch reads and extension
@@ -109,28 +106,21 @@ impl DurableRuntime {
         {
             return Ok(None);
         }
-        let (entries, _filtered) = match session
-            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE], None)
-            .await
-        {
-            Ok(reply) => reply,
-            Err(_) => return Ok(None),
-        };
+        let entries = session.branch_entries_of_types(&[ENTRY_TYPE]).await?;
         let runtime = Self::new(
             session,
             DurableState::try_from_branch(&entries)
                 .map_err(|error| format!("durable branch replay: {error}"))?,
-            max_entry_seq(&entries),
         );
         Ok(Some(runtime))
     }
 
     /// Create an empty runtime for deterministic adapter tests.
     pub fn empty(session: Arc<HostSession>) -> Arc<Self> {
-        Self::new(session, DurableState::default(), 0)
+        Self::new(session, DurableState::default())
     }
 
-    fn new(session: Arc<HostSession>, state: DurableState, last_entry_seq: u64) -> Arc<Self> {
+    fn new(session: Arc<HostSession>, state: DurableState) -> Arc<Self> {
         let (changes, _) = tokio::sync::broadcast::channel(MAX_CHANGE_ENTRIES);
         Arc::new(Self {
             session,
@@ -138,16 +128,13 @@ impl DurableRuntime {
             refresh_lock: Mutex::new(()),
             changes,
             history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_CHANGE_ENTRIES))),
-            last_entry_seq: Mutex::new(last_entry_seq),
         })
     }
 
-    async fn load(session: Arc<HostSession>, _strict_recovery: bool) -> Result<Arc<Self>, String> {
-        let (entries, _filtered) = session
-            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE], None)
-            .await?;
+    async fn load(session: Arc<HostSession>) -> Result<Arc<Self>, String> {
+        let entries = session.branch_entries_of_types(&[ENTRY_TYPE]).await?;
         let state = DurableState::try_from_branch(&entries)?;
-        Ok(Self::new(session, state, max_entry_seq(&entries)))
+        Ok(Self::new(session, state))
     }
 
     pub async fn state(&self) -> DurableState {
@@ -217,42 +204,17 @@ impl DurableRuntime {
 
     pub async fn refresh_branch(&self) -> Result<bool, String> {
         let _refresh = self.refresh_lock.lock().await;
-        let after_seq = *self.last_entry_seq.lock().await;
-        let (entries, _filtered) = self
-            .session
-            .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE], Some(after_seq))
-            .await?;
-        let current = self.projection.lock().await.clone();
-        let mut next = current.clone();
-        let mut next_entry_seq = after_seq.max(max_entry_seq(&entries));
-
-        if let Err(_incremental_error) = apply_entries(&mut next, &entries) {
-            // A missing journal delta, unsupported legacy shape, or a native
-            // host that ignored the cursor requires one authoritative replay.
-            let (full_entries, _filtered) = self
-                .session
-                .branch_entries_of_types(&[ENTRY_TYPE, LEGACY_ENTRY_TYPE], None)
-                .await?;
-            next = DurableState::try_from_branch(&full_entries)?;
-            next_entry_seq = max_entry_seq(&full_entries);
-        }
-        *self.last_entry_seq.lock().await = next_entry_seq;
-
-        if current == next {
+        let entries = self.session.branch_entries_of_types(&[ENTRY_TYPE]).await?;
+        let next = DurableState::try_from_branch(&entries)?;
+        let mut projection = self.projection.lock().await;
+        if *projection == next {
             return Ok(false);
         }
-        *self.projection.lock().await = next.clone();
+        *projection = next.clone();
+        drop(projection);
         self.publish(next).await;
         Ok(true)
     }
-}
-
-fn max_entry_seq(entries: &[Value]) -> u64 {
-    entries
-        .iter()
-        .filter_map(|entry| entry.get("seq").and_then(Value::as_u64))
-        .max()
-        .unwrap_or_default()
 }
 
 fn mutation_command(mutation: &DurableMutation) -> Value {
@@ -286,34 +248,26 @@ mod tests {
         let fixture = tokio::spawn(async move {
             let mut lines = BufReader::new(peer).lines();
             let mut started = false;
-            let mut refreshes = 0;
             while let Some(line) = lines.next_line().await.unwrap() {
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let data = match request["type"].as_str() {
-                    Some("get_session_branch") => {
-                        if started {
-                            assert_eq!(
-                                request["customType"].as_str(),
-                                Some(if refreshes % 2 == 0 {
-                                    ENTRY_TYPE
-                                } else {
-                                    LEGACY_ENTRY_TYPE
-                                })
-                            );
-                            assert_eq!(
-                                request["afterSeq"].as_u64(),
-                                Some(if refreshes < 2 { 0 } else { 7 })
-                            );
-                            refreshes += 1;
-                            json!({"filtered":true,"entries": [{"seq":7,"type":"custom","customType":ENTRY_TYPE,"data":{
-                                "revision":1,"nextRunId":1,
-                                "run":{"id":"run-1","status":"running","tools":[]},
-                                "queue":[]
-                            }}]})
-                        } else {
-                            json!({"entries": []})
-                        }
+                    Some("get_session_branch") if started => {
+                        assert_eq!(request["customTypes"], json!([ENTRY_TYPE]));
+                        json!({
+                            "filtered": true,
+                            "entries": [{"id":"entry-1","seq":7,"type":"custom","customType":ENTRY_TYPE,"data":{
+                                "format": rpi_durable_core::JOURNAL_FORMAT,
+                                "version": rpi_durable_core::JOURNAL_VERSION,
+                                "kind":"snapshot","baseRevision":0,"revision":1,
+                                "state": {
+                                    "revision":1,"nextRunId":1,
+                                    "run":{"id":"run-1","status":"running","tools":[]},
+                                    "queue":[]
+                                }
+                            }}]
+                        })
                     }
+                    Some("get_session_branch") => json!({"filtered":true,"entries":[]}),
                     Some("execute_command") => {
                         started = true;
                         json!({"changed":true,"run":{"id":"run-1","status":"running","tools":[]}})
@@ -361,6 +315,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn try_attach_propagates_filter_rpc_and_replay_errors() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let snapshot = json!({"id":"entry-4","type":"custom","customType":ENTRY_TYPE,"data":{
+            "format":rpi_durable_core::JOURNAL_FORMAT,"version":rpi_durable_core::JOURNAL_VERSION,
+            "kind":"snapshot","baseRevision":3,"revision":4,"state":{"revision":4,"queue":[]}
+        }});
+        let mut invalid_responses = vec![
+            (true, json!({"entries": []})),
+            (true, json!({"filtered": false, "entries": []})),
+            (
+                true,
+                json!({"filtered": true, "entries": [{"type":"custom", "customType":ENTRY_TYPE, "data":{"revision":4}}]}),
+            ),
+            (false, Value::Null),
+        ];
+        for malformed in [
+            Value::Null,
+            json!({"id":"foreign","type":"message","customType":ENTRY_TYPE,"data":{}}),
+            json!({"id":"foreign","type":"custom","customType":"rpi-durable-runtime","data":{}}),
+            json!({"type":"custom","customType":ENTRY_TYPE,"data":{}}),
+            json!({"id":"","type":"custom","customType":ENTRY_TYPE,"data":{}}),
+            json!({"id":"missing-data","type":"custom","customType":ENTRY_TYPE}),
+        ] {
+            invalid_responses.push((
+                true,
+                json!({"filtered":true,"entries":[malformed,snapshot.clone()]}),
+            ));
+        }
+        for (success, data) in invalid_responses {
+            let (writer, peer) = tokio::io::duplex(4096);
+            let (session, injector) = HostSession::test_connection(writer, 16);
+            let fixture = tokio::spawn(async move {
+                let mut lines = BufReader::new(peer).lines();
+                let request: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(request["customTypes"], json!([ENTRY_TYPE]));
+                assert!(request.get("customType").is_none());
+                injector.send(json!({"type":"response", "id":request["id"], "success":success, "data":data, "error":"branch query failed"})).unwrap();
+            });
+            assert!(DurableRuntime::try_attach(session.clone()).await.is_err());
+            fixture.await.unwrap();
+            session.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_refresh_preserves_the_last_good_projection() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            let snapshot = json!({"id":"entry-4","type":"custom","customType":ENTRY_TYPE,"data":{
+                "format":rpi_durable_core::JOURNAL_FORMAT,"version":rpi_durable_core::JOURNAL_VERSION,
+                "kind":"snapshot","baseRevision":3,"revision":4,"state":{"revision":4,"queue":[]}
+            }});
+            for entries in [
+                json!([snapshot.clone()]),
+                json!([snapshot, {"type":"custom","customType":ENTRY_TYPE,"data":{"revision":5}}]),
+            ] {
+                let request: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                injector
+                    .send(json!({"type":"response","id":request["id"],"success":true,
+                    "data":{"filtered":true,"entries":entries}}))
+                    .unwrap();
+            }
+        });
+        let runtime = DurableRuntime::try_attach(session.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut subscription = runtime.subscribe_changes(Some(4)).await;
+        assert!(runtime.refresh_branch().await.is_err());
+        assert_eq!(runtime.state().await.revision, 4);
+        assert!(matches!(
+            subscription.receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        fixture.await.unwrap();
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn runtime_rolls_back_when_native_append_fails() {
         use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -375,7 +413,7 @@ mod tests {
                         "type": "response",
                         "id": request["id"],
                         "success": true,
-                        "data": {"entries": []}
+                        "data": {"filtered": true, "entries": []}
                     })
                 } else {
                     json!({
@@ -406,24 +444,10 @@ mod tests {
             json!({"type":"ready","protocol":"rpi","supportedCommands":[]}),
         );
 
-        assert!(
-            DurableRuntime::try_attach(session.clone())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(DurableRuntime::try_attach(session.clone())
+            .await
+            .unwrap()
+            .is_none());
         session.shutdown().await;
-    }
-
-    #[test]
-    fn branch_recovery_uses_newest_valid_entry() {
-        let old = json!({"type":"custom","customType":ENTRY_TYPE,"data":{"revision":1}});
-        let current = json!({
-            "type":"custom",
-            "customType":ENTRY_TYPE,
-            "data":{"revision":2}
-        });
-        let state = DurableState::from_branch(&[old, json!({"type":"message"}), current]);
-        assert_eq!(state.revision, 2);
     }
 }

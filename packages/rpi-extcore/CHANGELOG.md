@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.8...rpi-extcore-v0.2.0) - 2026-10-29
+
+### Other
+
+- *(durable)* [**breaking**] require canonical filtered branch recovery ([#109](https://github.com/pi-rust/rpi-package/pull/109))
+
+### Changed
+
+- Query native branches once with a non-empty `customTypes` array and require `filtered: true`; remove full-branch/singular APIs, per-type merging and old-host fallback.
+- Project only canonical durable journals and propagate advertised-capability query/replay failures instead of silently disabling durable state. Sessions without durable capabilities remain supported; HTTP, ACP and Web wire contracts are unchanged.
+
+## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.7...rpi-extcore-v0.1.8) - 2026-10-28
+
+### Fixed
+
+- *(durable)* replay journal deltas and legacy bases
+
+### Other
+
+- test durable legacy read compatibility
+- preserve legacy durable reads during refresh
+- mark legacy durable reads for removal
+- Revert "remove legacy durable entry discriminator"
+- remove legacy durable entry discriminator
+- simplify durable replay to canonical branch reads
+
+## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.6...rpi-extcore-v0.1.7) - 2026-10-28
+
+### Other
+
+- Merge pull request #99 from pi-rust/feature-1028
+- *(durable)* remove background polling
+
+## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.5...rpi-extcore-v0.1.6) - 2026-10-28
+
+### Other
+
+- *(transcript)* reduce session snapshot and branch polling cost
+
 ## [0.1.5](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.1.4...rpi-extcore-v0.1.5) - 2026-10-28
 
 ### Added

@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.1.19](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.18...rpi-web-v0.1.19) - 2026-10-29
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.18](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.17...rpi-web-v0.1.18) - 2026-10-28
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.17](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.16...rpi-web-v0.1.17) - 2026-10-28
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.16](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.15...rpi-web-v0.1.16) - 2026-10-28
+
+### Other
+
+- *(transcript)* reduce session snapshot and branch polling cost
+
 ## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.14...rpi-web-v0.1.15) - 2026-10-28
 
 ### Other

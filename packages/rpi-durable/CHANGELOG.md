@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.4...rpi-durable-v0.3.0) - 2026-10-29
+
+### Other
+
+- *(durable)* [**breaking**] require canonical filtered branch recovery ([#109](https://github.com/pi-rust/rpi-package/pull/109))
+
+### Changed
+
+- **Breaking preview:** require filtered `GetSessionBranch` reads using `customTypes`; reject unconfirmed host responses instead of accepting a full transcript.
+- Restore only current-version `durable-state` journal snapshots/deltas. Remove legacy discriminator and unversioned state migration; upgrade the native host and plugin together.
+
+### Tests
+
+- Add a real native RPC/DLL smoke for filtering, retired query rejection, canonical journal commits and restart recovery without model calls.
+
+## [0.2.4](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.3...rpi-durable-v0.2.4) - 2026-10-29
+
+### Other
+
+- *(durable)* request filtered journal branch entries ([#107](https://github.com/pi-rust/rpi-package/pull/107))
+
+## [0.2.3](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.2...rpi-durable-v0.2.3) - 2026-10-28
+
+### Other
+
+- mark legacy durable reads for removal
+
+### Deprecated
+
+- Mark read-only compatibility for `rpi-durable-runtime` as deprecated. Existing
+  sessions remain readable through the `0.2.x` durable / `0.1.x` core lines; the
+  compatibility path is planned for removal in `rpi-durable` `0.3.0` and
+  `rpi-durable-core` `0.2.0`. New writes use only `durable-state`.
+
 ## [0.2.2](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.1...rpi-durable-v0.2.2) - 2026-10-28
 
 ### Added

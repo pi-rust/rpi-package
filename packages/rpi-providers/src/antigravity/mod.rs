@@ -256,17 +256,28 @@ fn begin() -> Result<Value, String> {
 fn exchange(pasted: &str) -> Result<Value, String> {
     let pasted = pasted.to_owned();
     // Redemption runs inside the worker, before any request; a rejected input sends nothing.
-    let result = block_on_oauth(move |net| async move {
-        auth::complete(
+    block_on_oauth(move |net| async move {
+        exchange_credential(
             &net,
             ClientSource::environment(),
-            &net.endpoints,
             &shared().logins,
             &pasted,
             Instant::now(),
         )
         .await
-    })?;
+    })
+}
+
+/// Redeems a login and packs the credential the host stores. The access value carries the
+/// project the login bound, so a later stream can use it without a process-local cache.
+async fn exchange_credential(
+    net: &Net,
+    source: ClientSource,
+    logins: &Mutex<auth::PendingLogins>,
+    pasted: &str,
+    now: Instant,
+) -> Result<Value, String> {
+    let result = auth::complete(net, source, &net.endpoints, logins, pasted, now).await?;
     if result["type"] != "success" {
         return Err("Antigravity OAuth exchange failed".into());
     }
@@ -275,12 +286,17 @@ fn exchange(pasted: &str) -> Result<Value, String> {
     if access.is_empty() {
         return Err("Antigravity OAuth exchange returned no access token".into());
     }
+    let project = result["projectId"].as_str().unwrap_or_default();
     shared()
         .credentials
         .lock()
         .unwrap()
         .remember(&access, &refresh);
-    Ok(credential_envelope(&access, &refresh, &result["expires"]))
+    Ok(credential_envelope(
+        &auth::format_access(&access, project),
+        &refresh,
+        &result["expires"],
+    ))
 }
 
 fn refresh(credential: &Value) -> Result<Value, String> {
@@ -292,19 +308,34 @@ fn refresh(credential: &Value) -> Result<Value, String> {
     if packed.is_empty() {
         return Err("Antigravity has no stored refresh credential".into());
     }
-    let refreshed = block_on_oauth(move |net| async move {
-        auth::refresh(&net, ClientSource::environment(), &net.endpoints, &packed).await
-    })?;
+    let old_token = auth::parse_access(&old_access).0.to_owned();
+    block_on_oauth(move |net| async move {
+        refresh_credential(&net, ClientSource::environment(), &old_token, &packed).await
+    })
+}
+
+/// Refreshes the packed refresh token. The refresh token keeps the project segments, so the new
+/// access is stored with the same binding, and a credential stored before the binding gains it.
+async fn refresh_credential(
+    net: &Net,
+    source: ClientSource,
+    old_token: &str,
+    packed: &str,
+) -> Result<Value, String> {
+    let refreshed = auth::refresh(net, source, &net.endpoints, packed).await?;
     let access = refreshed["access"].as_str().unwrap_or_default().to_owned();
     let refresh = refreshed["refresh"].as_str().unwrap_or_default().to_owned();
     if access.is_empty() {
         return Err("Antigravity token refresh returned no access token".into());
     }
-    let mut credentials = shared().credentials.lock().unwrap();
-    credentials.forget(&old_access);
-    credentials.remember(&access, &refresh);
+    {
+        let mut credentials = shared().credentials.lock().unwrap();
+        credentials.forget(old_token);
+        credentials.remember(&access, &refresh);
+    }
+    let project = auth::bound_project(&refresh);
     Ok(credential_envelope(
-        &access,
+        &auth::format_access(&access, &project),
         &refresh,
         &refreshed["expires"],
     ))
@@ -316,12 +347,17 @@ fn revoke(credential: &Value) -> Result<Value, String> {
         .unwrap_or_default()
         .to_owned();
     let access = credential["access"].as_str().unwrap_or_default().to_owned();
-    let revoke_access = access.clone();
-    block_on_oauth(move |net| async move {
-        auth::revoke(&net, &net.endpoints, &packed, &revoke_access).await
-    })?;
-    shared().credentials.lock().unwrap().forget(&access);
+    block_on_oauth(move |net| async move { revoke_credential(&net, &packed, &access).await })?;
     Ok(json!({"version": 1, "kind": "success", "payload": {}}))
+}
+
+/// Revokes the refresh token, or the plain access token when none is stored. A stored access
+/// may carry a project binding, which is never sent.
+async fn revoke_credential(net: &Net, packed: &str, access: &str) -> Result<(), String> {
+    let token = auth::parse_access(access).0;
+    auth::revoke(net, &net.endpoints, packed, token).await?;
+    shared().credentials.lock().unwrap().forget(token);
+    Ok(())
 }
 
 /// Host credential envelope. `expires_at` is whole seconds; Pi's `expires` is milliseconds.

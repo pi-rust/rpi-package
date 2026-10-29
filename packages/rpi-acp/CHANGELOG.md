@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.23...rpi-acp-v0.2.0) - 2026-10-29
+
+### Other
+
+- *(durable)* [**breaking**] require canonical filtered branch recovery ([#109](https://github.com/pi-rust/rpi-package/pull/109))
+
+## [0.1.23](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.22...rpi-acp-v0.1.23) - 2026-10-28
+
+### Other
+
+- use canonical durable events in ACP
+
+## [0.1.22](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.21...rpi-acp-v0.1.22) - 2026-10-28
+
+### Other
+
+- Merge pull request #99 from pi-rust/feature-1028
+- *(durable)* remove background polling
+
+## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.20...rpi-acp-v0.1.21) - 2026-10-28
+
+### Other
+
+- *(transcript)* reduce session snapshot and branch polling cost
+
 ## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.19...rpi-acp-v0.1.20) - 2026-10-28
 
 ### Added

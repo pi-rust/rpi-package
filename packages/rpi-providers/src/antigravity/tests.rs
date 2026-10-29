@@ -123,6 +123,64 @@ fn request_and_schema_match_original_tests_with_pi_1_3() {
 }
 
 #[test]
+fn normalizes_union_schema_types_for_gemini_tools() {
+    assert_eq!(
+        schema::to_gemini_schema(
+            &json!({"type": ["string", "null"]}),
+            schema::Options::default(),
+        ),
+        json!({"type": "STRING"}),
+    );
+
+    let nested = schema::to_gemini_schema(
+        &json!({
+            "type": ["object", "null"],
+            "properties": {
+                "count": {"type": ["null", "integer"]},
+                "optional": {"type": ["null"]}
+            }
+        }),
+        schema::Options::default(),
+    );
+    assert_eq!(
+        nested,
+        json!({
+            "type": "OBJECT",
+            "properties": {
+                "count": {"type": "INTEGER"},
+                "optional": {}
+            }
+        }),
+    );
+
+    let request = convert::build_gemini_request(
+        &json!({
+            "messages": [{
+                "role": "system",
+                "content": [{"type": "text", "text": "tools"}],
+                "toolsAdded": [{
+                    "name": "read",
+                    "description": "read a value",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": ["string", "null"]}}
+                    }
+                }]
+            }]
+        }),
+        convert::Options::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        request["tools"][0]["functionDeclarations"][0]["parameters"],
+        json!({
+            "type": "OBJECT",
+            "properties": {"path": {"type": "STRING"}}
+        }),
+    );
+}
+
+#[test]
 fn metadata_and_generation_match_pinned_source() {
     let fixture = fixture("metadata.json");
     for case in fixture["fnv"].as_array().unwrap() {
@@ -383,7 +441,6 @@ fn mismatched_state_is_rejected_and_takes_nothing() {
     );
     let login = logins
         .redeem(&callback("code-1", &state), now)
-        .ok()
         .expect("the real login is still pending");
     assert_eq!(login.verifier, verifier);
 }
@@ -433,12 +490,10 @@ fn concurrent_begins_keep_separate_verifiers() {
     assert_ne!(first_verifier, second_verifier);
     let second = logins
         .redeem(&callback("code", &second_state), now)
-        .ok()
         .expect("second login");
     assert_eq!(second.verifier, second_verifier);
     let first = logins
         .redeem(&callback("code", &first_state), now)
-        .ok()
         .expect("first login");
     assert_eq!(first.verifier, first_verifier);
 }
@@ -451,14 +506,10 @@ fn bare_code_redeems_the_most_recent_live_login() {
     let (_, newer) = issue(&mut logins, 3, 4, now);
     let bare = auth::parse_pasted("  4/0AbC-code  ");
     assert!(matches!(&bare, auth::Pasted::Bare(code) if code == "4/0AbC-code"));
-    assert_eq!(
-        logins.redeem(&bare, now).ok().expect("newest").verifier,
-        newer
-    );
+    assert_eq!(logins.redeem(&bare, now).expect("newest").verifier, newer);
     assert_eq!(
         logins
             .redeem(&bare, now)
-            .ok()
             .expect("then the older one")
             .verifier,
         older
@@ -488,7 +539,6 @@ fn pending_table_is_bounded_and_evicts_the_oldest() {
     for (state, verifier) in &issued[1..] {
         let login = logins
             .redeem(&callback("code", state), now)
-            .ok()
             .expect("kept within the limit");
         assert_eq!(&login.verifier, verifier);
     }
@@ -499,8 +549,8 @@ fn pending_table_is_bounded_and_evicts_the_oldest() {
 struct Silent(AtomicUsize);
 struct Unread;
 impl auth::Body for Unread {
-    fn text(self) -> impl Future<Output = Result<String, String>> + Send {
-        async { Err("unread".into()) }
+    async fn text(self) -> Result<String, String> {
+        Err("unread".into())
     }
 }
 impl auth::Port for Silent {
@@ -629,7 +679,7 @@ async fn token_server(
         let mut seen = Vec::new();
         for (path, status, body) in routes {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let (request_path, request_body) = read_post(&mut socket).await;
+            let (request_path, _, request_body) = read_post(&mut socket).await;
             assert!(request_path.ends_with(path), "{request_path} vs {path}");
             seen.push((request_path, request_body));
             let head = format!(
@@ -644,7 +694,8 @@ async fn token_server(
     (endpoints, handle)
 }
 
-async fn read_post(socket: &mut TcpStream) -> (String, String) {
+/// Reads one request: its path, its Authorization header and its body.
+async fn read_post(socket: &mut TcpStream) -> (String, String, String) {
     let mut bytes = Vec::new();
     let end = loop {
         let mut buffer = [0; 4096];
@@ -678,8 +729,16 @@ async fn read_post(socket: &mut TcpStream) -> (String, String) {
         .nth(1)
         .unwrap()
         .to_owned();
+    let authorization = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("authorization")
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap_or_default();
     let body = String::from_utf8_lossy(&bytes[end + 4..end + 4 + length]).to_string();
-    (path, body)
+    (path, authorization, body)
 }
 
 async fn respond(socket: &mut TcpStream, status: u16, body: &str) {
@@ -710,7 +769,7 @@ async fn direct_cancellation_reports_aborted_and_keeps_partial_text() {
     let server = tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let (path, _) = read_post(&mut socket).await;
+            let (path, _, _) = read_post(&mut socket).await;
             if path.ends_with(":loadCodeAssist") {
                 respond(
                     &mut socket,
@@ -908,6 +967,268 @@ async fn refresh_failure_reports_status_and_never_the_client_secret() {
     assert!(error.contains("400"), "{error}");
     assert!(!error.contains(FAKE_SECRET), "{error}");
     assert!(!error.contains("old"), "{error}");
+}
+
+#[test]
+fn access_binding_is_a_suffix_that_only_the_token_is_split_from() {
+    assert_eq!(auth::format_access("ya29.tok", "proj-7"), "ya29.tok|proj-7");
+    assert_eq!(auth::format_access("ya29.tok", ""), "ya29.tok");
+    assert_eq!(
+        auth::parse_access("ya29.tok|proj-7"),
+        ("ya29.tok", Some("proj-7"))
+    );
+    assert_eq!(auth::parse_access("ya29.tok"), ("ya29.tok", None));
+    assert_eq!(auth::parse_access("ya29.tok|"), ("ya29.tok", None));
+    assert_eq!(auth::parse_access("|proj-7").0, "", "no token to send");
+    assert_eq!(auth::bound_project("refresh|proj"), "proj");
+    assert_eq!(
+        auth::bound_project("refresh|proj|managed"),
+        "managed",
+        "the managed project wins"
+    );
+    assert_eq!(auth::bound_project("refresh"), "");
+}
+
+#[tokio::test]
+async fn exchange_stores_the_discovered_project_with_the_access() {
+    let (endpoints, server) = token_server(vec![
+        (
+            "/token",
+            200,
+            r#"{"access_token":"login-access","refresh_token":"login-refresh","expires_in":60}"#,
+        ),
+        ("/userinfo", 200, r#"{"email":"user@example.invalid"}"#),
+        (
+            "/v1internal:loadCodeAssist",
+            200,
+            r#"{"cloudaicompanionProject":"bound-project"}"#,
+        ),
+    ])
+    .await;
+    let port = net(endpoints);
+    let logins = Mutex::new(auth::PendingLogins::default());
+    let (state, _) = issue(&mut logins.lock().unwrap(), 3, 4, Instant::now());
+    let pasted = format!("http://localhost:51121/oauth-callback?code=code-1&state={state}");
+    let envelope = super::exchange_credential(
+        &port,
+        client(FAKE_ID, FAKE_SECRET),
+        &logins,
+        &pasted,
+        Instant::now(),
+    )
+    .await
+    .unwrap();
+    let seen = server.await.unwrap();
+
+    assert!(
+        seen[2].0.ends_with(":loadCodeAssist"),
+        "discovery ran at login"
+    );
+    assert_eq!(envelope["kind"], "credential");
+    assert_eq!(envelope["payload"]["access"], "login-access|bound-project");
+    assert_eq!(
+        envelope["payload"]["refresh"], "login-refresh|bound-project",
+        "the refresh token keeps the same binding"
+    );
+}
+
+#[tokio::test]
+async fn exchange_without_a_discovered_project_stores_a_plain_access() {
+    let (endpoints, server) = token_server(vec![
+        (
+            "/token",
+            200,
+            r#"{"access_token":"login-access","refresh_token":"login-refresh","expires_in":60}"#,
+        ),
+        ("/userinfo", 200, r#"{"email":"user@example.invalid"}"#),
+        ("/v1internal:loadCodeAssist", 200, "{}"),
+    ])
+    .await;
+    let port = net(endpoints);
+    let logins = Mutex::new(auth::PendingLogins::default());
+    let (state, _) = issue(&mut logins.lock().unwrap(), 5, 6, Instant::now());
+    let pasted = format!("http://localhost:51121/oauth-callback?code=code-2&state={state}");
+    let envelope = super::exchange_credential(
+        &port,
+        client(FAKE_ID, FAKE_SECRET),
+        &logins,
+        &pasted,
+        Instant::now(),
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+
+    assert_eq!(
+        envelope["payload"]["access"], "login-access",
+        "no binding is stored, so the stream keeps discovery"
+    );
+}
+
+#[tokio::test]
+async fn refresh_keeps_the_binding_and_sends_only_the_refresh_token() {
+    let (endpoints, server) = token_server(vec![(
+        "/token",
+        200,
+        r#"{"access_token":"new-access","refresh_token":"rotated","expires_in":3600}"#,
+    )])
+    .await;
+    let envelope = super::refresh_credential(
+        &net(endpoints),
+        client(FAKE_ID, FAKE_SECRET),
+        "old-access",
+        "old-refresh|bound-project",
+    )
+    .await
+    .unwrap();
+    let seen = server.await.unwrap();
+
+    assert_eq!(form_pairs(&seen[0].1)["refresh_token"], "old-refresh");
+    assert_eq!(envelope["payload"]["access"], "new-access|bound-project");
+    assert_eq!(envelope["payload"]["refresh"], "rotated|bound-project");
+}
+
+#[tokio::test]
+async fn revoke_sends_the_plain_token_of_a_bound_access() {
+    let (endpoints, server) = token_server(vec![("/revoke", 200, ""), ("/revoke", 200, "")]).await;
+    let port = net(endpoints);
+    // No refresh token stored: the plain access token is revoked.
+    super::revoke_credential(&port, "", "ya29.plain|bound-project")
+        .await
+        .unwrap();
+    // A stored refresh token is revoked in preference to the access token.
+    super::revoke_credential(&port, "kept|bound-project", "ya29.plain|bound-project")
+        .await
+        .unwrap();
+    let seen = server.await.unwrap();
+
+    assert_eq!(form_pairs(&seen[0].1)["token"], "ya29.plain");
+    assert_eq!(form_pairs(&seen[1].1)["token"], "kept");
+}
+
+/// A bound access sends its plain token and streams with its project. Only one connection is
+/// accepted, so a discovery call would fail the test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stored_binding_streams_with_its_project_and_no_discovery() {
+    use rpi_ai::{
+        AssistantMessageEvent, Context, Message, Provider, SimpleStreamOptions, UserMessage,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (path, authorization, body) = read_post(&mut socket).await;
+        assert!(path.ends_with("streamGenerateContent?alt=sse"), "{path}");
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let data = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}\n\n";
+        socket
+            .write_all(format!("{:x}\r\n{data}\r\n", data.len()).as_bytes())
+            .await
+            .unwrap();
+        socket.write_all(b"0\r\n\r\n").await.unwrap();
+        (authorization, serde_json::from_str::<Value>(&body).unwrap())
+    });
+    let mut model = super::models()[1].clone();
+    model.base_url = base;
+    let options = SimpleStreamOptions {
+        api_key: Some("ya29.bound|bound-project".into()),
+        ..Default::default()
+    };
+    let context = Context::new(vec![Message::User(UserMessage::new("hi", 0))]);
+    let mut stream = direct().stream_simple(&model, &context, &options).await;
+    let mut done = false;
+    while let Some(event) = stream.next().await {
+        done |= matches!(event, AssistantMessageEvent::Done { .. });
+    }
+    let (authorization, body) = tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(done, "the stream completes");
+    assert_eq!(authorization, "Bearer ya29.bound", "only the token is sent");
+    assert_eq!(body["project"], "bound-project");
+}
+
+/// A bound access sends its plain token. An upstream error that echoes the token or the project
+/// reaches the caller redacted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bound_access_is_redacted_from_upstream_errors() {
+    use rpi_ai::{
+        AssistantMessageEvent, Context, Message, Provider, SimpleStreamOptions, UserMessage,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let _ = read_post(&mut socket).await;
+        respond(
+            &mut socket,
+            401,
+            r#"{"error":"bad token ya29.echo for bound-project"}"#,
+        )
+        .await;
+    });
+    let mut model = super::models()[1].clone();
+    model.base_url = base;
+    let options = SimpleStreamOptions {
+        api_key: Some("ya29.echo|bound-project".into()),
+        ..Default::default()
+    };
+    let context = Context::new(vec![Message::User(UserMessage::new("hi", 0))]);
+    let mut stream = direct().stream_simple(&model, &context, &options).await;
+    let mut message = None;
+    while let Some(event) = stream.next().await {
+        if let AssistantMessageEvent::Error { error, .. } = event {
+            message = error.error_message;
+        }
+    }
+    server.await.unwrap();
+
+    let message = message.expect("an error terminal");
+    assert!(message.contains("HTTP 401"), "{message}");
+    assert!(!message.contains("ya29.echo"), "token leaked: {message}");
+    assert!(
+        !message.contains("bound-project"),
+        "project leaked: {message}"
+    );
+}
+
+/// A stored value that binds a project but carries no token is refused before any connection.
+#[tokio::test]
+async fn binding_without_a_token_is_refused_before_any_connection() {
+    use rpi_ai::{
+        AssistantMessageEvent, Context, Message, Provider, SimpleStreamOptions, UserMessage,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut model = super::models()[1].clone();
+    model.base_url = format!("http://{}", listener.local_addr().unwrap());
+    let options = SimpleStreamOptions {
+        api_key: Some("|bound-project".into()),
+        ..Default::default()
+    };
+    let context = Context::new(vec![Message::User(UserMessage::new("hi", 0))]);
+    let mut stream = direct().stream_simple(&model, &context, &options).await;
+    let mut message = None;
+    while let Some(event) = stream.next().await {
+        if let AssistantMessageEvent::Error { error, .. } = event {
+            message = error.error_message;
+        }
+    }
+
+    assert_eq!(
+        message.as_deref(),
+        Some("Missing Antigravity OAuth access token")
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), listener.accept())
+            .await
+            .is_err(),
+        "no connection may be opened without a token"
+    );
 }
 
 #[test]

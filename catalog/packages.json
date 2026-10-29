@@ -67,47 +67,47 @@
   },
   {
     "name": "rpi-durable",
-    "version": "0.2.2",
+    "version": "0.3.0",
     "type": "extension",
     "tool": "durable",
     "inspiredBy": "Durable session workflow checkpoints",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-durable --path packages/rpi-durable",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-durable-v0.2.2/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-durable-v0.3.0/rpi-extension.json"
   },
   {
     "name": "rpi-todo",
-    "version": "0.2.4",
+    "version": "0.3.0",
     "type": "extension",
     "tool": "todo",
     "inspiredBy": "Pi todo extensions",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-todo",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-todo-v0.2.4/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-todo-v0.3.0/rpi-extension.json"
   },
   {
     "name": "rpi-goal",
-    "version": "0.1.11",
+    "version": "0.2.0",
     "type": "extension",
     "tool": "goal",
     "inspiredBy": "Codex goal mode",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-goal",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.1.11/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.2.0/rpi-extension.json"
   },
   {
     "name": "rpi-plan-mode",
-    "version": "0.1.6",
+    "version": "0.2.0",
     "type": "extension",
     "tool": "plan_mode_start + plan_mode_complete",
     "inspiredBy": "pi-plan-mode",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-plan-mode",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-plan-mode-v0.1.6/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-plan-mode-v0.2.0/rpi-extension.json"
   },
   {
     "name": "rpi-codegraph",
@@ -199,14 +199,14 @@
   },
   {
     "name": "rpi-acp",
-    "version": "0.1.20",
+    "version": "0.2.0",
     "type": "extension",
     "tool": "--acp (Agent Client Protocol stdio server)",
     "inspiredBy": "Zed external agents / agent-client-protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-acp",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.1.20/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.0/rpi-extension.json"
   },
   {
     "name": "rpi-permission-gate",
@@ -232,25 +232,25 @@
   },
   {
     "name": "rpi-providers",
-    "version": "0.1.5",
+    "version": "0.1.7",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Provider integrations",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-providers --github pi-rust/rpi-package",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-providers-v0.1.5/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-providers-v0.1.7/rpi-extension.json"
   },
   {
     "name": "rpi-web",
-    "version": "0.1.15",
+    "version": "0.1.19",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Browser project and session workspace",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-web",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.15/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.19/rpi-extension.json"
   },
   {
     "name": "rpi-edit-diagnostics",

@@ -24,7 +24,6 @@ use std::sync::{Mutex, OnceLock};
 
 const TOOL: &str = "durable";
 const ENTRY_TYPE: &str = rpi_durable_core::ENTRY_TYPE;
-const LEGACY_ENTRY_TYPE: &str = rpi_durable_core::LEGACY_ENTRY_TYPE;
 const MAX_STEPS: usize = 128;
 const MAX_NAME_CHARS: usize = 500;
 const MAX_STEP_ID_CHARS: usize = 128;
@@ -461,103 +460,26 @@ fn apply_record(base: &DurableState, record: &JournalRecord) -> Result<DurableSt
 }
 
 #[derive(Clone, Debug)]
-enum BranchRecord {
-    Legacy {
-        state: DurableState,
-        entry_id: Option<String>,
-    },
-    Journal {
-        record: JournalRecord,
-        entry_id: String,
-    },
-}
-
-fn decode_legacy_state(data: &Value) -> Result<DurableState, String> {
-    let object = data
-        .as_object()
-        .ok_or("invalid legacy durable state: expected an object")?;
-    if !object.contains_key("workflow") {
-        return Err("invalid durable state envelope: missing workflow discriminator".into());
-    }
-    const LEGACY_KEYS: &[&str] = &[
-        "workflow",
-        "run",
-        "nextRunId",
-        "nextQueueId",
-        "queue",
-        "revision",
-    ];
-    if let Some(key) = object
-        .keys()
-        .find(|key| !LEGACY_KEYS.contains(&key.as_str()))
-    {
-        return Err(format!("invalid legacy durable state: unknown field {key}"));
-    }
-    let state: DurableState = serde_json::from_value(data.clone())
-        .map_err(|error| format!("invalid legacy durable state: {error}"))?;
-    validate_state(&state)?;
-    Ok(state)
-}
-
-fn decode_legacy_runtime_state(data: &Value) -> Result<DurableState, String> {
-    let mut object = data
-        .as_object()
-        .cloned()
-        .ok_or("invalid legacy runtime state: expected an object")?;
-    object.entry("workflow").or_insert(Value::Null);
-    let revision = object.get("revision").and_then(Value::as_u64).unwrap_or(0);
-    if let Some(run) = object.get_mut("run").and_then(Value::as_object_mut) {
-        run.entry("startedRevision").or_insert(json!(revision));
-        run.entry("updatedRevision").or_insert(json!(revision));
-        if let Some(tools) = run.get_mut("tools").and_then(Value::as_array_mut) {
-            for tool in tools {
-                if let Some(tool) = tool.as_object_mut() {
-                    tool.entry("callKey").or_insert(Value::Null);
-                }
-            }
-        }
-    }
-    if let Some(queue) = object.get_mut("queue").and_then(Value::as_array_mut) {
-        for item in queue {
-            if let Some(item) = item.as_object_mut() {
-                item.entry("createdRevision").or_insert(json!(revision));
-                item.entry("updatedRevision").or_insert(json!(revision));
-            }
-        }
-    }
-    let state = serde_json::from_value(Value::Object(object))
-        .map_err(|error| format!("invalid legacy runtime state: {error}"))?;
-    validate_state(&state)?;
-    Ok(state)
+struct BranchRecord {
+    record: JournalRecord,
+    entry_id: String,
 }
 
 fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), String> {
     let mut records = Vec::new();
     let mut invalid_records = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
-        let custom_type = entry.get("customType").and_then(Value::as_str);
         if entry.get("type").and_then(Value::as_str) != Some("custom")
-            || !matches!(custom_type, Some(ENTRY_TYPE) | Some(LEGACY_ENTRY_TYPE))
+            || entry.get("customType").and_then(Value::as_str) != Some(ENTRY_TYPE)
         {
-            continue;
+            return Err("filtered durable branch contains an unexpected entry type".into());
         }
+        let entry_id = branch_entry_identity(entry)
+            .ok_or("filtered durable branch entry has no valid native id")?;
+        let data = entry
+            .get("data")
+            .ok_or("durable custom entry has no data")?;
         let parsed = (|| -> Result<BranchRecord, String> {
-            let data = entry
-                .get("data")
-                .ok_or("durable custom entry has no data")?;
-            if custom_type == Some(LEGACY_ENTRY_TYPE) {
-                return Ok(BranchRecord::Legacy {
-                    state: decode_legacy_runtime_state(data)?,
-                    entry_id: branch_entry_identity(entry),
-                });
-            }
-            let has_format = data.get("format").is_some();
-            let has_version = data.get("version").is_some();
-            if !has_format && !has_version {
-                let state = decode_legacy_state(data)?;
-                let entry_id = branch_entry_identity(entry);
-                return Ok(BranchRecord::Legacy { state, entry_id });
-            }
             let record: JournalRecord = serde_json::from_value(data.clone())
                 .map_err(|error| format!("invalid durable journal record: {error}"))?;
             if record.format != JOURNAL_FORMAT || record.version != JOURNAL_VERSION {
@@ -589,9 +511,7 @@ fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), Strin
                 }
                 validate_state(snapshot)?;
             }
-            let entry_id =
-                branch_entry_identity(entry).ok_or("versioned durable entry has no native id")?;
-            Ok(BranchRecord::Journal { record, entry_id })
+            Ok(BranchRecord { record, entry_id })
         })();
         match parsed {
             Ok(record) => records.push((entry_index, record)),
@@ -606,7 +526,7 @@ fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), Strin
     let latest_snapshot = records.iter().rposition(|(_, record)| {
         matches!(
             record,
-            BranchRecord::Journal {
+            BranchRecord {
                 record: JournalRecord {
                     kind: JournalKind::Snapshot,
                     ..
@@ -634,46 +554,9 @@ fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), Strin
         .into_iter()
         .map(|(_, record)| record)
         .collect::<Vec<_>>();
-    let first_journal = records
-        .iter()
-        .position(|record| matches!(record, BranchRecord::Journal { .. }));
-    if let Some(first_journal) = first_journal {
-        if records[first_journal..]
-            .iter()
-            .any(|record| matches!(record, BranchRecord::Legacy { .. }))
-        {
-            return Err("legacy durable state appears after a versioned journal record".into());
-        }
-    }
-
-    let snapshot_index = records.iter().rposition(|record| {
-        matches!(
-            record,
-            BranchRecord::Journal {
-                record: JournalRecord {
-                    kind: JournalKind::Snapshot,
-                    ..
-                },
-                ..
-            }
-        )
-    });
-    let legacy_index = records
-        .iter()
-        .rposition(|record| matches!(record, BranchRecord::Legacy { .. }));
-    let start = match snapshot_index {
-        Some(snapshot) if legacy_index.map_or(true, |legacy| legacy < snapshot) => snapshot,
-        Some(_) => legacy_index.expect("legacy index exists after snapshot"),
-        None => legacy_index.unwrap_or(0),
-    };
-
-    let (mut restored, mut anchor, force_snapshot) = match records.get(start) {
+    let (mut restored, mut anchor, force_snapshot) = match records.first() {
         None => (DurableState::default(), None, true),
-        Some(BranchRecord::Legacy { state, entry_id }) => {
-            validate_state(state)?;
-            (state.clone(), entry_id.clone(), true)
-        }
-        Some(BranchRecord::Journal { record, entry_id }) => {
+        Some(BranchRecord { record, entry_id }) => {
             if !matches!(record.kind, JournalKind::Snapshot) {
                 return Err("durable journal has no self-contained snapshot base".into());
             }
@@ -687,13 +570,7 @@ fn decode_branch(entries: &[Value]) -> Result<(DurableState, JournalMeta), Strin
     validate_state(&restored)?;
     let mut commits_since_snapshot: u64 = 0;
 
-    for record in records
-        .iter()
-        .skip(if records.is_empty() { 0 } else { start + 1 })
-    {
-        let BranchRecord::Journal { record, entry_id } = record else {
-            return Err("legacy durable state appears after a versioned journal record".into());
-        };
+    for BranchRecord { record, entry_id } in records.iter().skip(1) {
         if matches!(record.kind, JournalKind::Snapshot) {
             return Err("unexpected durable snapshot after the selected snapshot anchor".into());
         }
@@ -984,7 +861,15 @@ where
 }
 
 fn restore_state_inner() -> Result<(), String> {
-    let value = call_runtime(RuntimeActionId::GetSessionBranch, json!({}))?;
+    // Filtering is a required host contract, not a hint. Never retry with an
+    // unfiltered branch on hosts that do not implement it.
+    let value = call_runtime(
+        RuntimeActionId::GetSessionBranch,
+        json!({"customTypes": [ENTRY_TYPE]}),
+    )?;
+    if value.get("filtered").and_then(Value::as_bool) != Some(true) {
+        return Err("GetSessionBranch must confirm filtered: true; upgrade the native host".into());
+    }
     let entries = value
         .get("entries")
         .and_then(Value::as_array)
@@ -2408,26 +2293,34 @@ mod tests {
     }
 
     #[test]
-    fn legacy_and_versioned_entries_restore_without_losing_the_branch_anchor() {
+    fn unversioned_snapshot_is_not_a_restore_base_or_delta_anchor() {
         let legacy = json!({
             "type":"custom", "customType":ENTRY_TYPE, "id":"legacy-1",
             "data":{"workflow":null}
         });
-        let mut log = vec![legacy];
-        let current = DurableState::default();
-        let meta = JournalMeta {
-            anchor_entry_id: Some("legacy-1".into()),
-            force_snapshot: true,
-            commits_since_snapshot: 0,
-        };
-        let (state, _) = commit_logged(&current, &meta, started(), &mut log).unwrap();
+        assert!(decode_branch(std::slice::from_ref(&legacy)).is_err());
+        let mut log = Vec::new();
+        let (state, _) = commit_logged(
+            &DurableState::default(),
+            &JournalMeta::default(),
+            started(),
+            &mut log,
+        )
+        .unwrap();
+        let mut delta = log[0].clone();
+        delta["data"]["kind"] = json!("delta");
+        delta["data"].as_object_mut().unwrap().remove("state");
+        delta["data"]["changes"] = json!([{"op":"setWorkflow","workflow":null}]);
+        delta["data"]["baseEntryId"] = json!("legacy-1");
+        assert!(decode_branch(&[legacy.clone(), delta]).is_err());
+
+        // A canonical self-contained snapshot may obsolete an invalid prefix;
+        // it does not migrate or use that prefix as a replay anchor.
+        log.insert(0, legacy);
         let (restored, restored_meta) = decode_branch(&log).unwrap();
         assert_eq!(restored, state);
-        assert_eq!(restored_meta.anchor_entry_id, Some("entry-2".into()));
-        assert_eq!(
-            serde_json::to_value(&log[1]["data"]).unwrap()["format"],
-            JOURNAL_FORMAT
-        );
+        assert_eq!(restored_meta.anchor_entry_id, Some("entry-1".into()));
+        assert!(!restored_meta.force_snapshot);
     }
 
     #[test]
@@ -2535,7 +2428,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_recognition_requires_workflow_and_rejects_journal_shapes() {
+    fn unversioned_snapshots_and_incomplete_journal_envelopes_are_rejected() {
         let native = |data: Value| {
             json!({
                 "id": "native-entry",
@@ -2575,10 +2468,62 @@ mod tests {
         }))])
         .is_err());
 
-        let valid = native(json!({"workflow": null}));
-        let (state, meta) = decode_branch(&[valid]).unwrap();
-        assert_eq!(state, DurableState::default());
-        assert_eq!(meta.anchor_entry_id, Some("native-entry".into()));
+        for data in [
+            json!({"workflow": null}),
+            serde_json::to_value(DurableState::default()).unwrap(),
+            serde_json::to_value(started()).unwrap(),
+        ] {
+            assert!(decode_branch(&[native(data)]).is_err());
+        }
+    }
+
+    #[test]
+    fn filtered_branch_rejects_foreign_and_malformed_native_envelopes() {
+        let mut log = Vec::new();
+        commit_logged(
+            &DurableState::default(),
+            &JournalMeta::default(),
+            started(),
+            &mut log,
+        )
+        .unwrap();
+        let mut malformed = vec![Value::Null, json!({}), json!({"type":"message"})];
+        for (field, value) in [
+            ("type", json!("message")),
+            ("customType", json!("rpi-durable-runtime")),
+            ("customType", json!("unrelated")),
+            ("id", json!(null)),
+            ("id", json!(7)),
+            ("id", json!("")),
+        ] {
+            let mut entry = log[0].clone();
+            entry[field] = value;
+            malformed.push(entry);
+        }
+        for field in ["type", "customType", "id", "data"] {
+            let mut entry = log[0].clone();
+            entry.as_object_mut().unwrap().remove(field);
+            malformed.push(entry);
+        }
+        for entry in malformed {
+            assert!(
+                decode_branch(std::slice::from_ref(&entry)).is_err(),
+                "{entry}"
+            );
+            assert!(
+                decode_branch(&[entry.clone(), log[0].clone()]).is_err(),
+                "{entry}"
+            );
+            assert!(
+                decode_branch(&[log[0].clone(), entry.clone()]).is_err(),
+                "{entry}"
+            );
+        }
+        let runtime = json!({
+            "id":"old-runtime", "type":"custom", "customType":"rpi-durable-runtime",
+            "data":{"run":null,"queue":[]}
+        });
+        assert!(decode_branch(&[runtime]).is_err());
     }
 
     #[test]
@@ -2847,11 +2792,16 @@ mod tests {
     }
 
     #[test]
-    fn old_checkpoint_data_defaults_the_run_journal_and_queue() {
-        let restored: DurableState = serde_json::from_value(json!({
-            "workflow": null
-        }))
-        .unwrap();
-        assert_eq!(restored, DurableState::default());
+    fn old_checkpoint_data_is_not_restored_with_default_run_and_queue() {
+        for data in [
+            json!({"workflow":null}),
+            json!({"workflow":null,"run":null,"queue":[],"revision":0}),
+        ] {
+            let entry = json!({
+                "id":"old-checkpoint", "type":"custom", "customType":ENTRY_TYPE,
+                "data":data
+            });
+            assert!(decode_branch(&[entry]).is_err());
+        }
     }
 }

@@ -1,16 +1,16 @@
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{
-        Arc, Mutex as StdMutex,
         atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::{Mutex, RwLock, broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, Mutex, RwLock},
 };
 
 /// How many projected events a session keeps so a page reload can rebuild the
@@ -773,80 +773,25 @@ impl HostSession {
         Ok(())
     }
 
-    /// Read the complete currently selected native session branch.
-    pub async fn session_branch(&self) -> Result<Vec<Value>, String> {
+    /// Read the selected native branch's custom entries in one filtered request.
+    /// Unfiltered replies are rejected: pollers must never accept a full transcript.
+    pub async fn branch_entries_of_types(
+        &self,
+        custom_types: &[&str],
+    ) -> Result<Vec<Value>, String> {
+        if custom_types.is_empty() || custom_types.iter().any(|kind| kind.trim().is_empty()) {
+            return Err("get_session_branch: non-empty custom types are required".into());
+        }
         let data = self
-            .runtime_command("get_session_branch", json!({}))
+            .runtime_command("get_session_branch", json!({"customTypes": custom_types}))
             .await?;
+        if data.get("filtered").and_then(Value::as_bool) != Some(true) {
+            return Err("get_session_branch: host must return filtered custom entries".into());
+        }
         data.get("entries")
             .and_then(Value::as_array)
             .cloned()
             .ok_or_else(|| "get_session_branch: invalid entries data".into())
-    }
-
-    /// Read only custom entries after an optional native entry sequence.
-    /// Initial reads omit `after_seq`; incremental reads use it to avoid
-    /// replaying the durable journal prefix. When the host supports filtered
-    /// reads, both the canonical and legacy durable discriminators are loaded
-    /// so migration entries can provide the replay base.
-    pub async fn branch_entries_of_type(
-        &self,
-        custom_type: &str,
-        after_seq: Option<u64>,
-    ) -> Result<(Vec<Value>, bool), String> {
-        self.branch_entries_of_types(&[custom_type], after_seq)
-            .await
-    }
-
-    pub async fn branch_entries_of_types(
-        &self,
-        custom_types: &[&str],
-        after_seq: Option<u64>,
-    ) -> Result<(Vec<Value>, bool), String> {
-        let first_type = custom_types.first().copied().ok_or_else(|| {
-            "get_session_branch: at least one custom type is required".to_string()
-        })?;
-        let (mut entries, filtered) = self.branch_entries_request(first_type, after_seq).await?;
-        if !filtered || custom_types.len() == 1 {
-            // An old host ignores customType and returns the complete branch.
-            // Do not issue a second expensive full-transcript request.
-            return Ok((entries, filtered));
-        }
-
-        for custom_type in &custom_types[1..] {
-            let (mut extra, extra_filtered) =
-                self.branch_entries_request(custom_type, after_seq).await?;
-            if !extra_filtered {
-                // The host stopped honoring filters; this response is already
-                // the authoritative complete branch.
-                return Ok((extra, false));
-            }
-            entries.append(&mut extra);
-        }
-        entries.sort_by_key(|entry| entry.get("seq").and_then(Value::as_u64));
-        Ok((entries, true))
-    }
-
-    async fn branch_entries_request(
-        &self,
-        custom_type: &str,
-        after_seq: Option<u64>,
-    ) -> Result<(Vec<Value>, bool), String> {
-        let mut params = json!({"customType": custom_type});
-        if let Some(after_seq) = after_seq {
-            params["afterSeq"] = json!(after_seq);
-        }
-        let data = self.runtime_command("get_session_branch", params).await?;
-        let entries = data
-            .get("entries")
-            .and_then(Value::as_array)
-            .cloned()
-            .ok_or_else(|| "get_session_branch: invalid entries data".to_string())?;
-        let filtered = data
-            .get("filtered")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        Ok((entries, filtered))
     }
 
     /// Append a protocol-neutral custom entry to the native session branch.
@@ -1033,6 +978,74 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn branch_query_uses_one_custom_types_request_and_preserves_native_order() {
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        assert!(session.branch_entries_of_types(&[]).await.is_err());
+        assert!(session.branch_entries_of_types(&[" "]).await.is_err());
+        let entries = json!([
+            {"id":"b","seq":8,"type":"custom","customType":"second"},
+            {"id":"a","seq":3,"type":"custom","customType":"first"}
+        ]);
+        let expected = entries.as_array().unwrap().clone();
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            let request: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request["type"], "get_session_branch");
+            assert_eq!(request["customTypes"], json!(["first", "second"]));
+            assert!(request.get("customType").is_none());
+            injector
+                .send(json!({"type":"response","id":request["id"],"success":true,
+                "data":{"filtered":true,"entries":entries}}))
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), lines.next_line())
+                    .await
+                    .is_err(),
+                "multiple types must not cause multiple branch requests"
+            );
+        });
+        assert_eq!(
+            session
+                .branch_entries_of_types(&["first", "second"])
+                .await
+                .unwrap(),
+            expected
+        );
+        fixture.await.unwrap();
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn branch_query_rejects_unfiltered_and_malformed_replies() {
+        for data in [
+            json!({"entries":[]}),
+            json!({"filtered":false,"entries":[]}),
+            json!({"filtered":"true","entries":[]}),
+            json!({"filtered":true}),
+            json!({"filtered":true,"entries":{}}),
+        ] {
+            let (writer, peer) = tokio::io::duplex(4096);
+            let (session, injector) = HostSession::test_connection(writer, 16);
+            let fixture = tokio::spawn(async move {
+                let mut lines = BufReader::new(peer).lines();
+                let request: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                injector
+                    .send(json!({"type":"response","id":request["id"],"success":true,"data":data}))
+                    .unwrap();
+            });
+            assert!(session
+                .branch_entries_of_types(&["durable-state"])
+                .await
+                .is_err());
+            fixture.await.unwrap();
+            session.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
     async fn forced_close_and_shutdown_timeout_finalize_all_session_observers_once() {
         for graceful in [false, true] {
             let root = std::env::temp_dir().join(format!("rpi-close-{}", uuid::Uuid::new_v4()));
@@ -1074,14 +1087,12 @@ mod tests {
                 session.terminate().await;
             }
             assert!(worker_abort.is_finished());
-            assert!(
-                tokio::time::timeout(Duration::from_secs(1), request)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap_err()
-                    .contains("closed")
-            );
+            assert!(tokio::time::timeout(Duration::from_secs(1), request)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err()
+                .contains("closed"));
             assert_eq!(raw.recv().await.unwrap()["type"], "host_closed");
             let closed = projected.recv().await.unwrap();
             assert_eq!(closed.value["type"], "host_closed");
@@ -1460,12 +1471,10 @@ mod tests {
             .unwrap();
         let (writer, reader) = tokio::io::duplex(64);
         drop(reader);
-        assert!(
-            write_commands(writer, outbound, pending)
-                .await
-                .unwrap_err()
-                .contains("failed to write")
-        );
+        assert!(write_commands(writer, outbound, pending)
+            .await
+            .unwrap_err()
+            .contains("failed to write"));
     }
 
     #[tokio::test]
@@ -1473,26 +1482,20 @@ mod tests {
         let mut valid = &b"{\"type\":\"ready\",\"protocol\":\"rpi\"}\n"[..];
         assert!(read_ready(&mut valid, Duration::from_secs(1)).await.is_ok());
         let mut invalid = &b"{\"type\":\"ready\",\"protocol\":\"other\"}\n"[..];
-        assert!(
-            read_ready(&mut invalid, Duration::from_secs(1))
-                .await
-                .is_err()
-        );
+        assert!(read_ready(&mut invalid, Duration::from_secs(1))
+            .await
+            .is_err());
         let large = vec![b'x'; 1024 * 1024 + 1];
         let mut oversized = large.as_slice();
-        assert!(
-            read_ready(&mut oversized, Duration::from_secs(1))
-                .await
-                .is_err()
-        );
+        assert!(read_ready(&mut oversized, Duration::from_secs(1))
+            .await
+            .is_err());
         assert_eq!(oversized.len(), 1);
         let (silent, _writer) = tokio::io::duplex(64);
         let mut silent = BufReader::new(silent);
-        assert!(
-            read_ready(&mut silent, Duration::from_millis(20))
-                .await
-                .unwrap_err()
-                .contains("timed out")
-        );
+        assert!(read_ready(&mut silent, Duration::from_millis(20))
+            .await
+            .unwrap_err()
+            .contains("timed out"));
     }
 }
