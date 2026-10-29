@@ -1305,6 +1305,24 @@ test("uploads a file and includes its workspace path in the prompt", async ({
   });
 });
 
+test("previews image attachments when the browser omits the MIME type", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Mock session" }),
+  ).toBeVisible();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "Screenshot.jpg",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  await expect(page.locator(".composer-attachment img")).toHaveCount(1);
+});
+
 test("renders image blocks returned in the transcript", async ({ page }) => {
   await mockHost(page);
   await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>

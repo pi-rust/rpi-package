@@ -118,6 +118,13 @@ import {
   type Row,
 } from "./transcript";
 
+function isImageAttachment(name: string, mimeType = "") {
+  return (
+    mimeType.toLowerCase().startsWith("image/") ||
+    /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(name)
+  );
+}
+
 type Attachment = {
   name: string;
   path: string;
@@ -2044,9 +2051,11 @@ export default function App() {
         const result = await api.upload(projectId, file);
         uploaded.push({
           ...result,
-          previewUrl: file.type.startsWith("image/")
-            ? URL.createObjectURL(file)
-            : undefined,
+          previewUrl:
+            isImageAttachment(file.name, file.type) ||
+            isImageAttachment(result.name)
+              ? URL.createObjectURL(file)
+              : undefined,
         });
       }
       setAttachments((current) => [...current, ...uploaded]);
