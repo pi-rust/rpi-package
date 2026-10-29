@@ -1332,6 +1332,7 @@ export default function App() {
           if (cancelled) return;
           availableProjects = result.projects;
           setProjects(result.projects);
+          setProjectsRoot(result.projectsRoot ?? "");
           const defaultProject =
             result.projects.find(
               (item) => item.id === result.defaultProjectId && !item.archived,

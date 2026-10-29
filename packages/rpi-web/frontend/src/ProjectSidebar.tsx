@@ -1026,8 +1026,18 @@ export function ProjectSidebar({
     );
   }
   const fallback: Project = { id: "", name: zh ? "会话" : "Chats", path: "" };
-  const groups = (projects.length ? projects : [fallback]).filter(
-    (project) => Boolean(project.archived) === archived,
+  const catalog = projects.length ? projects : [fallback];
+  const belongsToProject = (session: SessionSummary, project: Project) =>
+    !projects.length ||
+    session.projectId === project.id ||
+    (!session.projectId && project.id === catalog[0].id);
+  const groups = catalog.filter((project) =>
+    archived
+      ? Boolean(project.archived) ||
+        sessions.some(
+          (session) => session.archived && belongsToProject(session, project),
+        )
+      : !project.archived,
   );
   return (
     <div className="project-navigation">
@@ -1091,9 +1101,7 @@ export function ProjectSidebar({
           const chats = sessions
             .filter(
               (session) =>
-                (!projects.length ||
-                  session.projectId === project.id ||
-                  (!session.projectId && project.id === groups[0].id)) &&
+                belongsToProject(session, project) &&
                 (Boolean(project.archived) ||
                   Boolean(session.archived) === archived),
             )
