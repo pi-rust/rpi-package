@@ -123,6 +123,64 @@ fn request_and_schema_match_original_tests_with_pi_1_3() {
 }
 
 #[test]
+fn normalizes_union_schema_types_for_gemini_tools() {
+    assert_eq!(
+        schema::to_gemini_schema(
+            &json!({"type": ["string", "null"]}),
+            schema::Options::default(),
+        ),
+        json!({"type": "STRING"}),
+    );
+
+    let nested = schema::to_gemini_schema(
+        &json!({
+            "type": ["object", "null"],
+            "properties": {
+                "count": {"type": ["null", "integer"]},
+                "optional": {"type": ["null"]}
+            }
+        }),
+        schema::Options::default(),
+    );
+    assert_eq!(
+        nested,
+        json!({
+            "type": "OBJECT",
+            "properties": {
+                "count": {"type": "INTEGER"},
+                "optional": {}
+            }
+        }),
+    );
+
+    let request = convert::build_gemini_request(
+        &json!({
+            "messages": [{
+                "role": "system",
+                "content": [{"type": "text", "text": "tools"}],
+                "toolsAdded": [{
+                    "name": "read",
+                    "description": "read a value",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": ["string", "null"]}}
+                    }
+                }]
+            }]
+        }),
+        convert::Options::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        request["tools"][0]["functionDeclarations"][0]["parameters"],
+        json!({
+            "type": "OBJECT",
+            "properties": {"path": {"type": "STRING"}}
+        }),
+    );
+}
+
+#[test]
 fn metadata_and_generation_match_pinned_source() {
     let fixture = fixture("metadata.json");
     for case in fixture["fnv"].as_array().unwrap() {
