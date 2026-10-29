@@ -984,7 +984,15 @@ where
 }
 
 fn restore_state_inner() -> Result<(), String> {
-    let value = call_runtime(RuntimeActionId::GetSessionBranch, json!({}))?;
+    // Ask capable hosts for only the durable journal discriminators. Older
+    // hosts ignore the arguments and return the complete branch, which remains
+    // valid input for the same decoder and preserves upgrade compatibility.
+    let value = call_runtime(
+        RuntimeActionId::GetSessionBranch,
+        json!({
+            "customTypes": [ENTRY_TYPE, LEGACY_ENTRY_TYPE],
+        }),
+    )?;
     let entries = value
         .get("entries")
         .and_then(Value::as_array)
