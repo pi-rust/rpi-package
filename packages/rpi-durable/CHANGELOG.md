@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.3...rpi-durable-v0.2.4) - 2026-10-29
+
+### Other
+
+- *(durable)* request filtered journal branch entries ([#107](https://github.com/pi-rust/rpi-package/pull/107))
+
 ## [0.2.3](https://github.com/pi-rust/rpi-package/compare/rpi-durable-v0.2.2...rpi-durable-v0.2.3) - 2026-10-28
 
 ### Other
