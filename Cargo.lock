@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-durable"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "rpi-durable-core",
  "rpi-plugin-sdk 0.3.20",
