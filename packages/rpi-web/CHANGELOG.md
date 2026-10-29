@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.20...rpi-web-v0.1.21) - 2026-10-29
+
+### Fixed
+
+- *(web)* keep project archive actions visible without hover
+
 ## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.19...rpi-web-v0.1.20) - 2026-10-29
 
 ### Added
