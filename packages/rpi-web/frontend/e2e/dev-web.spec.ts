@@ -1406,6 +1406,201 @@ test("renders image blocks returned in the transcript", async ({ page }) => {
       .toBeGreaterThan(0);
   }
 });
+const imagePng =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const nativeUserImage = {
+  role: "user",
+  entryId: "user-image",
+  timestamp: 1_700_000_000_000,
+  content: [
+    { type: "text", text: "Inspect this image" },
+    { type: "image", data: imagePng, mimeType: "image/png" },
+  ],
+};
+
+test("Markdown data images decode without allowing unsafe links or HTML", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "assistant",
+            entryId: "markdown-image",
+            content: [
+              {
+                type: "text",
+                text: [
+                  `![inline PNG](data:image/png;base64,${imagePng})`,
+                  `[image link](data:image/png;base64,${imagePng})`,
+                  "[unsafe link](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+                  "[script link](javascript:alert%281%29)",
+                  "![unsafe image](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+                  '<img src="/raw-html-image.png" onerror="alert(1)">',
+                ].join("\n\n"),
+              },
+            ],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  const image = page.getByAltText("inline PNG");
+  await expect(image).toHaveAttribute(
+    "src",
+    `data:image/png;base64,${imagePng}`,
+  );
+  await expect
+    .poll(() => image.evaluate((e: HTMLImageElement) => e.naturalWidth))
+    .toBeGreaterThan(0);
+  for (const label of ["unsafe link", "script link", "image link"]) {
+    await expect(
+      page.locator(".prose a").filter({ hasText: label }),
+    ).not.toHaveAttribute("href", /^(data|javascript):/i);
+  }
+  await expect(page.getByAltText("unsafe image")).not.toHaveAttribute(
+    "src",
+    /^data:/i,
+  );
+  await expect(page.locator('img[src="/raw-html-image.png"]')).toHaveCount(0);
+});
+
+for (const imageOnly of [false, true]) {
+  test(`user ${imageOnly ? "image-only" : "text and image"} messages survive snapshot and reload`, async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          messages: [
+            {
+              ...nativeUserImage,
+              content: imageOnly
+                ? nativeUserImage.content.slice(1)
+                : nativeUserImage.content,
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+    );
+    for (const reload of [false, true]) {
+      if (reload) await page.reload();
+      else await page.goto("/");
+      const images = page.locator(".transcript-image img");
+      await expect(images).toHaveCount(1);
+      await expect
+        .poll(() =>
+          images.first().evaluate((e: HTMLImageElement) => e.naturalWidth),
+        )
+        .toBeGreaterThan(0);
+      if (!imageOnly)
+        await expect(
+          page.getByText("Inspect this image", { exact: true }),
+        ).toHaveCount(1);
+    }
+  });
+}
+
+test("live user images render at start and are replaced rather than duplicated at end", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let finish!: () => void;
+  const ended = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [],
+        events: [
+          {
+            seq: 5,
+            event: { type: "message_start", message: nativeUserImage },
+          },
+        ],
+        lastSeq: 5,
+        total: 0,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      await ended;
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `event: ready\ndata: {"type":"ready"}\n\nid: 6\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message: { ...nativeUserImage, content: [{ type: "text", text: "Image received" }, nativeUserImage.content[1]] } })}\n\n`,
+      });
+    },
+  );
+  try {
+    await page.goto("/");
+    const images = page.locator(".transcript-image img");
+    await expect(images).toHaveCount(1);
+    finish();
+    await expect(
+      page.getByText("Image received", { exact: true }),
+    ).toBeVisible();
+    await expect(images).toHaveCount(1);
+    await expect(
+      page.getByText("Inspect this image", { exact: true }),
+    ).toHaveCount(0);
+    await expect
+      .poll(() =>
+        images.first().evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+  } finally {
+    finish();
+  }
+});
+
+test("snapshot overlap does not duplicate committed user images", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [nativeUserImage],
+        events: [
+          {
+            seq: 5,
+            event: { type: "message_start", message: nativeUserImage },
+          },
+          { seq: 6, event: { type: "message_end", message: nativeUserImage } },
+        ],
+        lastSeq: 6,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  await expect(page.locator(".transcript-image img")).toHaveCount(1);
+  await expect(
+    page.getByText("Inspect this image", { exact: true }),
+  ).toHaveCount(1);
+});
+
 test("streamed markdown handles incomplete fences and stays formatted in dark mode", async ({
   page,
 }, testInfo) => {

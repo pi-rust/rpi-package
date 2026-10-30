@@ -7,13 +7,24 @@ import {
   type ReactNode,
 } from "react";
 import { Check, Copy } from "lucide-react";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { translate, type Language } from "./i18n";
 
 const remarkPlugins = [remarkGfm, remarkBreaks];
+// Data URLs are needed for inline images, never for navigable Markdown links.
+const imageUrlTransform: ComponentProps<typeof Markdown>["urlTransform"] = (
+  url,
+  key,
+  node,
+) =>
+  node.tagName === "img" &&
+  key === "src" &&
+  /^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(url)
+    ? url
+    : defaultUrlTransform(url);
 const rehypePlugins: ComponentProps<typeof Markdown>["rehypePlugins"] = [
   [rehypeHighlight, { ignoreMissing: true }],
 ];
@@ -111,6 +122,7 @@ export const MarkdownBody = memo(function MarkdownBody({
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={components}
+        urlTransform={imageUrlTransform}
         skipHtml
       >
         {text}

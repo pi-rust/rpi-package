@@ -93,6 +93,7 @@ import {
 import {
   rowsFromAssistant,
   rowsFromMessages,
+  rowsFromUser,
   prependRows,
   upsertTool,
   withoutPrefix,
@@ -989,7 +990,8 @@ export default function App() {
             const text = textOf(event.message);
             const prefix = `u${seq}`;
             currentUser.current = prefix;
-            if (text)
+            const initial = rowsFromUser(event.message, prefix);
+            if (initial.length > 0)
               setRows((previous) => {
                 const optimistic = previous.find(
                   (row) =>
@@ -1000,7 +1002,7 @@ export default function App() {
                 );
                 return [
                   ...previous.filter((row) => row.id !== optimistic?.id),
-                  { kind: "text", id: prefix, role: "user", text },
+                  ...initial,
                 ];
               });
             break;
@@ -1023,7 +1025,8 @@ export default function App() {
               const text = textOf(event.message);
               const prefix = currentUser.current ?? `u${seq}`;
               currentUser.current = null;
-              if (text)
+              const rebuilt = rowsFromUser(event.message, prefix);
+              if (rebuilt.length > 0)
                 setRows((previous) => {
                   const optimistic = previous.find(
                     (row) =>
@@ -1033,10 +1036,10 @@ export default function App() {
                       row.text === text,
                   );
                   return [
-                    ...previous.filter(
+                    ...withoutPrefix(previous, prefix).filter(
                       (row) => row.id !== prefix && row.id !== optimistic?.id,
                     ),
-                    { kind: "text", id: prefix, role: "user", text },
+                    ...rebuilt,
                   ];
                 });
             }

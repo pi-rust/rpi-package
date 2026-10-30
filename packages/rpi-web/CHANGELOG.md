@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Render inline Markdown `data:image` sources without allowing data URLs in links or raw HTML.
+- Preserve user image blocks in snapshots, reloads and live message events, including image-only messages, without duplicating start/end rows.
+
 ## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.20...rpi-web-v0.1.21) - 2026-10-29
 
 ### Fixed
