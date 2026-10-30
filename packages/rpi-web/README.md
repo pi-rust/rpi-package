@@ -8,6 +8,8 @@ The conversation has a tiny **right-side timeline rail** when any user message i
 
 Generic successful-completion notes such as **Run completed / 运行状态：已完成** are omitted from chat. Failed/stopped results, meaningful error details, explicit summaries and authoritative elapsed-time footers remain available; native events/history and completion handling are unchanged.
 
+Todo cards keep the native result's **whole-list progress**, even when `list` hides completed tasks: `6/7 completed` with one listed pending task remains **6/7**, not 0/1. Expanded details explain when only part of the list is shown, preserve in-progress task markers, and also support summary-only completed or empty results. The icon's **Todo operation completed / 待办操作已完成** status describes the tool call, not whether all tasks are finished. Old checklist-only results remain supported; task state, call timings and native history are unchanged.
+
 Tool headers show exact **native tool names by default**, including prefixes and case. In **Settings → Tool names**, choose **Native names / 原生名称** or **Mapped names / 映射名称** (the previous localized actions such as Read/Ran/Edited). The selection is saved in this browser and applies to all tool cards, including live updates, plans and todos. Switching changes only the header label: paths, commands, metadata, elapsed times, details and expansion state are preserved; native calls and transcript data are unchanged.
 
 Long shell commands inside tool details default to a four-line visual preview. Use **Show full command / 展开完整命令** to reveal the complete command and collapse it again when finished. Short commands need no extra click; copying always retains the full original command, including quotes and newlines.

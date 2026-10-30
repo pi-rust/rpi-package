@@ -1758,6 +1758,9 @@ details[open] > summary:before {
   text-decoration: line-through;
   text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent);
 }
+.todo-list li.in-progress .todo-check {
+  color: var(--blue-text);
+}
 .todo-check {
   flex: 0 0 18px;
   height: 18px;

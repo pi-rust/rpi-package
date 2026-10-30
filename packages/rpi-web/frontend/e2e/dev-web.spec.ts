@@ -9513,3 +9513,214 @@ test.describe("conversation timeline", () => {
     } finally { await context.close(); }
   });
 });
+
+test.describe("todo progress regression", () => {
+  const partial = "6/7 completed\n[ ] #5: Verify remaining task";
+  const inProgress = "6/7 completed\n[•] #5: Verify remaining task";
+  const full = `6/7 completed\n${Array.from({ length: 7 }, (_, index) =>
+    `[${index === 5 ? " " : "✓"}] #${index}: ${index === 5 ? "Verify remaining task" : `Completed task ${index}`}`,
+  ).join("\n")}`;
+  const summaryText = (language: "en" | "zh", done: number, total: number) =>
+    language === "zh" ? `${done}/${total} 项任务已完成` : `${done}/${total} tasks completed`;
+  const operationDone = (language: "en" | "zh") =>
+    language === "zh" ? "待办操作已完成" : "Todo operation completed";
+  const scopeText = (language: "en" | "zh", shown: number, total: number) =>
+    language === "zh"
+      ? `本次结果仅列出 ${shown}/${total} 项任务，进度包含全部任务。`
+      : `This result lists ${shown} of ${total} tasks. Progress includes the entire list.`;
+  const call = (id: string, includeDone = false) => ({
+    type: "toolCall", id, name: "todo", arguments: { action: "list", includeDone },
+    webTiming: { elapsedMs: 0, running: false },
+  });
+  const result = (id: string, content: unknown, isError = false) => ({
+    role: "toolResult", toolCallId: id, toolName: "todo", content, isError,
+    webTiming: { elapsedMs: 0, running: false },
+  });
+  const snapshot = async (page: Page, messages: unknown[], status = "ready", lastSeq = 4) => {
+    await page.route(snapshotRoute, route => route.fulfill({
+      json: { sessionId, messages, events: [], status, lastSeq },
+    }));
+  };
+
+  for (const language of ["en", "zh"] as const) {
+    test(`adjacent full, filtered and full snapshots retain global 6/7 progress in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      await snapshot(page, [
+        { role: "assistant", content: [call("todo-full-before", true)] },
+        result("todo-full-before", full),
+        { role: "assistant", content: [call("todo-filtered")] },
+        result("todo-filtered", partial),
+        { role: "assistant", content: [call("todo-full-after", true)] },
+        result("todo-full-after", full),
+      ]);
+      await page.goto("/");
+      const cards = page.locator(".todo-card");
+      await expect(cards).toHaveCount(3);
+      for (let index = 0; index < 3; index++) {
+        const card = cards.nth(index);
+        await expect(card).toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", false);
+        await expect(card.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(card.locator("summary")).not.toContainText("0/1");
+        await expect(card.locator("summary .tool-status")).toHaveAttribute("title", operationDone(language));
+        await expect(card.locator("summary .tool-status .sr-only")).toHaveText(operationDone(language));
+        await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
+        await expect(card.locator(".tool-elapsed")).not.toContainText("~");
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".todo-list li")).toHaveCount(index === 1 ? 1 : 7);
+        await expect(card.locator(".todo-list li.done")).toHaveCount(index === 1 ? 0 : 6);
+        await expect(card.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
+        if (index === 1) {
+          await expect(card.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
+          await expect(card.locator(".todo-scope")).toBeVisible();
+        } else {
+          await expect(card.locator(".todo-scope")).toHaveCount(0);
+        }
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+
+    test(`native todo representations and invalid headers use safe structured or generic fallbacks in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const cases = [
+        { content: "7/7 completed", done: 7, total: 7, shown: 0 },
+        { content: "No todos", done: 0, total: 0, shown: 0 },
+        { content: "[x] Legacy complete\n[•] Legacy active\n[ ] Legacy pending", done: 1, total: 3, shown: 3 },
+        { content: [{ type: "text", text: "6/7 completed" }, { type: "text", text: "[ ] #5: Verify remaining task" }], done: 6, total: 7, shown: 1 },
+        { content: "8/7 completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
+        { content: "9007199254740992/9007199254740993 completed\n[ ] Pending", done: 0, total: 1, shown: 1 },
+        { content: "6/7 completed\n[ ] Pending one\n[ ] Pending two", done: 0, total: 2, shown: 2 },
+        { content: "0/2 completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
+        { content: "six/seven completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
+        { content: "six/seven completed", generic: true },
+        { content: "Unrecognized todo output", generic: true },
+        { content: "Error: todo storage unavailable", generic: true, isError: true },
+      ];
+      await snapshot(page, cases.flatMap((entry, index) => [
+        { role: "assistant", content: [call(`todo-case-${index}`)] },
+        result(`todo-case-${index}`, entry.content, entry.isError),
+      ]));
+      await page.goto("/");
+      const cards = page.locator(".tool-card");
+      await expect(cards).toHaveCount(cases.length);
+      for (const [index, entry] of cases.entries()) {
+        const card = cards.nth(index);
+        if (entry.generic) {
+          await expect(card).not.toHaveClass(/todo-card/);
+          await expect(card.locator("summary .tool-summary-meta")).toHaveCount(0);
+          await expect(card.locator(".todo-list, .todo-scope")).toHaveCount(0);
+          if (!entry.isError) await card.locator(":scope > summary").click();
+          await expect(card.locator(".tool-detail")).toContainText(entry.content as string);
+          if (entry.isError) {
+            await expect(card).toHaveClass(/tool-error/);
+            await expect(card.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
+          }
+          continue;
+        }
+        await expect(card).toHaveClass(/todo-card/);
+        await expect(card.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, entry.done!, entry.total!));
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".todo-list li")).toHaveCount(entry.shown!);
+        await expect(card.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
+        if (entry.shown! < entry.total!) {
+          await expect(card.locator(".todo-scope")).toHaveText(scopeText(language, entry.shown!, entry.total!));
+        } else {
+          await expect(card.locator(".todo-scope")).toHaveCount(0);
+        }
+        if (entry.total === 0) await expect(card.locator(".todo-detail")).toContainText(language === "zh" ? "暂无待办任务。" : "No tasks.");
+        if (index === 2) {
+          await expect(card.locator("li.done")).toHaveCount(1);
+          await expect(card.locator("li.in-progress .todo-check svg.spin")).toHaveCount(1);
+          await expect(card.locator("li.in-progress .sr-only")).toHaveText(language === "zh" ? "任务进行中: " : "Task in progress: ");
+        }
+      }
+    });
+
+    test(`live partial todo progress survives completion, error status and snapshot reload in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const messages = [{ role: "assistant", content: [call("todo-live"), call("todo-live-error")] }];
+
+      let reloaded = false;
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 7 : 4, events: [],
+        messages: reloaded ? [...messages, result("todo-live", [{ type: "text", text: inProgress }]), result("todo-live-error", inProgress, true)] : messages,
+      } }));
+      let releasePartial!: () => void;
+      let releaseDone!: () => void;
+      const partialGate = new Promise<void>(resolve => { releasePartial = resolve; });
+      const doneGate = new Promise<void>(resolve => { releaseDone = resolve; });
+      let attempts = 0;
+      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+        const attempt = attempts++;
+        if (attempt > 1) return route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\nevent: ready\ndata: {\"type\":\"ready\"}\n\n" });
+        await (attempt === 0 ? partialGate : doneGate);
+        const events = attempt === 0 ? [{
+          seq: 5, type: "tool_execution_update", toolCallId: "todo-live", toolName: "todo",
+          partialResult: { text: inProgress }, webTiming: { elapsedMs: 0, running: true },
+        }] : [{
+          seq: 6, type: "tool_execution_end", toolCallId: "todo-live", toolName: "todo", isError: false,
+          result: { content: [{ type: "text", text: inProgress }] }, webTiming: { elapsedMs: 0, running: false },
+        }, {
+          seq: 7, type: "tool_execution_end", toolCallId: "todo-live-error", toolName: "todo", isError: true,
+          result: { content: [{ type: "text", text: inProgress }] }, webTiming: { elapsedMs: 0, running: false },
+        }];
+        await route.fulfill({ contentType: "text/event-stream", body: `retry: 100\n${events.map(event => `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")}` });
+      });
+      try {
+        await page.goto("/");
+        const live = page.locator(".tool-card").first();
+        const status = live.locator("summary .tool-status");
+        await expect(live).toHaveClass(/tool-pending/);
+        await expect(status).toHaveAttribute("title", language === "zh" ? "排队中" : "queued");
+        await live.locator(":scope > summary").click();
+        await expect(live).toHaveJSProperty("open", true);
+        releasePartial();
+        await expect(live).toHaveClass(/tool-running/);
+        await expect(live).toHaveClass(/todo-card/);
+        await expect(live).toHaveJSProperty("open", true);
+        await expect(status).toHaveAttribute("title", language === "zh" ? "执行中" : "running");
+        await expect(status.locator("svg.spin")).toHaveCount(1);
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(live.locator("li.in-progress")).toHaveCount(1);
+        await expect(live.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
+        releaseDone();
+        await expect(live).toHaveClass(/tool-done/);
+        await expect(live).toHaveJSProperty("open", true);
+        await expect(status).toHaveAttribute("title", operationDone(language));
+        await expect(status.locator(".sr-only")).toHaveText(operationDone(language));
+        await expect(status.locator("svg.spin")).toHaveCount(0);
+        await expect(live.locator("li.in-progress .todo-check svg.spin")).toHaveCount(1);
+        await expect(live.locator("li.in-progress .sr-only")).toHaveText(language === "zh" ? "任务进行中: " : "Task in progress: ");
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(live.locator(".tool-elapsed")).toHaveText("0.0s");
+        const error = page.locator(".todo-card.tool-error");
+        await expect(error).toHaveJSProperty("open", true);
+        await expect(error.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
+        await expect(error.locator("summary .tool-status .sr-only")).toHaveText(language === "zh" ? "失败" : "failed");
+        await expect(error.locator("summary .tool-status svg.lucide-circle-alert")).toHaveCount(1);
+        await expect(error.locator("summary")).not.toContainText(operationDone(language));
+        await live.locator(":scope > summary").click();
+        await expect(live).toHaveJSProperty("open", false);
+        reloaded = true;
+        await page.reload();
+        await expect(page.locator(".todo-card")).toHaveCount(2);
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(live).toHaveJSProperty("open", false);
+        await live.locator(":scope > summary").click();
+        await expect(live.locator(".todo-list li")).toHaveCount(1);
+        await expect(live.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
+        await expect(live.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
+        await expect(error.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
+      } finally {
+        releasePartial();
+        releaseDone();
+      }
+    });
+  }
+});
