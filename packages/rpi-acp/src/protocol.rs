@@ -1036,14 +1036,23 @@ pub async fn run(
                 match opened {
                     Ok((session, state)) => {
                         let updates = if method == "session/load" {
-                            crate::history::saved_session(session_id).and_then(|path| {
-                                crate::history::replay(&path, state["leafId"].as_str())
-                            })
+                            crate::history::Replay::prepare(&session, session_id)
+                                .await
+                                .map(Some)
                         } else {
-                            Ok(Vec::new())
+                            Ok(None)
                         };
                         match updates {
-                            Ok(updates) => {
+                            Ok(mut replay) => {
+                                if let Some(replay) = replay.as_mut() {
+                                    if let Err(error) = replay.emit(&writer, session_id).await {
+                                        if !sessions.lock().await.contains_key(session_id) {
+                                            session.kill().await;
+                                        }
+                                        writer.session_error(&id, method, &error).await;
+                                        continue;
+                                    }
+                                }
                                 let mut result = json!({});
                                 match config_options_for(&session, &state).await {
                                     Ok(config) => {
@@ -1065,15 +1074,8 @@ pub async fn run(
                                 if let Some(watcher) = watcher {
                                     durable_watchers.insert(session_id.to_owned(), watcher);
                                 }
-                                for update in updates {
-                                    writer
-                                        .notify(
-                                            "session/update",
-                                            json!({"sessionId":session_id,"update":update}),
-                                        )
-                                        .await;
-                                }
                                 writer.respond(&id, result).await;
+                                drop(replay);
                             }
                             Err(error) => {
                                 // Keep an already attached backend alive on a replay error.

@@ -139,6 +139,10 @@ impl Session {
         self.rpc.state().await
     }
 
+    pub async fn history_read(&self) -> Result<rpi_extcore::history::page::HistoryRead, String> {
+        rpi_extcore::history::page::HistoryRead::begin(self.rpc.clone()).await
+    }
+
     pub async fn available_models(&self) -> Result<Value, String> {
         self.rpc.available_models().await
     }

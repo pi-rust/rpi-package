@@ -640,6 +640,21 @@ impl HostSession {
         self.runtime.events.subscribe()
     }
 
+    /// Capture an event boundary after subscribing. Fail closed if publication
+    /// is in flight rather than sampling independently from state and history.
+    pub async fn history_boundary(&self) -> Result<u64, String> {
+        let history = self.runtime.history.lock().await;
+        let latest = self.runtime.seq.load(Ordering::SeqCst);
+        if history.back().map_or(0, |event| event.seq) != latest {
+            return Err("history event publication in flight; retry load".into());
+        }
+        Ok(latest)
+    }
+
+    pub(crate) fn history_cancellation(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.cancellation.subscribe()
+    }
+
     /// Replayable projection of everything this session has emitted.
     pub async fn history(&self, after: Option<u64>) -> Vec<BufferedEvent> {
         let history = self.runtime.history.lock().await;
@@ -977,6 +992,35 @@ async fn publish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bounded_history_boundary_fails_on_publication_and_changes() {
+        let (stdin, _peer) = tokio::io::duplex(4096);
+        let (session, _injector) = HostSession::test_connection(stdin, 16);
+        let read = crate::history::page::HistoryRead::begin(session.clone())
+            .await
+            .unwrap();
+        assert_eq!(session.history_boundary().await.unwrap(), 0);
+        publish(
+            &session.runtime.events,
+            &session.runtime.history,
+            &session.runtime.state,
+            &session.runtime.seq,
+            json!({"type":"session_entry_committed"}),
+        )
+        .await;
+        assert_eq!(session.history_boundary().await.unwrap(), 1);
+        // Fallback cannot turn a changed event boundary into a successful empty read.
+        assert!(read.ensure_active().is_ok());
+        session.runtime.seq.fetch_add(1, Ordering::SeqCst);
+        assert!(session
+            .history_boundary()
+            .await
+            .unwrap_err()
+            .contains("in flight"));
+        drop(read);
+        assert!(session.try_run_lease().is_ok());
+    }
 
     #[tokio::test]
     async fn compact_live_projection_is_replayable_without_changing_raw_frames() {

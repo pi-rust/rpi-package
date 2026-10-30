@@ -225,3 +225,38 @@ replacement/truncation. This is not a race-free local filesystem sandbox or a
 full-file integrity audit: hostile concurrent rewrites outside the checkpoint
 are not guaranteed to be detected. No deployment/restart is required or
 performed by this API.
+
+## Bounded active-branch replay preparation
+
+`history::page::{BranchAnchor, MessagePage, HistoryRead, HistorySpool}` provides
+protocol-neutral replay preparation. `HistoryRead::begin(Arc<HostSession>)` owns
+the existing prompt/run lease until the adapter drops it after replay. It
+subscribes before capturing a consistent retained event sequence boundary.
+`prepare(saved_path)` validates every page and rechecks both the native anchor
+and event boundary before returning a disk-backed oldest-first page stack.
+Any intervening event requires retry; it is not silently merged into history.
+
+Hosts advertising `get_messages` receive at most **128 messages** per RPC;
+each serialized page is limited to **8 MiB**. Required entry IDs are nonempty,
+at most 1024 UTF-8 bytes and unique throughout traversal. Cursor echo,
+exclusivity, full intermediate windows, first/last IDs, progress, total count
+and leaf anchoring are validated. Bad advertised replies never select fallback.
+Preparation has a **30-second** budget beginning at `HistoryRead::begin`; each
+RPC gets the lesser of **15 seconds** and the remaining preparation budget.
+Deadline/cancellation checks also surround parsing and bounded synchronous
+spool operations; blocking filesystem calls are not forcibly preempted.
+
+The random `create_new` temporary spool uses Unix **0600** creation permissions
+(and inherited temporary-directory ACLs on Windows). It holds at most **512 MiB**,
+including eight-byte page trailers, and is closed/removed on error, cancellation
+or owner drop. Only a page and entry-ID validation metadata are kept in memory
+for native paging, not the full transcript or a growing spool-offset index.
+
+Only hosts lacking the capability use the saved native transcript fallback.
+The actual open file is read with limit-plus-one reads: **64 MiB per file** and
+**8 MiB per JSONL line**, including line delimiters. This path reuses the native
+branch validator, checks the leaf before/after reading, then builds the same
+bounded spool. Its in-memory parsed entries/messages are bounded by that file
+limit; it never calls the old unbounded file helper. These are history-layer
+limits, not a new global native RPC frame-size limit or hostile-filesystem
+sandbox. The native transcript remains the sole persisted source of truth.
