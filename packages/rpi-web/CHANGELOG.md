@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.1.25](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.24...rpi-web-v0.1.25) - 2026-10-30
+
+### Fixed
+
+- *(web)* render structured ask history cards
+- *(web)* preserve global todo progress for filtered results
+
+### Other
+
+- Merge pull request #124 from pi-rust/fix/web-todo-progress
+
 ## [0.1.24](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.23...rpi-web-v0.1.24) - 2026-10-30
 
 ### Added
