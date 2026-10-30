@@ -1,4 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ChevronRight,
   CircleAlert,
@@ -13,6 +19,10 @@ import {
 } from "lucide-react";
 import { translate, type Language } from "./i18n";
 import { isShellTool, type ToolStatus } from "./transcript";
+
+export type ToolNameMode = "native" | "mapped";
+export const TOOL_NAME_MODE_KEY = "rpi-web-tool-name-mode";
+export const ToolNameModeContext = createContext<ToolNameMode>("native");
 
 function iconForTool(name: string) {
   const tool = name
@@ -88,6 +98,8 @@ export function ToolDisclosure({
   children: ReactNode;
 }) {
   const { open, setOpen } = expansion;
+  const nameMode = useContext(ToolNameModeContext);
+  const displayName = nameMode === "native" ? toolName : action;
   const Icon = iconForTool(toolName);
   const label = translate(
     language,
@@ -117,8 +129,8 @@ export function ToolDisclosure({
           <span className="sr-only">{label}</span>
         </span>
         <span className="tool-summary-text">
-          <span className="tool-action" title={action}>
-            {action}
+          <span className="tool-action" title={displayName}>
+            {displayName}
           </span>
           {target && (
             <code className={`tool-target ${targetClassName}`} title={target}>

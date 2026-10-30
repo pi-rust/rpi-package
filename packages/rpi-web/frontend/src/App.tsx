@@ -84,9 +84,12 @@ import { RunElapsed } from "./RunElapsed";
 import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
 import {
   ToolDisclosure,
+  TOOL_NAME_MODE_KEY,
+  ToolNameModeContext,
   toolSummary,
   useToolExpansion,
   type ToolExpansion,
+  type ToolNameMode,
 } from "./ToolDisclosure";
 import {
   ConfirmDialog,
@@ -579,6 +582,13 @@ export default function App() {
   const [tagsTarget, setTagsTarget] = useState<SessionSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [toolNameMode, setToolNameMode] = useState<ToolNameMode>(() => {
+    try {
+      return localStorage.getItem(TOOL_NAME_MODE_KEY) === "mapped" ? "mapped" : "native";
+    } catch {
+      return "native";
+    }
+  });
   const [mobileSessionPicker, setMobileSessionPicker] = useState(false);
   const [mobileSessionQuery, setMobileSessionQuery] = useState("");
   const [creatingSession, setCreatingSession] = useState(false);
@@ -1285,6 +1295,13 @@ export default function App() {
       /* optional preference */
     }
   }, [theme]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(TOOL_NAME_MODE_KEY, toolNameMode);
+    } catch {
+      /* optional display preference */
+    }
+  }, [toolNameMode]);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (
@@ -3072,6 +3089,23 @@ export default function App() {
                 { value: "en", label: "English" },
               ]}
             />
+            <label>{t("toolNames")}</label>
+            <div className="project-mode" role="group" aria-label={t("toolNames")}>
+              <button
+                type="button"
+                aria-pressed={toolNameMode === "native"}
+                onClick={() => setToolNameMode("native")}
+              >
+                {t("nativeToolNames")}
+              </button>
+              <button
+                type="button"
+                aria-pressed={toolNameMode === "mapped"}
+                onClick={() => setToolNameMode("mapped")}
+              >
+                {t("mappedToolNames")}
+              </button>
+            </div>
             <div className="shortcut-list">
               <span>{t("newSession")}</span>
               <kbd>Ctrl / ⌘ N</kbd>
@@ -3592,18 +3626,20 @@ export default function App() {
                 )}
 
                 <ProjectImageContext.Provider value={project}>
-                  {rows.map((row) => (
-                    <div
-                      className="transcript-row"
-                      data-transcript-row={row.id}
-                      key={row.id}
-                    >
-                      <RowView row={row} language={language} />
-                      {runFooters.get(row.id)?.map((timing) => (
-                        <RunElapsed key={timing.runId} timing={timing} language={language} />
-                      ))}
-                    </div>
-                  ))}
+                  <ToolNameModeContext.Provider value={toolNameMode}>
+                    {rows.map((row) => (
+                      <div
+                        className="transcript-row"
+                        data-transcript-row={row.id}
+                        key={row.id}
+                      >
+                        <RowView row={row} language={language} />
+                        {runFooters.get(row.id)?.map((timing) => (
+                          <RunElapsed key={timing.runId} timing={timing} language={language} />
+                        ))}
+                      </div>
+                    ))}
+                  </ToolNameModeContext.Provider>
                 </ProjectImageContext.Provider>
 
                 {busy && rows.length > 0 && (

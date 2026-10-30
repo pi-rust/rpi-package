@@ -6098,10 +6098,10 @@ test("tool disclosures keep read paths and search queries visible while closed o
     await expect(read).toHaveJSProperty("open", false);
     await expect(search).toHaveJSProperty("open", false);
     await expect(read.locator(":scope > summary .tool-action")).toHaveText(
-      "Read",
+      "read",
     );
     await expect(search.locator(":scope > summary .tool-action")).toHaveText(
-      "Searched",
+      "websearch",
     );
     await expect(
       read.locator(":scope > summary code.tool-target"),
@@ -6249,7 +6249,7 @@ test("multiline edit opens in one click with real diff lines and addition/remova
   await expect(summary.locator("code.tool-target")).toHaveText(
     "src/multiline.ts",
   );
-  await expect(summary.locator(".tool-action")).toHaveText("Edited");
+  await expect(summary.locator(".tool-action")).toHaveText("edit");
   await expect(summary.locator(".edit-count")).toContainText("+3");
   await expect(summary.locator(".edit-count")).toContainText("−2");
   await expect(card.locator("summary")).toHaveCount(1);
@@ -8528,5 +8528,224 @@ test.describe("session issue badges", () => {
       await expect(row(page, "Mock session")).toHaveClass(/active/);
     }
     expect(state.otherRequests).toEqual([]);
+  });
+});
+
+test.describe("tool name display preference", () => {
+  const key = "rpi-web-tool-name-mode";
+  const tools = [
+    { name: "read", args: { path: "src/preference.ts" }, result: "export const preference = 42;" },
+    { name: "bash", args: { command: "printf preference" }, result: "preference" },
+    { name: "edit", args: { path: "src/edit.ts", edits: [{ oldText: "before", newText: "after" }] }, result: "Edited src/edit.ts" },
+    { name: "plan", args: { plan: "# Preference plan\n\n- Inspect names\n- Verify controls" }, result: "# Preference plan\n\n- Inspect names\n- Verify controls" },
+    { name: "todo", args: {}, result: "1/2 completed\n[✓] #0: Inspect names\n[ ] #1: Verify controls" },
+    { name: "Custom_Preference_Probe", args: { path: "probe.txt" }, result: "Custom preference payload" },
+    { name: "functions.Read_File", args: { path: "src/prefixed.ts" }, result: "export const prefixed = true;" },
+  ];
+  const native = tools.map(tool => tool.name);
+  const mapped = ["Read", "Ran", "Edited", "Plan", "Todos", "Custom_Preference_Probe", "Read"];
+  const chinese = ["已读取", "已运行", "已编辑", "计划", "待办", "Custom_Preference_Probe", "已读取"];
+
+  // Local copy: the summary-layout describe's fixture is scoped there.
+  async function summarySnapshot(page: Page, entries = tools) {
+    await mockHost(page);
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "ready", lastSeq: 9, events: [],
+      messages: entries.length ? [
+        { role: "assistant", content: entries.map((tool, index) => ({
+          type: "toolCall", id: `name-preference-${index}`, name: tool.name, arguments: tool.args,
+          webTiming: { elapsedMs: 1234, running: false },
+        })) },
+        ...entries.map((tool, index) => ({
+          role: "toolResult", toolCallId: `name-preference-${index}`, toolName: tool.name,
+          isError: false, content: [{ type: "text", text: tool.result }],
+          webTiming: { elapsedMs: 1234, running: false },
+        })),
+      ] : [],
+    } }));
+  }
+  async function labels(page: Page, names: string[]) {
+    const cards = page.locator(".tool-card");
+    await expect(cards).toHaveCount(names.length);
+    await expect(cards.locator(":scope > summary .tool-action")).toHaveText(names);
+    for (const [index, name] of names.entries()) {
+      const summary = cards.nth(index).locator(":scope > summary");
+      expect(await summary.locator(".tool-action").textContent()).toBe(name);
+      await expect(summary.locator(".tool-action")).toHaveAttribute("title", name);
+      await expect(summary).toHaveAccessibleName(new RegExp(name.replaceAll(".", "\\.")));
+    }
+  }
+  async function settings(page: Page, zh = false) {
+    await page.keyboard.press("Control+,");
+    const group = page.getByRole("group", { name: zh ? "工具名称" : "Tool names", exact: true });
+    await expect(group).toBeVisible();
+    return group;
+  }
+  async function choose(page: Page, mode: "native" | "mapped", zh = false) {
+    const group = await settings(page, zh);
+    const names = zh ? ["原生名称", "映射名称"] : ["Native names", "Mapped names"];
+    const selected = group.getByRole("button", { name: names[mode === "native" ? 0 : 1], exact: true });
+    await selected.focus();
+    await page.keyboard.press("Enter");
+    await expect(selected).toHaveAttribute("aria-pressed", "true");
+    await expect(group.getByRole("button", { name: names[mode === "native" ? 1 : 0], exact: true })).toHaveAttribute("aria-pressed", "false");
+    await page.keyboard.press("Escape");
+    await expect(group).toBeHidden();
+  }
+  async function savedState(page: Page, mode: "native" | "mapped") {
+    const group = await settings(page);
+    await expect(group.getByRole("button", { name: "Native names", exact: true })).toHaveAttribute("aria-pressed", String(mode === "native"));
+    await expect(group.getByRole("button", { name: "Mapped names", exact: true })).toHaveAttribute("aria-pressed", String(mode === "mapped"));
+    await page.keyboard.press("Escape");
+  }
+  const unchanged = (page: Page) => page.locator(".tool-card").evaluateAll(cards => cards.map(card => ({
+    className: card.className,
+    parts: Array.from(card.querySelectorAll("summary .tool-target, summary .tool-summary-meta, summary .tool-elapsed, .tool-detail"))
+      .map(node => [node.className, node.textContent, node.getAttribute("title")]),
+    icon: card.querySelector("summary .tool-status svg")?.getAttribute("class"),
+    open: (card as HTMLDetailsElement).open,
+  })));
+
+  test("desktop native defaults, local keyboard toggles and reload persistence preserve all five renderers", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "en"));
+    await summarySnapshot(page);
+    const commands: unknown[] = [];
+    page.on("request", request => {
+      if (!new URL(request.url()).pathname.endsWith("/commands") || request.method() !== "POST") return;
+      const body = request.postDataJSON();
+      // Independent inspector polling can overlap the local preference toggle.
+      if (!String(body.type).startsWith("get_")) commands.push(body);
+    });
+    await page.goto("/");
+    await labels(page, native);
+    await savedState(page, "native");
+    const cards = page.locator(".tool-card");
+    for (const renderer of [".shell-card", ".edit-card", ".plan-card", ".todo-card"])
+      await expect(page.locator(renderer)).toHaveCount(1);
+    await expect(cards.locator("summary .tool-elapsed")).toHaveText(tools.map(() => "1.2s"));
+    await expect(cards.nth(2).locator("summary .edit-count")).toContainText("+1");
+    await expect(cards.nth(2).locator("summary .edit-count")).toContainText("−1");
+    await expect(cards.nth(4).locator("summary .tool-summary-meta")).toContainText("1/2");
+    for (let index = 0; index < 5; index++) {
+      await cards.nth(index).locator(":scope > summary").focus();
+      await page.keyboard.press("Enter");
+      await expect(cards.nth(index)).toHaveJSProperty("open", true);
+    }
+    await expect(cards.first().getByText(tools[0].result, { exact: false })).toBeVisible();
+    await expect(page.locator(".shell-output")).toHaveText("preference");
+    await expect(page.locator(".edit-line.add")).toHaveCount(1);
+    await expect(page.locator(".plan-outline li")).toHaveCount(2);
+    await expect(page.locator(".todo-list li")).toHaveCount(2);
+    const before = await unchanged(page);
+    const commandBoundary = commands.length;
+    await choose(page, "mapped");
+    await labels(page, mapped);
+    expect(await unchanged(page)).toEqual(before);
+    await expect(cards.first()).toHaveJSProperty("open", true);
+    await expect.poll(() => page.evaluate(k => localStorage.getItem(k), key)).toBe("mapped");
+    expect(commands.slice(commandBoundary)).toEqual([]);
+    await page.reload();
+    await labels(page, mapped);
+    await savedState(page, "mapped");
+    const reloadBoundary = commands.length;
+    await choose(page, "native");
+    await labels(page, native);
+    expect(commands.slice(reloadBoundary)).toEqual([]);
+    await expect.poll(() => page.evaluate(k => localStorage.getItem(k), key)).toBe("native");
+    await page.reload();
+    await labels(page, native);
+    await savedState(page, "native");
+  });
+
+  test("Chinese 390px fresh defaults stay native and keyboard settings localize only mapped actions", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    await summarySnapshot(page);
+    await page.goto("/");
+    await labels(page, native);
+    const group = await settings(page, true);
+    await expect(group.getByRole("button", { name: "原生名称", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(group.getByRole("button", { name: "映射名称", exact: true })).toHaveAttribute("aria-pressed", "false");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.keyboard.press("Escape");
+    await choose(page, "mapped", true);
+    await labels(page, chinese);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await choose(page, "native", true);
+    await labels(page, native);
+    await expect(page.locator(".tool-action").last()).toHaveText("functions.Read_File");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+
+  test("invalid saved values and tool-key-only blocked storage fall back safely and toggle in memory", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.addInitScript(k => {
+      localStorage.setItem("rpi-web-language", "en");
+      // Init-script order is unspecified when the blocked-storage phase reloads.
+      try { localStorage.setItem(k, "invalid-mode"); } catch { /* tool key blocked */ }
+    }, key);
+    await summarySnapshot(page);
+    await page.goto("/");
+    await labels(page, native);
+    await savedState(page, "native");
+    await choose(page, "mapped");
+    await labels(page, mapped);
+    await page.addInitScript(k => {
+      const get = Storage.prototype.getItem;
+      const set = Storage.prototype.setItem;
+      Storage.prototype.getItem = function (name) {
+        if (name === k) throw new DOMException("Tool preference blocked", "SecurityError");
+        return get.call(this, name);
+      };
+      Storage.prototype.setItem = function (name, value) {
+        if (name === k) throw new DOMException("Tool preference blocked", "SecurityError");
+        return set.call(this, name, value);
+      };
+    }, key);
+    await page.reload();
+    await labels(page, native);
+    await savedState(page, "native");
+    await choose(page, "mapped");
+    await labels(page, mapped);
+    await savedState(page, "mapped");
+    await choose(page, "native");
+    await labels(page, native);
+    expect(errors).toEqual([]);
+  });
+
+  test("live SSE preserves raw names running and done, with Reading to Read only when mapped", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "en"));
+    await summarySnapshot(page, []);
+    const releases: Array<() => void> = [];
+    const gates = Array.from({ length: 4 }, () => new Promise<void>(resolve => releases.push(resolve)));
+    let connection = 0;
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+      const index = connection++;
+      if (index >= gates.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      await gates[index];
+      const start = index % 2 === 0;
+      const event = {
+        type: start ? "tool_execution_start" : "tool_execution_end",
+        toolCallId: `live-preference-${Math.floor(index / 2)}`, toolName: "functions.Read_File",
+        ...(start ? { args: { path: "src/live.ts" } } : { result: "export const live = true;", isError: false }),
+        webTiming: { elapsedMs: start ? 100 : 1234, running: start },
+      };
+      await route.fulfill({ contentType: "text/event-stream", body: `retry: 20\nid: ${10 + index}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
+    });
+    try {
+      await page.goto("/");
+      for (let index = 0; index < 4; index++) {
+        if (index === 2) await choose(page, "mapped");
+        releases[index]();
+        const card = page.locator(".tool-card").nth(Math.floor(index / 2));
+        await expect(card).toHaveClass(index % 2 === 0 ? /tool-running/ : /tool-done/);
+        await expect(card.locator("summary .tool-action")).toHaveText(index < 2 ? "functions.Read_File" : index === 2 ? "Reading" : "Read");
+        await expect(card.locator("summary .tool-target")).toHaveText("src/live.ts");
+        if (index % 2 === 0) await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(1);
+        else await expect(card.locator("summary .tool-elapsed")).toHaveText("1.2s");
+      }
+    } finally { releases.forEach(release => release()); }
   });
 });

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add Settings → Tool names to switch between exact native names (the default) and mapped/localized action labels across all tool cards. Save the choice locally, preserve expansion, targets, details and timings, and leave native calls and transcript data unchanged.
 - Show compact translated interruption/resume hints in desktop and mobile session lists from existing error and settlement metadata, with accessible explanations and no per-session RPC reads. Active retries suppress old errors; normal stops, declined operations, and offline/closed sessions without evidence are not mislabeled. This does not add persistent crash detection for registry-only offline sessions.
 - Render fenced `mermaid` flowcharts (`flowchart`/`graph`) and sequence diagrams locally as zoomable SVG images, with source/copy controls, theme updates, mobile containment and debounced streaming recovery. Lazy-load the pinned Mermaid dependency; reject authored configuration, shape metadata, HTML/images and custom CSS before rendering, retaining exact source for invalid, unsupported or oversized diagrams.
 - Show Codex-style total elapsed time after completed conversation runs, including stopped/failed runs, in both live and historical views. Use matching native operation start/finish records through a bounded, resumable core/HTTP query; never estimate from individual tool times or browser clocks. Requires the matching backend update; unavailable or incomplete timing metadata is omitted.
