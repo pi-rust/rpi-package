@@ -1044,7 +1044,7 @@ code {
   width: min(88%, 650px);
   padding: 11px 15px;
   border: 1px solid var(--line);
-  border-radius: 16px 16px 4px 16px;
+  border-radius: 16px;
   background: var(--soft);
 }
 .message.user .plain-message {

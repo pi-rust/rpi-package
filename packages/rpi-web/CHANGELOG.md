@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Use equal user-message corner radii and show the localized sender label only once instead of repeating it in both avatar and name.
 - Render inline Markdown `data:image` sources without allowing data URLs in links or raw HTML.
 - Preserve user image blocks in snapshots, reloads and live message events, including image-only messages, without duplicating start/end rows.
 - Resolve local raster image references against the active project and serve authenticated image bytes through the project API instead of receiving the Web/Vite SPA HTML fallback. Requires the matching backend update.

@@ -5166,11 +5166,7 @@ function MessageRow({
   return (
     <article className={`message ${row.role}`}>
       <div className="message-heading">
-        {row.role === "assistant" ? (
-          <Mark />
-        ) : (
-          <span className="user-avatar">{t("you").slice(0, 1)}</span>
-        )}
+        {row.role === "assistant" && <Mark />}
         <strong>{row.role === "assistant" ? "rpi" : t("you")}</strong>
       </div>
       <div className="message-body">

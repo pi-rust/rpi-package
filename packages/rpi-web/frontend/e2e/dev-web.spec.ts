@@ -6948,3 +6948,62 @@ test.describe("attachment cards", () => {
     await expect(card).toHaveCount(0);
   });
 });
+
+for (const width of [1280, 390]) {
+  test(`user message has one localized sender label and equal corners at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          lastSeq: 4,
+          events: [],
+          messages: [
+            { role: "user", content: "Please inspect the attachment" },
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "I will inspect it." }],
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto("/");
+    const message = page.locator(".message.user");
+    await expect(message.locator(".message-heading")).toHaveText("You");
+    await expect(message.locator(".user-avatar")).toHaveCount(0);
+    const corners = () =>
+      message.locator(".message-body").evaluate((node) => {
+        const style = getComputedStyle(node);
+        return [
+          style.borderTopLeftRadius,
+          style.borderTopRightRadius,
+          style.borderBottomRightRadius,
+          style.borderBottomLeftRadius,
+        ];
+      });
+    expect(await corners()).toEqual(["16px", "16px", "16px", "16px"]);
+    if (width === 390)
+      await page
+        .getByRole("button", { name: "Toggle sidebar", exact: true })
+        .click();
+    await chooseMenuOption(page, "Language", "zh");
+    if (width === 390)
+      await page.locator(".sidebar .sidebar-brand button").click();
+    await expect(message.locator(".message-heading")).toHaveText("你");
+    await expect(message.locator(".message-heading strong")).toHaveCount(1);
+    await expect(
+      page.locator(".message.assistant .message-heading strong"),
+    ).toHaveText("rpi");
+    expect(await corners()).toEqual(["16px", "16px", "16px", "16px"]);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  });
+}
