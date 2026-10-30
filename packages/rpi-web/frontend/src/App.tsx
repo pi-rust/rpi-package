@@ -77,6 +77,8 @@ import { ProjectContext } from "./ProjectContext";
 import { ZoomableImage } from "./ZoomableImage";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
 import { useTranscriptViewport } from "./useTranscriptViewport";
+import { useRunTimings, timingByRow } from "./useRunTimings";
+import { RunElapsed } from "./RunElapsed";
 import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
 import {
   ToolDisclosure,
@@ -705,6 +707,11 @@ export default function App() {
   } | null>(null);
   const autoEarlierCursor = useRef<string | null>(null);
   const continueEarlier = useRef<number | null>(null);
+  const runTimings = useRunTimings(
+    sessionId, rows, `${connectionRevision}:${navigationRevision.current}`,
+    !loadingSession && Boolean(capabilities), settleTick,
+  );
+  const runFooters = useMemo(() => timingByRow(rows, runTimings), [rows, runTimings]);
   const rememberTranscriptPosition = useTranscriptViewport(
     transcriptRef,
     followingRef,
@@ -3589,6 +3596,9 @@ export default function App() {
                       key={row.id}
                     >
                       <RowView row={row} language={language} />
+                      {runFooters.get(row.id)?.map((timing) => (
+                        <RunElapsed key={timing.runId} timing={timing} language={language} />
+                      ))}
                     </div>
                   ))}
                 </ProjectImageContext.Provider>
@@ -5002,6 +5012,7 @@ const RowView = memo(function RowView({
   language: Language;
 }) {
   const t = (key: MessageKey) => translate(language, key);
+  if (row.kind === "boundary") return null;
   if (row.kind === "note") {
     const values = row.translation?.values;
     const isRunStatus =

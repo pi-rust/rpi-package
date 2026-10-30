@@ -1,4 +1,5 @@
 //! Session and workspace operations shared by protocol adapters.
+pub use crate::run_timing::RunTimingsQuery;
 use crate::{
     durable::{DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE},
     host::HostSession,
@@ -15,6 +16,59 @@ use tokio::{
     process::Command,
     sync::{Mutex, RwLock},
 };
+/// Query persisted native run elapsed metadata without starting a native child.
+/// A conflict invalidates the client's accumulated timings and cursor.
+pub async fn run_timings(state: &Service, id: String, query: RunTimingsQuery) -> ServiceReply {
+    if uuid::Uuid::parse_str(&id).is_err() {
+        return (
+            ReplyKind::InvalidInput,
+            json!({"error":"session ID must be a UUID"}),
+        )
+            .into_reply();
+    }
+    if let Err(error) = query.validate() {
+        return error.into_reply();
+    }
+    if state.registry.read().await.get(&id).is_none()
+        && !state.sessions.read().await.contains_key(&id)
+    {
+        return (ReplyKind::NotFound, json!({"error":"unknown session"})).into_reply();
+    }
+    let project = match session_project(state, &id).await {
+        Ok(project) => project,
+        Err(error) => return (ReplyKind::Unavailable, json!({"error":error})).into_reply(),
+    };
+    let configured = state.config.session_dir.clone();
+    let cache = state.run_timing_cache.clone();
+    let permit = match state.run_timing_workers.clone().acquire_owned().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                ReplyKind::Unavailable,
+                json!({"error":"timing reader closed"}),
+            )
+                .into_reply()
+        }
+    };
+    match tokio::task::spawn_blocking(move || {
+        // Both the permit and cache serialization remain owned by the worker even
+        // when the async request is cancelled.
+        let _permit = permit;
+        let root = crate::run_timing::session_root(&project.root, configured)?;
+        let mut cache = cache
+            .lock()
+            .map_err(|_| crate::reply::failure(ReplyKind::Internal, "timing cache poisoned"))?;
+        let page = cache.query(&id, &root, &query)?;
+        serde_json::to_value(page)
+            .map_err(|_| crate::reply::failure(ReplyKind::Internal, "timing serialization failed"))
+    })
+    .await
+    {
+        Ok(result) => result.into_reply(),
+        Err(_) => (ReplyKind::Internal, json!({"error":"timing reader failed"})).into_reply(),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BackendConfig {
     pub project: PathBuf,
@@ -50,6 +104,8 @@ pub struct Service {
     durable_event_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
+    run_timing_cache: Arc<std::sync::Mutex<crate::run_timing::RunTimingCache>>,
+    run_timing_workers: Arc<tokio::sync::Semaphore>,
 }
 impl Service {
     pub fn new(
@@ -85,6 +141,8 @@ impl Service {
             durable_event_watchers: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             registry: Arc::new(RwLock::new(registry)),
+            run_timing_cache: Arc::new(std::sync::Mutex::new(Default::default())),
+            run_timing_workers: Arc::new(tokio::sync::Semaphore::new(2)),
         }))
     }
     pub async fn live_session(&self, id: &str) -> Option<Arc<HostSession>> {
@@ -1700,5 +1758,93 @@ mod tests {
         let title = summarize(&"x".repeat(120));
         assert_eq!(title.chars().count(), 61);
         assert!(title.ends_with('…'));
+    }
+}
+
+#[cfg(test)]
+mod run_timing_service_tests {
+    use super::*;
+    #[tokio::test]
+    async fn run_timings_reads_known_native_transcripts_without_starting_a_host() {
+        let root =
+            std::env::temp_dir().join(format!("rpi-timing-service-{}", uuid::Uuid::new_v4()));
+        let sessions = root.join(".rpi/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let state = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("registry.json"),
+            session_dir: Some(PathBuf::from(".rpi/sessions")),
+            rpi_bin: root.join("must-not-start.exe"),
+            ..BackendConfig::default()
+        })
+        .unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let query = || RunTimingsQuery {
+            entry_ids: vec!["actual".into()],
+            cursor: None,
+        };
+        assert_eq!(
+            run_timings(&state, "../escape".into(), query()).await.kind,
+            ReplyKind::InvalidInput
+        );
+        assert_eq!(
+            run_timings(&state, id.clone(), query()).await.kind,
+            ReplyKind::NotFound
+        );
+        state
+            .registry
+            .write()
+            .await
+            .upsert(RegistryEntry {
+                session_id: id.clone(),
+                project_id: Some(state.default_project_id.clone()),
+                title: None,
+                parent_session_id: None,
+                fork_entry_id: None,
+                relation: None,
+                created_at: 0,
+                updated_at: 0,
+            })
+            .unwrap();
+        let rows = [
+            json!({"kind":"header","version":4,"id":id}),
+            json!({"kind":"record","type":"operation_started","id":"run","timestamp":1234,"lane":"main","intent":{"kind":"run"}}),
+            json!({"kind":"entry","type":"message","id":"actual","lane":"main","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool","name":"read"}]}}),
+            json!({"kind":"record","type":"operation_finished","id":"finish","runId":"run","timestamp":7890,"lane":"main","outcome":"completed"}),
+        ];
+        let path = sessions.join(format!("2026_{id}.jsonl"));
+        std::fs::write(
+            &path,
+            rows.iter().map(|v| format!("{v}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let before = std::fs::read(state.config.registry.clone()).unwrap();
+        let reply = run_timings(&state, id.clone(), query()).await;
+        assert_eq!(reply.kind, ReplyKind::Success);
+        assert_eq!(
+            reply.value["timings"][0],
+            json!({"runId":"run","lane":"main","finalEntryId":"actual","startedAt":1234,"finishedAt":7890,"elapsedMs":6656,"outcome":"completed"})
+        );
+        assert_eq!(reply.value["complete"], true);
+        assert!(reply.value["cursor"].is_string());
+        let bad = run_timings(
+            &state,
+            id.clone(),
+            RunTimingsQuery {
+                cursor: Some("invalid".into()),
+                ..query()
+            },
+        )
+        .await;
+        assert_eq!(bad.kind, ReplyKind::Conflict);
+        let empty = run_timings(&state, id, RunTimingsQuery::default()).await;
+        assert_eq!(empty.kind, ReplyKind::Success);
+        assert_eq!(empty.value["timings"], json!([]));
+        assert!(state.sessions.read().await.is_empty());
+        assert_eq!(
+            std::fs::read(state.config.registry.clone()).unwrap(),
+            before
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

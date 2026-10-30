@@ -3898,3 +3898,26 @@ details[open] > summary:before {
   flex-shrink: 0;
   white-space: nowrap;
 }
+
+.run-elapsed {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 22px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.run-elapsed > span:not(.run-elapsed-line) {
+  flex-shrink: 0;
+  max-width: 80%;
+  overflow-wrap: anywhere;
+}
+.run-elapsed-line {
+  height: 1px;
+  flex: 1;
+  background: var(--border);
+}

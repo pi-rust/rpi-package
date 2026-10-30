@@ -110,3 +110,96 @@ series, compatible additions and fixes use patch releases where possible;
 breaking public API changes use a minor release. See the
 [architecture and migration contract](../../docs/architecture/extension-core.md)
 and the [changelog](CHANGELOG.md).
+
+## Native run elapsed query (read-only)
+
+`service::run_timings(&Service, id: String, query: RunTimingsQuery) -> ServiceReply`
+reads persisted native v4 JSONL, including appends from a live native session,
+without starting a host, watcher, registry writer or sidecar. The request type
+is available at both `service::RunTimingsQuery` and
+`run_timing::RunTimingsQuery`. HTTP route/extraction remains adapter-owned.
+
+Request JSON: `{ "entryIds": ["committed-message-id"], "cursor": null }`.
+Unknown fields are rejected. `entryIds` defaults to an empty list and accepts
+at most 400 unique nonempty IDs, each at most 256 UTF-8 bytes. An empty list
+returns no timings but still advances indexing. `cursor` is optional and at
+most 128 bytes. Session IDs must be UUIDs and already known to this service.
+
+Success is a `run_timing::RunTimingsPage` serialized as:
+
+```json
+{
+  "timings": [{
+    "runId": "native-operation-start-id", "lane": "main",
+    "finalEntryId": "actual-committed-message-id",
+    "startedAt": 1234, "finishedAt": 7890, "elapsedMs": 6656,
+    "outcome": "completed"
+  }],
+  "complete": true, "cursor": "opaque-generation-token",
+  "scannedBytes": 1042, "totalBytes": 1042
+}
+```
+
+Timestamps are native signed Unix milliseconds; elapsed is a checked,
+nonnegative `u64` difference, never message timestamps or client wall time.
+Only matching `operation_started.id` (`intent.kind = run`) and
+`operation_finished.runId` in the same lane generate a timing. The footer binds
+to the last actual committed displayable user/assistant/toolResult message
+within that interval (nonempty text/thinking, images and tool calls count), never
+reserved IDs or an unchanged source leaf. `image_url` requires a nested nonempty
+string `image_url.url`, matching the frontend's object shape.
+Missing/reversed boundaries, no-output operations, navigation/compaction and
+suspended unfinished runs produce no fabricated footer. Absent lane is treated
+as `main` for backward fixtures; explicit lane strings remain isolated. Native
+fork-import entries encode `lane: null` and do not count toward an active run or
+replace its last entry. Explicit null lanes are ignored on records too (native
+operation records require a lane string).
+
+Each call advances at most 4 MiB / 4096 complete records. Lines up to 32 MiB
+are assembled incrementally; an unfinished final line is not EOF-complete.
+`scannedBytes` is the cumulative consumed file offset (including partial-line
+bytes); `totalBytes` is that call's file-length snapshot. `complete` means all
+complete records through that snapshot were scanned, **not** that a live run
+settled or that future appends cannot occur. Continue/poll with the returned
+cursor, even after `complete: true`; the entry selection may change freely.
+Each reply includes all currently indexed matches for the current selection,
+not only the newest scan's matches. No-cursor calls reuse a healthy cached index.
+A generation cursor is returned even on complete pages.
+
+The service owns a 16-session LRU, at most 20,000 completed timing records per
+session and 128 active lanes. Only timing/active-run metadata is retained after
+record processing; a bounded incomplete-line scratch buffer may temporarily
+contain JSON content up to the 32 MiB line bound. After each completed line,
+scratch capacity above 64 KiB is released; partial lines remain intact across
+continuations. No message/tool body is written to disk. Two blocking
+worker permits are held inside worker closures through cancellation; one cache
+mutex serializes scans (including reads of the same file). Metadata capacity,
+oversized lines and discovery caps return `LimitExceeded`, never silent eviction
+of individual timing records or a fake complete result.
+
+Resolution uses the known session's registered project, explicit
+`BackendConfig.session_dir`, then native user `settings.json`'s `sessionDir`,
+then `RPI_CODING_AGENT_SESSION_DIR`, then `<project>/.rpi/sessions`. Relative
+roots are project-relative. User settings are read with a 1 MiB bound; settings
+with comments/unsupported JSON return explicit `Unavailable` rather than risk
+selecting the wrong file (configure `session_dir` to override). Flat files and
+one subdirectory level are supported, with at most 10,000 directory entries per
+initial discovery. Successful paths are cached for continuations; filename IDs
+and bounded headers must match the exact UUID and native header version 4.
+Canonical containment rejects transcript symlink escapes. Directory symlinks
+are not traversed. No filesystem path is accepted from the query/session ID.
+
+Error mapping: `InvalidInput` for invalid requests; `NotFound` for unknown
+service sessions; `Unavailable` for missing/unsupported native storage or bad
+headers/JSON; `AccessDenied` for scope escapes; `Conflict` for stale/evicted or
+invalid cursors, duplicate transcripts, truncation or detected replacement.
+**On Conflict, clients must clear accumulated timings and cursor and retry
+without a cursor.** A stale cursor is rejected without removing or promoting a
+healthy cached generation in the LRU. Once a cursor matches (or is absent), scan
+errors, including detected file changes, remove the affected scan rather than
+return stale timings.
+Identity, size, modification and a trailing 4 KiB checkpoint detect ordinary
+replacement/truncation. This is not a race-free local filesystem sandbox or a
+full-file integrity audit: hostile concurrent rewrites outside the checkpoint
+are not guaranteed to be detected. No deployment/restart is required or
+performed by this API.

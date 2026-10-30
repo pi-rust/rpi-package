@@ -7007,3 +7007,712 @@ for (const width of [1280, 390]) {
     ).toBe(true);
   });
 }
+
+// Native timing metadata is supplemental: never derive elapsed time from tool
+// messages, browser clocks, transcript positions, or an earlier session's cache.
+test.describe("run timing regressions", () => {
+  const timingRoute = /\/api\/v1\/sessions\/[^/]+\/run-timings\/query$/;
+  const finalMessage = (
+    entryId = "elapsed-final",
+    text = "Final native answer",
+  ) => ({
+    role: "assistant",
+    entryId,
+    content: [{ type: "text", text }],
+  });
+  const nativeTiming = (
+    finalEntryId = "elapsed-final",
+    runId = "elapsed-run",
+    outcome = "completed",
+    elapsedMs = 138_000,
+  ) => ({
+    runId,
+    lane: "main",
+    finalEntryId,
+    startedAt: 1000,
+    finishedAt: 1000 + elapsedMs,
+    elapsedMs,
+    outcome,
+  });
+  const timingPage = (timings: unknown[] = [], extra = {}) => ({
+    timings,
+    complete: true,
+    cursor: "g",
+    scannedBytes: 100,
+    totalBytes: 100,
+    ...extra,
+  });
+  const gate = () => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  };
+  async function history(page: Page, messages: unknown[], extra = {}) {
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: { sessionId, messages, events: [], lastSeq: 4, ...extra },
+      }),
+    );
+  }
+
+  test("run elapsed history attaches once after the final projected row and survives reload", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    await history(page, [
+      {
+        role: "assistant",
+        entryId: "elapsed-tool-call",
+        content: [
+          { type: "text", text: "Inspecting the file" },
+          {
+            type: "toolCall",
+            id: "elapsed-read",
+            name: "read",
+            arguments: { path: "README.md" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        entryId: "elapsed-tool-result",
+        toolCallId: "elapsed-read",
+        content: [{ type: "text", text: "File inspected" }],
+      },
+      {
+        ...finalMessage(),
+        content: [
+          { type: "text", text: "First final block" },
+          { type: "image", mimeType: "image/png", data: png },
+          { type: "text", text: "Last final block" },
+        ],
+      },
+    ]);
+    const requests: Array<{ entryIds: string[]; cursor?: string }> = [];
+    await page.route(timingRoute, (route) => {
+      expect(route.request().method()).toBe("POST");
+      requests.push(route.request().postDataJSON());
+      return route.fulfill({ json: timingPage([nativeTiming()]) });
+    });
+    const footer = page.locator('.run-elapsed[data-run-id="elapsed-run"]');
+    for (let load = 0; load < 2; load++) {
+      if (load) await page.reload();
+      else await page.goto("/");
+      await expect(footer).toHaveText("Worked for 2m 18s");
+      await expect(page.locator(".run-elapsed")).toHaveCount(1);
+      await expect(footer).toHaveAttribute("data-entry-id", "elapsed-final");
+      const row = page.locator(".transcript-row").filter({ has: footer });
+      await expect(row).toContainText("Last final block");
+      await expect(row.locator(":scope > .run-elapsed:last-child")).toHaveCount(
+        1,
+      );
+      await expect(
+        row.locator("xpath=following-sibling::*[@data-transcript-row]"),
+      ).toHaveCount(0);
+      await expect(page.locator(".tool-card .run-elapsed")).toHaveCount(0);
+    }
+    expect(requests.length).toBeGreaterThanOrEqual(2);
+    for (const request of requests)
+      expect(request.entryIds).toContain("elapsed-final");
+    expect(
+      requests.filter((request) => !request.cursor).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  test("run elapsed live completion refreshes native snapshot before attaching the footer", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const settled = gate();
+    let snapshots = 0;
+    let queriedFinal = false;
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          lastSeq: snapshots++ ? 5 : 4,
+          events: [],
+          messages:
+            snapshots > 1
+              ? [finalMessage()]
+              : [
+                  {
+                    role: "user",
+                    entryId: "elapsed-prompt",
+                    content: "Please work",
+                  },
+                ],
+        },
+      }),
+    );
+    await page.route(timingRoute, (route) => {
+      const { entryIds } = route.request().postDataJSON();
+      queriedFinal ||= entryIds.includes("elapsed-final");
+      return route.fulfill({
+        json: timingPage(queriedFinal ? [nativeTiming()] : []),
+      });
+    });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        await settled.promise;
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'id: 5\nevent: agent_settled\ndata: {"type":"agent_settled","runId":"elapsed-run","outcome":"completed"}\n\n',
+        });
+      },
+    );
+    await page.goto("/");
+    await expect(page.locator(".message.user")).toContainText("Please work");
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    settled.release();
+    await expect(
+      page.locator('.run-elapsed[data-run-id="elapsed-run"]'),
+    ).toHaveText("Worked for 2m 18s");
+    expect(snapshots).toBeGreaterThanOrEqual(2);
+    expect(queriedFinal).toBe(true);
+    await expect(page.locator(".run-elapsed")).toHaveCount(1);
+  });
+
+  test("run timing older pagination attaches multiple footers without replacing current timing", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()], {
+      firstId: "elapsed-final",
+      hasMore: true,
+    });
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages") return route.fallback();
+      expect(body.beforeId).toBe("elapsed-final");
+      return route.fulfill({
+        json: response(
+          {
+            messages: [
+              finalMessage("older-a", "Older answer A"),
+              finalMessage("older-b", "Older answer B"),
+            ],
+            firstId: "older-a",
+            hasMore: false,
+          },
+          "get_messages",
+        ),
+      });
+    });
+    const queries: string[][] = [];
+    await page.route(timingRoute, (route) => {
+      const { entryIds } = route.request().postDataJSON();
+      queries.push(entryIds);
+      return route.fulfill({
+        json: timingPage(
+          [
+            nativeTiming(),
+            nativeTiming("older-a", "run-older-a"),
+            nativeTiming("older-b", "run-older-b"),
+          ].filter((timing) => entryIds.includes(timing.finalEntryId)),
+        ),
+      });
+    });
+    await page.goto("/");
+    await expect(page.locator(".run-elapsed")).toHaveCount(1);
+    await page.getByRole("button", { name: "Load earlier messages" }).click();
+    await expect(page.locator(".run-elapsed")).toHaveCount(3);
+    for (const [id, text] of [
+      ["run-older-a", "Older answer A"],
+      ["run-older-b", "Older answer B"],
+      ["elapsed-run", "Final native answer"],
+    ]) {
+      const footer = page.locator(`.run-elapsed[data-run-id="${id}"]`);
+      await expect(footer).toHaveCount(1);
+      await expect(
+        page.locator(".transcript-row").filter({ has: footer }),
+      ).toContainText(text);
+    }
+    expect(
+      queries.some((ids) => ids.includes("older-a") && ids.includes("older-b")),
+    ).toBe(true);
+  });
+
+  test("run timing session switch discards a stale response even with the same final entry ID", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await page.route(
+      (url) => /\/sessions\/[^/]+\/snapshot$/.test(url.pathname),
+      (route) =>
+        route.fulfill({
+          json: {
+            sessionId: new URL(route.request().url()).pathname.split("/")[4],
+            messages: [finalMessage()],
+            events: [],
+            lastSeq: 4,
+          },
+        }),
+    );
+    const old = gate();
+    let pending = false;
+    let delivered = false;
+    await page.route(timingRoute, async (route) => {
+      if (route.request().url().includes(`/${sessionId}/`)) {
+        pending = true;
+        await old.promise;
+        await route.fulfill({
+          json: timingPage([nativeTiming("elapsed-final", "stale-run")]),
+        });
+        delivered = true;
+      } else {
+        await route.fulfill({
+          json: timingPage([nativeTiming("elapsed-final", "new-run")]),
+        });
+      }
+    });
+    await page.goto("/");
+    await expect.poll(() => pending).toBe(true);
+    await page
+      .getByRole("button", { name: "New session", exact: false })
+      .first()
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "New session" }),
+    ).toBeVisible();
+    await expect(
+      page.locator('.run-elapsed[data-run-id="new-run"]'),
+    ).toHaveText("Worked for 2m 18s");
+    old.release();
+    await expect.poll(() => delivered).toBe(true);
+    await chooseMenuOption(page, "Language", "zh");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="new-run"]'),
+    ).toHaveText("已用时 2 分 18 秒");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="stale-run"]'),
+    ).toHaveCount(0);
+    await expect(page.locator(".run-elapsed")).toHaveCount(1);
+  });
+
+  test("run timing 409 reset clears published timing and restarts without the stale cursor", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()]);
+    const conflict = gate();
+    const restart = gate();
+    const queries: Array<{ entryIds: string[]; cursor?: string }> = [];
+    await page.route(timingRoute, async (route) => {
+      queries.push(route.request().postDataJSON());
+      if (queries.length === 1)
+        return route.fulfill({
+          json: timingPage([nativeTiming("elapsed-final", "before-reset")], {
+            complete: false,
+            cursor: "obsolete",
+          }),
+        });
+      if (queries.length === 2) {
+        await conflict.promise;
+        return route.fulfill({ status: 409, json: { error: "cursor reset" } });
+      }
+      await restart.promise;
+      return route.fulfill({
+        json: timingPage([nativeTiming("elapsed-final", "after-reset")]),
+      });
+    });
+    await page.goto("/");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="before-reset"]'),
+    ).toHaveCount(1);
+    await expect.poll(() => queries.length).toBe(2);
+    expect(queries[1].cursor).toBe("obsolete");
+    conflict.release();
+    await expect.poll(() => queries.length).toBe(3);
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    expect(queries[2].cursor).toBeUndefined();
+    expect(queries[2].entryIds).toEqual(queries[0].entryIds);
+    restart.release();
+    await expect(
+      page.locator('.run-elapsed[data-run-id="after-reset"]'),
+    ).toHaveText("Worked for 2m 18s");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="before-reset"]'),
+    ).toHaveCount(0);
+  });
+
+  test("run timing continuation follows cursor until complete and does not duplicate a repeated timing", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()]);
+    const queries: Array<{ cursor?: string }> = [];
+    await page.route(timingRoute, (route) => {
+      queries.push(route.request().postDataJSON());
+      const n = queries.length;
+      return route.fulfill({
+        json: timingPage(n === 1 ? [] : [nativeTiming()], {
+          complete: n >= 3,
+          cursor: `slice-${n}`,
+          scannedBytes: n * 30,
+        }),
+      });
+    });
+    await page.goto("/");
+    await expect.poll(() => queries.length).toBe(3);
+    expect(queries.map((query) => query.cursor)).toEqual([
+      undefined,
+      "slice-1",
+      "slice-2",
+    ]);
+    await expect(page.locator(".run-elapsed")).toHaveCount(1);
+    await expect(page.locator(".run-elapsed")).toHaveText("Worked for 2m 18s");
+  });
+
+  test("run timing stalled continuation is bounded and never invents a footer", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()]);
+    let requests = 0;
+    await page.route(timingRoute, (route) => {
+      requests++;
+      return route.fulfill({
+        json: timingPage([], {
+          complete: false,
+          cursor: "stalled",
+          scannedBytes: 10,
+        }),
+      });
+    });
+    await page.goto("/");
+    await expect.poll(() => requests, { timeout: 8000 }).toBe(5);
+    // Exceed the backoff to distinguish stopped work from a slow retry loop.
+    await page.waitForTimeout(1300);
+    expect(requests).toBe(5);
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    await expect(page.locator(".error-banner")).toHaveCount(0);
+  });
+
+  test("run timing old backend 404 stays quiet and disables further lookups on pagination", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()], {
+      firstId: "elapsed-final",
+      hasMore: true,
+    });
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+      if (route.request().postDataJSON().type !== "get_messages")
+        return route.fallback();
+      return route.fulfill({
+        json: response(
+          {
+            messages: [finalMessage("older", "Older native answer")],
+            firstId: "older",
+            hasMore: false,
+          },
+          "get_messages",
+        ),
+      });
+    });
+    let requests = 0;
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route(timingRoute, (route) => {
+      requests++;
+      return route.fulfill({
+        status: 404,
+        json: { error: "Unknown endpoint" },
+      });
+    });
+    await page.goto("/");
+    await expect.poll(() => requests).toBe(1);
+    await page.getByRole("button", { name: "Load earlier messages" }).click();
+    await expect(page.locator(".message.assistant").first()).toContainText(
+      "Older native answer",
+    );
+    await chooseMenuOption(page, "Language", "zh");
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    await expect(page.locator(".error-banner")).toHaveCount(0);
+    expect(requests).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  test("run timing invalid or missing metadata never produces a local fallback footer", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [
+      finalMessage(),
+      finalMessage("missing", "No native timing"),
+    ]);
+    let queried = false;
+    await page.route(timingRoute, (route) => {
+      queried = true;
+      return route.fulfill({
+        json: timingPage([
+          { ...nativeTiming(), elapsedMs: -1 },
+          { ...nativeTiming("elapsed-final", "mismatch"), finishedAt: 2000 },
+          {
+            ...nativeTiming("elapsed-final", "fractional"),
+            elapsedMs: 1.5,
+            finishedAt: 1001.5,
+          },
+          {
+            ...nativeTiming("elapsed-final", "unknown-outcome"),
+            outcome: "running",
+          },
+          {
+            ...nativeTiming("elapsed-final", "missing-duration"),
+            elapsedMs: undefined,
+          },
+          nativeTiming("not-in-transcript", "unrelated"),
+        ]),
+      });
+    });
+    await page.goto("/");
+    await expect.poll(() => queried).toBe(true);
+    await expect(page.locator(".message.assistant")).toHaveCount(2);
+    await chooseMenuOption(page, "Language", "zh");
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    await expect(page.locator(".error-banner")).toHaveCount(0);
+  });
+
+  test("run timing repeated 409 clears each pass including the exhausted third conflict", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()]);
+    const conflicts = [gate(), gate(), gate()];
+    const queries: Array<{ entryIds: string[]; cursor?: string }> = [];
+    await page.route(timingRoute, async (route) => {
+      queries.push(route.request().postDataJSON());
+      const index = queries.length - 1;
+      const pass = Math.floor(index / 2);
+      if (pass >= conflicts.length)
+        return route.fulfill({ status: 500, json: { error: "retry budget exceeded" } });
+      if (index % 2 === 0)
+        return route.fulfill({
+          json: timingPage([nativeTiming("elapsed-final", `pass-${pass}`)], {
+            complete: false,
+            cursor: `pass-${pass}-cursor`,
+          }),
+        });
+      await conflicts[pass].promise;
+      return route.fulfill({ status: 409, json: { error: "cursor reset" } });
+    });
+    await page.goto("/");
+    for (let pass = 0; pass < conflicts.length; pass++) {
+      await expect.poll(() => queries.length).toBe((pass + 1) * 2);
+      await expect(page.locator(".run-elapsed")).toHaveCount(1);
+      await expect(
+        page.locator(`.run-elapsed[data-run-id="pass-${pass}"]`),
+      ).toBeVisible();
+      expect(queries[pass * 2].cursor).toBeUndefined();
+      expect(queries[pass * 2].entryIds).toEqual(["elapsed-final"]);
+      expect(queries[pass * 2 + 1].cursor).toBe(`pass-${pass}-cursor`);
+      conflicts[pass].release();
+    }
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    // Longer than the stalled-scan backoff: exhausted conflicts must stop work.
+    await page.waitForTimeout(1300);
+    expect(queries).toHaveLength(6);
+    await expect(page.locator(".error-banner")).toHaveCount(0);
+  });
+
+  for (const olderPage of [false, true]) {
+    test(`run elapsed terminal tool result follows trailing assistant text ${olderPage ? "after loading earlier messages" : "and survives reload"}`, async ({
+      page,
+    }) => {
+      await mockHost(page);
+      const call = {
+        role: "assistant",
+        entryId: "terminal-call",
+        content: [
+          {
+            type: "toolCall",
+            id: "terminal",
+            name: "read",
+            arguments: { path: "terminal.txt" },
+          },
+          { type: "text", text: "Trailing visible assistant text" },
+        ],
+      };
+      const result = {
+        role: "toolResult",
+        entryId: "terminal-result",
+        toolCallId: "terminal",
+        content: [{ type: "text", text: "Terminal tool output" }],
+      };
+      await history(page, olderPage ? [result] : [call, result], {
+        firstId: olderPage ? "terminal-result" : "terminal-call",
+        hasMore: olderPage,
+      });
+      if (olderPage)
+        await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+          const body = route.request().postDataJSON();
+          if (body.type !== "get_messages") return route.fallback();
+          expect(body.beforeId).toBe("terminal-result");
+          return route.fulfill({
+            json: response(
+              { messages: [call], firstId: "terminal-call", hasMore: false },
+              "get_messages",
+            ),
+          });
+        });
+      await page.route(timingRoute, (route) => {
+        expect(route.request().postDataJSON().entryIds).toContain("terminal-result");
+        return route.fulfill({
+          json: timingPage([
+            nativeTiming("terminal-result", "terminal-run", "aborted"),
+          ]),
+        });
+      });
+      const footer = page.locator('.run-elapsed[data-run-id="terminal-run"]');
+      for (let load = 0; load < (olderPage ? 1 : 2); load++) {
+        if (load) await page.reload();
+        else await page.goto("/");
+        await expect(footer).toBeVisible();
+        if (olderPage)
+          await page.getByRole("button", { name: "Load earlier messages" }).click();
+        await expect(page.locator(".message.assistant")).toContainText(
+          "Trailing visible assistant text",
+        );
+        await expect(page.locator(".tool-card")).toContainText("Terminal tool output");
+        await expect(page.locator(".run-elapsed")).toHaveCount(1);
+        await expect(footer).toHaveAttribute("data-entry-id", "terminal-result");
+        await expect(footer).toHaveText("Worked for 2m 18s · Stopped");
+        await expect(page.locator(".tool-card .run-elapsed")).toHaveCount(0);
+        await expect.poll(async () => {
+          const bounds = await footer.boundingBox();
+          const outputs = await page.locator(".tool-card, .message.assistant").all();
+          if (!bounds || outputs.length < 2) return false;
+          for (const output of outputs) {
+            const box = await output.boundingBox();
+            if (!box || bounds.y < box.y + box.height - 1) return false;
+          }
+          return true;
+        }).toBe(true);
+        await expect(
+          page.locator(".transcript-row").filter({ has: footer })
+            .locator("xpath=following-sibling::*[@data-transcript-row]"),
+        ).toHaveCount(0);
+      }
+    });
+  }
+
+  test("run elapsed mobile 390px localizes completed hours and aborted failed markers without overflow", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockHost(page);
+    await history(page, [
+      finalMessage(),
+      finalMessage("hour-final", "Long completed run"),
+      finalMessage("aborted-final", "Interrupted answer"),
+      finalMessage("failed-final", "Failed answer"),
+    ]);
+    await page.route(timingRoute, (route) =>
+      route.fulfill({
+        json: timingPage([
+          nativeTiming(),
+          nativeTiming("hour-final", "hour-run", "completed", 3_738_000),
+          nativeTiming("aborted-final", "aborted-run", "aborted"),
+          nativeTiming("failed-final", "failed-run", "failed"),
+        ]),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.locator(".run-elapsed")).toHaveCount(4);
+    const assertFits = async () => {
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      for (const footer of await page.locator(".run-elapsed").all()) {
+        expect(
+          await footer.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return (
+              rect.left >= 0 &&
+              rect.right <= innerWidth &&
+              node.scrollWidth <= node.clientWidth + 1
+            );
+          }),
+        ).toBe(true);
+      }
+    };
+    await expect(
+      page.locator('.run-elapsed[data-run-id="elapsed-run"]'),
+    ).toHaveText("Worked for 2m 18s");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="hour-run"]'),
+    ).toHaveText("Worked for 1h 2m 18s");
+    await expect(page.locator(".run-aborted .run-elapsed-outcome")).toHaveText(
+      " · Stopped",
+    );
+    await expect(page.locator(".run-failed .run-elapsed-outcome")).toHaveText(
+      " · Failed",
+    );
+    await assertFits();
+    await page
+      .getByRole("button", { name: "Toggle sidebar", exact: true })
+      .click();
+    await chooseMenuOption(page, "Language", "zh");
+    await page.locator(".sidebar .sidebar-brand button").click();
+    await expect(
+      page.locator('.run-elapsed[data-run-id="elapsed-run"]'),
+    ).toHaveText("已用时 2 分 18 秒");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="hour-run"]'),
+    ).toHaveText("已用时 1 小时 2 分 18 秒");
+    await expect(page.locator(".run-aborted .run-elapsed-outcome")).toHaveText(
+      " · 已停止",
+    );
+    await expect(page.locator(".run-failed .run-elapsed-outcome")).toHaveText(
+      " · 失败",
+    );
+    await assertFits();
+  });
+
+  test("run timing batches over 400 entry IDs and restarts earlier batches on a later conflict", async ({ page }) => {
+    await mockHost(page);
+    await history(page, Array.from({ length: 401 }, (_, i) => finalMessage(`batch-${i}`, `Answer ${i}`)));
+    const conflict = gate();
+    const refreshed = gate();
+    const queries: Array<{ entryIds: string[]; cursor?: string }> = [];
+    await page.route(timingRoute, async route => {
+      const query = route.request().postDataJSON();
+      queries.push(query);
+      if (queries.length === 1) return route.fulfill({ json: timingPage([nativeTiming("batch-0", "old-first")], { cursor: "g1" }) });
+      if (queries.length === 2) {
+        await conflict.promise;
+        return route.fulfill({ status: 409, json: { error: "generation replaced" } });
+      }
+      if (queries.length === 3) {
+        await refreshed.promise;
+        return route.fulfill({ json: timingPage([nativeTiming("batch-0", "fresh-first")], { cursor: "g2" }) });
+      }
+      return route.fulfill({ json: timingPage([nativeTiming("batch-400", "fresh-last")], { cursor: "g2" }) });
+    });
+    await page.goto("/");
+    await expect(page.locator('.run-elapsed[data-run-id="old-first"]')).toHaveCount(1);
+    await expect.poll(() => queries.length).toBe(2);
+    expect(queries.map(q => q.entryIds.length)).toEqual([400, 1]);
+    expect(queries[1].cursor).toBe("g1");
+    conflict.release();
+    await expect.poll(() => queries.length).toBe(3);
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    expect(queries[2].cursor).toBeUndefined();
+    expect(queries[2].entryIds).toEqual(queries[0].entryIds);
+    refreshed.release();
+    await expect(page.locator('.run-elapsed[data-run-id="fresh-first"]')).toHaveCount(1);
+    await expect(page.locator('.run-elapsed[data-run-id="fresh-last"]')).toHaveCount(1);
+    await expect(page.locator('.run-elapsed[data-run-id="old-first"]')).toHaveCount(0);
+    expect(queries[3].cursor).toBe("g2");
+    expect(queries[3].entryIds).toEqual(["batch-400"]);
+    expect(queries).toHaveLength(4);
+  });
+});

@@ -200,6 +200,23 @@ export interface UiDialogPayload {
   allowFreeform?: boolean;
   freeform?: boolean;
 }
+export interface RunTiming {
+  runId: string;
+  lane: string;
+  finalEntryId: string;
+  startedAt: number;
+  finishedAt: number;
+  elapsedMs: number;
+  outcome: "completed" | "aborted" | "failed" | "declined";
+}
+export interface RunTimingsPage {
+  timings: RunTiming[];
+  complete: boolean;
+  cursor: string | null;
+  scannedBytes: number;
+  totalBytes: number;
+}
+
 export interface SnapshotFrame {
   sessionId: string;
   status?: string;
@@ -404,6 +421,12 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<SnapshotFrame>(`/sessions/${id}/snapshot${suffix}`);
   },
+  runTimings: (id: string, entryIds: string[], cursor?: string, signal?: AbortSignal) =>
+    request<RunTimingsPage>(`/sessions/${id}/run-timings/query`, {
+      method: "POST",
+      body: JSON.stringify({ entryIds, ...(cursor ? { cursor } : {}) }),
+      signal,
+    }),
   messages: (id: string, params: { beforeId?: string; limit?: number }) =>
     commandData<{
       messages: unknown[];
