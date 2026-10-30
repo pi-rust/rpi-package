@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.1.23](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.22...rpi-web-v0.1.23) - 2026-10-30
+
+### Added
+
+- *(web)* default to native tool names with mapped toggle
+- *(web)* flag interrupted sessions in chat lists
+- *(web)* render Mermaid flowcharts in chat Markdown
+- *(web)* show authoritative elapsed time for completed runs
+- *(web)* show uploaded files as readable attachment cards
+- *(web)* present tools as compact Codex-style disclosures
+- *(web)* page older messages automatically on upward scroll
+
+### Fixed
+
+- *(web)* remove redundant composer queue heading
+- *(web)* align tool icons and trailing disclosure controls
+- *(web)* preview long commands before expanding full text
+- *(web)* unify user bubble corners and sender labels
+
+### Other
+
+- Merge pull request #119 from pi-rust/fix/web-image-rendering
+
 ## [0.1.22](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.21...rpi-web-v0.1.22) - 2026-10-30
 
 ### Added
