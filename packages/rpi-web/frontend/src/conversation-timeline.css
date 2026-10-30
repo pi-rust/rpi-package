@@ -57,9 +57,14 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
-  touch-action: pan-y;
+  touch-action: none;
+  user-select: none;
+  cursor: ns-resize;
   min-height: 0;
   border-radius: 8px;
+}
+.timeline-panel ol[data-scrubbing] {
+  cursor: grabbing;
 }
 .timeline-panel ol::-webkit-scrollbar {
   display: none;

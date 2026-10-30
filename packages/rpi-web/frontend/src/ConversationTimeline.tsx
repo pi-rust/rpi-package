@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type PointerEvent,
   type RefObject,
 } from "react";
 import type { Row } from "./transcript";
@@ -74,10 +75,24 @@ export function ConversationTimeline({
   const root = useRef<HTMLElement>(null);
   const list = useRef<HTMLOListElement>(null);
   const tooltip = useRef<HTMLDivElement>(null);
+  const drag = useRef<{
+    pointerId: number;
+    node: HTMLOListElement;
+    buttons: HTMLButtonElement[];
+    startY: number;
+    x: number;
+    y: number;
+    moved: boolean;
+    startId: string;
+    lastId: string;
+    frame: number;
+    time: number;
+  } | null>(null);
+  const ignorePointerClick = useRef(false);
+  const releasedAt = useRef<{ x: number; y: number } | null>(null);
   const browsing = useRef({
     pointer: false,
     focus: false,
-    touch: false,
     until: 0,
   });
   const [active, setActive] = useState("");
@@ -91,6 +106,18 @@ export function ConversationTimeline({
     key: Parameters<typeof translate>[1],
     values?: Record<string, string | number>,
   ) => translate(language, key, values);
+
+  const stopDrag = () => {
+    const gesture = drag.current;
+    if (!gesture) return;
+    drag.current = null;
+    releasedAt.current = { x: gesture.x, y: gesture.y };
+    cancelAnimationFrame(gesture.frame);
+    delete gesture.node.dataset.scrubbing;
+    if (gesture.node.hasPointerCapture(gesture.pointerId))
+      gesture.node.releasePointerCapture(gesture.pointerId);
+    browsing.current.until = performance.now() + 1000;
+  };
 
   useLayoutEffect(() => {
     const node = transcript.current;
@@ -136,6 +163,7 @@ export function ConversationTimeline({
       node.removeEventListener("scroll", schedule);
       observer.disconnect();
       cancelAnimationFrame(frame);
+      stopDrag();
       targets.current.clear();
     };
     // Previews may change while typing; only new/replaced targets require rebinding.
@@ -158,7 +186,7 @@ export function ConversationTimeline({
     if (
       browsing.current.pointer ||
       browsing.current.focus ||
-      browsing.current.touch ||
+      drag.current ||
       performance.now() < browsing.current.until
     )
       return;
@@ -175,6 +203,7 @@ export function ConversationTimeline({
     const dismiss = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || event.isComposing) return;
       event.stopPropagation();
+      stopDrag();
       setPreview(null);
     };
     document.addEventListener("keydown", dismiss, true);
@@ -193,10 +222,12 @@ export function ConversationTimeline({
     const rail = root.current;
     if (!rail) return;
     const box = button.getBoundingClientRect();
-    setPreview({
-      id,
-      top: box.top + box.height / 2 - rail.getBoundingClientRect().top,
-    });
+    const half = (tooltip.current?.offsetHeight ?? 0) / 2;
+    const center = box.top + box.height / 2 - rail.getBoundingClientRect().top;
+    const top = Math.max(half, Math.min(center, rail.clientHeight - half));
+    setPreview((previous) =>
+      previous?.id === id && previous.top === top ? previous : { id, top },
+    );
   };
   const navigate = (rowId: string) => {
     const target = targets.current.get(rowId);
@@ -205,6 +236,99 @@ export function ConversationTimeline({
     setActive(rowId);
     setPreview(null);
   };
+  // The rail scrolls independently, but a held pointer scrubs the loaded turns.
+  const scrub = (gesture: NonNullable<typeof drag.current>, elapsed = 0) => {
+    const { node, buttons, y } = gesture;
+    const box = node.getBoundingClientRect();
+    if (!box.height || !buttons.length) return;
+    const edge = Math.min(24, box.height / 4);
+    const direction = y < box.top + edge ? -1 : y > box.bottom - edge ? 1 : 0;
+    node.scrollTop += (direction * 480 * elapsed) / 1000;
+    const offset =
+      node.scrollTop + Math.max(0, Math.min(y - box.top, box.height - 1));
+    const index = Math.max(
+      0,
+      Math.min(
+        buttons.length - 1,
+        Math.floor((offset - buttons[0].offsetTop) / buttons[0].offsetHeight),
+      ),
+    );
+    const button = buttons[index];
+    const id = button.dataset.timelineTarget!;
+    if (gesture.lastId !== id) {
+      gesture.lastId = id;
+      navigate(id);
+    }
+    showPreview(button, id);
+  };
+  const startDrag = (event: PointerEvent<HTMLOListElement>) => {
+    if (!event.isPrimary || event.button !== 0 || drag.current) return;
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
+      ".timeline-node",
+    );
+    if (!button || !event.currentTarget.contains(button)) return;
+    const node = event.currentTarget;
+    drag.current = {
+      pointerId: event.pointerId,
+      node,
+      buttons: Array.from(
+        node.querySelectorAll<HTMLButtonElement>(".timeline-node"),
+      ),
+      startY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+      moved: false,
+      startId: button.dataset.timelineTarget!,
+      lastId: "",
+      frame: 0,
+      time: 0,
+    };
+    ignorePointerClick.current = true;
+    node.setPointerCapture(event.pointerId);
+    // Keep the composer/window in place; taps are handled on pointerup.
+    event.preventDefault();
+  };
+  const moveDrag = (event: PointerEvent<HTMLOListElement>) => {
+    const gesture = drag.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    gesture.x = event.clientX;
+    gesture.y = event.clientY;
+    // A chorded mouse release emits pointermove until its last button is up.
+    if (!(event.buttons & 1)) {
+      stopDrag();
+      setPreview(null);
+      return;
+    }
+    if (!gesture.moved && Math.abs(gesture.y - gesture.startY) < 4) return;
+    gesture.moved = true;
+    gesture.node.dataset.scrubbing = "true";
+    if (gesture.frame) return;
+    const step = (time: number) => {
+      if (drag.current !== gesture) return;
+      const elapsed = gesture.time ? Math.min(32, time - gesture.time) : 0;
+      gesture.time = time;
+      scrub(gesture, elapsed);
+      gesture.frame = requestAnimationFrame(step);
+    };
+    gesture.frame = requestAnimationFrame(step);
+  };
+  const finishDrag = (event: PointerEvent<HTMLOListElement>) => {
+    const gesture = drag.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    gesture.x = event.clientX;
+    gesture.y = event.clientY;
+    if (gesture.moved) scrub(gesture);
+    else navigate(gesture.startId);
+    stopDrag();
+    setPreview(null);
+  };
+  const cancelDrag = (event: PointerEvent<HTMLOListElement>) => {
+    if (event.target !== event.currentTarget) return;
+    if (drag.current?.pointerId !== event.pointerId) return;
+    stopDrag();
+    setPreview(null);
+  };
+
   const moveFocus = (
     event: KeyboardEvent<HTMLButtonElement>,
     index: number,
@@ -247,7 +371,10 @@ export function ConversationTimeline({
       }}
       onPointerLeave={() => {
         browsing.current.pointer = false;
-        setPreview(null);
+        if (!drag.current) {
+          releasedAt.current = null;
+          setPreview(null);
+        }
       }}
     >
       <nav
@@ -287,17 +414,19 @@ export function ConversationTimeline({
         )}
         <ol
           ref={list}
-          onTouchStart={() => {
-            browsing.current.touch = true;
-          }}
-          onTouchEnd={() => {
-            browsing.current.touch = false;
-            browsing.current.until = performance.now() + 1000;
-          }}
-          onTouchCancel={() => {
-            browsing.current.touch = false;
+          onPointerDown={startDrag}
+          onPointerMove={moveDrag}
+          onPointerUp={finishDrag}
+          onPointerCancel={cancelDrag}
+          onLostPointerCapture={cancelDrag}
+          onClickCapture={(event) => {
+            if (!ignorePointerClick.current || event.detail === 0) return;
+            ignorePointerClick.current = false;
+            event.preventDefault();
+            event.stopPropagation();
           }}
           onScroll={() => {
+            if (drag.current) return;
             const button = document.activeElement;
             if (
               preview &&
@@ -325,7 +454,15 @@ export function ConversationTimeline({
                   previewEntry?.id === entry.id ? previewId : undefined
                 }
                 onPointerEnter={(event) => {
-                  if (event.pointerType !== "touch")
+                  // Releasing capture can re-enter the tick under a stationary pointer.
+                  const released = releasedAt.current;
+                  if (
+                    released?.x === event.clientX &&
+                    released.y === event.clientY
+                  )
+                    return;
+                  releasedAt.current = null;
+                  if (event.pointerType !== "touch" && !drag.current)
                     showPreview(event.currentTarget, entry.rowId);
                 }}
                 onFocus={(event) => {

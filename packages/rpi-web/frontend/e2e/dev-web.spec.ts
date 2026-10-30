@@ -9128,10 +9128,22 @@ test.describe("conversation timeline", () => {
       const originalTargets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
       await nodes(page).first().hover();
       await expect(page.getByRole("tooltip")).toBeVisible();
-      await page.getByRole("button", { name: "New session", exact: false }).first().click();
+      const list = page.locator(".timeline-panel ol");
+      const start = (await nodes(page).first().boundingBox())!;
+      const target = (await nodes(page).nth(1).boundingBox())!;
+      await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+      await expect(list).toHaveAttribute("data-scrubbing", "true");
+      await expect(nodes(page).nth(1)).toHaveAttribute("aria-current", "location");
+      // Activate the session switch by keyboard while the pointer remains held.
+      await page.getByRole("button", { name: "New session", exact: false }).first().focus();
+      await page.keyboard.press("Enter");
       await expect(page.locator(".toolbar h1")).toHaveText("New session");
       await expect.poll(() => waiting).toBe(true);
       await expect(nodes(page)).toHaveCount(1);
+      await expect(list).not.toHaveAttribute("data-scrubbing");
+      await page.mouse.up();
       await expect(page.getByRole("tooltip")).toHaveCount(0);
       release();
       await expect(nodes(page)).toHaveCount(2);
@@ -9178,7 +9190,7 @@ test.describe("conversation timeline", () => {
     await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
     await expect.poll(() => railContains(page)).toBe(true);
     const list = page.locator(".timeline-panel ol");
-    expect(await list.evaluate(element => ({ overflow: getComputedStyle(element).overflowY, touch: getComputedStyle(element).touchAction }))).toEqual({ overflow: "auto", touch: "pan-y" });
+    expect(await list.evaluate(element => ({ overflow: getComputedStyle(element).overflowY, touch: getComputedStyle(element).touchAction }))).toEqual({ overflow: "auto", touch: "none" });
     const box = (await list.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     const before = await outsideRail(page);
@@ -9226,13 +9238,195 @@ test.describe("conversation timeline", () => {
     expect(reads).toHaveLength(0);
   });
 
-  test("native mobile touch swipes only the long rail without navigating a turn", async ({ browser, browserName, baseURL }) => {
+  test("mouse scrubbing switches turns before release, preserves preview and suppresses the starting click", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, turns("drag", 8));
+    const reads: unknown[] = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_messages") reads.push(body);
+      return route.fallback();
+    });
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(8);
+    await jump(page, 0);
+    const composer = page.locator(".composer textarea");
+    await composer.fill("Keep this draft while scrubbing");
+    const before = await outsideRail(page);
+    const list = page.locator(".timeline-panel ol");
+    const start = (await nodes(page).nth(1).boundingBox())!;
+    const target = (await nodes(page).nth(4).boundingBox())!;
+    const id = (await nodes(page).nth(4).getAttribute("data-timeline-target"))!;
+    const top = await list.evaluate(element => element.scrollTop);
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2 + 3);
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 5 });
+    // All navigation assertions here happen while the real mouse button is still held.
+    await expect(list).toHaveAttribute("data-scrubbing", "true");
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("5 / 8");
+    const middle = (await nodes(page).nth(2).boundingBox())!;
+    await page.mouse.move(middle.x + middle.width / 2, middle.y + middle.height / 2);
+    await expect(nodes(page).nth(2)).toHaveAttribute("aria-current", "location");
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("3 / 8");
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("5 / 8");
+    // Capture keeps the vertical target and preview even outside the narrow rail.
+    await page.mouse.move(target.x - 40, target.y + target.height / 2);
+    await expect(page.getByRole("tooltip")).toBeVisible();
+    const previewBox = (await page.getByRole("tooltip").boundingBox())!;
+    expect(previewBox.x).toBeGreaterThanOrEqual(0);
+    expect(previewBox.x + previewBox.width).toBeLessThanOrEqual(1280);
+    const during = await outsideRail(page);
+    expect(during.transcript).not.toBe(before.transcript);
+    expect({ ...during, transcript: before.transcript }).toEqual(before);
+    expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+    await expect(composer).toHaveValue("Keep this draft while scrubbing");
+    await expect(composer).toBeFocused();
+    // Release at the scrubbed turn; a synthesized click must not return to the pressed turn.
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+    await page.mouse.up();
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.waitForTimeout(100);
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
+    expect(await outsideRail(page)).toEqual(during);
+    await jump(page, 1);
+    expect(reads).toHaveLength(0);
+  });
+
+  test("Escape stops a held scrub without rollback, and right or nonprimary pointers do not scrub", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, turns("cancel", 8));
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(8);
+    await jump(page, 0);
+    const list = page.locator(".timeline-panel ol");
+    const start = (await nodes(page).nth(1).boundingBox())!;
+    const target = (await nodes(page).nth(4).boundingBox())!;
+    const x = start.x + start.width / 2;
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.move(x, target.y + target.height / 2);
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await page.mouse.up({ button: "right" });
+    await nodes(page).nth(1).dispatchEvent("pointerdown", { pointerId: 99, pointerType: "touch", isPrimary: false, button: 0, clientY: start.y });
+    await list.dispatchEvent("pointermove", { pointerId: 99, pointerType: "touch", isPrimary: false, buttons: 1, clientY: target.y });
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, target.y + target.height / 2);
+    await expect(list).toHaveAttribute("data-scrubbing", "true");
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    const reading = await outsideRail(page);
+    await page.keyboard.press("Escape");
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.up();
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    expect(await outsideRail(page)).toEqual(reading);
+    await jump(page, 1);
+  });
+
+  test("held long-rail edge scrolling stops on capture loss and the next click still works", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, turns("edge", 80));
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(80);
+    await jump(page, 0);
+    const before = await outsideRail(page);
+    const list = page.locator(".timeline-panel ol");
+    await list.evaluate(element => element.addEventListener("pointerdown", event => {
+      (element as HTMLElement).dataset.testPointerId = String((event as PointerEvent).pointerId);
+    }, { once: true }));
+    const start = (await nodes(page).nth(3).boundingBox())!;
+    const box = (await list.boundingBox())!;
+    const top = await list.evaluate(element => element.scrollTop);
+    const x = box.x + box.width / 2;
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, box.y + box.height + 30);
+    await expect(list).toHaveAttribute("data-scrubbing", "true");
+    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(top + 80);
+    await expect(page.getByRole("tooltip")).toBeVisible();
+    expect((await outsideRail(page)).composer).toEqual(before.composer);
+    expect(await page.evaluate(() => window.scrollY)).toBe(before.windowY);
+    await list.evaluate(element => {
+      const pointerId = Number((element as HTMLElement).dataset.testPointerId);
+      if (!element.hasPointerCapture(pointerId)) throw new Error("Expected a captured mouse pointer");
+      element.releasePointerCapture(pointerId);
+    });
+    // Flush pending capture processing with a real event while still holding the button.
+    await page.mouse.move(x, box.y + box.height + 40);
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    expect(await list.evaluate(element => element.hasPointerCapture(Number((element as HTMLElement).dataset.testPointerId)))).toBe(false);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const stopped = await list.evaluate(element => element.scrollTop);
+    const current = await page.locator('.timeline-node[aria-current="location"]').getAttribute("data-timeline-target");
+    const reading = await outsideRail(page);
+    await page.mouse.move(x, box.y + box.height + 60);
+    await page.waitForTimeout(200);
+    expect(await list.evaluate(element => element.scrollTop)).toBe(stopped);
+    await expect(page.locator('.timeline-node[aria-current="location"]')).toHaveAttribute("data-timeline-target", current!);
+    expect(await outsideRail(page)).toEqual(reading);
+    await page.mouse.up();
+    const visibleIndex = await list.evaluate(element => Array.from(element.querySelectorAll(".timeline-node")).findIndex(node => {
+      const box = node.getBoundingClientRect();
+      const viewport = element.getBoundingClientRect();
+      return box.top >= viewport.top && box.bottom <= viewport.bottom;
+    }));
+    expect(visibleIndex).toBeGreaterThan(0);
+    await jump(page, visibleIndex);
+  });
+
+  test("releasing the primary mouse button stops a chorded edge scrub", async ({ page }) => {
+    await mockHost(page);
+    await snapshot(page, turns("chord", 80));
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(80);
+    await jump(page, 0);
+    const list = page.locator(".timeline-panel ol");
+    const box = (await list.boundingBox())!;
+    const start = (await nodes(page).nth(2).boundingBox())!;
+    const x = box.x + box.width / 2;
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, box.y + box.height + 20);
+    await expect(list).toHaveAttribute("data-scrubbing", "true");
+    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(40);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "left" });
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    const stopped = await list.evaluate(element => element.scrollTop);
+    const reading = await outsideRail(page);
+    await page.waitForTimeout(150);
+    expect(await list.evaluate(element => element.scrollTop)).toBe(stopped);
+    expect(await outsideRail(page)).toEqual(reading);
+    await page.mouse.up({ button: "right" });
+    await jump(page, 0);
+  });
+
+  test("native mobile touch scrubs before touchEnd, cancels cleanly and accepts the next tap", async ({ browser, browserName, baseURL }) => {
     test.skip(browserName !== "chromium", "Native touch injection uses Chromium CDP");
     const context = await browser.newContext({ baseURL, isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 } });
     try {
       const page = await context.newPage();
       await mockHost(page);
-      await snapshot(page, turns("touch", 80));
+      await snapshot(page, turns("touch", 8));
       const reads: unknown[] = [];
       await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
         const body = route.request().postDataJSON();
@@ -9241,32 +9435,79 @@ test.describe("conversation timeline", () => {
       });
       await page.goto("/");
       expect(await page.evaluate(() => navigator.maxTouchPoints > 0 && "ontouchstart" in window && matchMedia("(pointer: coarse)").matches)).toBe(true);
-      await expect(nodes(page)).toHaveCount(80);
+      await expect(nodes(page)).toHaveCount(8);
       await scrollPagingTo(page, 0);
       await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
       await expect.poll(() => railContains(page)).toBe(true);
       const list = page.locator(".timeline-panel ol");
       await expect(list).toBeVisible();
-      expect(await list.evaluate(element => getComputedStyle(element).touchAction)).toBe("pan-y");
-      const box = (await list.boundingBox())!;
+      expect(await list.evaluate(element => getComputedStyle(element).touchAction)).toBe("none");
+      const start = (await nodes(page).nth(1).boundingBox())!;
+      const target = (await nodes(page).nth(5).boundingBox())!;
+      const id = (await nodes(page).nth(5).getAttribute("data-timeline-target"))!;
       const before = await outsideRail(page);
       const top = await list.evaluate(element => element.scrollTop);
       const cdp = await context.newCDPSession(page);
       try {
-        const x = box.x + box.width / 2;
-        const y = box.y + box.height - 20;
+        const x = start.x + start.width / 2;
+        const y = start.y + start.height / 2;
         await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
-        for (let step = 1; step <= 10; step++) {
-          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - step * 18, id: 1 }] });
+        for (let step = 1; step <= 6; step++) {
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + (target.y + target.height / 2 - y) * step / 6, id: 1 }] });
+          await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+        }
+        // Genuine mobile pointer events must navigate during the gesture, not on tap release.
+        await expect(list).toHaveAttribute("data-scrubbing", "true");
+        await expect(nodes(page).nth(5)).toHaveAttribute("aria-current", "location");
+        await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
+        await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("6 / 8");
+        const during = await outsideRail(page);
+        expect(during.transcript).not.toBe(before.transcript);
+        expect({ ...during, transcript: before.transcript }).toEqual(before);
+        expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+        const preview = (await page.getByRole("tooltip").boundingBox())!;
+        expect(preview.x).toBeGreaterThanOrEqual(0);
+        expect(preview.x + preview.width).toBeLessThanOrEqual(390);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await expect(list).not.toHaveAttribute("data-scrubbing");
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        await page.waitForTimeout(100);
+        await expect(nodes(page).nth(5)).toHaveAttribute("aria-current", "location");
+        expect(await outsideRail(page)).toEqual(during);
+        // A second real drag is cancelled while active; keep its latest reading target.
+        const cancelTarget = (await nodes(page).nth(3).boundingBox())!;
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 2 }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: cancelTarget.y + cancelTarget.height / 2, id: 2 }] });
+        await expect(list).toHaveAttribute("data-scrubbing", "true");
+        await expect(nodes(page).nth(3)).toHaveAttribute("aria-current", "location");
+        const cancelled = await outsideRail(page);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+        await expect(list).not.toHaveAttribute("data-scrubbing");
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        await page.waitForTimeout(100);
+        await expect(nodes(page).nth(3)).toHaveAttribute("aria-current", "location");
+        expect(await outsideRail(page)).toEqual(cancelled);
+        expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+        const tap = (await nodes(page).nth(2).boundingBox())!;
+        await page.touchscreen.tap(tap.x + tap.width / 2, tap.y + tap.height / 2);
+        await expect(nodes(page).nth(2)).toHaveAttribute("aria-current", "location");
+        const tapId = (await nodes(page).nth(2).getAttribute("data-timeline-target"))!;
+        await expect.poll(async () => Math.abs(await targetOffset(page, tapId) - 12)).toBeLessThanOrEqual(3);
+        const afterTap = await outsideRail(page);
+        expect({ ...afterTap, transcript: before.transcript }).toEqual(before);
+        // Gesture interception is confined to the rail: normal chat swiping still scrolls.
+        const chat = (await page.locator(".transcript").boundingBox())!;
+        const chatX = chat.x + chat.width / 2;
+        const chatY = chat.y + chat.height * 0.7;
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: chatX, y: chatY, id: 3 }] });
+        for (let step = 1; step <= 8; step++) {
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: chatX, y: chatY - step * 14, id: 3 }] });
           await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
         }
         await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-        await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(top + 50);
-        // Allow native momentum and any erroneous synthesized click to finish.
-        await page.waitForTimeout(500);
-        expect(await outsideRail(page)).toEqual(before);
-        await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
-        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        await expect.poll(() => page.locator(".transcript").evaluate(element => element.scrollTop)).toBeGreaterThan(afterTap.transcript + 40);
+        expect((await outsideRail(page)).composer).toEqual(before.composer);
+        expect(await page.evaluate(() => window.scrollY)).toBe(before.windowY);
         expect(reads).toHaveLength(0);
       } finally { await cdp.detach(); }
     } finally { await context.close(); }
