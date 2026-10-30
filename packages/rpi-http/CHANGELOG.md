@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.9...rpi-http-v0.1.10) - 2026-10-30
+
+### Fixed
+
+- *(web)* serve project raster image artifacts securely
+
 ## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.8...rpi-http-v0.1.9) - 2026-10-29
 
 ### Added
