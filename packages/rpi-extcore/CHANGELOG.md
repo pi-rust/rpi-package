@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve native compact-delta streaming for snapshot-oriented Web consumers through a shared live message projection. Raw native frames stay compact, initial content is retained, late tool identities and complete argument JSON update without guessing, and structural/final snapshots remain authoritative. Text/thinking reconciliation no longer discards nonempty initial content.
+
 ## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.0...rpi-extcore-v0.2.1) - 2026-10-29
 
 ### Added

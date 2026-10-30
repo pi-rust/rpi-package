@@ -1387,6 +1387,32 @@ mod tests {
     }
 
     #[test]
+    fn compact_fixture_maps_initial_and_final_content_without_duplicate_acp_chunks() {
+        let frames = [
+            json!({"type":"message_start","message":{"role":"assistant","content":[{"type":"thinking","thinking":"初"},{"type":"text","text":"Hello"}]}}),
+            json!({"type":"message_update","eventType":"thinking_delta","contentIndex":0,"delta":"想🌊"}),
+            json!({"type":"message_update","eventType":"text_delta","contentIndex":1,"delta":" world!"}),
+            json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"初想🌊好了"},{"type":"text","text":"Hello world! Saved."}]}}),
+        ];
+        let mut stream = StreamText::default();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        for event in frames {
+            for update in stream.event(&event).unwrap() {
+                let target = match update["sessionUpdate"].as_str() {
+                    Some("agent_message_chunk") => &mut text,
+                    Some("agent_thought_chunk") => &mut thinking,
+                    other => panic!("unexpected update: {other:?}"),
+                };
+                target.push_str(update["content"]["text"].as_str().unwrap());
+            }
+        }
+        assert_eq!(text, "Hello world! Saved.");
+        assert_eq!(thinking, "初想🌊好了");
+        assert!(stream.complete(&text).unwrap().is_none());
+    }
+
+    #[test]
     fn cumulative_snapshots_repair_missing_middle_deltas_without_duplication() {
         let mut stream = StreamText::default();
         let partial = json!({"type":"message_update","eventType":"text_delta", "delta":"中文", "message":{"role":"assistant","content":[{"type":"text","text":"中文"}]}});
