@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.1.22](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.21...rpi-web-v0.1.22) - 2026-10-30
+
+### Added
+
+- *(web)* enlarge transcript and Markdown images in a viewer
+
+### Fixed
+
+- *(web)* serve project raster image artifacts securely
+- *(web)* render inline and user message images
+
 ### Added
 
 - Open transcript and Markdown images in an accessible, keyboard-operated viewer with fit-to-window and scrollable original-size modes.

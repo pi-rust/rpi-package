@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.1...rpi-acp-v0.2.2) - 2026-10-30
+
+### Fixed
+
+- *(rpc)* adapt server and shared projections to compact native deltas
+
 ### Fixed
 
 - Cover compact native text/thinking updates with nonempty initial content and authoritative final suffixes, without duplicate ACP chunks. Shared reconciliation is provided by rpi-extcore; native prompt acceptance and settlement semantics are unchanged.

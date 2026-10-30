@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.1...rpi-extcore-v0.2.2) - 2026-10-30
+
+### Fixed
+
+- *(web)* serve project raster image artifacts securely
+- *(rpc)* adapt server and shared projections to compact native deltas
+
+### Other
+
+- Merge pull request #116 from pi-rust/fix/rpc-compact-deltas
+
 ### Fixed
 
 - Preserve native compact-delta streaming for snapshot-oriented Web consumers through a shared live message projection. Raw native frames stay compact, initial content is retained, late tool identities and complete argument JSON update without guessing, and structural/final snapshots remain authoritative. Text/thinking reconciliation no longer discards nonempty initial content.
