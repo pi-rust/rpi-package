@@ -4,6 +4,7 @@
 
 ### Added
 
+- Render fenced `mermaid` flowcharts (`flowchart`/`graph`) and sequence diagrams locally as zoomable SVG images, with source/copy controls, theme updates, mobile containment and debounced streaming recovery. Lazy-load the pinned Mermaid dependency; reject authored configuration, shape metadata, HTML/images and custom CSS before rendering, retaining exact source for invalid, unsupported or oversized diagrams.
 - Show Codex-style total elapsed time after completed conversation runs, including stopped/failed runs, in both live and historical views. Use matching native operation start/finish records through a bounded, resumable core/HTTP query; never estimate from individual tool times or browser clocks. Requires the matching backend update; unavailable or incomplete timing metadata is omitted.
 - Open transcript and Markdown images in an accessible, keyboard-operated viewer with fit-to-window and scrollable original-size modes.
 - Load earlier transcript messages automatically when scrolling near the top, using smaller 48-entry pages with request deduplication and stable reading position, including late-loading images.

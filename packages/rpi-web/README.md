@@ -8,6 +8,23 @@ Completed conversation runs also show a compact **Worked for … / 已用时 …
 
 Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
 
+## Mermaid diagrams
+
+Fenced `mermaid` blocks render flowcharts (`flowchart` or `graph`) and sequence diagrams locally:
+
+````markdown
+```mermaid
+flowchart TD
+  A[开始] --> B{验证成功?}
+  B -->|是| C[完成]
+  B -->|否| A
+```
+````
+
+Use **View source / 查看源码** to inspect or copy the exact source, and click the diagram (or press Enter) for the existing fit/original-size image viewer. Diagrams follow light/dark themes and fit narrow screens. The bundled Mermaid library loads only when needed; no CDN is used. This is frontend-only and needs no new backend route. Mermaid 12 targets modern browsers (Safari 17.4+); frontend builds require Node 22.12+.
+
+Unfinished streamed syntax automatically recovers when valid text arrives. Invalid/unsupported diagrams preserve source instead of breaking chat. Rendering is limited to 20,000 source characters, 300 newline/semicolon-separated segments, 150 edges and 16,384px per generated dimension. Only flowcharts and sequences are enabled initially. Source-owned initialization/frontmatter, shape metadata (`@{...}`), HTML other than `<br>`, image resources and custom CSS (`style`, `classDef`, `linkStyle`) are deliberately rejected before rendering. Generated SVGs are displayed in browser image mode, not injected as application HTML; graph links/callbacks are not interactive. Unsupported features remain readable/copyable as source.
+
 ## Installation
 
 This guide uses the **rpi 0.7.0** native host. Web shares one implementation between a native extension and a standalone executable.

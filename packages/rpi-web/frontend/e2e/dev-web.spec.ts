@@ -7905,3 +7905,260 @@ test.describe("shell command previews", () => {
     expect(await code.textContent()).toBe(command);
   });
 });
+
+test.describe("Mermaid diagrams", () => {
+  const flow = 'flowchart TD\n  start[开始] --> process[处理数据]\n  process --> done[完成]\n';
+  const sequence = 'sequenceDiagram\n  participant A as 用户\n  participant B as 服务\n  A->>B: 你好\n  B-->>A: 收到\n';
+  const failure = "Unable to render this diagram. The syntax may be incomplete or unsupported; source is shown below.";
+  const fence = (source: string) => `\`\`\`mermaid\n${source}\`\`\``;
+
+  async function diagramSnapshot(page: Page, text: string) {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) => route.fulfill({
+      json: {
+        sessionId,
+        messages: [{ role: "assistant", entryId: "mermaid-message", content: [{ type: "text", text }] }],
+        events: [], lastSeq: 4, total: 1, hasMore: false,
+      },
+    }));
+  }
+
+  async function decodedDiagram(image: ReturnType<Page["locator"]>) {
+    await expect(image).toHaveAttribute("src", /^data:image\/svg\+xml/);
+    await expect.poll(() => image.evaluate(async (node: HTMLImageElement) => {
+      try { await node.decode(); return node.naturalWidth; } catch { return 0; }
+    })).toBeGreaterThan(0);
+    return image.evaluate((node: HTMLImageElement) => {
+      const svg = decodeURIComponent(node.src.slice(node.src.indexOf(",") + 1));
+      const document = new DOMParser().parseFromString(svg, "image/svg+xml");
+      return {
+        svg,
+        text: document.documentElement.textContent ?? "",
+        viewBox: document.documentElement.getAttribute("viewBox"),
+        parseErrors: document.querySelectorAll("parsererror").length,
+      };
+    });
+  }
+
+  async function fits(page: Page) {
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    await expect.poll(() => page.locator(".transcript").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+  }
+
+  // Reconnection gates mirror the existing streamed Markdown tests. No native host
+  // or Mermaid stub is involved; each stage is a real protocol message patch.
+  async function streamStages(page: Page, stages: string[]) {
+    const releases: Array<() => void> = [];
+    const gates = stages.map(() => new Promise<void>((resolve) => releases.push(resolve)));
+    let connection = 0;
+    await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) => {
+      const index = connection++;
+      if (index >= stages.length) {
+        return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      }
+      await gates[index];
+      const message = { role: "assistant", content: [{ type: "text", text: stages[index] }] };
+      const event = (seq: number, type: string) =>
+        `id: ${seq}\nevent: ${type}\ndata: ${JSON.stringify({ type, message })}\n\n`;
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: "retry: 20\n" + event(5 + index * 2, index === 0 ? "message_start" : "message_update") +
+          (index === stages.length - 1 ? event(6 + index * 2, "message_end") : ""),
+      });
+    });
+    return releases;
+  }
+
+  test("renders Chinese flowcharts and sequences as decoded SVG images beside ordinary code, with exact source and copy", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async (text: string) => { (window as Window & { mermaidCopied?: string }).mermaidCopied = text; } },
+      });
+    });
+    await diagramSnapshot(page, `${fence(flow)}\n\n${fence(sequence)}\n\n\`\`\`js\nconst answer = 42;\n\`\`\``);
+    await page.goto("/");
+    const blocks = page.locator(".mermaid-block");
+    await expect(blocks).toHaveCount(2);
+    for (const [index, label] of ["开始", "用户"].entries()) {
+      const block = blocks.nth(index);
+      await expect(block).toHaveClass(/markdown-code-block/);
+      const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+      expect(decoded.parseErrors).toBe(0);
+      expect(decoded.text).toContain(label);
+      expect(decoded.viewBox).toMatch(/\S+\s+\S+\s+\S+\s+\S+/);
+      expect(decoded.svg).not.toContain("<foreignObject");
+      await expect(block.locator(".mermaid-diagram svg, object, iframe")).toHaveCount(0);
+    }
+    await expect(page.locator(".markdown-code-block:not(.mermaid-block) pre code")).toHaveText("const answer = 42;\n");
+    const first = blocks.first();
+    await expect(first.locator(".mermaid-source")).toHaveCount(0);
+    await first.getByRole("button", { name: "View source", exact: true }).click();
+    await expect(first.locator(".mermaid-source")).toBeVisible();
+    expect(await first.locator(".mermaid-source code").textContent()).toBe(flow);
+    await first.getByRole("button", { name: "Copy code", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as Window & { mermaidCopied?: string }).mermaidCopied)).toBe(flow);
+    await first.getByRole("button", { name: "View diagram", exact: true }).click();
+    await decodedDiagram(first.locator(".mermaid-diagram img"));
+    await expect(first.locator(".mermaid-source")).toHaveCount(0);
+  });
+
+  test("follows root theme mutations on desktop and 390px, fits the keyboard image viewer and restores focus", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await page.addInitScript(() => localStorage.setItem("rpi-theme", "light"));
+    await diagramSnapshot(page, fence(flow));
+    await page.goto("/");
+    const block = page.locator(".mermaid-block");
+    const image = block.locator(".mermaid-diagram img");
+    const light = await decodedDiagram(image);
+    await expect(block).toHaveAttribute("data-theme", "light");
+    await fits(page);
+    const lightSource = await image.getAttribute("src");
+    await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
+    await expect(block).toHaveAttribute("data-theme", "dark");
+    await expect(image).not.toHaveAttribute("src", lightSource!);
+    const dark = await decodedDiagram(image);
+    for (const label of ["开始", "处理数据", "完成"]) {
+      expect(light.text).toContain(label);
+      expect(dark.text).toContain(label);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fits(page);
+    const enlarge = block.getByRole("button", { name: "Enlarge image: Mermaid diagram", exact: true });
+    await enlarge.scrollIntoViewIfNeeded();
+    await enlarge.focus();
+    await page.keyboard.press("Enter");
+    const viewer = page.getByRole("dialog", { name: "Image viewer", exact: true });
+    await expect(viewer).toBeVisible();
+    await decodedDiagram(viewer.locator("img"));
+    const box = await viewer.locator("img").boundingBox();
+    expect(box!.width).toBeLessThan(390);
+    expect(box!.height).toBeLessThan(844);
+    await viewer.getByRole("button", { name: "Original size", exact: true }).click();
+    await viewer.getByRole("button", { name: "Fit to window", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(viewer).toHaveCount(0);
+    await expect(enlarge).toBeFocused();
+    await fits(page);
+  });
+
+  test("localizes source, diagram and image controls in Chinese", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    await diagramSnapshot(page, fence(flow));
+    await page.goto("/");
+    const block = page.locator(".mermaid-block");
+    const image = block.locator(".mermaid-diagram img");
+    await decodedDiagram(image);
+    await expect(image).toHaveAttribute("alt", "Mermaid 流程图");
+    await block.getByRole("button", { name: "查看源码", exact: true }).click();
+    expect(await block.locator(".mermaid-source code").textContent()).toBe(flow);
+    await expect(block.getByRole("button", { name: "复制代码", exact: true })).toBeVisible();
+    await block.getByRole("button", { name: "查看图表", exact: true }).click();
+    await image.click();
+    const viewer = page.getByRole("dialog", { name: "图片查看器", exact: true });
+    await expect(viewer).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(viewer).toHaveCount(0);
+  });
+
+  test("shows exact invalid source and recovers when SSE repairs the diagram without render orphans", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const invalid = "flowchart TD\n  start[unfinished\n";
+    await diagramSnapshot(page, "");
+    const release = await streamStages(page, [fence(invalid), fence(flow)]);
+    try {
+      await page.goto("/");
+      release[0]();
+      const block = page.locator(".mermaid-block");
+      await expect(block).toHaveCount(1);
+      await expect(block.locator(".mermaid-status")).toHaveText(failure);
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(invalid);
+      await expect(block.locator(".mermaid-diagram img")).toHaveCount(0);
+      release[1]();
+      const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+      expect(decoded.text).toContain("开始");
+      await expect(block.locator(".mermaid-status")).toHaveCount(0);
+      await block.getByRole("button", { name: "View source", exact: true }).click();
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(flow);
+      await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
+      expect(errors).toEqual([]);
+    } finally {
+      // Release route handlers even if an assertion fails before the repair.
+      release.forEach((resolve) => resolve());
+    }
+  });
+
+  test("rejects source-owned config and external resources while rendering strict click links only as an image", async ({ page, baseURL }) => {
+    expect(baseURL).toBeTruthy();
+    const origin = new URL(baseURL!).origin;
+    const externalRequests: string[] = [];
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      (window as Window & { mermaidAttack?: string }).mermaidAttack = "untouched";
+    });
+    await page.route("**/*", async (route) => {
+      const url = new URL(route.request().url());
+      if (/^https?:$/.test(url.protocol) && (url.origin !== origin || url.pathname.startsWith("/mermaid-attack/"))) {
+        externalRequests.push(url.href);
+        return route.abort();
+      }
+      return route.fallback();
+    });
+    const attacks = [
+      '%%{init: {"securityLevel": "loose", "flowchart": {"htmlLabels": true}}}%%\nflowchart TD\n  A --> B\n',
+      'flowchart TD\n  A["<img src=\'https://mermaid-attack.invalid/remote.png\' onerror=\'window.mermaidAttack=1\'>"]\n',
+      'flowchart TD\n  A@{ img: "https://mermaid-attack.invalid/shape.png", label: "Remote" }\n  style A fill:url(https://mermaid-attack.invalid/fill.svg)\n',
+      'flowchart TD\n  A@{ "img": "/mermaid-attack/pending.png" }\n',
+      'flowchart TD\n  A@{ "\\u0069mg": "https://mermaid-attack.invalid/escaped.png" }\n',
+      'flowchart TD\n  A --> B\n  classDef default fill:u\\72l(/mermaid-attack/fill.svg)\n',
+      'flowchart TD\n  A --> B\n  style A background-image:image-set("/mermaid-attack/background.png")\n',
+      'flowchart TD\n  中[Node]\n  style 中 filter:u\\72l(/mermaid-attack/filter.svg#f)\n',
+    ];
+    const strict = 'flowchart TD\n  A[Safe] --> B[Done]\n  click A "javascript:window.mermaidAttack=1" "Unsafe link"\n';
+    await diagramSnapshot(page, [...attacks, strict].map(fence).join("\n\n"));
+    await page.goto("/");
+    const blocks = page.locator(".mermaid-block");
+    await expect(blocks).toHaveCount(attacks.length + 1);
+    for (const [index, source] of attacks.entries()) {
+      const block = blocks.nth(index);
+      await expect(block.locator(".mermaid-status")).toHaveText(failure);
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(source);
+      await expect(block.locator(".mermaid-diagram img")).toHaveCount(0);
+    }
+    const normal = blocks.nth(attacks.length);
+    const decoded = await decodedDiagram(normal.locator(".mermaid-diagram img"));
+    expect(decoded.parseErrors).toBe(0);
+    expect(decoded.text).toContain("Safe");
+    // Never activate the untrusted link: the SVG must stay in inert image mode.
+    await expect(blocks.locator(".mermaid-diagram svg, script, iframe, object, embed, a, [onclick], [onerror], [onload]")).toHaveCount(0);
+    // The image's React click handler opens our viewer, never a diagram callback.
+    await expect(normal.locator(".mermaid-diagram img")).not.toHaveAttribute("onclick");
+    await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
+    expect(await page.evaluate(() => (window as Window & { mermaidAttack?: string }).mermaidAttack)).toBe("untouched");
+    expect(externalRequests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("preserves all oversized source and still renders the following bounded diagram without orphans", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    // A small line count isolates the character bound from the line-count bound.
+    const oversized = `flowchart TD\n  A[${"x".repeat(20_001)}] --> B[End]\n`;
+    expect(oversized.length).toBeGreaterThan(20_000);
+    await diagramSnapshot(page, `${fence(oversized)}\n\n${fence(flow)}`);
+    await page.goto("/");
+    const blocks = page.locator(".mermaid-block");
+    await expect(blocks).toHaveCount(2);
+    const rejected = blocks.first();
+    await expect(rejected.locator(".mermaid-status")).toHaveText(failure);
+    expect(await rejected.locator(".mermaid-source code").textContent()).toBe(oversized);
+    await expect(rejected.locator(".mermaid-diagram img")).toHaveCount(0);
+    const decoded = await decodedDiagram(blocks.nth(1).locator(".mermaid-diagram img"));
+    expect(decoded.parseErrors).toBe(0);
+    expect(decoded.text).toContain("开始");
+    await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+});
