@@ -3659,6 +3659,8 @@ export default function App() {
                 transcript={transcriptRef}
                 language={language}
                 hasMore={hasMore}
+                loadingEarlier={loadingEarlier}
+                onLoadEarlier={() => void loadEarlier()}
                 onNavigate={(target) => {
                   const node = transcriptRef.current;
                   if (!node || !node.contains(target)) return;

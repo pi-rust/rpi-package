@@ -53,12 +53,16 @@ export function ConversationTimeline({
   transcript,
   language,
   hasMore,
+  loadingEarlier,
+  onLoadEarlier,
   onNavigate,
 }: {
   rows: Row[];
   transcript: RefObject<HTMLDivElement | null>;
   language: Language;
   hasMore: boolean;
+  loadingEarlier: boolean;
+  onLoadEarlier: () => void;
   onNavigate: (target: HTMLElement) => void;
 }) {
   const entries = useMemo(
@@ -91,7 +95,7 @@ export function ConversationTimeline({
   useLayoutEffect(() => {
     const node = transcript.current;
     const rowIds = JSON.parse(targetKey) as string[];
-    if (!node || rowIds.length < 2) return;
+    if (!node || !rowIds.length) return;
     const wanted = new Set(rowIds);
     const ordered: { id: string; element: HTMLElement }[] = [];
     targets.current.clear();
@@ -233,7 +237,7 @@ export function ConversationTimeline({
     ? focused
     : active || entries[0]?.rowId;
 
-  if (entries.length < 2) return null;
+  if (!entries.length && !hasMore) return null;
   return (
     <aside
       className="conversation-timeline"
@@ -268,6 +272,19 @@ export function ConversationTimeline({
           {t("timelineScrollHint")}
           {hasMore ? ` ${t("timelineLoadedOnly")}` : ""}
         </p>
+        {hasMore && (
+          <button
+            type="button"
+            className="timeline-load-earlier"
+            aria-label={t("timelineLoadEarlier")}
+            title={t("timelineLoadEarlier")}
+            disabled={loadingEarlier}
+            aria-busy={loadingEarlier}
+            onClick={onLoadEarlier}
+          >
+            <span aria-hidden="true">{loadingEarlier ? "…" : "↑"}</span>
+          </button>
+        )}
         <ol
           ref={list}
           onTouchStart={() => {

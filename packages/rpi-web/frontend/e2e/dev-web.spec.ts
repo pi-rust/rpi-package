@@ -8842,6 +8842,66 @@ test.describe("conversation timeline", () => {
     });
   }
 
+  for (const [language, width] of [["en", 1280], ["zh", 390]] as const) {
+    test(`initial tool-only page keeps a visible bounded history entry in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      await snapshot(page, Array.from({ length: 48 }, (_, index) => ({
+        role: "assistant", entryId: `tool-only-${index}`,
+        content: [{ type: "toolCall", id: `tool-${index}`, name: "read", arguments: { path: `src/file-${index}.ts` } }],
+      })), { firstId: "tool-only-0", hasMore: true });
+      const requests: Array<{ beforeId?: string; limit?: number }> = [];
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
+        const body = route.request().postDataJSON();
+        if (body.type !== "get_messages") return route.fallback();
+        requests.push(body);
+        await held;
+        return route.fulfill({ json: response({ messages: turns("loaded", 1), firstId: "loaded-0", hasMore: false }, "get_messages") });
+      });
+      try {
+        await page.goto("/");
+        const rail = page.locator(".conversation-timeline");
+        const load = rail.getByRole("button", { name: language === "en" ? "Show earlier messages in timeline" : "在时间线中显示更早的消息", exact: true });
+        await expect(load).toBeVisible();
+        await expect(nodes(page)).toHaveCount(0);
+        const box = await rail.boundingBox();
+        expect(box!.width).toBeLessThanOrEqual(28);
+        expect(requests).toHaveLength(0);
+        const anchor = await visiblePagingAnchor(page);
+        await load.click();
+        await expect(load).toBeDisabled();
+        await expect(load).toHaveAttribute("aria-busy", "true");
+        expect(requests).toMatchObject([{ beforeId: "tool-only-0", limit: 48 }]);
+        release();
+        await expect(nodes(page)).toHaveCount(1);
+        await expect(page.locator(".timeline-load-earlier")).toHaveCount(0);
+        await expectPagingAnchor(page, anchor);
+        // The clicked history button is replaced beneath the pointer; enter the new tick afresh.
+        await page.locator(".composer textarea").hover();
+        await nodes(page).first().hover();
+        await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("1 / 1");
+        await jump(page, 0);
+        expect(requests).toHaveLength(1);
+      } finally { release(); }
+    });
+  }
+
+  test("a single loaded question is visible and navigable without history paging", async ({ page }) => {
+    await mockHost(page);
+    await snapshot(page, turns("single", 1));
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(1);
+    await expect(page.locator(".timeline-load-earlier")).toHaveCount(0);
+    await nodes(page).first().focus();
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("1 / 1");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => Math.abs(await targetOffset(page, "single-0") - 12)).toBeLessThanOrEqual(3);
+    await expect(nodes(page)).toHaveAttribute("aria-current", "location");
+  });
+
   test("desktop narrow rail previews user turns and roves focus without navigating until activation", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await mockHost(page);
@@ -9071,7 +9131,7 @@ test.describe("conversation timeline", () => {
       await page.getByRole("button", { name: "New session", exact: false }).first().click();
       await expect(page.locator(".toolbar h1")).toHaveText("New session");
       await expect.poll(() => waiting).toBe(true);
-      await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+      await expect(nodes(page)).toHaveCount(1);
       await expect(page.getByRole("tooltip")).toHaveCount(0);
       release();
       await expect(nodes(page)).toHaveCount(2);
