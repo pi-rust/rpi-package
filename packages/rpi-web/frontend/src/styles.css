@@ -357,6 +357,23 @@ code {
   flex: 1;
   min-width: 0;
 }
+.session-issue {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 450;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.session-issue-resume {
+  color: var(--muted);
+}
+.session-issue > svg {
+  flex-shrink: 0;
+}
 .tree-mark {
   color: var(--muted);
   font-family: var(--mono);
@@ -687,30 +704,117 @@ code {
   gap: 6px;
   margin-bottom: 10px;
 }
+.user-message-content {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.attachment-card {
+  width: min(360px, 100%);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.attachment-card > summary,
 .composer-attachment {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 10px;
   min-width: 0;
-  max-width: min(260px, 100%);
-  padding: 4px 6px;
-  border: 1px solid var(--line);
-  background: var(--soft);
+  min-height: 60px;
+  padding: 10px;
+  box-sizing: border-box;
+}
+.attachment-card > summary::before {
+  content: none;
+}
+.attachment-card > summary:hover {
+  background: var(--hover);
+}
+.attachment-card > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.attachment-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  height: 40px;
+  border-radius: 6px;
+  color: var(--blue-text);
+  background: var(--blue-soft);
+}
+.attachment-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.attachment-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+.attachment-meta {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.attachment-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.attachment-card[open] .attachment-chevron {
+  transform: rotate(180deg);
+}
+.attachment-path {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
   font-size: 11px;
 }
+.attachment-path code {
+  min-width: 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.attachment-copy {
+  display: inline-flex;
+  justify-self: start;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.composer-attachment {
+  width: min(260px, 100%);
+}
 .composer-attachment img {
-  width: 72px;
-  height: 72px;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
   border-radius: 5px;
   object-fit: cover;
 }
-.composer-attachment:has(img) {
-  align-items: flex-start;
-}
-.composer-attachment > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.composer-attachment > button {
+  flex-shrink: 0;
 }
 .composer-attach {
   display: inline-flex;
@@ -864,6 +968,9 @@ code {
   max-width: 760px;
   margin: auto;
 }
+.transcript-row {
+  display: flow-root;
+}
 .message {
   padding: 0 0 28px;
 }
@@ -954,7 +1061,7 @@ code {
   width: min(88%, 650px);
   padding: 11px 15px;
   border: 1px solid var(--line);
-  border-radius: 16px 16px 4px 16px;
+  border-radius: 16px;
   background: var(--soft);
 }
 .message.user .plain-message {
@@ -1028,6 +1135,40 @@ code {
 }
 .markdown-code-block pre code {
   font-family: var(--mono);
+}
+.mermaid-block .markdown-code-heading {
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.mermaid-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mermaid-diagram {
+  padding: 16px;
+  min-width: 0;
+  background: var(--surface);
+}
+.prose .mermaid-diagram img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 600px;
+  margin: 0 auto;
+  border: 0;
+  object-fit: contain;
+}
+.mermaid-status {
+  margin: 0;
+  padding: 12px 15px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.mermaid-block .mermaid-source {
+  max-height: 480px;
 }
 
 summary {
@@ -1154,141 +1295,206 @@ details[open] > summary:before {
   object-fit: contain;
 }
 
-.tool-card {
+.zoomable-image {
+  cursor: zoom-in;
+  touch-action: manipulation;
+}
+.zoomable-image:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: -3px;
+}
+.image-viewer {
+  width: calc(100vw - 32px);
+  height: calc(100dvh - 32px);
+  max-width: none;
+  max-height: none;
+  padding: 0;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: transparent;
-  margin: 0 0 14px;
-  max-width: 100%;
-  overflow: hidden;
-  transition:
-    background-color 0.15s,
-    border-color 0.15s;
-}
-.tool-card:hover,
-.tool-card[open] {
-  background: var(--soft);
-}
-.tool-card > summary {
-  padding: 3px 11px;
-  min-height: 36px;
-  gap: 8px;
-  color: var(--muted);
-}
-.tool-card > summary strong {
-  font-size: 12px;
-  font-family: var(--mono);
-  font-weight: 500;
+  border-radius: 12px;
+  background: var(--surface);
   color: var(--text);
-}
-.tool-card > summary {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
   overflow: hidden;
 }
-.shell-card > summary code.shell-command {
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  flex: 1 1 auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text);
+.image-viewer::backdrop {
+  background: #000c;
 }
-.shell-card > summary {
-  display: grid;
-  grid-template-columns: 8px auto auto minmax(0, 1fr) auto auto;
-  gap: 8px;
-  padding-inline: 10px;
+.image-viewer-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
-.shell-card > summary::before {
-  width: 8px;
-}
-.shell-card > summary .tool-elapsed,
-.shell-card > summary .tool-status {
-  min-width: 0;
-  margin-left: 0;
-  white-space: nowrap;
-}
-.tool-status {
-  font-size: 10px;
-  margin-left: auto;
+.image-viewer-toolbar {
   display: flex;
   align-items: center;
-  color: var(--green);
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.image-viewer-toolbar h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.image-viewer-toolbar button {
+  flex-shrink: 0;
+  min-height: 44px;
+}
+.image-viewer-toolbar .icon-button {
+  min-width: 44px;
+}
+.image-viewer-viewport {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.image-viewer-viewport img {
+  display: block;
+  flex-shrink: 0;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+.image-viewer-viewport[data-actual-size="true"] {
+  display: block;
+}
+.image-viewer-viewport[data-actual-size="true"] img {
+  max-width: none;
+  max-height: none;
+  margin: 0 auto;
+}
+
+/* Codex-style activity rows: quiet summaries, one toggle, indented details. */
+.tool-card {
+  width: min(100%, 760px);
+  max-width: 100%;
+  margin: 0 auto 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: hidden;
+}
+.tool-card > summary {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  gap: 8px;
+  padding: 5px 4px;
+  border-radius: 5px;
+  color: var(--muted);
+}
+.tool-card > summary::before {
+  content: none;
+}
+.tool-card > summary:hover {
+  background: var(--soft);
+}
+.tool-card > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.tool-chevron {
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.tool-card[open] > summary .tool-chevron {
+  transform: rotate(90deg);
+}
+.tool-summary-text {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+}
+.tool-action {
+  flex-shrink: 0;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 450;
+}
+.tool-target {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tool-summary-meta,
+.tool-elapsed,
+.tool-status {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.tool-summary-meta {
+  color: var(--muted);
+}
+.tool-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.tool-done .tool-status {
+  opacity: 0.55;
 }
 .tool-card.failed .tool-status {
   color: var(--danger);
 }
 .tool-detail {
-  padding: 3px 14px 13px;
-  border-top: 1px solid var(--line);
+  margin: 2px 0 12px 10px;
+  padding: 2px 10px 4px 18px;
+  border-left: 1px solid var(--line);
 }
 .tool-detail h4 {
+  margin: 10px 0 6px;
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
+  font-weight: 500;
   color: var(--muted);
-  margin: 13px 0 6px;
 }
 .tool-card pre {
-  font-size: 11px;
+  margin: 0;
+  padding: 4px;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 360px;
-  overflow: auto;
-  margin: 0;
   color: var(--text);
-  padding: 4px;
+}
+.tool-card pre.tool-arguments {
+  max-height: 140px;
+  color: var(--muted);
 }
 .tool-card pre.tool-result-pre {
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--bg);
-  padding: 9px 11px;
-  font-size: 12px;
-  line-height: 1.7;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
 }
 .tool-detail .prose {
   font-size: 13px;
   line-height: 1.75;
-}
-/* Tool calls follow the flat DeepSeek Harness rhythm: one aligned row,
-   one separator, and indented output instead of nested rounded cards. */
-.tool-card {
-  width: min(100%, 760px);
-  margin: 0 auto 8px;
-  border-width: 1px 0;
-  border-radius: 0;
-  background: transparent;
-}
-.tool-card + .tool-card {
-  border-top: 0;
-}
-.tool-card > summary {
-  min-height: 32px;
-  padding: 4px 0;
-}
-.tool-detail {
-  padding: 8px 0 12px 29px;
-}
-.tool-card pre.tool-result-pre {
-  border-inline: 0;
-  padding-inline: 10px;
-}
-.tool-card > summary strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tool-detail {
-  padding: 8px 16px 12px 29px;
 }
 .read-code,
 .tool-detail > .prose,
@@ -1296,38 +1502,34 @@ details[open] > summary:before {
   min-width: 0;
   max-width: 100%;
 }
-.shell-detail {
-  padding: 10px 16px 12px 29px;
-}
-.shell-window {
-  max-width: 100%;
-}
-
-.edit-hunk {
-  border-inline: 0;
-  border-radius: 0;
-}
 .read-code-path {
   margin: 0 0 6px;
-  padding-bottom: 5px;
-  border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11px;
   overflow-wrap: anywhere;
 }
-.shell-window {
-  border-inline: 0;
-  border-radius: 0;
+.edit-content-heading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  color: var(--muted);
+  font-size: 11px;
 }
-
-.shell-detail {
-}
-.shell-summary-prompt {
-  flex-shrink: 0;
-  color: var(--green);
+.edit-count {
+  display: inline-flex;
+  gap: 7px;
   font-family: var(--mono);
-  font-size: 12px;
+}
+.edit-count .add {
+  color: var(--green);
+}
+.edit-count .remove {
+  color: var(--danger);
+}
+.shell-window {
+  max-width: 100%;
 }
 .tool-detail,
 .tool-detail > *,
@@ -1350,10 +1552,17 @@ details[open] > summary:before {
 }
 .shell-window {
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
+}
+.shell-command-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
 }
 .shell-titlebar {
   display: flex;
@@ -1396,7 +1605,7 @@ details[open] > summary:before {
 .shell-body {
   display: grid;
   gap: 8px;
-  padding: 10px 12px 12px;
+  padding: 8px 0;
 }
 .shell-card .shell-window .shell-input,
 .shell-card .shell-window .shell-output {
@@ -1414,9 +1623,38 @@ details[open] > summary:before {
   align-items: baseline;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--blue-soft) 38%, var(--surface));
+  border: 0;
+  border-radius: 4px;
+  background: var(--soft);
+}
+.shell-card .shell-window .shell-command-code {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.6;
+}
+.shell-card .shell-window .shell-command-preview {
+  /* Four rendered lines plus the existing 8px top/bottom input padding. */
+  max-height: calc(6.4em + 16px);
+  overflow: hidden;
+}
+.shell-card .shell-window .shell-command-preview.expanded {
+  max-height: none;
+}
+.shell-command-toggle {
+  display: block;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.shell-command-toggle:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 .shell-card .shell-window .shell-output {
   padding: 0 1px;
@@ -1543,11 +1781,14 @@ details[open] > summary:before {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+.edit-content-body {
+  max-height: 480px;
+  overflow: auto;
+}
 .edit-hunk {
-  display: grid;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
+  border-radius: 4px;
+  overflow: auto;
 }
 .edit-hunk + .edit-hunk {
   margin-top: 8px;
@@ -1560,12 +1801,16 @@ details[open] > summary:before {
   font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+  white-space: pre;
+  overflow-wrap: normal;
   color: var(--text);
 }
 .edit-line code {
   font-family: inherit;
+  flex-shrink: 0;
   min-width: 0;
 }
 .edit-line.remove {
@@ -3149,10 +3394,6 @@ details[open] > summary:before {
   text-align: center;
   box-sizing: border-box;
 }
-.tool-card {
-  max-width: 760px;
-  margin: 0 auto 14px;
-}
 .tool-card.tool-running > summary .tool-status {
   color: var(--blue-text);
 }
@@ -3250,7 +3491,7 @@ details[open] > summary:before {
   background: var(--danger);
 }
 
-/* "Load earlier" sits above the transcript, outside the message column. */
+/* Automatic top paging retains a keyboard-accessible retry/short-chat fallback. */
 .load-earlier {
   display: flex;
   justify-content: center;
@@ -3736,8 +3977,25 @@ details[open] > summary:before {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
-.tool-elapsed + .tool-status {
-  margin-left: 0;
+.run-elapsed {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 22px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.run-elapsed > span:not(.run-elapsed-line) {
   flex-shrink: 0;
-  white-space: nowrap;
+  max-width: 80%;
+  overflow-wrap: anywhere;
+}
+.run-elapsed-line {
+  height: 1px;
+  flex: 1;
+  background: var(--border);
 }

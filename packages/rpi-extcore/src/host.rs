@@ -315,6 +315,7 @@ impl HostRuntime {
 
 #[derive(Debug)]
 struct HostState {
+    live_message: crate::message::LiveMessageProjection,
     status: String,
     last_error: Option<String>,
     latest_settlement: Option<Value>,
@@ -494,6 +495,7 @@ impl HostSession {
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let created_at = now_ms();
         let state = Arc::new(RwLock::new(HostState {
+            live_message: Default::default(),
             status: "ready".into(),
             last_error: None,
             latest_settlement: None,
@@ -786,6 +788,7 @@ impl HostSession {
                 events: broadcast::channel(capacity).0,
                 pending,
                 state: Arc::new(RwLock::new(HostState {
+                    live_message: Default::default(),
                     status: "ready".into(),
                     last_error: None,
                     latest_settlement: None,
@@ -1029,80 +1032,25 @@ impl HostSession {
         Ok(())
     }
 
-    /// Read the complete currently selected native session branch.
-    pub async fn session_branch(&self) -> Result<Vec<Value>, String> {
+    /// Read the selected native branch's custom entries in one filtered request.
+    /// Unfiltered replies are rejected: pollers must never accept a full transcript.
+    pub async fn branch_entries_of_types(
+        &self,
+        custom_types: &[&str],
+    ) -> Result<Vec<Value>, String> {
+        if custom_types.is_empty() || custom_types.iter().any(|kind| kind.trim().is_empty()) {
+            return Err("get_session_branch: non-empty custom types are required".into());
+        }
         let data = self
-            .runtime_command("get_session_branch", json!({}))
+            .runtime_command("get_session_branch", json!({"customTypes": custom_types}))
             .await?;
+        if data.get("filtered").and_then(Value::as_bool) != Some(true) {
+            return Err("get_session_branch: host must return filtered custom entries".into());
+        }
         data.get("entries")
             .and_then(Value::as_array)
             .cloned()
             .ok_or_else(|| "get_session_branch: invalid entries data".into())
-    }
-
-    /// Read only custom entries after an optional native entry sequence.
-    /// Initial reads omit `after_seq`; incremental reads use it to avoid
-    /// replaying the durable journal prefix. When the host supports filtered
-    /// reads, both the canonical and legacy durable discriminators are loaded
-    /// so migration entries can provide the replay base.
-    pub async fn branch_entries_of_type(
-        &self,
-        custom_type: &str,
-        after_seq: Option<u64>,
-    ) -> Result<(Vec<Value>, bool), String> {
-        self.branch_entries_of_types(&[custom_type], after_seq)
-            .await
-    }
-
-    pub async fn branch_entries_of_types(
-        &self,
-        custom_types: &[&str],
-        after_seq: Option<u64>,
-    ) -> Result<(Vec<Value>, bool), String> {
-        let first_type = custom_types.first().copied().ok_or_else(|| {
-            "get_session_branch: at least one custom type is required".to_string()
-        })?;
-        let (mut entries, filtered) = self.branch_entries_request(first_type, after_seq).await?;
-        if !filtered || custom_types.len() == 1 {
-            // An old host ignores customType and returns the complete branch.
-            // Do not issue a second expensive full-transcript request.
-            return Ok((entries, filtered));
-        }
-
-        for custom_type in &custom_types[1..] {
-            let (mut extra, extra_filtered) =
-                self.branch_entries_request(custom_type, after_seq).await?;
-            if !extra_filtered {
-                // The host stopped honoring filters; this response is already
-                // the authoritative complete branch.
-                return Ok((extra, false));
-            }
-            entries.append(&mut extra);
-        }
-        entries.sort_by_key(|entry| entry.get("seq").and_then(Value::as_u64));
-        Ok((entries, true))
-    }
-
-    async fn branch_entries_request(
-        &self,
-        custom_type: &str,
-        after_seq: Option<u64>,
-    ) -> Result<(Vec<Value>, bool), String> {
-        let mut params = json!({"customType": custom_type});
-        if let Some(after_seq) = after_seq {
-            params["afterSeq"] = json!(after_seq);
-        }
-        let data = self.runtime_command("get_session_branch", params).await?;
-        let entries = data
-            .get("entries")
-            .and_then(Value::as_array)
-            .cloned()
-            .ok_or_else(|| "get_session_branch: invalid entries data".to_string())?;
-        let filtered = data
-            .get("filtered")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        Ok((entries, filtered))
     }
 
     /// Append a protocol-neutral custom entry to the native session branch.
@@ -1222,12 +1170,8 @@ async fn publish(
     history: &Arc<Mutex<VecDeque<BufferedEvent>>>,
     state: &Arc<RwLock<HostState>>,
     seq: &AtomicU64,
-    value: Value,
+    mut value: Value,
 ) {
-    let kind = value
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("message");
     // History is the publication gate. Acquire both locks before allocating a
     // sequence or changing state, and keep them through the synchronous send.
     // There must be no await after mutation starts: cancellation then leaves
@@ -1236,6 +1180,8 @@ async fn publish(
     let mut state = state.write().await;
     let next = seq.fetch_add(1, Ordering::SeqCst) + 1;
     {
+        state.live_message.project(&mut value);
+        let kind = value["type"].as_str().unwrap_or("message");
         state.last_seq = next;
         state.updated_at = now_ms();
         match kind {
@@ -1502,6 +1448,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compact_live_projection_is_replayable_without_changing_raw_frames() {
+        let (writer, _peer) = tokio::io::duplex(4096);
+        let (session, _injector) = HostSession::test_connection(writer, 32);
+        let mut raw_receiver = session.subscribe_raw();
+        let mut projected_receiver = session.subscribe();
+        let frames: Vec<Value> =
+            serde_json::from_str(include_str!("../tests/fixtures/compact-deltas.json")).unwrap();
+        let mut tracker = crate::run::RunTracker::new(json!("prompt"));
+        tracker.observe(
+            &json!({"type":"response","id":"prompt","success":true,"data":{"accepted":true}}),
+            false,
+        );
+        for (index, raw) in frames.iter().enumerate() {
+            // Same ordering as the native reader: raw first, projection second.
+            session.runtime.raw_events.send(raw.clone()).unwrap();
+            publish(
+                &session.runtime.events,
+                &session.runtime.history,
+                &session.runtime.state,
+                &session.runtime.seq,
+                raw.clone(),
+            )
+            .await;
+            assert_eq!(raw_receiver.recv().await.unwrap(), *raw);
+            let projected = projected_receiver.recv().await.unwrap();
+            assert_eq!(projected.seq, index as u64 + 1);
+            let replay = session.history(Some(index as u64)).await;
+            assert_eq!(replay.len(), 1);
+            assert_eq!(replay[0].value, projected.value);
+            if raw["eventType"] == "text_delta" || raw["eventType"] == "thinking_delta" {
+                assert!(raw.get("message").is_none());
+                assert_eq!(projected.value["message"]["role"], "assistant");
+            }
+            let progress = tracker.observe(raw, false);
+            if raw["type"] == "agent_settled" {
+                assert_eq!(
+                    progress.outcome,
+                    Some(Ok(crate::run::RunOutcome::Completed))
+                );
+            } else {
+                assert!(progress.outcome.is_none(), "message_end is not settlement");
+            }
+        }
+        assert_eq!(session.snapshot().await.status, "ready");
+        assert_eq!(session.snapshot().await.last_seq, frames.len() as u64);
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn branch_query_uses_one_custom_types_request_and_preserves_native_order() {
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (session, injector) = HostSession::test_connection(writer, 16);
+        assert!(session.branch_entries_of_types(&[]).await.is_err());
+        assert!(session.branch_entries_of_types(&[" "]).await.is_err());
+        let entries = json!([
+            {"id":"b","seq":8,"type":"custom","customType":"second"},
+            {"id":"a","seq":3,"type":"custom","customType":"first"}
+        ]);
+        let expected = entries.as_array().unwrap().clone();
+        let fixture = tokio::spawn(async move {
+            let mut lines = BufReader::new(peer).lines();
+            let request: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request["type"], "get_session_branch");
+            assert_eq!(request["customTypes"], json!(["first", "second"]));
+            assert!(request.get("customType").is_none());
+            injector
+                .send(json!({"type":"response","id":request["id"],"success":true,
+                "data":{"filtered":true,"entries":entries}}))
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), lines.next_line())
+                    .await
+                    .is_err(),
+                "multiple types must not cause multiple branch requests"
+            );
+        });
+        assert_eq!(
+            session
+                .branch_entries_of_types(&["first", "second"])
+                .await
+                .unwrap(),
+            expected
+        );
+        fixture.await.unwrap();
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn branch_query_rejects_unfiltered_and_malformed_replies() {
+        for data in [
+            json!({"entries":[]}),
+            json!({"filtered":false,"entries":[]}),
+            json!({"filtered":"true","entries":[]}),
+            json!({"filtered":true}),
+            json!({"filtered":true,"entries":{}}),
+        ] {
+            let (writer, peer) = tokio::io::duplex(4096);
+            let (session, injector) = HostSession::test_connection(writer, 16);
+            let fixture = tokio::spawn(async move {
+                let mut lines = BufReader::new(peer).lines();
+                let request: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                injector
+                    .send(json!({"type":"response","id":request["id"],"success":true,"data":data}))
+                    .unwrap();
+            });
+            assert!(session
+                .branch_entries_of_types(&["durable-state"])
+                .await
+                .is_err());
+            fixture.await.unwrap();
+            session.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
     async fn forced_close_and_shutdown_timeout_finalize_all_session_observers_once() {
         for graceful in [false, true] {
             let root = std::env::temp_dir().join(format!("rpi-close-{}", uuid::Uuid::new_v4()));
@@ -1687,6 +1750,7 @@ mod tests {
         let (events, _) = broadcast::channel(16);
         let history = Arc::new(Mutex::new(VecDeque::new()));
         let state = Arc::new(RwLock::new(HostState {
+            live_message: Default::default(),
             status: "ready".into(),
             last_error: None,
             latest_settlement: None,

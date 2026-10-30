@@ -439,7 +439,10 @@ export function isMarkdownText(text: string): boolean {
 
 export type ToolStatus = "pending" | "running" | "done" | "error";
 
-export type Row =
+export type Row = RowContent & { entryId?: string };
+
+type RowContent =
+  | { kind: "boundary"; id: string }
   | { kind: "text"; id: string; role: "user" | "assistant"; text: string }
   | { kind: "image"; id: string; role: "user" | "assistant"; image: ImageBlock }
   | { kind: "thinking"; id: string; text: string }
@@ -548,6 +551,17 @@ export function resultOf(message: Record<string, unknown>): unknown {
   return (message.content as unknown) ?? "";
 }
 
+/** Keep user text IDs compatible while projecting native image blocks too. */
+export function rowsFromUser(message: unknown, prefix: string): Row[] {
+  const rows: Row[] = [];
+  const text = textOf(message);
+  if (text) rows.push({ kind: "text", id: prefix, role: "user", text });
+  imageBlocksOf(message).forEach((image, index) => {
+    rows.push({ kind: "image", id: `${prefix}:image${index}`, role: "user", image });
+  });
+  return rows;
+}
+
 /**
  * Project a native `get_messages` snapshot into rows, keeping message order and
  * folding each tool result into the row of the call it answers.
@@ -562,10 +576,10 @@ export function rowsFromMessages(raw: unknown[]): Row[] {
     // index only backs it when a source lacks one (older hosts).
     const key =
       typeof message.entryId === "string" ? message.entryId : `s${index}`;
-
+    const before = rows.length;
+    try {
     if (role === "user") {
-      const text = textOf(value);
-      if (text) rows.push({ kind: "text", id: key, role: "user", text });
+      rows.push(...rowsFromUser(message, key));
       return;
     }
 
@@ -592,6 +606,9 @@ export function rowsFromMessages(raw: unknown[]): Row[] {
             timing: toolTiming(message.webTiming) ?? row.timing,
           };
         }
+        // Tool results fold into an earlier card, but their chronological
+        // boundary must stay here: a stopped run can end on this result.
+        rows.push({ kind: "boundary", id: `${key}:end` });
         return;
       }
       rows.push({
@@ -603,6 +620,7 @@ export function rowsFromMessages(raw: unknown[]): Row[] {
         status,
         timing: toolTiming(message.webTiming),
       });
+      rows.push({ kind: "boundary", id: `${key}:end` });
       return;
     }
 
@@ -624,6 +642,13 @@ export function rowsFromMessages(raw: unknown[]): Row[] {
     // `custom` covers injected notices such as an automatic continue.
     const text = textOf(value);
     if (text) rows.push({ kind: "note", id: key, text });
+    } finally {
+      // Multiple projected blocks share one native entry. The footer goes
+      // after its last row, never after every text/tool/image block.
+      if (typeof message.entryId === "string") {
+        for (let n = before; n < rows.length; n++) rows[n].entryId = message.entryId;
+      }
+    }
   });
   return rows;
 }
@@ -651,6 +676,8 @@ export function prependRows(older: Row[], current: Row[]): Row[] {
       result: row.result ?? candidate.result,
       images: row.images ?? candidate.images,
       timing: row.timing ?? candidate.timing,
+      entryId: row.result !== undefined ? row.entryId ?? candidate.entryId
+        : candidate.result !== undefined ? candidate.entryId ?? row.entryId : row.entryId ?? candidate.entryId,
       status:
         row.status === "error" || row.status === "done"
           ? row.status

@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { api, type Project, type SessionSummary } from "./api";
 import { translate, type Language } from "./i18n";
+import { SessionIssueBadge } from "./SessionIssueBadge";
 import { createPortal } from "react-dom";
 type FolderNode = {
   name: string;
@@ -147,12 +148,14 @@ export function ConfirmDialog({
   message,
   onClose,
   onConfirm,
+  confirmLabel,
 }: {
   language: Language;
   title: string;
   message: string;
   onClose: () => void;
   onConfirm: () => void;
+  confirmLabel?: string;
 }) {
   return (
     <Modal language={language} title={title} onClose={onClose}>
@@ -163,7 +166,7 @@ export function ConfirmDialog({
             {translate(language, "cancel")}
           </button>
           <button type="button" className="danger" onClick={onConfirm}>
-            {translate(language, "submit")}
+            {confirmLabel ?? translate(language, "submit")}
           </button>
         </div>
       </div>
@@ -747,7 +750,9 @@ interface SidebarProps {
   onNewProject: () => void;
   onRename: (session: SessionSummary) => void;
   onRenameProject: (project: Project) => void;
+  onProjectMetadata: (project: Project, archived: boolean) => Promise<void>;
   onEditTags: (session: SessionSummary) => void;
+  onDelete: (session: SessionSummary) => void;
   onMetadata: (
     session: SessionSummary,
     patch: { pinned?: boolean; archived?: boolean; tags?: string[] },
@@ -770,7 +775,9 @@ export function ProjectSidebar({
   onNewProject,
   onRename,
   onRenameProject,
+  onProjectMetadata,
   onEditTags,
+  onDelete,
   onMetadata,
 }: SidebarProps) {
   const zh = language === "zh";
@@ -845,6 +852,16 @@ export function ProjectSidebar({
       setPending("");
     }
   }
+  async function projectMetadata(project: Project, archived: boolean) {
+    if (pending) return;
+    setPending(`project:${project.id}`);
+    setMenu("");
+    try {
+      await onProjectMetadata(project, archived);
+    } finally {
+      setPending("");
+    }
+  }
   function sessionRow(session: SessionSummary) {
     const title = session.title || (zh ? "新会话" : "New session");
     const running = ["running", "starting", "awaiting_input"].includes(
@@ -884,6 +901,7 @@ export function ProjectSidebar({
             {session.relation && <span className="fork-label">↳ </span>}
             {title}
           </span>
+          <SessionIssueBadge session={session} language={language} />
           {draftSessionIds.has(session.sessionId) && (
             <span
               className="session-draft"
@@ -990,6 +1008,17 @@ export function ProjectSidebar({
                         ? "归档"
                         : "Archive"}
                   </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu("");
+                      onDelete(session);
+                    }}
+                  >
+                    <X size={14} />
+                    {zh ? "永久删除" : "Delete permanently"}
+                  </button>
+
                 </div>,
                 document.body,
               )}
@@ -999,7 +1028,19 @@ export function ProjectSidebar({
     );
   }
   const fallback: Project = { id: "", name: zh ? "会话" : "Chats", path: "" };
-  const groups = projects.length ? projects : [fallback];
+  const catalog = projects.length ? projects : [fallback];
+  const belongsToProject = (session: SessionSummary, project: Project) =>
+    !projects.length ||
+    session.projectId === project.id ||
+    (!session.projectId && project.id === catalog[0].id);
+  const groups = catalog.filter((project) =>
+    archived
+      ? Boolean(project.archived) ||
+        sessions.some(
+          (session) => session.archived && belongsToProject(session, project),
+        )
+      : !project.archived,
+  );
   return (
     <div className="project-navigation">
       <div className="sidebar-primary-actions">
@@ -1029,7 +1070,15 @@ export function ProjectSidebar({
                   ? "查看已归档"
                   : "Show archived chats"
             }
-            title={zh ? "已归档会话" : "Archived chats"}
+            title={
+              zh
+                ? archived
+                  ? "已归档项目和会话"
+                  : "查看已归档项目和会话"
+                : archived
+                  ? "Archived projects and chats"
+                  : "Show archived projects and chats"
+            }
             onClick={() => setArchived(!archived)}
           >
             <Archive size={14} />
@@ -1054,10 +1103,9 @@ export function ProjectSidebar({
           const chats = sessions
             .filter(
               (session) =>
-                (!projects.length ||
-                  session.projectId === project.id ||
-                  (!session.projectId && project.id === groups[0].id)) &&
-                Boolean(session.archived) === archived,
+                belongsToProject(session, project) &&
+                (Boolean(project.archived) ||
+                  Boolean(session.archived) === archived),
             )
             .sort(
               (a, b) =>
@@ -1137,6 +1185,25 @@ export function ProjectSidebar({
                             <SquarePen size={14} />
                             {zh ? "重命名" : "Rename"}
                           </button>
+                          <button
+                            role="menuitem"
+                            onClick={() =>
+                              void projectMetadata(project, !project.archived)
+                            }
+                          >
+                            {project.archived ? (
+                              <ArchiveRestore size={14} />
+                            ) : (
+                              <Archive size={14} />
+                            )}
+                            {project.archived
+                              ? zh
+                                ? "恢复项目"
+                                : "Restore project"
+                              : zh
+                                ? "归档项目"
+                                : "Archive project"}
+                          </button>
                         </div>,
                         document.body,
                       )}
@@ -1154,7 +1221,7 @@ export function ProjectSidebar({
                     });
                     onNewSession(project.id);
                   }}
-                  disabled={creating}
+                  disabled={archived || Boolean(project.archived) || creating}
                 >
                   <Plus size={14} />
                 </button>
@@ -1169,9 +1236,13 @@ export function ProjectSidebar({
                       onClick={() => onNewSession(project.id)}
                     >
                       {archived
-                        ? zh
-                          ? "没有已归档会话"
-                          : "No archived chats"
+                        ? project.archived
+                          ? zh
+                            ? "没有会话"
+                            : "No chats"
+                          : zh
+                            ? "没有已归档会话"
+                            : "No archived chats"
                         : zh
                           ? "开始第一个会话"
                           : "Start your first chat"}

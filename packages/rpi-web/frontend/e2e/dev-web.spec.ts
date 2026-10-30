@@ -2,6 +2,9 @@ import { chooseMenuOption } from "./controls";
 import { test, expect, type Page, type Route } from "@playwright/test";
 
 const sessionId = "session-1";
+// Match the endpoint independently of api.snapshot's optional query parameters.
+const snapshotRoute = (url: URL) =>
+  url.pathname === `/api/v1/sessions/${sessionId}/snapshot`;
 
 function assertBoundedSnapshotQuery(url: URL) {
   expect(url.searchParams.get("limit")).toBe("40");
@@ -77,8 +80,8 @@ function response(data: unknown, command = "mock") {
 
 async function mockHost(page: Page) {
   const projects = [
-    { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust" },
-    { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package" },
+    { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust", archived: false },
+    { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package", archived: false },
   ];
   const sessions: Array<
     typeof session & { pinned?: boolean; archived?: boolean }
@@ -126,6 +129,15 @@ async function mockHost(page: Page) {
       if (!project)
         return route.fulfill({ status: 404, json: { error: "missing" } });
       project.name = body.name;
+      return route.fulfill({ json: { project } });
+    }
+    if (/\/projects\/[^/]+\/metadata$/.test(path)) {
+      const body = request.postDataJSON() as { archived: boolean };
+      const id = path.split("/")[4];
+      const project = projects.find((entry) => entry.id === id);
+      if (!project)
+        return route.fulfill({ status: 404, json: { error: "missing" } });
+      project.archived = body.archived;
       return route.fulfill({ json: { project } });
     }
     if (/\/projects\/[^/]+\/files$/.test(path)) {
@@ -207,6 +219,12 @@ async function mockHost(page: Page) {
           status: "ready",
         },
       });
+    }
+    if (/\/sessions\/[^/]+$/.test(path) && request.method() === "DELETE") {
+      const id = path.split("/")[4];
+      const index = sessions.findIndex((entry) => entry.sessionId === id);
+      if (index >= 0) sessions.splice(index, 1);
+      return route.fulfill({ status: 204, body: "" });
     }
     if (/\/sessions\/[^/]+\/metadata$/.test(path)) {
       const entry = sessions.find((s) => s.sessionId === path.split("/")[4]);
@@ -392,14 +410,22 @@ test("capabilities gate the history and queue inspector", async ({ page }) => {
       .locator(".inspector .queue-item")
       .getByRole("button", { name: "Send now: pending", exact: true }),
   ).toBeVisible();
+  const cancel = page.waitForRequest(
+    (request) =>
+      request.url().endsWith(`/sessions/${sessionId}/commands`) &&
+      request.method() === "POST" &&
+      request.postDataJSON()?.type === "cancel_queued",
+  );
   await page
     .locator(".inspector .queue-item")
     .getByRole("button", { name: "Edit queued message" })
     .click();
+  await expect((await cancel).postDataJSON()).toMatchObject({
+    entryId: "queue-2",
+  });
   await expect(page.locator(".composer textarea")).toHaveValue("pending");
-  await expect(page.locator(".composer-queue-editing")).toContainText(
-    "Edit queued message",
-  );
+  await expect(page.locator(".composer-queue-editing")).toHaveCount(0);
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(0);
 });
 
 test("a stopped session can send a selected queued message now", async ({
@@ -619,11 +645,59 @@ test("projects can be renamed from the project actions menu", async ({
     }),
   ).not.toBeVisible();
 });
+test("projects can be archived and restored from the project actions menu", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Project actions: pi-rust", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Archive project", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Project actions: pi-rust", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Restore project", exact: true }).click();
+  await page.getByRole("button", { name: "Show projects", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "pi-rust", exact: true }),
+  ).toBeVisible();
+});
+
+for (const width of [1280, 390]) {
+  test(`project actions are visible without hover at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await mockHost(page);
+    await page.goto("/");
+    if (width < 768) {
+      await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
+    }
+    await page.mouse.move(width - 1, 843);
+    const actions = page.getByRole("button", {
+      name: "Project actions: pi-rust",
+      exact: true,
+    });
+    await expect(actions).toBeVisible();
+    await expect(actions).toHaveCSS("opacity", "1");
+    await actions.click();
+    await expect(
+      page.getByRole("menuitem", { name: "Archive project", exact: true }),
+    ).toBeVisible();
+  });
+}
+
 test("opening an existing folder is searchable and fills its project name", async ({
   page,
 }) => {
   await mockHost(page);
-  let createdBody: Record<string, unknown> | undefined;
+  let createdBody: unknown;
   await page.route("**/api/v1/projects", async (route) => {
     if (route.request().method() === "POST") {
       createdBody = route.request().postDataJSON();
@@ -738,6 +812,24 @@ test("session tags can be edited without sidebar filters", async ({ page }) => {
   await expect(
     page.locator(".session-tag", { hasText: "urgent" }),
   ).toBeVisible();
+});
+test("sessions can be permanently deleted from the session actions menu", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Session actions: Mock session", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Delete permanently", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Delete session permanently" }),
+  ).toContainText("This cannot be undone.");
+  await page
+    .getByRole("dialog", { name: "Delete session permanently" })
+    .getByRole("button", { name: "Delete permanently", exact: true })
+    .click();
+  await expect(page.getByRole("heading", { name: "Mock session" })).toHaveCount(0);
 });
 test("project navigation collapses and remembers appearance", async ({
   page,
@@ -1263,6 +1355,37 @@ test("uploads a file and includes its workspace path in the prompt", async ({
   });
 });
 
+test("previews image attachments when the browser omits the MIME type", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Mock session" }),
+  ).toBeVisible();
+  // setInputFiles infers MIME from the filename, even when mimeType is omitted.
+  // Dispatch a real File with an explicitly empty type to exercise the fallback.
+  const fileType = await page
+    .locator('input[type="file"]')
+    .evaluate((input: HTMLInputElement, base64) => {
+      const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], "Screenshot.png", { type: "" }));
+      input.files = transfer.files;
+      const type = input.files[0].type;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return type;
+    }, "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+  expect(fileType).toBe("");
+  const preview = page.locator(".composer-attachment img");
+  await expect(preview).toHaveCount(1);
+  await expect
+    .poll(() =>
+      preview.evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBeGreaterThan(0);
+});
+
 test("renders image blocks returned in the transcript", async ({ page }) => {
   await mockHost(page);
   await routeSnapshot(page, (route) =>
@@ -1296,8 +1419,622 @@ test("renders image blocks returned in the transcript", async ({ page }) => {
     }),
   );
   await page.goto("/");
-  await expect(page.locator(".transcript-image img")).toHaveCount(2);
+  const images = page.locator(".transcript-image img");
+  await expect(images).toHaveCount(2);
+  for (const image of await images.all()) {
+    await expect
+      .poll(() =>
+        image.evaluate((element: HTMLImageElement) => element.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+  }
 });
+const imagePng =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const nativeUserImage = {
+  role: "user",
+  entryId: "user-image",
+  timestamp: 1_700_000_000_000,
+  content: [
+    { type: "text", text: "Inspect this image" },
+    { type: "image", data: imagePng, mimeType: "image/png" },
+  ],
+};
+
+test("Markdown data images decode without allowing unsafe links or HTML", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "assistant",
+            entryId: "markdown-image",
+            content: [
+              {
+                type: "text",
+                text: [
+                  `![inline PNG](data:image/png;base64,${imagePng})`,
+                  `[image link](data:image/png;base64,${imagePng})`,
+                  "[unsafe link](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+                  "[script link](javascript:alert%281%29)",
+                  "![unsafe image](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+                  '<img src="/raw-html-image.png" onerror="alert(1)">',
+                ].join("\n\n"),
+              },
+            ],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  const image = page.getByAltText("inline PNG");
+  await expect(image).toHaveAttribute(
+    "src",
+    `data:image/png;base64,${imagePng}`,
+  );
+  await expect
+    .poll(() => image.evaluate((e: HTMLImageElement) => e.naturalWidth))
+    .toBeGreaterThan(0);
+  for (const label of ["unsafe link", "script link", "image link"]) {
+    await expect(
+      page.locator(".prose a").filter({ hasText: label }),
+    ).not.toHaveAttribute("href", /^(data|javascript):/i);
+  }
+  await expect(page.getByAltText("unsafe image")).not.toHaveAttribute(
+    "src",
+    /^data:/i,
+  );
+  await expect(page.locator('img[src="/raw-html-image.png"]')).toHaveCount(0);
+});
+
+for (const imageOnly of [false, true]) {
+  test(`user ${imageOnly ? "image-only" : "text and image"} messages survive snapshot and reload`, async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          messages: [
+            {
+              ...nativeUserImage,
+              content: imageOnly
+                ? nativeUserImage.content.slice(1)
+                : nativeUserImage.content,
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+    );
+    for (const reload of [false, true]) {
+      if (reload) await page.reload();
+      else await page.goto("/");
+      const images = page.locator(".transcript-image img");
+      await expect(images).toHaveCount(1);
+      await expect
+        .poll(() =>
+          images.first().evaluate((e: HTMLImageElement) => e.naturalWidth),
+        )
+        .toBeGreaterThan(0);
+      if (!imageOnly)
+        await expect(
+          page.getByText("Inspect this image", { exact: true }),
+        ).toHaveCount(1);
+    }
+  });
+}
+
+test("live user images render at start and are replaced rather than duplicated at end", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let finish!: () => void;
+  const ended = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [],
+        events: [
+          {
+            seq: 5,
+            event: { type: "message_start", message: nativeUserImage },
+          },
+        ],
+        lastSeq: 5,
+        total: 0,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      await ended;
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `event: ready\ndata: {"type":"ready"}\n\nid: 6\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message: { ...nativeUserImage, content: [{ type: "text", text: "Image received" }, nativeUserImage.content[1]] } })}\n\n`,
+      });
+    },
+  );
+  try {
+    await page.goto("/");
+    const images = page.locator(".transcript-image img");
+    await expect(images).toHaveCount(1);
+    finish();
+    await expect(
+      page.getByText("Image received", { exact: true }),
+    ).toBeVisible();
+    await expect(images).toHaveCount(1);
+    await expect(
+      page.getByText("Inspect this image", { exact: true }),
+    ).toHaveCount(0);
+    await expect
+      .poll(() =>
+        images.first().evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+  } finally {
+    finish();
+  }
+});
+
+test("snapshot overlap does not duplicate committed user images", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [nativeUserImage],
+        events: [
+          {
+            seq: 5,
+            event: { type: "message_start", message: nativeUserImage },
+          },
+          { seq: 6, event: { type: "message_end", message: nativeUserImage } },
+        ],
+        lastSeq: 6,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  await expect(page.locator(".transcript-image img")).toHaveCount(1);
+  await expect(
+    page.getByText("Inspect this image", { exact: true }),
+  ).toHaveCount(1);
+});
+
+for (const source of [
+  "/artifacts/theme-design-mobile-390.png",
+  "artifacts/theme-design-mobile-390.png",
+  "./artifacts/theme-design-mobile-390.png",
+  "http://127.0.0.1:4191/artifacts/theme-design-mobile-390.png",
+]) {
+  test(`project image URLs resolve and decode instead of receiving SPA HTML: ${source}`, async ({
+    page,
+    baseURL,
+  }) => {
+    const imageSource = source.replace("http://127.0.0.1:4191", baseURL!);
+    await mockHost(page);
+    await page.route(
+      (url) => url.pathname === "/api/v1/projects/project-a/image",
+      (route) => {
+        expect(new URL(route.request().url()).searchParams.get("path")).toBe(
+          "artifacts/theme-design-mobile-390.png",
+        );
+        return route.fulfill({
+          contentType: "image/png",
+          body: Buffer.from(imagePng, "base64"),
+        });
+      },
+    );
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          messages: [
+            {
+              role: "assistant",
+              entryId: "local-image",
+              content: [
+                { type: "text", text: `![Project image](${imageSource})` },
+                { type: "image_url", image_url: { url: imageSource } },
+              ],
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+    );
+    await page.goto("/");
+    const markdown = page.getByAltText("Project image").first();
+    await expect(markdown).toHaveAttribute(
+      "src",
+      "/api/v1/projects/project-a/image?path=artifacts%2Ftheme-design-mobile-390.png",
+    );
+    await expect
+      .poll(() => markdown.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    const native = page.locator(".transcript-image img");
+    await expect
+      .poll(() => native.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    await markdown.focus();
+    await markdown.press("Enter");
+    const viewer = page.getByRole("dialog", {
+      name: "Image viewer",
+      exact: true,
+    });
+    await expect(viewer).toBeVisible();
+    await expect
+      .poll(() =>
+        viewer.locator("img").evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+  });
+}
+
+test("project image resolution isolates identical paths across projects and reload", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(
+    (url) => url.pathname === "/api/v1/sessions",
+    (route) =>
+      route.fulfill({
+        json: {
+          sessions: [
+            session,
+            {
+              ...session,
+              sessionId: "session-2",
+              projectId: "project-b",
+              title: "Other image session",
+            },
+          ],
+        },
+      }),
+  );
+  await page.route(
+    (url) => /^\/api\/v1\/projects\/project-[ab]\/image$/.test(url.pathname),
+    (route) =>
+      route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(imagePng, "base64"),
+      }),
+  );
+  await page.route(
+    (url) => /\/sessions\/[^/]+\/snapshot$/.test(url.pathname),
+    (route) =>
+      route.fulfill({
+        json: {
+          sessionId: route.request().url().includes("session-2")
+            ? "session-2"
+            : sessionId,
+          messages: [
+            {
+              role: "assistant",
+              entryId: "same-path",
+              content: [
+                { type: "text", text: "![Scoped image](/artifacts/same.png)" },
+              ],
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+  );
+  await page.goto("/");
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-a\/image\?/,
+  );
+  const expand = page
+    .getByRole("region", { name: "rpi-package", exact: true })
+    .locator(".project-collapse");
+  if ((await expand.getAttribute("aria-expanded")) === "false")
+    await expand.click();
+  await page.getByRole("button", { name: /^Other image session/ }).click();
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-b\/image\?/,
+  );
+  await page.reload();
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-b\/image\?/,
+  );
+});
+
+test("project image resolution rejects traversal and unsupported schemes without rewriting external images", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let resourceRequests = 0;
+  await page.route(
+    (url) => url.pathname.endsWith("/image"),
+    (route) => {
+      resourceRequests++;
+      return route.fulfill({
+        status: 403,
+        json: { error: "unexpected local image request" },
+      });
+    },
+  );
+  await page.route("https://example.com/external.png", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(imagePng, "base64"),
+    }),
+  );
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "assistant",
+            entryId: "blocked-images",
+            content: [
+              {
+                type: "text",
+                text: [
+                  "![Parent](../outside.png)",
+                  "![Encoded parent](artifacts/%2e%2e/outside.png)",
+                  "![Local file](file:///private/outside.png)",
+                  "![Script](javascript:alert%281%29)",
+                  "![External](https://example.com/external.png)",
+                ].join("\n\n"),
+              },
+            ],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  for (const alt of ["Parent", "Encoded parent", "Local file", "Script"]) {
+    await expect(page.getByAltText(alt, { exact: true })).not.toHaveAttribute(
+      "src",
+      /.+/,
+    );
+  }
+  await expect(page.getByAltText("External")).toHaveAttribute(
+    "src",
+    "https://example.com/external.png",
+  );
+  await expect
+    .poll(() =>
+      page
+        .getByAltText("External")
+        .evaluate((e: HTMLImageElement) => e.naturalWidth),
+    )
+    .toBeGreaterThan(0);
+  expect(resourceRequests).toBe(0);
+});
+
+async function mockImageViewer(page: Page) {
+  await mockHost(page);
+  const photo = (alt: string) => ({
+    type: "image",
+    data: imagePng,
+    mimeType: "image/png",
+    alt,
+  });
+  await page.route("**/viewer-large.svg", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"><rect width="3000" height="2000" fill="#387aa5"/></svg>',
+    }),
+  );
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "user",
+            entryId: "viewer-user",
+            content: [photo("User photo")],
+          },
+          {
+            role: "assistant",
+            entryId: "viewer-assistant",
+            content: [
+              photo("Assistant photo"),
+              {
+                type: "text",
+                text: "![Markdown photo](/viewer-large.svg)\n\n[![Linked photo](/viewer-large.svg)](/should-not-navigate)",
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            entryId: "viewer-tool",
+            toolCallId: "photo-tool",
+            toolName: "read",
+            content: [photo("Tool photo")],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 3,
+        hasMore: false,
+      },
+    }),
+  );
+}
+
+for (const label of [
+  "User photo",
+  "Assistant photo",
+  "Tool photo",
+  "Markdown photo",
+  "Linked photo",
+]) {
+  test(`image viewer opens ${label} without navigation and restores focus`, async ({
+    page,
+  }) => {
+    await mockImageViewer(page);
+    let navigations = 0;
+    await page.route("**/should-not-navigate", (route) => {
+      navigations++;
+      return route.fulfill({
+        contentType: "text/html",
+        body: "Unexpected navigation",
+      });
+    });
+    await page.goto("/");
+    if (label === "Tool photo")
+      await page.locator(".tool-card > summary").click();
+    const thumbnail = page.getByAltText(label).first();
+    await thumbnail.scrollIntoViewIfNeeded();
+    await expect
+      .poll(() => thumbnail.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    const source = await thumbnail.evaluate(
+      (e: HTMLImageElement) => e.currentSrc,
+    );
+    const overflow = await page.evaluate(() => document.body.style.overflow);
+    await thumbnail.click();
+    const viewer = page.getByRole("dialog", {
+      name: "Image viewer",
+      exact: true,
+    });
+    await expect(viewer).toBeVisible();
+    await expect(viewer.locator("img")).toHaveAttribute("src", source);
+    await expect
+      .poll(() =>
+        viewer.locator("img").evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe(
+      "hidden",
+    );
+    await viewer.locator("img").click();
+    await expect(viewer).toBeVisible();
+    await viewer.getByRole("button", { name: "Close dialog" }).click();
+    await expect(viewer).toHaveCount(0);
+    await expect(thumbnail).toBeFocused();
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe(
+      overflow,
+    );
+    expect(new URL(page.url()).pathname).toBe("/");
+    expect(navigations).toBe(0);
+  });
+}
+
+test("image viewer supports keyboard open, trapped focus, Escape and backdrop close", async ({
+  page,
+}) => {
+  await mockImageViewer(page);
+  await page.goto("/");
+  const thumbnail = page.getByAltText("User photo").first();
+  await thumbnail.focus();
+  await page.keyboard.press("Enter");
+  const viewer = page.getByRole("dialog", {
+    name: "Image viewer",
+    exact: true,
+  });
+  await expect(viewer).toBeVisible();
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Original size" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Original size" }),
+  ).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(viewer).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(viewer).toBeVisible();
+  await page.mouse.click(2, 2);
+  await expect(viewer).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+});
+
+test("image viewer fits a mobile viewport and toggles original size in Chinese", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() =>
+    localStorage.setItem("rpi-web-language", "zh"),
+  );
+  await mockImageViewer(page);
+  await page.goto("/");
+  await page.getByAltText("Markdown photo").click();
+  const viewer = page.getByRole("dialog", { name: "图片查看器", exact: true });
+  await expect(viewer).toBeVisible();
+  const image = viewer.locator("img");
+  await expect
+    .poll(() => image.evaluate((e: HTMLImageElement) => e.naturalWidth))
+    .toBe(3000);
+  const fitted = await image.boundingBox();
+  expect(fitted!.width).toBeLessThan(390);
+  expect(fitted!.height).toBeLessThan(844);
+  await viewer.getByRole("button", { name: "原始尺寸" }).click();
+  await expect
+    .poll(() =>
+      image.evaluate((e: HTMLImageElement) => e.getBoundingClientRect().width),
+    )
+    .toBe(3000);
+  const viewport = viewer.locator(".image-viewer-viewport");
+  expect(await viewport.evaluate((e) => e.scrollWidth > e.clientWidth)).toBe(
+    true,
+  );
+  await viewer.getByRole("button", { name: "适应窗口" }).click();
+  await expect
+    .poll(() =>
+      image.evaluate((e: HTMLImageElement) => e.getBoundingClientRect().width),
+    )
+    .toBeLessThan(390);
+  await viewer.getByRole("button", { name: "关闭对话框" }).click();
+  await expect(viewer).toHaveCount(0);
+});
+
 test("streamed markdown handles incomplete fences and stays formatted in dark mode", async ({
   page,
 }, testInfo) => {
@@ -4495,7 +5232,7 @@ test("edit tool renders a file diff and powershell renders as a terminal", async
   await expect(page.locator(".edit-card")).toHaveCSS("border-radius", "0px");
   await page.locator(".edit-card > summary").click();
   await expect(page.locator(".edit-path")).toContainText("src/app.ts");
-  await page.locator(".edit-content > summary").click();
+  await expect(page.locator(".edit-line.remove")).toBeVisible();
   await expect(page.locator(".edit-line.remove")).toContainText("const a = 1;");
   await expect(page.locator(".edit-line.add")).toContainText("const a = 2;");
   await expect(page.locator(".shell-card")).toBeVisible();
@@ -4823,4 +5560,3209 @@ test("mobile composer footer keeps model picker usable beside session metrics", 
   expect(popoverBox!.y + popoverBox!.height).toBeLessThanOrEqual(844);
   await page.getByRole("option", { name: "Mobile model" }).click();
   await expect(popover).toBeHidden();
+});
+
+// Keep the initial transcript tall enough that top paging cannot be confused
+// with bottom-following, including at mobile widths.
+const upwardPagingMessages = Array.from({ length: 20 }, (_, index) => ({
+  role: "user",
+  entryId: `scroll-current-${index}`,
+  content: Array.from(
+    { length: 8 },
+    (_, line) =>
+      `Current message ${index}, line ${line}: enough history to scroll.`,
+  ).join("\n"),
+}));
+
+async function mockUpwardPaging(page: Page) {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: upwardPagingMessages,
+        events: [],
+        lastSeq: 4,
+        firstId: "scroll-current-0",
+        hasMore: true,
+      },
+    }),
+  );
+}
+
+async function scrollPagingTo(page: Page, top: number) {
+  await page.locator(".transcript").evaluate(async (element, value) => {
+    element.scrollTop = value;
+    // Also exercise repeated events at the same position (trackpad/held scroll).
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  }, top);
+}
+
+async function visiblePagingAnchor(page: Page) {
+  return page.locator(".transcript").evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    const row = Array.from(
+      element.querySelectorAll("[data-transcript-row]"),
+    ).find((item) => item.getBoundingClientRect().bottom > top + 20);
+    if (!row) throw new Error("Expected a visible transcript row");
+    return {
+      id: row.getAttribute("data-transcript-row")!,
+      offset: row.getBoundingClientRect().top - top,
+    };
+  });
+}
+
+async function expectPagingAnchor(
+  page: Page,
+  anchor: { id: string; offset: number },
+) {
+  await expect
+    .poll(() =>
+      page.locator(".transcript").evaluate((element, saved) => {
+        const row = Array.from(
+          element.querySelectorAll("[data-transcript-row]"),
+        ).find((item) => item.getAttribute("data-transcript-row") === saved.id);
+        if (!row) return Number.MAX_SAFE_INTEGER;
+        return Math.abs(
+          row.getBoundingClientRect().top -
+            element.getBoundingClientRect().top -
+            saved.offset,
+        );
+      }, anchor),
+    )
+    .toBeLessThanOrEqual(3);
+}
+
+for (const viewport of [
+  { name: "desktop", width: 1280, height: 900 },
+  { name: "mobile", width: 390, height: 844 },
+]) {
+  test(`upward paging: ${viewport.name} auto-loads 48 without a button click and stops at exhaustion`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({
+      width: viewport.width,
+      height: viewport.height,
+    });
+    await mockUpwardPaging(page);
+    const requests: Array<{ beforeId: string; limit: number }> = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages" || !body.beforeId)
+        return route.fallback();
+      requests.push(body);
+      return route.fulfill({
+        json: response(
+          {
+            messages: [
+              {
+                role: "user",
+                entryId: "scroll-oldest",
+                content: "Oldest auto-loaded message",
+              },
+            ],
+            firstId: "scroll-oldest",
+            hasMore: false,
+          },
+          "get_messages",
+        ),
+      });
+    });
+    await page.goto("/");
+    await expect(page.locator(".message.user")).toHaveCount(20);
+    await expect(
+      page.getByRole("button", { name: "Load earlier messages" }),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        page.locator(".transcript").evaluate((element) => element.scrollTop),
+      )
+      .toBeGreaterThan(160);
+    await page.waitForTimeout(250);
+    expect(requests).toHaveLength(0); // No initial automatic fetch.
+    await scrollPagingTo(page, 161);
+    expect(requests).toHaveLength(0);
+    await scrollPagingTo(page, 120);
+    await expect(
+      page.getByText("Oldest auto-loaded message", { exact: true }),
+    ).toBeVisible();
+    expect(requests).toMatchObject([
+      { beforeId: "scroll-current-0", limit: 48 },
+    ]);
+    await expect(
+      page.getByRole("button", { name: "Load earlier messages" }),
+    ).toHaveCount(0);
+    for (const top of [400, 100, 0, 400, 0]) await scrollPagingTo(page, top);
+    await page.waitForTimeout(250);
+    expect(requests).toHaveLength(1);
+  });
+}
+
+test("upward paging: held scrolling deduplicates requests and prepending preserves the visible row", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages" || !body.beforeId)
+        return route.fallback();
+      requests++;
+      await held;
+      return route.fulfill({
+        json: response(
+          {
+            messages: Array.from({ length: 8 }, (_, index) => ({
+              role: "user",
+              entryId: `scroll-older-${index}`,
+              content: `Prepended history ${index}\nSecond line\nThird line\nFourth line`,
+            })),
+            firstId: "scroll-older-0",
+            hasMore: true,
+          },
+          "get_messages",
+        ),
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect.poll(() => requests).toBe(1);
+  try {
+    for (const top of [110, 90, 130, 80, 100]) await scrollPagingTo(page, top);
+    await expect(
+      page.getByRole("button", { name: "Load earlier messages" }),
+    ).toBeDisabled();
+    expect(requests).toBe(1);
+    // Move while the request is held: capture must happen at response time.
+    await scrollPagingTo(page, 450);
+    const anchor = await visiblePagingAnchor(page);
+    release();
+    await expect(page.locator(".message.user")).toHaveCount(28);
+    await expectPagingAnchor(page, anchor);
+    await page.waitForTimeout(250);
+    await expectPagingAnchor(page, anchor);
+    expect(requests).toBe(1);
+  } finally {
+    release();
+  }
+});
+
+test("upward paging: a failed automatic cursor stays quiet until leaving and reentering the top", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  const cursors: string[] = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    cursors.push(body.beforeId);
+    if (cursors.length === 1)
+      return route.fulfill({
+        status: 503,
+        json: { error: "Temporary earlier history failure" },
+      });
+    return route.fulfill({
+      json: response(
+        {
+          messages: [
+            {
+              role: "user",
+              entryId: "scroll-retried",
+              content: "Retried earlier history",
+            },
+          ],
+          firstId: "scroll-retried",
+          hasMore: false,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect.poll(() => cursors.length).toBe(1);
+  const fallback = page.getByRole("button", { name: "Load earlier messages" });
+  await expect(fallback).toBeEnabled();
+  for (const top of [100, 60, 0, 120, 40]) await scrollPagingTo(page, top);
+  await page.waitForTimeout(350);
+  expect(cursors).toEqual(["scroll-current-0"]);
+  await scrollPagingTo(page, 400);
+  await scrollPagingTo(page, 120);
+  await expect(
+    page.getByText("Retried earlier history", { exact: true }),
+  ).toBeVisible();
+  expect(cursors).toEqual(["scroll-current-0", "scroll-current-0"]);
+});
+
+test("upward paging: a no-progress cursor ends paging even when the host reports hasMore", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  let requests = 0;
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    requests++;
+    return route.fulfill({
+      json: response(
+        {
+          messages: [upwardPagingMessages[0]],
+          firstId: body.beforeId,
+          hasMore: true,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect.poll(() => requests).toBe(1);
+  await expect(
+    page.getByRole("button", { name: "Load earlier messages" }),
+  ).toHaveCount(0);
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  for (const top of [400, 0, 400, 100, 0]) await scrollPagingTo(page, top);
+  await page.waitForTimeout(350);
+  expect(requests).toBe(1);
+});
+
+test("upward paging: advances the cursor for the next page without duplicate rows", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  const cursors: string[] = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    cursors.push(body.beforeId);
+    return route.fulfill({
+      json: response(
+        {
+          messages: [
+            {
+              role: "user",
+              entryId: `page-${cursors.length}`,
+              content: `Earlier page ${cursors.length}`,
+            },
+          ],
+          firstId: `page-${cursors.length}`,
+          hasMore: cursors.length < 2,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect(page.locator(".message.user")).toHaveCount(21);
+  await scrollPagingTo(page, 400);
+  await scrollPagingTo(page, 120);
+  await expect(page.locator(".message.user")).toHaveCount(22);
+  expect(cursors).toEqual(["scroll-current-0", "page-1"]);
+  await expect(
+    page.getByRole("button", { name: "Load earlier messages" }),
+  ).toHaveCount(0);
+});
+
+test("upward paging: a late older image does not move the reader's row", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let imageRequested = false;
+  await page.route("**/late-history.svg", async (route) => {
+    imageRequested = true;
+    await held;
+    return route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="960"><rect width="640" height="960" fill="blue"/></svg>',
+    });
+  });
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    return route.fulfill({
+      json: response(
+        {
+          messages: [
+            {
+              role: "assistant",
+              entryId: "late-image",
+              content: [
+                {
+                  type: "text",
+                  text: "![Late earlier image](/late-history.svg)",
+                },
+              ],
+            },
+            ...Array.from({ length: 5 }, (_, i) => ({
+              role: "user",
+              entryId: `late-old-${i}`,
+              content: `Older row ${i}\nMore text\nMore text`,
+            })),
+          ],
+          firstId: "late-image",
+          hasMore: false,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  const anchor = await visiblePagingAnchor(page);
+  try {
+    await expect(page.locator(".message.user")).toHaveCount(25);
+    await expectPagingAnchor(page, anchor);
+    // Simulate an image request started earlier but completing after it scrolls
+    // above the reader. Chromium may otherwise defer an offscreen lazy image.
+    await page
+      .getByAltText("Late earlier image")
+      .evaluate((i: HTMLImageElement) => {
+        i.loading = "eager";
+      });
+    await expect.poll(() => imageRequested).toBe(true);
+    release();
+    await expect
+      .poll(() =>
+        page
+          .getByAltText("Late earlier image")
+          .evaluate((i: HTMLImageElement) => i.naturalHeight),
+      )
+      .toBe(960);
+    await expectPagingAnchor(page, anchor);
+  } finally {
+    release();
+  }
+});
+
+test("upward paging: jumping to latest during a pending page keeps bottom follow", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let pending = false;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages" || !body.beforeId)
+        return route.fallback();
+      pending = true;
+      await held;
+      return route.fulfill({
+        json: response(
+          {
+            messages: [
+              {
+                role: "user",
+                entryId: "old-follow",
+                content: "Old follow row",
+              },
+            ],
+            firstId: "old-follow",
+            hasMore: false,
+          },
+          "get_messages",
+        ),
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect.poll(() => pending).toBe(true);
+  await scrollPagingTo(page, 1000000);
+  release();
+  await expect(page.locator(".message.user")).toHaveCount(21);
+  await expect
+    .poll(() =>
+      page
+        .locator(".transcript")
+        .evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop),
+    )
+    .toBeLessThan(3);
+});
+
+test("upward paging: an invisible page advances automatically without another scroll", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  const cursors: string[] = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    cursors.push(body.beforeId);
+    return route.fulfill({
+      json: response(
+        {
+          messages:
+            cursors.length === 1
+              ? []
+              : [
+                  {
+                    role: "user",
+                    entryId: "visible-old",
+                    content: "Visible earlier history",
+                  },
+                ],
+          firstId: cursors.length === 1 ? "invisible-old" : "visible-old",
+          hasMore: cursors.length === 1,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 0);
+  await expect(
+    page.getByText("Visible earlier history", { exact: true }),
+  ).toBeVisible();
+  expect(cursors).toEqual(["scroll-current-0", "invisible-old"]);
+});
+
+// Codex-style disclosure regressions: these fixtures deliberately retain both
+// arguments and results, so a compact summary must not replace either payload.
+test("tool disclosures keep read paths and search queries visible while closed on desktop and mobile", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 9,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-read",
+                name: "read",
+                arguments: { path: "src/disclosure-example.ts" },
+              },
+              {
+                type: "toolCall",
+                id: "disclosure-search",
+                name: "websearch",
+                arguments: { query: "Codex disclosure keyboard accessibility" },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-read",
+            toolName: "read",
+            content: [
+              { type: "text", text: "export const disclosureExample = true;" },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-search",
+            toolName: "websearch",
+            content: [
+              {
+                type: "text",
+                text: "Search result: accessible disclosure patterns",
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/");
+    const cards = page.locator(".tool-card.tool-done");
+    await expect(cards).toHaveCount(2);
+    const read = cards.filter({
+      has: page.locator("code.tool-target", {
+        hasText: "src/disclosure-example.ts",
+      }),
+    });
+    const search = cards.filter({
+      has: page.locator("code.tool-target", {
+        hasText: "Codex disclosure keyboard accessibility",
+      }),
+    });
+    await expect(read).toHaveJSProperty("open", false);
+    await expect(search).toHaveJSProperty("open", false);
+    await expect(read.locator(":scope > summary .tool-action")).toHaveText(
+      "read",
+    );
+    await expect(search.locator(":scope > summary .tool-action")).toHaveText(
+      "websearch",
+    );
+    await expect(
+      read.locator(":scope > summary code.tool-target"),
+    ).toBeVisible();
+    await expect(
+      search.locator(":scope > summary code.tool-target"),
+    ).toBeVisible();
+    await read.locator(":scope > summary").click();
+    await expect(read).toHaveJSProperty("open", true);
+    await expect(
+      read.getByText("export const disclosureExample = true;", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await search.locator(":scope > summary").click();
+    await expect(
+      search.getByText("Search result: accessible disclosure patterns", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
+});
+
+test("unknown tool preserves its real name and exposes full arguments and result with Enter", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 9,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-unknown",
+                name: "custom_inventory_probe",
+                arguments: {
+                  warehouse: "north-depot",
+                  filters: { includeArchived: true },
+                  ids: [17, 42],
+                },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-unknown",
+            toolName: "custom_inventory_probe",
+            content: [
+              {
+                type: "text",
+                text: "Inventory probe result: 42 widgets available",
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  const card = page.locator(".tool-card.tool-done");
+  const summary = card.locator(":scope > summary");
+  await expect(card).toHaveJSProperty("open", false);
+  await expect(summary).toContainText("custom_inventory_probe");
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(card).toHaveJSProperty("open", true);
+  const args = card.locator("pre.tool-arguments");
+  await expect(args).toBeVisible();
+  expect(JSON.parse((await args.textContent()) ?? "null")).toEqual({
+    warehouse: "north-depot",
+    filters: { includeArchived: true },
+    ids: [17, 42],
+  });
+  await expect(
+    card.getByText("Inventory probe result: 42 widgets available", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(card).toHaveJSProperty("open", false);
+  await expect(args).toBeHidden();
+});
+
+test("multiline edit opens in one click with real diff lines and addition/removal counts on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 9,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-edit",
+                name: "edit",
+                arguments: {
+                  path: "src/multiline.ts",
+                  edits: [
+                    {
+                      oldText: "const before = 1;\nconst removed = true;",
+                      newText:
+                        "const after = 2;\nconst added = true;\nexport { after };",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-edit",
+            toolName: "edit",
+            content: [{ type: "text", text: "Edited src/multiline.ts" }],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  const card = page.locator(".edit-card.tool-done");
+  const summary = card.locator(":scope > summary");
+  await expect(card).toHaveJSProperty("open", false);
+  await expect(summary.locator("code.tool-target")).toHaveText(
+    "src/multiline.ts",
+  );
+  await expect(summary.locator(".tool-action")).toHaveText("edit");
+  await expect(summary.locator(".edit-count")).toContainText("+3");
+  await expect(summary.locator(".edit-count")).toContainText("−2");
+  await expect(card.locator("summary")).toHaveCount(1);
+  await summary.click();
+  await expect(card).toHaveJSProperty("open", true);
+  const removed = card.locator(".edit-line.remove");
+  const added = card.locator(".edit-line.add");
+  await expect(removed).toHaveCount(2);
+  await expect(added).toHaveCount(3);
+  await expect(removed).toContainText([
+    "const before = 1;",
+    "const removed = true;",
+  ]);
+  await expect(added).toContainText([
+    "const after = 2;",
+    "const added = true;",
+    "export { after };",
+  ]);
+  for (const line of [...(await removed.all()), ...(await added.all())])
+    await expect(line).toBeVisible();
+});
+
+test("plan and todo disclosures start closed and reveal structured bodies in one click", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 9,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-plan",
+                name: "plan",
+                arguments: {
+                  plan: "# Disclosure plan\n\n- Inspect controls\n- Verify keyboard\n\nKeep details accessible.",
+                },
+              },
+              {
+                type: "toolCall",
+                id: "disclosure-todo",
+                name: "todo",
+                arguments: {},
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-plan",
+            toolName: "plan",
+            content: [
+              {
+                type: "text",
+                text: "# Disclosure plan\n\n- Inspect controls\n- Verify keyboard\n\nKeep details accessible.",
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-todo",
+            toolName: "todo",
+            content: [
+              {
+                type: "text",
+                text: "1/2 completed\n[✓] #0: Inspect controls\n[ ] #1: Verify keyboard",
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  const plan = page.locator(".plan-card");
+  const todo = page.locator(".todo-card");
+  await expect(plan).toHaveJSProperty("open", false);
+  await expect(todo).toHaveJSProperty("open", false);
+  await expect(plan.locator(".plan-outline")).toBeHidden();
+  await expect(todo.locator(".todo-list")).toBeHidden();
+  await plan.locator(":scope > summary").click();
+  await expect(plan.locator(".plan-outline li")).toHaveCount(2);
+  await expect(plan.locator(".plan-detail")).toContainText(
+    "Keep details accessible.",
+  );
+  await expect(plan.locator(".plan-detail")).toBeVisible();
+  await todo.locator(":scope > summary").click();
+  await expect(todo.locator(".todo-list li")).toHaveCount(2);
+  await expect(todo.locator(".todo-list li.done")).toHaveCount(1);
+  await expect(todo.locator(".todo-list")).toBeVisible();
+  await expect(todo.locator(":scope > summary")).toContainText("1/2");
+});
+
+test("a new tool error autoopens but manual collapse survives later SSE output and timing updates", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let releaseError!: () => void;
+  let releaseUpdate!: () => void;
+  const errorGate = new Promise<void>((resolve) => {
+    releaseError = resolve;
+  });
+  const updateGate = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-error",
+                name: "custom_failure_probe",
+                arguments: { path: "missing.txt" },
+                webTiming: { elapsedMs: 100, running: true },
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  let requests = 0;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events?*`,
+    async (route) => {
+      const attempt = requests++;
+      await (attempt === 0 ? errorGate : updateGate);
+      const event = {
+        type: "tool_execution_end",
+        toolCallId: "disclosure-error",
+        toolName: "custom_failure_probe",
+        isError: true,
+        result:
+          attempt === 0
+            ? "Missing file: initial failure"
+            : "Missing file: refreshed diagnostics",
+        webTiming: { elapsedMs: attempt === 0 ? 1200 : 2400, running: false },
+      };
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `retry: 100\nid: ${5 + attempt}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+      });
+    },
+  );
+  try {
+    await page.goto("/");
+    const card = page.locator(".tool-card");
+    await expect(card).toHaveClass(/tool-running/);
+    await expect(card).toHaveJSProperty("open", false);
+    releaseError();
+    await expect(card).toHaveClass(/tool-error/);
+    await expect(card).toHaveJSProperty("open", true);
+    await expect(
+      card.getByText("Missing file: initial failure", { exact: false }),
+    ).toBeVisible();
+    await card.locator(":scope > summary").click();
+    await expect(card).toHaveJSProperty("open", false);
+    releaseUpdate();
+    await expect(card.locator(".tool-elapsed")).toHaveText("2.4s");
+    await expect(card).toHaveJSProperty("open", false);
+    await card.locator(":scope > summary").click();
+    await expect(
+      card.getByText("Missing file: refreshed diagnostics", { exact: false }),
+    ).toBeVisible();
+  } finally {
+    releaseError();
+    releaseUpdate();
+  }
+});
+
+test("opening a running shell tool survives elapsed ticks and its completed SSE result", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHost(page);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-live",
+                name: "bash",
+                arguments: { command: "printf 'disclosure complete'" },
+                webTiming: { elapsedMs: 100, running: true },
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events?*`,
+    async (route) => {
+      await gate;
+      const event = {
+        type: "tool_execution_end",
+        toolCallId: "disclosure-live",
+        toolName: "bash",
+        isError: false,
+        result: "disclosure complete",
+        webTiming: { elapsedMs: 1600, running: false },
+      };
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `retry: 60000\nid: 5\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+      });
+    },
+  );
+  try {
+    await page.goto("/");
+    const card = page.locator(".tool-card.tool-running");
+    await expect(card).toHaveJSProperty("open", false);
+    await expect(card.locator(".shell-command")).toHaveText(
+      "printf 'disclosure complete'",
+    );
+    await card.locator(":scope > summary").click();
+    await expect(card).toHaveJSProperty("open", true);
+    const timer = card.locator(".tool-elapsed");
+    const initial = await timer.innerText();
+    await expect.poll(() => timer.innerText()).not.toBe(initial);
+    await expect(card).toHaveJSProperty("open", true);
+    release();
+    const done = page.locator(".tool-card.tool-done");
+    await expect(done).toHaveJSProperty("open", true);
+    await expect(done.locator(".tool-elapsed")).toHaveText("1.6s");
+    await expect(done.locator(".shell-output")).toHaveText(
+      "disclosure complete",
+    );
+    await expect(done.locator(".shell-output")).toBeVisible();
+    await done.locator(":scope > summary").click();
+    await expect(done).toHaveJSProperty("open", false);
+  } finally {
+    release();
+  }
+});
+
+
+for (const name of ["todo", "plan"]) {
+  test(`a manually opened ${name} stays open when its result selects a structured renderer`, async ({
+    page,
+  }) => {
+    await mockHost(page);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "running",
+          lastSeq: 4,
+          events: [],
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "structured-transition",
+                  name,
+                  arguments: {},
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        await gate;
+        const event = {
+          type: "tool_execution_end",
+          toolCallId: "structured-transition",
+          toolName: name,
+          isError: false,
+          result:
+            name === "todo"
+              ? "1/2 completed\n[✓] #0: Inspect controls\n[ ] #1: Verify keyboard"
+              : "# Structured result\n\n- Inspect controls\n- Verify keyboard",
+        };
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body: `retry: 60000
+id: 5
+event: ${event.type}
+data: ${JSON.stringify(event)}
+
+`,
+        });
+      },
+    );
+    try {
+      await page.goto("/");
+      const card = page.locator(".tool-card");
+      await expect(card).toHaveClass(/tool-(pending|running)/);
+      await expect(card).toHaveJSProperty("open", false);
+      await card.locator(":scope > summary").click();
+      await expect(card).toHaveJSProperty("open", true);
+      release();
+      await expect(card).toHaveClass(new RegExp(`${name}-card`));
+      await expect(card).toHaveJSProperty("open", true);
+      await expect(
+        card.locator(name === "todo" ? ".todo-list" : ".plan-outline"),
+      ).toBeVisible();
+    } finally {
+      release();
+    }
+  });
+}
+
+test("expanding a tool at latest keeps its header in place instead of following output to the bottom", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          ...upwardPagingMessages,
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "long-tool",
+                name: "bash",
+                arguments: { command: "npm test" },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "long-tool",
+            toolName: "bash",
+            content: [
+              {
+                type: "text",
+                text: Array.from(
+                  { length: 100 },
+                  (_, i) => `Passing test ${i}`,
+                ).join("\n"),
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  const summary = page.locator(".shell-card > summary");
+  await expect(summary).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .locator(".transcript")
+        .evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop),
+    )
+    .toBeLessThan(3);
+  const before = await summary.boundingBox();
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".shell-card")).toHaveJSProperty("open", true);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  const after = await summary.boundingBox();
+  expect(Math.abs(after!.y - before!.y)).toBeLessThan(3);
+  await expect
+    .poll(() =>
+      page
+        .locator(".transcript")
+        .evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop),
+    )
+    .toBeGreaterThan(100);
+});
+
+// Attachment projection must remain display-only: native text and upload paths stay intact.
+test.describe("attachment cards", () => {
+  const docxPath =
+    ".rpi/uploads/c11ee75a-625a-4aec-a575-401843f7af66-电话卡分销小程序.docx";
+  const actualUserText =
+    "已附加文件:\n- .rpi/uploads/c11ee75a-625a-4aec-a575-401843f7af66-电话卡分销小程序.docx  这个附件显示需要优化";
+
+  async function attachmentSnapshot(page: Page, messages: unknown[]) {
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: { sessionId, status: "ready", lastSeq: 4, events: [], messages },
+      }),
+    );
+  }
+
+  test("projects the real Chinese DOCX and trailing prose on desktop and 390px", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await attachmentSnapshot(page, [
+      { role: "user", content: [{ type: "text", text: actualUserText }] },
+    ]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      if (width === 1280) await page.goto("/");
+      else await page.reload();
+      const card = page.locator(".message.user details.message-attachment");
+      await expect(card).toHaveCount(1);
+      await expect(card).toHaveJSProperty("open", false);
+      const summary = card.locator(":scope > summary");
+      await expect(summary.locator(".attachment-name")).toHaveText(
+        "电话卡分销小程序.docx",
+      );
+      await expect(summary.locator(".attachment-meta")).toHaveText("DOCX");
+      await expect(summary).not.toContainText("c11ee75a");
+      await expect(page.locator(".message.user .plain-message")).toContainText(
+        "这个附件显示需要优化",
+      );
+      await expect(card.locator(".attachment-path")).toBeHidden();
+      await summary.click();
+      await expect(card).toHaveJSProperty("open", true);
+      await expect(card.locator("div.attachment-path code")).toHaveText(
+        docxPath,
+      );
+      await expect(card.locator(".attachment-path")).not.toContainText(
+        "这个附件显示需要优化",
+      );
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      expect(
+        await page
+          .locator(".transcript")
+          .evaluate((node) => node.scrollWidth <= node.clientWidth),
+      ).toBe(true);
+    }
+  });
+
+  test("supports keyboard expansion and copying the original path without fetching DOCX", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (
+              window as Window & { attachmentCopiedPath?: string }
+            ).attachmentCopiedPath = text;
+          },
+        },
+      });
+    });
+    const fileRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        request.resourceType() === "image" ||
+        /\.docx$/i.test(url.pathname) ||
+        url.pathname.includes("/uploads/") ||
+        /\/projects\/[^/]+\/file$/.test(url.pathname)
+      ) {
+        fileRequests.push(request.url());
+      }
+    });
+    await mockHost(page);
+    await attachmentSnapshot(page, [
+      { role: "user", content: [{ type: "text", text: actualUserText }] },
+    ]);
+    await page.goto("/");
+    const card = page.locator("details.message-attachment");
+    await expect(card).toHaveJSProperty("open", false);
+    await expect(card.locator("img, iframe, object")).toHaveCount(0);
+    const summary = card.locator(":scope > summary");
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await expect(card).toHaveJSProperty("open", true);
+    await expect(card.locator(".attachment-path code")).toHaveText(docxPath);
+    const copy = card.getByRole("button", {
+      name: "Copy file path",
+      exact: true,
+    });
+    await copy.focus();
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { attachmentCopiedPath?: string })
+              .attachmentCopiedPath,
+        ),
+      )
+      .toBe(docxPath);
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await expect(card).toHaveJSProperty("open", false);
+    expect(fileRequests).toEqual([]);
+  });
+
+  test("keeps multiple English attachment filenames identical in live events and reload snapshots", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const paths = [
+      ".rpi/uploads/11111111-1111-4111-8111-111111111111-quarterly report.docx",
+      ".rpi/uploads/22222222-2222-4222-8222-222222222222-review  final.docx",
+    ];
+    const message = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `Please review both.\n\nAttached files:\n${paths.map((path) => `- ${path}`).join("\n")}`,
+        },
+      ],
+    };
+    let persisted = false;
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          lastSeq: persisted ? 5 : 4,
+          events: [],
+          messages: persisted ? [message] : [],
+        },
+      }),
+    );
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let delivered = false;
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events**`,
+      async (route) => {
+        await gate;
+        const body = delivered
+          ? 'event: ready\ndata: {"type":"ready"}\n\n'
+          : `retry: 60000\nid: 5\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message })}\n\n`;
+        delivered = true;
+        await route.fulfill({ contentType: "text/event-stream", body });
+      },
+    );
+    try {
+      await page.goto("/");
+      await expect(
+        page.getByRole("heading", { name: "Mock session" }),
+      ).toBeVisible();
+      await expect(page.locator("details.message-attachment")).toHaveCount(0);
+      release();
+      for (const reload of [false, true]) {
+        if (reload) {
+          persisted = true;
+          await page.reload();
+        }
+        const cards = page.locator(".message.user details.message-attachment");
+        await expect(cards).toHaveCount(2);
+        await expect(cards.locator(".attachment-name")).toHaveText([
+          "quarterly report.docx",
+          "review  final.docx",
+        ]);
+        await expect(cards.locator(".attachment-meta")).toHaveText([
+          "DOCX",
+          "DOCX",
+        ]);
+        await expect(
+          page.locator(".message.user .plain-message"),
+        ).toContainText("Please review both.");
+        for (let index = 0; index < paths.length; index++) {
+          await expect(cards.nth(index)).toHaveJSProperty("open", false);
+          await cards.nth(index).locator(":scope > summary").click();
+          await expect(
+            cards.nth(index).locator(".attachment-path code"),
+          ).toHaveText(paths[index]);
+        }
+      }
+    } finally {
+      release();
+    }
+  });
+
+  test("leaves code, quotes, ordinary paths, mixed invalid lists and assistant text raw", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const rawTexts = [
+      `\`\`\`text\nAttached files:\n- ${docxPath}\n\`\`\``,
+      `    Attached files:\n    - ${docxPath}`,
+      `> Attached files:\n> - ${docxPath}`,
+      `Ordinary workspace path: ${docxPath}`,
+      `Attached files:\n- ${docxPath}\n- not-an-upload.docx`,
+    ];
+    await attachmentSnapshot(page, [
+      ...rawTexts.map((text) => ({
+        role: "user",
+        content: [{ type: "text", text }],
+      })),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: `Attached files:\n- ${docxPath}` }],
+      },
+    ]);
+    await page.goto("/");
+    const bodies = page.locator(".message.user .message-body");
+    await expect(bodies).toHaveCount(rawTexts.length);
+    for (let index = 0; index < rawTexts.length; index++) {
+      // textContent preserves literal indentation and fences, unlike normalized text assertions.
+      expect(await bodies.nth(index).textContent()).toContain(rawTexts[index]);
+    }
+    await expect(
+      page.locator(".message.assistant .message-body"),
+    ).toContainText(docxPath);
+    await expect(page.locator("details.message-attachment")).toHaveCount(0);
+  });
+
+  test("preserves composer filename, size, removal and the uploaded native prompt path", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await page.goto("/");
+    await expect(
+      page.getByRole("heading", { name: "Mock session" }),
+    ).toBeVisible();
+    const upload = () =>
+      page.locator('input[type="file"]').setInputFiles({
+        name: "notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("hello"),
+      });
+    await upload();
+    const card = page.locator(".composer-attachment");
+    await expect(card).toHaveCount(1);
+    await expect(card.locator(".attachment-name")).toHaveText("notes.txt");
+    await expect(card.locator(".attachment-meta")).toHaveText(
+      /TXT\s*·\s*5\s*B/,
+    );
+    await card
+      .getByRole("button", {
+        name: "Remove attachment: notes.txt",
+        exact: true,
+      })
+      .click();
+    await expect(card).toHaveCount(0);
+    await upload();
+    await expect(card.locator(".attachment-name")).toHaveText("notes.txt");
+    await page.locator(".composer textarea").fill("Please inspect this file");
+    const prompt = page.waitForRequest(
+      (request) =>
+        request.url().includes(`/sessions/${sessionId}/commands`) &&
+        request.method() === "POST" &&
+        request.postDataJSON()?.type === "prompt",
+    );
+    await page.getByRole("button", { name: "Send message" }).click();
+    const body = (await prompt).postDataJSON();
+    expect(body.message).toContain("Please inspect this file");
+    expect(body.message).toMatch(
+      /(?:Attached files:|已附加文件:)\n- \.rpi\/uploads\/notes\.txt$/,
+    );
+    expect(body.message.match(/\.rpi\/uploads\/notes\.txt/g)).toHaveLength(1);
+    await expect(card).toHaveCount(0);
+  });
+});
+
+for (const width of [1280, 390]) {
+  test(`user message has one localized sender label and equal corners at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          lastSeq: 4,
+          events: [],
+          messages: [
+            { role: "user", content: "Please inspect the attachment" },
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "I will inspect it." }],
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto("/");
+    const message = page.locator(".message.user");
+    await expect(message.locator(".message-heading")).toHaveText("You");
+    await expect(message.locator(".user-avatar")).toHaveCount(0);
+    const corners = () =>
+      message.locator(".message-body").evaluate((node) => {
+        const style = getComputedStyle(node);
+        return [
+          style.borderTopLeftRadius,
+          style.borderTopRightRadius,
+          style.borderBottomRightRadius,
+          style.borderBottomLeftRadius,
+        ];
+      });
+    expect(await corners()).toEqual(["16px", "16px", "16px", "16px"]);
+    if (width === 390)
+      await page
+        .getByRole("button", { name: "Toggle sidebar", exact: true })
+        .click();
+    await chooseMenuOption(page, "Language", "zh");
+    if (width === 390)
+      await page.locator(".sidebar .sidebar-brand button").click();
+    await expect(message.locator(".message-heading")).toHaveText("你");
+    await expect(message.locator(".message-heading strong")).toHaveCount(1);
+    await expect(
+      page.locator(".message.assistant .message-heading strong"),
+    ).toHaveText("rpi");
+    expect(await corners()).toEqual(["16px", "16px", "16px", "16px"]);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  });
+}
+
+// Native timing metadata is supplemental: never derive elapsed time from tool
+// messages, browser clocks, transcript positions, or an earlier session's cache.
+test.describe("run timing regressions", () => {
+  const timingRoute = /\/api\/v1\/sessions\/[^/]+\/run-timings\/query$/;
+  const finalMessage = (
+    entryId = "elapsed-final",
+    text = "Final native answer",
+  ) => ({
+    role: "assistant",
+    entryId,
+    content: [{ type: "text", text }],
+  });
+  const nativeTiming = (
+    finalEntryId = "elapsed-final",
+    runId = "elapsed-run",
+    outcome = "completed",
+    elapsedMs = 138_000,
+  ) => ({
+    runId,
+    lane: "main",
+    finalEntryId,
+    startedAt: 1000,
+    finishedAt: 1000 + elapsedMs,
+    elapsedMs,
+    outcome,
+  });
+  const timingPage = (timings: unknown[] = [], extra = {}) => ({
+    timings,
+    complete: true,
+    cursor: "g",
+    scannedBytes: 100,
+    totalBytes: 100,
+    ...extra,
+  });
+  const gate = () => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  };
+  async function history(page: Page, messages: unknown[], extra = {}) {
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: { sessionId, messages, events: [], lastSeq: 4, ...extra },
+      }),
+    );
+  }
+
+  test("run elapsed history attaches once after the final projected row and survives reload", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    await history(page, [
+      {
+        role: "assistant",
+        entryId: "elapsed-tool-call",
+        content: [
+          { type: "text", text: "Inspecting the file" },
+          {
+            type: "toolCall",
+            id: "elapsed-read",
+            name: "read",
+            arguments: { path: "README.md" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        entryId: "elapsed-tool-result",
+        toolCallId: "elapsed-read",
+        content: [{ type: "text", text: "File inspected" }],
+      },
+      {
+        ...finalMessage(),
+        content: [
+          { type: "text", text: "First final block" },
+          { type: "image", mimeType: "image/png", data: png },
+          { type: "text", text: "Last final block" },
+        ],
+      },
+    ]);
+    const requests: Array<{ entryIds: string[]; cursor?: string }> = [];
+    await page.route(timingRoute, (route) => {
+      expect(route.request().method()).toBe("POST");
+      requests.push(route.request().postDataJSON());
+      return route.fulfill({ json: timingPage([nativeTiming()]) });
+    });
+    const footer = page.locator('.run-elapsed[data-run-id="elapsed-run"]');
+    for (let load = 0; load < 2; load++) {
+      if (load) await page.reload();
+      else await page.goto("/");
+      await expect(footer).toHaveText("Worked for 2m 18s");
+      await expect(page.locator(".run-elapsed")).toHaveCount(1);
+      await expect(footer).toHaveAttribute("data-entry-id", "elapsed-final");
+      const row = page.locator(".transcript-row").filter({ has: footer });
+      await expect(row).toContainText("Last final block");
+      await expect(row.locator(":scope > .run-elapsed:last-child")).toHaveCount(
+        1,
+      );
+      await expect(
+        row.locator("xpath=following-sibling::*[@data-transcript-row]"),
+      ).toHaveCount(0);
+      await expect(page.locator(".tool-card .run-elapsed")).toHaveCount(0);
+    }
+    expect(requests.length).toBeGreaterThanOrEqual(2);
+    for (const request of requests)
+      expect(request.entryIds).toContain("elapsed-final");
+    expect(
+      requests.filter((request) => !request.cursor).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  test("run elapsed live completion refreshes native snapshot before attaching the footer", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const settled = gate();
+    let snapshots = 0;
+    let queriedFinal = false;
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          lastSeq: snapshots++ ? 5 : 4,
+          events: [],
+          messages:
+            snapshots > 1
+              ? [finalMessage()]
+              : [
+                  {
+                    role: "user",
+                    entryId: "elapsed-prompt",
+                    content: "Please work",
+                  },
+                ],
+        },
+      }),
+    );
+    await page.route(timingRoute, (route) => {
+      const { entryIds } = route.request().postDataJSON();
+      queriedFinal ||= entryIds.includes("elapsed-final");
+      return route.fulfill({
+        json: timingPage(queriedFinal ? [nativeTiming()] : []),
+      });
+    });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        await settled.promise;
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'id: 5\nevent: agent_settled\ndata: {"type":"agent_settled","runId":"elapsed-run","outcome":"completed"}\n\n',
+        });
+      },
+    );
+    await page.goto("/");
+    await expect(page.locator(".message.user")).toContainText("Please work");
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    settled.release();
+    await expect(
+      page.locator('.run-elapsed[data-run-id="elapsed-run"]'),
+    ).toHaveText("Worked for 2m 18s");
+    expect(snapshots).toBeGreaterThanOrEqual(2);
+    expect(queriedFinal).toBe(true);
+    await expect(page.locator(".run-elapsed")).toHaveCount(1);
+  });
+
+  test("run timing older pagination attaches multiple footers without replacing current timing", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()], {
+      firstId: "elapsed-final",
+      hasMore: true,
+    });
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages") return route.fallback();
+      expect(body.beforeId).toBe("elapsed-final");
+      return route.fulfill({
+        json: response(
+          {
+            messages: [
+              finalMessage("older-a", "Older answer A"),
+              finalMessage("older-b", "Older answer B"),
+            ],
+            firstId: "older-a",
+            hasMore: false,
+          },
+          "get_messages",
+        ),
+      });
+    });
+    const queries: string[][] = [];
+    await page.route(timingRoute, (route) => {
+      const { entryIds } = route.request().postDataJSON();
+      queries.push(entryIds);
+      return route.fulfill({
+        json: timingPage(
+          [
+            nativeTiming(),
+            nativeTiming("older-a", "run-older-a"),
+            nativeTiming("older-b", "run-older-b"),
+          ].filter((timing) => entryIds.includes(timing.finalEntryId)),
+        ),
+      });
+    });
+    await page.goto("/");
+    await expect(page.locator(".run-elapsed")).toHaveCount(1);
+    await page.getByRole("button", { name: "Load earlier messages" }).click();
+    await expect(page.locator(".run-elapsed")).toHaveCount(3);
+    for (const [id, text] of [
+      ["run-older-a", "Older answer A"],
+      ["run-older-b", "Older answer B"],
+      ["elapsed-run", "Final native answer"],
+    ]) {
+      const footer = page.locator(`.run-elapsed[data-run-id="${id}"]`);
+      await expect(footer).toHaveCount(1);
+      await expect(
+        page.locator(".transcript-row").filter({ has: footer }),
+      ).toContainText(text);
+    }
+    expect(
+      queries.some((ids) => ids.includes("older-a") && ids.includes("older-b")),
+    ).toBe(true);
+  });
+
+  test("run timing session switch discards a stale response even with the same final entry ID", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await page.route(
+      (url) => /\/sessions\/[^/]+\/snapshot$/.test(url.pathname),
+      (route) =>
+        route.fulfill({
+          json: {
+            sessionId: new URL(route.request().url()).pathname.split("/")[4],
+            messages: [finalMessage()],
+            events: [],
+            lastSeq: 4,
+          },
+        }),
+    );
+    const old = gate();
+    let pending = false;
+    let delivered = false;
+    await page.route(timingRoute, async (route) => {
+      if (route.request().url().includes(`/${sessionId}/`)) {
+        pending = true;
+        await old.promise;
+        await route.fulfill({
+          json: timingPage([nativeTiming("elapsed-final", "stale-run")]),
+        });
+        delivered = true;
+      } else {
+        await route.fulfill({
+          json: timingPage([nativeTiming("elapsed-final", "new-run")]),
+        });
+      }
+    });
+    await page.goto("/");
+    await expect.poll(() => pending).toBe(true);
+    await page
+      .getByRole("button", { name: "New session", exact: false })
+      .first()
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "New session" }),
+    ).toBeVisible();
+    await expect(
+      page.locator('.run-elapsed[data-run-id="new-run"]'),
+    ).toHaveText("Worked for 2m 18s");
+    old.release();
+    await expect.poll(() => delivered).toBe(true);
+    await chooseMenuOption(page, "Language", "zh");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="new-run"]'),
+    ).toHaveText("已用时 2 分 18 秒");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="stale-run"]'),
+    ).toHaveCount(0);
+    await expect(page.locator(".run-elapsed")).toHaveCount(1);
+  });
+
+  test("run timing 409 reset clears published timing and restarts without the stale cursor", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()]);
+    const conflict = gate();
+    const restart = gate();
+    const queries: Array<{ entryIds: string[]; cursor?: string }> = [];
+    await page.route(timingRoute, async (route) => {
+      queries.push(route.request().postDataJSON());
+      if (queries.length === 1)
+        return route.fulfill({
+          json: timingPage([nativeTiming("elapsed-final", "before-reset")], {
+            complete: false,
+            cursor: "obsolete",
+          }),
+        });
+      if (queries.length === 2) {
+        await conflict.promise;
+        return route.fulfill({ status: 409, json: { error: "cursor reset" } });
+      }
+      await restart.promise;
+      return route.fulfill({
+        json: timingPage([nativeTiming("elapsed-final", "after-reset")]),
+      });
+    });
+    await page.goto("/");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="before-reset"]'),
+    ).toHaveCount(1);
+    await expect.poll(() => queries.length).toBe(2);
+    expect(queries[1].cursor).toBe("obsolete");
+    conflict.release();
+    await expect.poll(() => queries.length).toBe(3);
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    expect(queries[2].cursor).toBeUndefined();
+    expect(queries[2].entryIds).toEqual(queries[0].entryIds);
+    restart.release();
+    await expect(
+      page.locator('.run-elapsed[data-run-id="after-reset"]'),
+    ).toHaveText("Worked for 2m 18s");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="before-reset"]'),
+    ).toHaveCount(0);
+  });
+
+  test("run timing continuation follows cursor until complete and does not duplicate a repeated timing", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()]);
+    const queries: Array<{ cursor?: string }> = [];
+    await page.route(timingRoute, (route) => {
+      queries.push(route.request().postDataJSON());
+      const n = queries.length;
+      return route.fulfill({
+        json: timingPage(n === 1 ? [] : [nativeTiming()], {
+          complete: n >= 3,
+          cursor: `slice-${n}`,
+          scannedBytes: n * 30,
+        }),
+      });
+    });
+    await page.goto("/");
+    await expect.poll(() => queries.length).toBe(3);
+    expect(queries.map((query) => query.cursor)).toEqual([
+      undefined,
+      "slice-1",
+      "slice-2",
+    ]);
+    await expect(page.locator(".run-elapsed")).toHaveCount(1);
+    await expect(page.locator(".run-elapsed")).toHaveText("Worked for 2m 18s");
+  });
+
+  test("run timing stalled continuation is bounded and never invents a footer", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()]);
+    let requests = 0;
+    await page.route(timingRoute, (route) => {
+      requests++;
+      return route.fulfill({
+        json: timingPage([], {
+          complete: false,
+          cursor: "stalled",
+          scannedBytes: 10,
+        }),
+      });
+    });
+    await page.goto("/");
+    await expect.poll(() => requests, { timeout: 8000 }).toBe(5);
+    // Exceed the backoff to distinguish stopped work from a slow retry loop.
+    await page.waitForTimeout(1300);
+    expect(requests).toBe(5);
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    await expect(page.locator(".error-banner")).toHaveCount(0);
+  });
+
+  test("run timing old backend 404 stays quiet and disables further lookups on pagination", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()], {
+      firstId: "elapsed-final",
+      hasMore: true,
+    });
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+      if (route.request().postDataJSON().type !== "get_messages")
+        return route.fallback();
+      return route.fulfill({
+        json: response(
+          {
+            messages: [finalMessage("older", "Older native answer")],
+            firstId: "older",
+            hasMore: false,
+          },
+          "get_messages",
+        ),
+      });
+    });
+    let requests = 0;
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route(timingRoute, (route) => {
+      requests++;
+      return route.fulfill({
+        status: 404,
+        json: { error: "Unknown endpoint" },
+      });
+    });
+    await page.goto("/");
+    await expect.poll(() => requests).toBe(1);
+    await page.getByRole("button", { name: "Load earlier messages" }).click();
+    await expect(page.locator(".message.assistant").first()).toContainText(
+      "Older native answer",
+    );
+    await chooseMenuOption(page, "Language", "zh");
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    await expect(page.locator(".error-banner")).toHaveCount(0);
+    expect(requests).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  test("run timing invalid or missing metadata never produces a local fallback footer", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [
+      finalMessage(),
+      finalMessage("missing", "No native timing"),
+    ]);
+    let queried = false;
+    await page.route(timingRoute, (route) => {
+      queried = true;
+      return route.fulfill({
+        json: timingPage([
+          { ...nativeTiming(), elapsedMs: -1 },
+          { ...nativeTiming("elapsed-final", "mismatch"), finishedAt: 2000 },
+          {
+            ...nativeTiming("elapsed-final", "fractional"),
+            elapsedMs: 1.5,
+            finishedAt: 1001.5,
+          },
+          {
+            ...nativeTiming("elapsed-final", "unknown-outcome"),
+            outcome: "running",
+          },
+          {
+            ...nativeTiming("elapsed-final", "missing-duration"),
+            elapsedMs: undefined,
+          },
+          nativeTiming("not-in-transcript", "unrelated"),
+        ]),
+      });
+    });
+    await page.goto("/");
+    await expect.poll(() => queried).toBe(true);
+    await expect(page.locator(".message.assistant")).toHaveCount(2);
+    await chooseMenuOption(page, "Language", "zh");
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    await expect(page.locator(".error-banner")).toHaveCount(0);
+  });
+
+  test("run timing repeated 409 clears each pass including the exhausted third conflict", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await history(page, [finalMessage()]);
+    const conflicts = [gate(), gate(), gate()];
+    const queries: Array<{ entryIds: string[]; cursor?: string }> = [];
+    await page.route(timingRoute, async (route) => {
+      queries.push(route.request().postDataJSON());
+      const index = queries.length - 1;
+      const pass = Math.floor(index / 2);
+      if (pass >= conflicts.length)
+        return route.fulfill({ status: 500, json: { error: "retry budget exceeded" } });
+      if (index % 2 === 0)
+        return route.fulfill({
+          json: timingPage([nativeTiming("elapsed-final", `pass-${pass}`)], {
+            complete: false,
+            cursor: `pass-${pass}-cursor`,
+          }),
+        });
+      await conflicts[pass].promise;
+      return route.fulfill({ status: 409, json: { error: "cursor reset" } });
+    });
+    await page.goto("/");
+    for (let pass = 0; pass < conflicts.length; pass++) {
+      await expect.poll(() => queries.length).toBe((pass + 1) * 2);
+      await expect(page.locator(".run-elapsed")).toHaveCount(1);
+      await expect(
+        page.locator(`.run-elapsed[data-run-id="pass-${pass}"]`),
+      ).toBeVisible();
+      expect(queries[pass * 2].cursor).toBeUndefined();
+      expect(queries[pass * 2].entryIds).toEqual(["elapsed-final"]);
+      expect(queries[pass * 2 + 1].cursor).toBe(`pass-${pass}-cursor`);
+      conflicts[pass].release();
+    }
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    // Longer than the stalled-scan backoff: exhausted conflicts must stop work.
+    await page.waitForTimeout(1300);
+    expect(queries).toHaveLength(6);
+    await expect(page.locator(".error-banner")).toHaveCount(0);
+  });
+
+  for (const olderPage of [false, true]) {
+    test(`run elapsed terminal tool result follows trailing assistant text ${olderPage ? "after loading earlier messages" : "and survives reload"}`, async ({
+      page,
+    }) => {
+      await mockHost(page);
+      const call = {
+        role: "assistant",
+        entryId: "terminal-call",
+        content: [
+          {
+            type: "toolCall",
+            id: "terminal",
+            name: "read",
+            arguments: { path: "terminal.txt" },
+          },
+          { type: "text", text: "Trailing visible assistant text" },
+        ],
+      };
+      const result = {
+        role: "toolResult",
+        entryId: "terminal-result",
+        toolCallId: "terminal",
+        content: [{ type: "text", text: "Terminal tool output" }],
+      };
+      await history(page, olderPage ? [result] : [call, result], {
+        firstId: olderPage ? "terminal-result" : "terminal-call",
+        hasMore: olderPage,
+      });
+      if (olderPage)
+        await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+          const body = route.request().postDataJSON();
+          if (body.type !== "get_messages") return route.fallback();
+          expect(body.beforeId).toBe("terminal-result");
+          return route.fulfill({
+            json: response(
+              { messages: [call], firstId: "terminal-call", hasMore: false },
+              "get_messages",
+            ),
+          });
+        });
+      await page.route(timingRoute, (route) => {
+        expect(route.request().postDataJSON().entryIds).toContain("terminal-result");
+        return route.fulfill({
+          json: timingPage([
+            nativeTiming("terminal-result", "terminal-run", "aborted"),
+          ]),
+        });
+      });
+      const footer = page.locator('.run-elapsed[data-run-id="terminal-run"]');
+      for (let load = 0; load < (olderPage ? 1 : 2); load++) {
+        if (load) await page.reload();
+        else await page.goto("/");
+        await expect(footer).toBeVisible();
+        if (olderPage)
+          await page.getByRole("button", { name: "Load earlier messages" }).click();
+        await expect(page.locator(".message.assistant")).toContainText(
+          "Trailing visible assistant text",
+        );
+        await expect(page.locator(".tool-card")).toContainText("Terminal tool output");
+        await expect(page.locator(".run-elapsed")).toHaveCount(1);
+        await expect(footer).toHaveAttribute("data-entry-id", "terminal-result");
+        await expect(footer).toHaveText("Worked for 2m 18s · Stopped");
+        await expect(page.locator(".tool-card .run-elapsed")).toHaveCount(0);
+        await expect.poll(async () => {
+          const bounds = await footer.boundingBox();
+          const outputs = await page.locator(".tool-card, .message.assistant").all();
+          if (!bounds || outputs.length < 2) return false;
+          for (const output of outputs) {
+            const box = await output.boundingBox();
+            if (!box || bounds.y < box.y + box.height - 1) return false;
+          }
+          return true;
+        }).toBe(true);
+        await expect(
+          page.locator(".transcript-row").filter({ has: footer })
+            .locator("xpath=following-sibling::*[@data-transcript-row]"),
+        ).toHaveCount(0);
+      }
+    });
+  }
+
+  test("run elapsed mobile 390px localizes completed hours and aborted failed markers without overflow", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockHost(page);
+    await history(page, [
+      finalMessage(),
+      finalMessage("hour-final", "Long completed run"),
+      finalMessage("aborted-final", "Interrupted answer"),
+      finalMessage("failed-final", "Failed answer"),
+    ]);
+    await page.route(timingRoute, (route) =>
+      route.fulfill({
+        json: timingPage([
+          nativeTiming(),
+          nativeTiming("hour-final", "hour-run", "completed", 3_738_000),
+          nativeTiming("aborted-final", "aborted-run", "aborted"),
+          nativeTiming("failed-final", "failed-run", "failed"),
+        ]),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.locator(".run-elapsed")).toHaveCount(4);
+    const assertFits = async () => {
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      for (const footer of await page.locator(".run-elapsed").all()) {
+        expect(
+          await footer.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return (
+              rect.left >= 0 &&
+              rect.right <= innerWidth &&
+              node.scrollWidth <= node.clientWidth + 1
+            );
+          }),
+        ).toBe(true);
+      }
+    };
+    await expect(
+      page.locator('.run-elapsed[data-run-id="elapsed-run"]'),
+    ).toHaveText("Worked for 2m 18s");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="hour-run"]'),
+    ).toHaveText("Worked for 1h 2m 18s");
+    await expect(page.locator(".run-aborted .run-elapsed-outcome")).toHaveText(
+      " · Stopped",
+    );
+    await expect(page.locator(".run-failed .run-elapsed-outcome")).toHaveText(
+      " · Failed",
+    );
+    await assertFits();
+    await page
+      .getByRole("button", { name: "Toggle sidebar", exact: true })
+      .click();
+    await chooseMenuOption(page, "Language", "zh");
+    await page.locator(".sidebar .sidebar-brand button").click();
+    await expect(
+      page.locator('.run-elapsed[data-run-id="elapsed-run"]'),
+    ).toHaveText("已用时 2 分 18 秒");
+    await expect(
+      page.locator('.run-elapsed[data-run-id="hour-run"]'),
+    ).toHaveText("已用时 1 小时 2 分 18 秒");
+    await expect(page.locator(".run-aborted .run-elapsed-outcome")).toHaveText(
+      " · 已停止",
+    );
+    await expect(page.locator(".run-failed .run-elapsed-outcome")).toHaveText(
+      " · 失败",
+    );
+    await assertFits();
+  });
+
+  test("run timing batches over 400 entry IDs and restarts earlier batches on a later conflict", async ({ page }) => {
+    await mockHost(page);
+    await history(page, Array.from({ length: 401 }, (_, i) => finalMessage(`batch-${i}`, `Answer ${i}`)));
+    const conflict = gate();
+    const refreshed = gate();
+    const queries: Array<{ entryIds: string[]; cursor?: string }> = [];
+    await page.route(timingRoute, async route => {
+      const query = route.request().postDataJSON();
+      queries.push(query);
+      if (queries.length === 1) return route.fulfill({ json: timingPage([nativeTiming("batch-0", "old-first")], { cursor: "g1" }) });
+      if (queries.length === 2) {
+        await conflict.promise;
+        return route.fulfill({ status: 409, json: { error: "generation replaced" } });
+      }
+      if (queries.length === 3) {
+        await refreshed.promise;
+        return route.fulfill({ json: timingPage([nativeTiming("batch-0", "fresh-first")], { cursor: "g2" }) });
+      }
+      return route.fulfill({ json: timingPage([nativeTiming("batch-400", "fresh-last")], { cursor: "g2" }) });
+    });
+    await page.goto("/");
+    await expect(page.locator('.run-elapsed[data-run-id="old-first"]')).toHaveCount(1);
+    await expect.poll(() => queries.length).toBe(2);
+    expect(queries.map(q => q.entryIds.length)).toEqual([400, 1]);
+    expect(queries[1].cursor).toBe("g1");
+    conflict.release();
+    await expect.poll(() => queries.length).toBe(3);
+    await expect(page.locator(".run-elapsed")).toHaveCount(0);
+    expect(queries[2].cursor).toBeUndefined();
+    expect(queries[2].entryIds).toEqual(queries[0].entryIds);
+    refreshed.release();
+    await expect(page.locator('.run-elapsed[data-run-id="fresh-first"]')).toHaveCount(1);
+    await expect(page.locator('.run-elapsed[data-run-id="fresh-last"]')).toHaveCount(1);
+    await expect(page.locator('.run-elapsed[data-run-id="old-first"]')).toHaveCount(0);
+    expect(queries[3].cursor).toBe("g2");
+    expect(queries[3].entryIds).toEqual(["batch-400"]);
+    expect(queries).toHaveLength(4);
+  });
+});
+
+// Command previews must never truncate the native command used for display/copy.
+test.describe("shell command previews", () => {
+  const wrapped = `printf '%s\n' ${Array.from({ length: 90 }, (_, i) => `'argument ${i}'`).join(" ")}`;
+  const heredoc = [
+    "python - <<'PY'",
+    'message = "quoted value"',
+    "values = ['one', 'two']",
+    "for value in values:",
+    "    print(message, value)",
+    "print('last visible only when expanded')",
+    "PY",
+  ].join("\n");
+
+  async function commandSnapshot(page: Page, commands: string[]) {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          lastSeq: 4,
+          events: [],
+          messages: commands.flatMap((command, index) => [
+            {
+              role: "assistant",
+              content: [{
+                type: "toolCall",
+                id: `preview-${index}`,
+                name: "bash",
+                arguments: { command },
+              }],
+            },
+            {
+              role: "toolResult",
+              toolCallId: `preview-${index}`,
+              toolName: "bash",
+              isError: false,
+              content: [{ type: "text", text: "done" }],
+            },
+          ]),
+        },
+      }),
+    );
+  }
+
+  async function assertFits(page: Page) {
+    await expect.poll(() => page.evaluate(() =>
+      document.documentElement.scrollWidth <= innerWidth,
+    )).toBe(true);
+    await expect.poll(() => page.locator(".transcript").evaluate((node) =>
+      node.scrollWidth <= node.clientWidth + 1,
+    )).toBe(true);
+  }
+
+  test("clips wrapped and heredoc commands to four rendered lines on desktop and mobile until explicitly expanded", async ({ page }) => {
+    await commandSnapshot(page, [wrapped, heredoc, "pwd"]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const cards = page.locator(".shell-card");
+      await expect(cards).toHaveCount(3);
+      for (const [index, command] of [wrapped, heredoc, "pwd"].entries()) {
+        const card = cards.nth(index);
+        await expect(card).toHaveJSProperty("open", false);
+        await card.locator(":scope > summary").click();
+        const preview = card.locator("pre.shell-input");
+        const code = preview.locator("code");
+        await expect(code).toBeVisible();
+        expect(await code.textContent()).toBe(command);
+        const show = card.getByRole("button", { name: "Show full command", exact: true });
+        if (index === 2) {
+          await expect(show).toHaveCount(0);
+          continue;
+        }
+        await expect(show).toHaveAttribute("aria-expanded", "false");
+        const codeId = await code.getAttribute("id");
+        expect(codeId).toBeTruthy();
+        await expect(show).toHaveAttribute("aria-controls", codeId!);
+        expect(await show.evaluate((node) => node.closest("pre") === null)).toBe(true);
+        const assertClipped = async () => {
+          await expect.poll(() => preview.evaluate((node) => {
+            const style = getComputedStyle(node);
+            const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+            return node.scrollHeight > node.clientHeight + 1 &&
+              Math.abs(node.clientHeight - padding - 4 * parseFloat(style.lineHeight)) <= 2;
+          })).toBe(true);
+        };
+        await assertClipped();
+        await show.click();
+        const collapse = card.getByRole("button", { name: "Collapse command", exact: true });
+        await expect(collapse).toHaveAttribute("aria-expanded", "true");
+        await expect(collapse).toHaveAttribute("aria-controls", codeId!);
+        await expect.poll(() => preview.evaluate((node) =>
+          node.scrollHeight <= node.clientHeight + 1,
+        )).toBe(true);
+        expect(await code.textContent()).toBe(command);
+        await assertFits(page);
+        await collapse.click();
+        await expect(show).toHaveAttribute("aria-expanded", "false");
+        await assertClipped();
+        await expect(card).toHaveJSProperty("open", true);
+      }
+      await assertFits(page);
+    }
+  });
+
+  test("copies the exact full collapsed command and supports Enter and Space expansion", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (window as Window & { shellCopiedCommand?: string }).shellCopiedCommand = text;
+          },
+        },
+      });
+    });
+    await commandSnapshot(page, [heredoc]);
+    await page.goto("/");
+    const card = page.locator(".shell-card");
+    await expect(card).toHaveJSProperty("open", false);
+    await card.locator(":scope > summary").click();
+    const show = card.getByRole("button", { name: "Show full command", exact: true });
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await card.getByRole("button", { name: "Copy command", exact: true }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as Window & { shellCopiedCommand?: string }).shellCopiedCommand,
+    )).toBe(heredoc);
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    for (const key of ["Enter", "Space"]) {
+      await show.focus();
+      await page.keyboard.press(key);
+      const collapse = card.getByRole("button", { name: "Collapse command", exact: true });
+      await expect(collapse).toHaveAttribute("aria-expanded", "true");
+      await expect.poll(() => card.locator("pre.shell-input").evaluate((node) =>
+        node.scrollHeight <= node.clientHeight + 1,
+      )).toBe(true);
+      await collapse.focus();
+      await page.keyboard.press(key);
+      await expect(show).toHaveAttribute("aria-expanded", "false");
+      await expect(card).toHaveJSProperty("open", true);
+    }
+    expect(await card.locator(".shell-input code").textContent()).toBe(heredoc);
+  });
+
+  test("localizes command controls in Chinese and detects overflow after a mobile resize without changing native text", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    // Under four rendered lines at 1280px, but over four at 390px.
+    const command = `printf '%s\n' ${Array.from({ length: 24 }, () => "token").join(" ")}`;
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await commandSnapshot(page, [command]);
+    await page.goto("/");
+    await page.getByRole("button", { name: "关闭项目面板", exact: true }).click();
+    const card = page.locator(".shell-card");
+    await expect(card).toHaveJSProperty("open", false);
+    await card.locator(":scope > summary").click();
+    const preview = card.locator("pre.shell-input");
+    const code = preview.locator("code");
+    await expect(code).toBeVisible();
+    expect(await code.textContent()).toBe(command);
+    await expect.poll(() => preview.evaluate((node) =>
+      node.scrollHeight <= node.clientHeight + 1,
+    )).toBe(true);
+    const show = card.getByRole("button", { name: "展开完整命令", exact: true });
+    await expect(show).toHaveCount(0);
+    // No navigation or new snapshot: ResizeObserver must remeasure the same command.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator(".sidebar .sidebar-brand button").click();
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await expect.poll(() => preview.evaluate((node) =>
+      node.scrollHeight > node.clientHeight + 1,
+    )).toBe(true);
+    expect(await code.textContent()).toBe(command);
+    await show.click();
+    const collapse = card.getByRole("button", { name: "收起命令", exact: true });
+    await expect(collapse).toHaveAttribute("aria-expanded", "true");
+    await expect.poll(() => preview.evaluate((node) =>
+      node.scrollHeight <= node.clientHeight + 1,
+    )).toBe(true);
+    await assertFits(page);
+    await collapse.click();
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await expect(show).toHaveCount(0);
+    await expect(card).toHaveJSProperty("open", true);
+    expect(await code.textContent()).toBe(command);
+  });
+});
+
+test.describe("Mermaid diagrams", () => {
+  const flow = 'flowchart TD\n  start[开始] --> process[处理数据]\n  process --> done[完成]\n';
+  const sequence = 'sequenceDiagram\n  participant A as 用户\n  participant B as 服务\n  A->>B: 你好\n  B-->>A: 收到\n';
+  const failure = "Unable to render this diagram. The syntax may be incomplete or unsupported; source is shown below.";
+  const fence = (source: string) => `\`\`\`mermaid\n${source}\`\`\``;
+
+  async function diagramSnapshot(page: Page, text: string) {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) => route.fulfill({
+      json: {
+        sessionId,
+        messages: [{ role: "assistant", entryId: "mermaid-message", content: [{ type: "text", text }] }],
+        events: [], lastSeq: 4, total: 1, hasMore: false,
+      },
+    }));
+  }
+
+  async function decodedDiagram(image: ReturnType<Page["locator"]>) {
+    await expect(image).toHaveAttribute("src", /^data:image\/svg\+xml/);
+    await expect.poll(() => image.evaluate(async (node: HTMLImageElement) => {
+      try { await node.decode(); return node.naturalWidth; } catch { return 0; }
+    })).toBeGreaterThan(0);
+    return image.evaluate((node: HTMLImageElement) => {
+      const svg = decodeURIComponent(node.src.slice(node.src.indexOf(",") + 1));
+      const document = new DOMParser().parseFromString(svg, "image/svg+xml");
+      return {
+        svg,
+        text: document.documentElement.textContent ?? "",
+        viewBox: document.documentElement.getAttribute("viewBox"),
+        parseErrors: document.querySelectorAll("parsererror").length,
+      };
+    });
+  }
+
+  async function fits(page: Page) {
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    await expect.poll(() => page.locator(".transcript").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+  }
+
+  // Reconnection gates mirror the existing streamed Markdown tests. No native host
+  // or Mermaid stub is involved; each stage is a real protocol message patch.
+  async function streamStages(page: Page, stages: string[]) {
+    const releases: Array<() => void> = [];
+    const gates = stages.map(() => new Promise<void>((resolve) => releases.push(resolve)));
+    let connection = 0;
+    await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) => {
+      const index = connection++;
+      if (index >= stages.length) {
+        return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      }
+      await gates[index];
+      const message = { role: "assistant", content: [{ type: "text", text: stages[index] }] };
+      const event = (seq: number, type: string) =>
+        `id: ${seq}\nevent: ${type}\ndata: ${JSON.stringify({ type, message })}\n\n`;
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: "retry: 20\n" + event(5 + index * 2, index === 0 ? "message_start" : "message_update") +
+          (index === stages.length - 1 ? event(6 + index * 2, "message_end") : ""),
+      });
+    });
+    return releases;
+  }
+
+  test("renders Chinese flowcharts and sequences as decoded SVG images beside ordinary code, with exact source and copy", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async (text: string) => { (window as Window & { mermaidCopied?: string }).mermaidCopied = text; } },
+      });
+    });
+    await diagramSnapshot(page, `${fence(flow)}\n\n${fence(sequence)}\n\n\`\`\`js\nconst answer = 42;\n\`\`\``);
+    await page.goto("/");
+    const blocks = page.locator(".mermaid-block");
+    await expect(blocks).toHaveCount(2);
+    for (const [index, label] of ["开始", "用户"].entries()) {
+      const block = blocks.nth(index);
+      await expect(block).toHaveClass(/markdown-code-block/);
+      const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+      expect(decoded.parseErrors).toBe(0);
+      expect(decoded.text).toContain(label);
+      expect(decoded.viewBox).toMatch(/\S+\s+\S+\s+\S+\s+\S+/);
+      expect(decoded.svg).not.toContain("<foreignObject");
+      await expect(block.locator(".mermaid-diagram svg, object, iframe")).toHaveCount(0);
+    }
+    await expect(page.locator(".markdown-code-block:not(.mermaid-block) pre code")).toHaveText("const answer = 42;\n");
+    const first = blocks.first();
+    await expect(first.locator(".mermaid-source")).toHaveCount(0);
+    await first.getByRole("button", { name: "View source", exact: true }).click();
+    await expect(first.locator(".mermaid-source")).toBeVisible();
+    expect(await first.locator(".mermaid-source code").textContent()).toBe(flow);
+    await first.getByRole("button", { name: "Copy code", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as Window & { mermaidCopied?: string }).mermaidCopied)).toBe(flow);
+    await first.getByRole("button", { name: "View diagram", exact: true }).click();
+    await decodedDiagram(first.locator(".mermaid-diagram img"));
+    await expect(first.locator(".mermaid-source")).toHaveCount(0);
+  });
+
+  test("follows root theme mutations on desktop and 390px, fits the keyboard image viewer and restores focus", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await page.addInitScript(() => localStorage.setItem("rpi-theme", "light"));
+    await diagramSnapshot(page, fence(flow));
+    await page.goto("/");
+    const block = page.locator(".mermaid-block");
+    const image = block.locator(".mermaid-diagram img");
+    const light = await decodedDiagram(image);
+    await expect(block).toHaveAttribute("data-theme", "light");
+    await fits(page);
+    const lightSource = await image.getAttribute("src");
+    await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
+    await expect(block).toHaveAttribute("data-theme", "dark");
+    await expect(image).not.toHaveAttribute("src", lightSource!);
+    const dark = await decodedDiagram(image);
+    for (const label of ["开始", "处理数据", "完成"]) {
+      expect(light.text).toContain(label);
+      expect(dark.text).toContain(label);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await fits(page);
+    const enlarge = block.getByRole("button", { name: "Enlarge image: Mermaid diagram", exact: true });
+    await enlarge.scrollIntoViewIfNeeded();
+    await enlarge.focus();
+    await page.keyboard.press("Enter");
+    const viewer = page.getByRole("dialog", { name: "Image viewer", exact: true });
+    await expect(viewer).toBeVisible();
+    await decodedDiagram(viewer.locator("img"));
+    const box = await viewer.locator("img").boundingBox();
+    expect(box!.width).toBeLessThan(390);
+    expect(box!.height).toBeLessThan(844);
+    await viewer.getByRole("button", { name: "Original size", exact: true }).click();
+    await viewer.getByRole("button", { name: "Fit to window", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(viewer).toHaveCount(0);
+    await expect(enlarge).toBeFocused();
+    await fits(page);
+  });
+
+  test("localizes source, diagram and image controls in Chinese", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    await diagramSnapshot(page, fence(flow));
+    await page.goto("/");
+    const block = page.locator(".mermaid-block");
+    const image = block.locator(".mermaid-diagram img");
+    await decodedDiagram(image);
+    await expect(image).toHaveAttribute("alt", "Mermaid 流程图");
+    await block.getByRole("button", { name: "查看源码", exact: true }).click();
+    expect(await block.locator(".mermaid-source code").textContent()).toBe(flow);
+    await expect(block.getByRole("button", { name: "复制代码", exact: true })).toBeVisible();
+    await block.getByRole("button", { name: "查看图表", exact: true }).click();
+    await image.click();
+    const viewer = page.getByRole("dialog", { name: "图片查看器", exact: true });
+    await expect(viewer).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(viewer).toHaveCount(0);
+  });
+
+  test("shows exact invalid source and recovers when SSE repairs the diagram without render orphans", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const invalid = "flowchart TD\n  start[unfinished\n";
+    await diagramSnapshot(page, "");
+    const release = await streamStages(page, [fence(invalid), fence(flow)]);
+    try {
+      await page.goto("/");
+      release[0]();
+      const block = page.locator(".mermaid-block");
+      await expect(block).toHaveCount(1);
+      await expect(block.locator(".mermaid-status")).toHaveText(failure);
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(invalid);
+      await expect(block.locator(".mermaid-diagram img")).toHaveCount(0);
+      release[1]();
+      const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+      expect(decoded.text).toContain("开始");
+      await expect(block.locator(".mermaid-status")).toHaveCount(0);
+      await block.getByRole("button", { name: "View source", exact: true }).click();
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(flow);
+      await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
+      expect(errors).toEqual([]);
+    } finally {
+      // Release route handlers even if an assertion fails before the repair.
+      release.forEach((resolve) => resolve());
+    }
+  });
+
+  test("rejects source-owned config and external resources while rendering strict click links only as an image", async ({ page, baseURL }) => {
+    expect(baseURL).toBeTruthy();
+    const origin = new URL(baseURL!).origin;
+    const externalRequests: string[] = [];
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      (window as Window & { mermaidAttack?: string }).mermaidAttack = "untouched";
+    });
+    await page.route("**/*", async (route) => {
+      const url = new URL(route.request().url());
+      if (/^https?:$/.test(url.protocol) && (url.origin !== origin || url.pathname.startsWith("/mermaid-attack/"))) {
+        externalRequests.push(url.href);
+        return route.abort();
+      }
+      return route.fallback();
+    });
+    const attacks = [
+      '%%{init: {"securityLevel": "loose", "flowchart": {"htmlLabels": true}}}%%\nflowchart TD\n  A --> B\n',
+      'flowchart TD\n  A["<img src=\'https://mermaid-attack.invalid/remote.png\' onerror=\'window.mermaidAttack=1\'>"]\n',
+      'flowchart TD\n  A@{ img: "https://mermaid-attack.invalid/shape.png", label: "Remote" }\n  style A fill:url(https://mermaid-attack.invalid/fill.svg)\n',
+      'flowchart TD\n  A@{ "img": "/mermaid-attack/pending.png" }\n',
+      'flowchart TD\n  A@{ "\\u0069mg": "https://mermaid-attack.invalid/escaped.png" }\n',
+      'flowchart TD\n  A --> B\n  classDef default fill:u\\72l(/mermaid-attack/fill.svg)\n',
+      'flowchart TD\n  A --> B\n  style A background-image:image-set("/mermaid-attack/background.png")\n',
+      'flowchart TD\n  中[Node]\n  style 中 filter:u\\72l(/mermaid-attack/filter.svg#f)\n',
+    ];
+    const strict = 'flowchart TD\n  A[Safe] --> B[Done]\n  click A "javascript:window.mermaidAttack=1" "Unsafe link"\n';
+    await diagramSnapshot(page, [...attacks, strict].map(fence).join("\n\n"));
+    await page.goto("/");
+    const blocks = page.locator(".mermaid-block");
+    await expect(blocks).toHaveCount(attacks.length + 1);
+    for (const [index, source] of attacks.entries()) {
+      const block = blocks.nth(index);
+      await expect(block.locator(".mermaid-status")).toHaveText(failure);
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(source);
+      await expect(block.locator(".mermaid-diagram img")).toHaveCount(0);
+    }
+    const normal = blocks.nth(attacks.length);
+    const decoded = await decodedDiagram(normal.locator(".mermaid-diagram img"));
+    expect(decoded.parseErrors).toBe(0);
+    expect(decoded.text).toContain("Safe");
+    // Never activate the untrusted link: the SVG must stay in inert image mode.
+    await expect(blocks.locator(".mermaid-diagram svg, script, iframe, object, embed, a, [onclick], [onerror], [onload]")).toHaveCount(0);
+    // The image's React click handler opens our viewer, never a diagram callback.
+    await expect(normal.locator(".mermaid-diagram img")).not.toHaveAttribute("onclick");
+    await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
+    expect(await page.evaluate(() => (window as Window & { mermaidAttack?: string }).mermaidAttack)).toBe("untouched");
+    expect(externalRequests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("preserves all oversized source and still renders the following bounded diagram without orphans", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    // A small line count isolates the character bound from the line-count bound.
+    const oversized = `flowchart TD\n  A[${"x".repeat(20_001)}] --> B[End]\n`;
+    expect(oversized.length).toBeGreaterThan(20_000);
+    await diagramSnapshot(page, `${fence(oversized)}\n\n${fence(flow)}`);
+    await page.goto("/");
+    const blocks = page.locator(".mermaid-block");
+    await expect(blocks).toHaveCount(2);
+    const rejected = blocks.first();
+    await expect(rejected.locator(".mermaid-status")).toHaveText(failure);
+    expect(await rejected.locator(".mermaid-source code").textContent()).toBe(oversized);
+    await expect(rejected.locator(".mermaid-diagram img")).toHaveCount(0);
+    const decoded = await decodedDiagram(blocks.nth(1).locator(".mermaid-diagram img"));
+    expect(decoded.parseErrors).toBe(0);
+    expect(decoded.text).toContain("开始");
+    await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+});
+
+// Keep this fixture local: summary layout must not depend on a live native host.
+test.describe("Codex tool summary layout", () => {
+  type SummaryTool = {
+    name: string;
+    args: Record<string, unknown>;
+    result: string;
+    state?: "done" | "running" | "error";
+  };
+
+  async function summarySnapshot(page: Page, tools: SummaryTool[]) {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: tools.some((tool) => tool.state === "running") ? "running" : "ready",
+          lastSeq: 9,
+          events: [],
+          messages: [
+            {
+              role: "assistant",
+              content: tools.map((tool, index) => ({
+                type: "toolCall",
+                id: `codex-summary-${index}`,
+                name: tool.name,
+                arguments: tool.args,
+                webTiming: {
+                  elapsedMs: 1234,
+                  running: tool.state === "running",
+                },
+              })),
+            },
+            ...tools.flatMap((tool, index) =>
+              tool.state === "running" ? [] : [{
+                role: "toolResult",
+                toolCallId: `codex-summary-${index}`,
+                toolName: tool.name,
+                isError: tool.state === "error",
+                content: [{ type: "text", text: tool.result }],
+                webTiming: { elapsedMs: 1234, running: false },
+              }],
+            ),
+          ],
+        },
+      }),
+    );
+  }
+
+  async function expectSummaryGeometry(summary: ReturnType<Page["locator"]>) {
+    await summary.scrollIntoViewIfNeeded();
+    await expect(summary.locator(":scope > :first-child")).toHaveClass("tool-status");
+    await expect(summary.locator(":scope > :last-child")).toHaveClass(/tool-chevron/);
+    const geometry = await summary.evaluate((node) => {
+      const box = (element: Element) => {
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x, right: rect.right, width: rect.width };
+      };
+      return {
+        bounds: box(node),
+        viewport: window.innerWidth,
+        parts: [
+          // Measure the stable icon slot, not a spinner's rotating SVG bounds.
+          ".tool-status", ".tool-action", ".tool-target",
+          ".tool-summary-meta", ".tool-elapsed", ".tool-chevron",
+        ].flatMap((selector) => {
+          const element = node.querySelector(selector);
+          return element ? [{ selector, ...box(element) }] : [];
+        }),
+      };
+    });
+    expect(geometry.bounds.x).toBeGreaterThanOrEqual(0);
+    expect(geometry.bounds.right).toBeLessThanOrEqual(geometry.viewport + 1);
+    for (const [index, part] of geometry.parts.entries()) {
+      expect(part.width, part.selector).toBeGreaterThan(0);
+      expect(part.x, part.selector).toBeGreaterThanOrEqual(geometry.bounds.x - 1);
+      expect(part.right, part.selector).toBeLessThanOrEqual(geometry.bounds.right + 1);
+      if (index > 0) {
+        const previous = geometry.parts[index - 1];
+        expect(part.x, `${previous.selector} precedes ${part.selector}`).toBeGreaterThan(previous.x);
+        expect(part.x, "summary parts do not overlap").toBeGreaterThanOrEqual(previous.right - 1);
+      }
+    }
+    const status = summary.locator(".tool-status");
+    const label = await status.getAttribute("title");
+    expect(label).toBeTruthy();
+    await expect(status.locator(".sr-only")).toHaveText(label!);
+    await expect(summary).toHaveAccessibleName(new RegExp(label!));
+    await expect(status.locator("svg")).toHaveAttribute("aria-hidden", "true");
+    await expect(summary.locator(".tool-chevron")).toHaveAttribute("aria-hidden", "true");
+  }
+
+  test("completed tool icons lead and native chevrons trail at desktop and mobile widths", async ({ page }) => {
+    const tools: Array<SummaryTool & { icon: string }> = [
+      { name: "read", args: { path: "src/example.ts" }, result: "export const answer = 42;", icon: "file-text" },
+      { name: "bash", args: { command: "printf summary" }, result: "summary", icon: "terminal" },
+      { name: "edit", args: { path: "src/edit.ts", edits: [{ oldText: "old", newText: "new" }] }, result: "Edited src/edit.ts", icon: "pencil" },
+      { name: "write", args: { path: "src/write.ts", content: "new" }, result: "Wrote src/write.ts", icon: "pencil" },
+      { name: "websearch", args: { query: "summary layout" }, result: "Search result", icon: "search" },
+      { name: "plan", args: { plan: "# Summary plan\n\n- Inspect icons\n- Verify layout" }, result: "# Summary plan\n\n- Inspect icons\n- Verify layout", icon: "list-checks" },
+      { name: "todo", args: {}, result: "1/2 completed\n[✓] #0: Inspect icons\n[ ] #1: Verify layout", icon: "list-checks" },
+      { name: "webfetch", args: { url: "https://example.com" }, result: "Fetched page", icon: "globe" },
+      { name: "custom_summary_probe", args: { path: "probe.txt" }, result: "Unknown tool payload", icon: "wrench" },
+    ];
+    await summarySnapshot(page, tools);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const cards = page.locator(".tool-card");
+      await expect(cards).toHaveCount(tools.length);
+      for (const [index, tool] of tools.entries()) {
+        const card = cards.nth(index);
+        const summary = card.locator(":scope > summary");
+        await expect(card).toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", false);
+        await expect(summary.locator(`.tool-status > svg.lucide-${tool.icon}`)).toHaveCount(1);
+        await expect(summary.locator(".tool-status .spin, .tool-status .lucide-circle-alert")).toHaveCount(0);
+        await expect(summary.locator(".tool-elapsed")).toHaveText("1.2s");
+        await expectSummaryGeometry(summary);
+      }
+      // Metadata is still in the middle, not replaced by either icon.
+      await expect(cards.nth(2).locator("summary .edit-count")).toContainText("+1");
+      await expect(cards.nth(2).locator("summary .edit-count")).toContainText("−1");
+      await expect(cards.nth(5).locator("summary .tool-summary-meta")).not.toBeEmpty();
+      await expect(cards.nth(6).locator("summary .tool-summary-meta")).toContainText("1/2");
+      const read = cards.first();
+      const summary = read.locator(":scope > summary");
+      await summary.locator(":scope > .tool-chevron:last-child").click();
+      await expect(read).toHaveJSProperty("open", true);
+      await expect(read.getByText("export const answer = 42;", { exact: false })).toBeVisible();
+      await summary.focus();
+      await page.keyboard.press("Enter");
+      await expect(read).toHaveJSProperty("open", false);
+      await summary.locator(":scope > .tool-status:first-child").click();
+      await expect(read).toHaveJSProperty("open", true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  });
+
+  test("long targets ellipsize without losing edit metadata or elapsed time on desktop and mobile", async ({ page }) => {
+    const path = `src/${"very-long-directory-segment/".repeat(30)}summary.ts`;
+    await summarySnapshot(page, [{
+      name: "edit",
+      args: { path, edits: [{ oldText: "const before = 1;", newText: "const after = 2;\nexport { after };" }] },
+      result: `Edited ${path}`,
+    }]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const card = page.locator(".edit-card.tool-done");
+      const summary = card.locator(":scope > summary");
+      const target = summary.locator(".tool-target");
+      await expect(card).toHaveJSProperty("open", false);
+      await expect(target).toHaveText(path);
+      await expect(target).toHaveAttribute("title", path);
+      await expect(target).toHaveCSS("text-overflow", "ellipsis");
+      await expect(target).toHaveCSS("overflow-x", "hidden");
+      await expect(target).toHaveCSS("white-space", "nowrap");
+      expect(await target.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
+      await expect(summary.locator(".edit-count")).toContainText("+2");
+      await expect(summary.locator(".edit-count")).toContainText("−1");
+      await expect(summary.locator(".tool-elapsed")).toHaveText("1.2s");
+      await expectSummaryGeometry(summary);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await summary.locator(".tool-chevron").click();
+      await expect(card.locator(".edit-line.add")).toHaveCount(2);
+      await expect(card.locator(".edit-line.remove")).toHaveCount(1);
+    }
+  });
+
+  test("running spinner and error alert preserve status labels, auto-open, manual collapse and Enter", async ({ page }) => {
+    await summarySnapshot(page, [
+      { name: "bash", args: { command: "sleep 10" }, result: "", state: "running" },
+      { name: "read", args: { path: "missing.txt" }, result: "Missing file: summary regression", state: "error" },
+    ]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const running = page.locator(".tool-card.tool-running");
+      const error = page.locator(".tool-card.tool-error");
+      await expect(running).toHaveJSProperty("open", false);
+      await expect(error).toHaveJSProperty("open", true);
+      const runningSummary = running.locator(":scope > summary");
+      const errorSummary = error.locator(":scope > summary");
+      await expect(runningSummary.locator(".tool-status > svg.spin")).toHaveCount(1);
+      await expect(runningSummary.locator(".tool-status .lucide-terminal")).toHaveCount(0);
+      await expect(errorSummary.locator(".tool-status > svg.lucide-circle-alert")).toHaveCount(1);
+      await expect(errorSummary.locator(".tool-status .lucide-file-text, .tool-status .spin")).toHaveCount(0);
+      await expectSummaryGeometry(runningSummary);
+      await expectSummaryGeometry(errorSummary);
+      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeVisible();
+      await errorSummary.locator(":scope > .tool-chevron:last-child").click();
+      await expect(error).toHaveJSProperty("open", false);
+      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeHidden();
+      // A live elapsed tick in the sibling must not undo the reader's collapse.
+      const timer = runningSummary.locator(".tool-elapsed");
+      const initial = await timer.innerText();
+      await expect.poll(() => timer.innerText()).not.toBe(initial);
+      await expect(error).toHaveJSProperty("open", false);
+      await errorSummary.focus();
+      await page.keyboard.press("Enter");
+      await expect(error).toHaveJSProperty("open", true);
+      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeVisible();
+      await runningSummary.locator(".tool-chevron").click();
+      await expect(running).toHaveJSProperty("open", true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  });
+});
+
+for (const language of ["en", "zh"] as const) {
+  test(`composer queue omits its visible title but keeps controls and accessible names in ${language}`, async ({ page }) => {
+    await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    await mockHost(page);
+    const close = language === "zh" ? "关闭队列" : "Close queue";
+    const view = language === "zh" ? "查看排队消息" : "View queued messages";
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const panel = page.locator(".composer-queue-panel");
+      const heading = panel.locator(".composer-queue-heading");
+      await expect(panel).toBeVisible();
+      await expect(heading).toHaveAccessibleName(close);
+      await expect(heading).toHaveText("1");
+      await expect(heading.locator("strong")).toHaveCount(0);
+      await expect(panel.locator(".composer-queue-item")).toContainText("pending");
+      const edit = panel.getByRole("button", { name: language === "zh" ? "编辑排队消息" : "Edit queued message", exact: true });
+      await expect(edit).toBeVisible();
+      await heading.click();
+      await expect(heading).toHaveAccessibleName(view);
+      await expect(heading).toHaveAttribute("aria-expanded", "false");
+      await expect(heading.locator(".composer-queue-preview")).toHaveText("pending");
+      expect(await heading.innerText()).not.toContain(language === "zh" ? "队列" : "Queue");
+      await heading.focus();
+      await page.keyboard.press("Enter");
+      await expect(heading).toHaveAccessibleName(close);
+      await expect(heading).toHaveAttribute("aria-expanded", "true");
+      await expect(heading).toHaveText("1");
+      await expect(edit).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  });
+}
+
+test.describe("session issue badges", () => {
+  type Summary = import("../src/api").SessionSummary;
+  const rawError = "PRIVATE_HOST_ERROR_do_not_render";
+  function seed(): Summary[] {
+    const other = (id: string, extra: Partial<Summary>): Summary => ({
+      ...session, sessionId: id, title: id, tags: [], ...extra,
+    });
+    return [
+      { ...session },
+      other("known-failed", { latestSettlement: { outcome: "failed" } }),
+      other("known-interrupted", { latestSettlement: { outcome: "interrupted" } }),
+      other("host-error", { error: rawError }),
+      other("error-status", { status: "error" }),
+      other("recoverable", { status: "error", error: rawError, latestSettlement: { outcome: "interrupted", pendingResume: true } }),
+      other("normal-completed", { latestSettlement: { outcome: "completed" } }),
+      other("normal-aborted", { error: rawError, latestSettlement: { outcome: "aborted" } }),
+      other("normal-declined", { error: rawError, latestSettlement: { outcome: "declined" } }),
+      other("offline-unknown", { status: "offline" }),
+      other("closed-normal", { status: "closed" }),
+      ...["running", "starting", "awaiting_input"].map(status => other(`${status}-with-old-failed`, {
+        status, error: rawError, latestSettlement: { outcome: "failed", pendingResume: true },
+      })),
+    ];
+  }
+  async function setup(page: Page) {
+    await mockHost(page);
+    const state = { sessions: seed(), listReads: 0, otherRequests: [] as string[] };
+    const listRoute = (url: URL) => url.pathname === "/api/v1/sessions";
+    await page.route(listRoute, route => {
+      if (route.request().method() !== "GET") return route.fallback();
+      state.listReads++;
+      return route.fulfill({ json: { sessions: state.sessions } });
+    });
+    page.on("request", request => {
+      const path = new URL(request.url()).pathname;
+      const match = path.match(/^\/api\/v1\/sessions\/([^/]+)(?:\/|$)/);
+      if (match && match[1] !== sessionId) state.otherRequests.push(path);
+    });
+    return state;
+  }
+  const row = (page: Page, title: string) => page.locator(".project-session")
+    .filter({ has: page.locator(".session-title", { hasText: title }) });
+
+  test("desktop shows summary evidence before opening sessions without leaking errors", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    await page.goto("/");
+    const sidebar = page.locator(".project-tree");
+    await expect(sidebar.locator(".session-issue-failed")).toHaveCount(4);
+    await expect(sidebar.locator(".session-issue-resume")).toHaveCount(1);
+    for (const title of ["known-failed", "known-interrupted", "host-error", "error-status"]) {
+      const badge = row(page, title).locator(".session-issue-failed");
+      await expect(badge).toBeVisible();
+      await expect(badge).toHaveText("Interrupted");
+      await expect(badge).toHaveAccessibleName("Interrupted. This session reported an error or failed run. Open it to review and retry.");
+      await expect(badge).toHaveAttribute("title", "This session reported an error or failed run. Open it to review and retry.");
+      await expect(row(page, title).locator(".project-session-link")).toHaveAttribute("title", title);
+    }
+    await expect(row(page, "recoverable").locator(".session-issue-resume")).toHaveText("Needs resume");
+    for (const title of ["Mock session", "normal-completed", "normal-aborted", "normal-declined", "offline-unknown", "closed-normal", "running-with-old-failed", "starting-with-old-failed", "awaiting_input-with-old-failed"])
+      await expect(row(page, title).locator(".session-issue")).toHaveCount(0);
+    await expect(page.locator("body")).not.toContainText(rawError);
+    expect(await sidebar.locator("[title]").evaluateAll(elements => elements.map(el => el.getAttribute("title")).join("\n"))).not.toContain(rawError);
+    expect(state.otherRequests).toEqual([]);
+    await row(page, "known-failed").locator(".project-session-link").click();
+    await expect(row(page, "known-failed")).toHaveClass(/active/);
+  });
+
+  test("English and Chinese labels agree in desktop rows and the 390px mobile picker", async ({ page }) => {
+    const state = await setup(page);
+    await page.goto("/");
+    for (const language of ["en", "zh"] as const) {
+      await page.evaluate(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.setViewportSize({ width: 1280, height: 844 });
+      await page.reload();
+      const failed = language === "zh" ? "异常中断" : "Interrupted";
+      const resume = language === "zh" ? "待恢复" : "Needs resume";
+      await expect(row(page, "known-failed").locator(".session-issue-failed")).toHaveText(failed);
+      await expect(row(page, "recoverable").locator(".session-issue-resume")).toHaveText(resume);
+      await page.setViewportSize({ width: 390, height: 844 });
+      // Start with the mobile defaults instead of desktop overlays left open.
+      await page.reload();
+      await page.getByRole("button", { name: language === "zh" ? "切换会话" : "Switch session", exact: true }).click();
+      const picker = page.locator(".mobile-session-sheet");
+      await expect(picker).toBeVisible();
+      await expect(picker.locator(".session-issue-failed")).toHaveText([failed, failed, failed, failed]);
+      await expect(picker.locator(".session-issue-resume")).toHaveText(resume);
+      for (const badge of await picker.locator(".session-issue").all()) {
+        await expect(badge).toBeVisible();
+        await expect(badge).toHaveAccessibleName(/.+/);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await expect(picker.locator(".mobile-session-option").filter({ hasText: "known-failed" })).toContainText(failed);
+      await expect(picker).not.toContainText(rawError);
+      expect(await picker.locator(".session-issue").evaluateAll(elements => elements.map(el => el.getAttribute("title")).join("\n"))).not.toContain(rawError);
+      await page.getByRole("button", { name: language === "zh" ? "关闭面板" : "Close panel", exact: true }).click();
+    }
+    expect(state.otherRequests).toEqual([]);
+  });
+
+  test("list refresh clears a noncurrent failure for running and completed summaries", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    state.sessions = [state.sessions[0], { ...state.sessions[1], error: rawError }];
+    await page.goto("/");
+    const failedRow = row(page, "known-failed");
+    await expect(failedRow.locator(".session-issue-failed")).toHaveText("Interrupted");
+    await expect(row(page, "Mock session")).toHaveClass(/active/);
+    for (const update of [
+      { status: "running" },
+      { status: "ready", error: null, latestSettlement: { outcome: "completed" } },
+    ]) {
+      state.sessions = [state.sessions[0], { ...state.sessions[1], ...update }];
+      const reads = state.listReads;
+      const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/sessions" && response.request().method() === "GET");
+      await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
+      await refreshed;
+      expect(state.listReads).toBeGreaterThan(reads);
+      await expect(failedRow.locator(".session-issue")).toHaveCount(0);
+      await expect(row(page, "Mock session")).toHaveClass(/active/);
+    }
+    expect(state.otherRequests).toEqual([]);
+  });
+});
+
+test.describe("tool name display preference", () => {
+  const key = "rpi-web-tool-name-mode";
+  const tools = [
+    { name: "read", args: { path: "src/preference.ts" }, result: "export const preference = 42;" },
+    { name: "bash", args: { command: "printf preference" }, result: "preference" },
+    { name: "edit", args: { path: "src/edit.ts", edits: [{ oldText: "before", newText: "after" }] }, result: "Edited src/edit.ts" },
+    { name: "plan", args: { plan: "# Preference plan\n\n- Inspect names\n- Verify controls" }, result: "# Preference plan\n\n- Inspect names\n- Verify controls" },
+    { name: "todo", args: {}, result: "1/2 completed\n[✓] #0: Inspect names\n[ ] #1: Verify controls" },
+    { name: "Custom_Preference_Probe", args: { path: "probe.txt" }, result: "Custom preference payload" },
+    { name: "functions.Read_File", args: { path: "src/prefixed.ts" }, result: "export const prefixed = true;" },
+  ];
+  const native = tools.map(tool => tool.name);
+  const mapped = ["Read", "Ran", "Edited", "Plan", "Todos", "Custom_Preference_Probe", "Read"];
+  const chinese = ["已读取", "已运行", "已编辑", "计划", "待办", "Custom_Preference_Probe", "已读取"];
+
+  // Local copy: the summary-layout describe's fixture is scoped there.
+  async function summarySnapshot(page: Page, entries = tools) {
+    await mockHost(page);
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "ready", lastSeq: 9, events: [],
+      messages: entries.length ? [
+        { role: "assistant", content: entries.map((tool, index) => ({
+          type: "toolCall", id: `name-preference-${index}`, name: tool.name, arguments: tool.args,
+          webTiming: { elapsedMs: 1234, running: false },
+        })) },
+        ...entries.map((tool, index) => ({
+          role: "toolResult", toolCallId: `name-preference-${index}`, toolName: tool.name,
+          isError: false, content: [{ type: "text", text: tool.result }],
+          webTiming: { elapsedMs: 1234, running: false },
+        })),
+      ] : [],
+    } }));
+  }
+  async function labels(page: Page, names: string[]) {
+    const cards = page.locator(".tool-card");
+    await expect(cards).toHaveCount(names.length);
+    await expect(cards.locator(":scope > summary .tool-action")).toHaveText(names);
+    for (const [index, name] of names.entries()) {
+      const summary = cards.nth(index).locator(":scope > summary");
+      expect(await summary.locator(".tool-action").textContent()).toBe(name);
+      await expect(summary.locator(".tool-action")).toHaveAttribute("title", name);
+      await expect(summary).toHaveAccessibleName(new RegExp(name.replaceAll(".", "\\.")));
+    }
+  }
+  async function settings(page: Page, zh = false) {
+    await page.keyboard.press("Control+,");
+    const group = page.getByRole("group", { name: zh ? "工具名称" : "Tool names", exact: true });
+    await expect(group).toBeVisible();
+    return group;
+  }
+  async function choose(page: Page, mode: "native" | "mapped", zh = false) {
+    const group = await settings(page, zh);
+    const names = zh ? ["原生名称", "映射名称"] : ["Native names", "Mapped names"];
+    const selected = group.getByRole("button", { name: names[mode === "native" ? 0 : 1], exact: true });
+    await selected.focus();
+    await page.keyboard.press("Enter");
+    await expect(selected).toHaveAttribute("aria-pressed", "true");
+    await expect(group.getByRole("button", { name: names[mode === "native" ? 1 : 0], exact: true })).toHaveAttribute("aria-pressed", "false");
+    await page.keyboard.press("Escape");
+    await expect(group).toBeHidden();
+  }
+  async function savedState(page: Page, mode: "native" | "mapped") {
+    const group = await settings(page);
+    await expect(group.getByRole("button", { name: "Native names", exact: true })).toHaveAttribute("aria-pressed", String(mode === "native"));
+    await expect(group.getByRole("button", { name: "Mapped names", exact: true })).toHaveAttribute("aria-pressed", String(mode === "mapped"));
+    await page.keyboard.press("Escape");
+  }
+  const unchanged = (page: Page) => page.locator(".tool-card").evaluateAll(cards => cards.map(card => ({
+    className: card.className,
+    parts: Array.from(card.querySelectorAll("summary .tool-target, summary .tool-summary-meta, summary .tool-elapsed, .tool-detail"))
+      .map(node => [node.className, node.textContent, node.getAttribute("title")]),
+    icon: card.querySelector("summary .tool-status svg")?.getAttribute("class"),
+    open: (card as HTMLDetailsElement).open,
+  })));
+
+  test("desktop native defaults, local keyboard toggles and reload persistence preserve all five renderers", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "en"));
+    await summarySnapshot(page);
+    const commands: unknown[] = [];
+    page.on("request", request => {
+      if (!new URL(request.url()).pathname.endsWith("/commands") || request.method() !== "POST") return;
+      const body = request.postDataJSON();
+      // Independent inspector polling can overlap the local preference toggle.
+      if (!String(body.type).startsWith("get_")) commands.push(body);
+    });
+    await page.goto("/");
+    await labels(page, native);
+    await savedState(page, "native");
+    const cards = page.locator(".tool-card");
+    for (const renderer of [".shell-card", ".edit-card", ".plan-card", ".todo-card"])
+      await expect(page.locator(renderer)).toHaveCount(1);
+    await expect(cards.locator("summary .tool-elapsed")).toHaveText(tools.map(() => "1.2s"));
+    await expect(cards.nth(2).locator("summary .edit-count")).toContainText("+1");
+    await expect(cards.nth(2).locator("summary .edit-count")).toContainText("−1");
+    await expect(cards.nth(4).locator("summary .tool-summary-meta")).toContainText("1/2");
+    for (let index = 0; index < 5; index++) {
+      await cards.nth(index).locator(":scope > summary").focus();
+      await page.keyboard.press("Enter");
+      await expect(cards.nth(index)).toHaveJSProperty("open", true);
+    }
+    await expect(cards.first().getByText(tools[0].result, { exact: false })).toBeVisible();
+    await expect(page.locator(".shell-output")).toHaveText("preference");
+    await expect(page.locator(".edit-line.add")).toHaveCount(1);
+    await expect(page.locator(".plan-outline li")).toHaveCount(2);
+    await expect(page.locator(".todo-list li")).toHaveCount(2);
+    const before = await unchanged(page);
+    const commandBoundary = commands.length;
+    await choose(page, "mapped");
+    await labels(page, mapped);
+    expect(await unchanged(page)).toEqual(before);
+    await expect(cards.first()).toHaveJSProperty("open", true);
+    await expect.poll(() => page.evaluate(k => localStorage.getItem(k), key)).toBe("mapped");
+    expect(commands.slice(commandBoundary)).toEqual([]);
+    await page.reload();
+    await labels(page, mapped);
+    await savedState(page, "mapped");
+    const reloadBoundary = commands.length;
+    await choose(page, "native");
+    await labels(page, native);
+    expect(commands.slice(reloadBoundary)).toEqual([]);
+    await expect.poll(() => page.evaluate(k => localStorage.getItem(k), key)).toBe("native");
+    await page.reload();
+    await labels(page, native);
+    await savedState(page, "native");
+  });
+
+  test("Chinese 390px fresh defaults stay native and keyboard settings localize only mapped actions", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    await summarySnapshot(page);
+    await page.goto("/");
+    await labels(page, native);
+    const group = await settings(page, true);
+    await expect(group.getByRole("button", { name: "原生名称", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(group.getByRole("button", { name: "映射名称", exact: true })).toHaveAttribute("aria-pressed", "false");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.keyboard.press("Escape");
+    await choose(page, "mapped", true);
+    await labels(page, chinese);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await choose(page, "native", true);
+    await labels(page, native);
+    await expect(page.locator(".tool-action").last()).toHaveText("functions.Read_File");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+
+  test("invalid saved values and tool-key-only blocked storage fall back safely and toggle in memory", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.addInitScript(k => {
+      localStorage.setItem("rpi-web-language", "en");
+      // Init-script order is unspecified when the blocked-storage phase reloads.
+      try { localStorage.setItem(k, "invalid-mode"); } catch { /* tool key blocked */ }
+    }, key);
+    await summarySnapshot(page);
+    await page.goto("/");
+    await labels(page, native);
+    await savedState(page, "native");
+    await choose(page, "mapped");
+    await labels(page, mapped);
+    await page.addInitScript(k => {
+      const get = Storage.prototype.getItem;
+      const set = Storage.prototype.setItem;
+      Storage.prototype.getItem = function (name) {
+        if (name === k) throw new DOMException("Tool preference blocked", "SecurityError");
+        return get.call(this, name);
+      };
+      Storage.prototype.setItem = function (name, value) {
+        if (name === k) throw new DOMException("Tool preference blocked", "SecurityError");
+        return set.call(this, name, value);
+      };
+    }, key);
+    await page.reload();
+    await labels(page, native);
+    await savedState(page, "native");
+    await choose(page, "mapped");
+    await labels(page, mapped);
+    await savedState(page, "mapped");
+    await choose(page, "native");
+    await labels(page, native);
+    expect(errors).toEqual([]);
+  });
+
+  test("live SSE preserves raw names running and done, with Reading to Read only when mapped", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "en"));
+    await summarySnapshot(page, []);
+    const releases: Array<() => void> = [];
+    const gates = Array.from({ length: 4 }, () => new Promise<void>(resolve => releases.push(resolve)));
+    let connection = 0;
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+      const index = connection++;
+      if (index >= gates.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      await gates[index];
+      const start = index % 2 === 0;
+      const event = {
+        type: start ? "tool_execution_start" : "tool_execution_end",
+        toolCallId: `live-preference-${Math.floor(index / 2)}`, toolName: "functions.Read_File",
+        ...(start ? { args: { path: "src/live.ts" } } : { result: "export const live = true;", isError: false }),
+        webTiming: { elapsedMs: start ? 100 : 1234, running: start },
+      };
+      await route.fulfill({ contentType: "text/event-stream", body: `retry: 20\nid: ${10 + index}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
+    });
+    try {
+      await page.goto("/");
+      for (let index = 0; index < 4; index++) {
+        if (index === 2) await choose(page, "mapped");
+        releases[index]();
+        const card = page.locator(".tool-card").nth(Math.floor(index / 2));
+        await expect(card).toHaveClass(index % 2 === 0 ? /tool-running/ : /tool-done/);
+        await expect(card.locator("summary .tool-action")).toHaveText(index < 2 ? "functions.Read_File" : index === 2 ? "Reading" : "Read");
+        await expect(card.locator("summary .tool-target")).toHaveText("src/live.ts");
+        if (index % 2 === 0) await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(1);
+        else await expect(card.locator("summary .tool-elapsed")).toHaveText("1.2s");
+      }
+    } finally { releases.forEach(release => release()); }
+  });
 });

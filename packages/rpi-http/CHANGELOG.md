@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.10...rpi-http-v0.1.11) - 2026-10-30
+
+### Added
+
+- *(web)* show authoritative elapsed time for completed runs
+
+### Other
+
+- Merge pull request #119 from pi-rust/fix/web-image-rendering
+
+## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.9...rpi-http-v0.1.10) - 2026-10-30
+
+### Fixed
+
+- *(web)* serve project raster image artifacts securely
+
+## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.8...rpi-http-v0.1.9) - 2026-10-29
+
+### Added
+
+- *(web)* add project archiving
+
+### Other
+
+- Merge main into feature-1028 and preserve canonical durable recovery
+
+## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.7...rpi-http-v0.1.8) - 2026-10-29
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.6...rpi-http-v0.1.7) - 2026-10-28
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.5...rpi-http-v0.1.6) - 2026-10-28
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.1.5](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.4...rpi-http-v0.1.5) - 2026-10-28
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
 ## [0.1.4](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.3...rpi-http-v0.1.4) - 2026-10-28
 
 ### Added

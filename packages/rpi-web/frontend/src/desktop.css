@@ -301,7 +301,12 @@
   height: 26px;
   width: 26px;
   padding: 0;
+}
+.project-group-header .project-new-session {
   opacity: 0;
+}
+.project-group-header .project-menu-trigger {
+  opacity: 1;
 }
 .project-group-header:hover .project-new-session,
 .project-group-header:focus-within .project-new-session,
@@ -1697,6 +1702,14 @@
   border-radius: 0;
   background: transparent;
   white-space: pre-wrap;
+}
+.workspace .shell-card .shell-window .shell-command-preview {
+  /* Four rendered lines plus this layout's 6px/8px vertical padding. */
+  max-height: calc(6.4em + 14px);
+  overflow: hidden;
+}
+.workspace .shell-card .shell-window .shell-command-preview.expanded {
+  max-height: none;
 }
 .workspace .shell-card .shell-window .shell-input code {
   min-width: 0;

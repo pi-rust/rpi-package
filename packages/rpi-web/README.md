@@ -2,7 +2,32 @@
 
 rpi-web is a browser workspace for the native `rpi` coding agent. It provides a project and session sidebar, streaming conversations, tool interactions, Markdown rendering, file previews, and Git diffs. Tool cards show elapsed execution time while commands run and keep the final duration after completion, reload, and service restart. The interface supports English and Simplified Chinese, with light and dark themes.
 
+Session lists on desktop and mobile show **Interrupted / 异常中断** for reported errors or failed runs, and **Needs resume / 待恢复** when the latest settlement explicitly reports a pending resume. Running/starting/input-waiting sessions suppress older failure markers; normal stops and declined operations are not labeled as abnormal. Successful completion clears the marker when the refreshed summary clears the error. This uses existing session-list metadata only, with no per-session history scan or extra RPC requests. It does **not** detect every offline crash: if a host restart leaves only an offline registry entry without error/settlement evidence, the UI does not invent a persisted interruption status.
+
+Tool headers show exact **native tool names by default**, including prefixes and case. In **Settings → Tool names**, choose **Native names / 原生名称** or **Mapped names / 映射名称** (the previous localized actions such as Read/Ran/Edited). The selection is saved in this browser and applies to all tool cards, including live updates, plans and todos. Switching changes only the header label: paths, commands, metadata, elapsed times, details and expansion state are preserved; native calls and transcript data are unchanged.
+
+Long shell commands inside tool details default to a four-line visual preview. Use **Show full command / 展开完整命令** to reveal the complete command and collapse it again when finished. Short commands need no extra click; copying always retains the full original command, including quotes and newlines.
+
+Completed conversation runs also show a compact **Worked for … / 已用时 …** divider, including failed and stopped runs. This is the native run's persisted finish timestamp minus its start timestamp, including model calls, tools and waiting—not a sum of tool timings or a browser stopwatch. Live completion and historical/reloaded messages use the same metadata. Requires the matching `rpi-http`/`rpi-extcore` backend update; an older backend quietly omits the divider. Incomplete or imported histories without authoritative run records do not display estimated times. Timing lookups run separately from the bounded transcript snapshot and resume in bounded chunks; they never block opening the conversation or change its SSE sequence boundary. Installing/restarting the backend is a separate operator step.
+
 Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
+
+## Mermaid diagrams
+
+Fenced `mermaid` blocks render flowcharts (`flowchart` or `graph`) and sequence diagrams locally:
+
+````markdown
+```mermaid
+flowchart TD
+  A[开始] --> B{验证成功?}
+  B -->|是| C[完成]
+  B -->|否| A
+```
+````
+
+Use **View source / 查看源码** to inspect or copy the exact source, and click the diagram (or press Enter) for the existing fit/original-size image viewer. Diagrams follow light/dark themes and fit narrow screens. The bundled Mermaid library loads only when needed; no CDN is used. This is frontend-only and needs no new backend route. Mermaid 12 targets modern browsers (Safari 17.4+); frontend builds require Node 22.12+.
+
+Unfinished streamed syntax automatically recovers when valid text arrives. Invalid/unsupported diagrams preserve source instead of breaking chat. Rendering is limited to 20,000 source characters, 300 newline/semicolon-separated segments, 150 edges and 16,384px per generated dimension. Only flowcharts and sequences are enabled initially. Source-owned initialization/frontmatter, shape metadata (`@{...}`), HTML other than `<br>`, image resources and custom CSS (`style`, `classDef`, `linkStyle`) are deliberately rejected before rendering. Generated SVGs are displayed in browser image mode, not injected as application HTML; graph links/callbacks are not interactive. Unsupported features remain readable/copyable as source.
 
 ## Installation
 
@@ -409,9 +434,29 @@ older transcript pages when the native host returned a truncated tail.
 The native `get_messages` response keeps the newest `limit` entries by default
 and returns `firstId`, `lastId`, and `hasMore`. Sending `beforeId: firstId` asks
 for the previous page. Each projected message carries its session `entryId`, so
-rows remain stable across reloads and pages; the UI uses that cursor for its
-"Load earlier messages" action. `total` remains the full branch projection
-count, while `truncated` is retained as a compatibility alias for `hasMore`.
+rows remain stable across reloads and pages. Scrolling within 160px of the top
+loads earlier messages automatically in 48-entry pages, without fetching all
+history on initial load. A keyboard-accessible button remains for short chats
+and retries. Only one page request is active; errors do not retry in a loop,
+and obsolete navigation responses cannot prepend into a different branch.
+The visible row stays anchored when a page is prepended or an older image
+finishes loading. `total` remains the full branch projection count, while
+`truncated` is retained as a compatibility alias for `hasMore`.
+
+Tool calls use compact activity summaries: an action and file path, command or
+query, followed by change counts and timings when available. They start
+collapsed; click the summary or use Enter/Space to show code, output, images,
+diffs or structured plans/tasks. Failures open automatically but can be
+collapsed. Live result/timing updates preserve the reader's choice, including
+when a result changes a generic call into a structured checklist. Expanding
+stops bottom-follow so long output does not move the reader away from its header.
+
+User upload lists display file cards with readable names and types rather than
+storage UUIDs. Expand a card to inspect or copy its original workspace path.
+This is a display-only projection of the bilingual attachment-list text; native
+prompts and history remain unchanged, and no document preview/download API is
+implied. The composer shows known sizes and image previews; historical cards do
+not invent sizes. Code examples, ordinary paths and malformed lists stay as text.
 
 Sessions also keep the last 512 projected events in memory with a monotonic
 `seq`; SSE frames carry `id: <seq>`. That buffer is what makes `?after=` work, and

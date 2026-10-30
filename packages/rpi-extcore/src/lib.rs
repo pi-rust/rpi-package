@@ -39,6 +39,7 @@ pub mod protocol;
 pub mod registry;
 pub mod reply;
 pub mod run;
+pub mod run_timing;
 pub mod sampling;
 pub mod service;
 pub mod session_fork;

@@ -7,6 +7,8 @@ use std::path::{Component, Path, PathBuf};
 struct SavedProject {
     name: String,
     path: PathBuf,
+    #[serde(default)]
+    archived: bool,
 }
 
 pub struct Projects {
@@ -33,8 +35,10 @@ impl Projects {
                 if project.root.starts_with(&root) {
                     if let Some(existing) = entries.iter_mut().find(|p| p.id == project.id) {
                         existing.name = item.name.clone();
+                        existing.archived = item.archived;
                     } else {
                         project.name = item.name.clone();
+                        project.archived = item.archived;
                         entries.push(project);
                     }
                 }
@@ -103,6 +107,7 @@ impl Projects {
         self.saved.push(SavedProject {
             name: project.name.clone(),
             path: project.root.clone(),
+            archived: false,
         });
         if let Err(error) = self.save() {
             self.saved.pop();
@@ -129,10 +134,38 @@ impl Projects {
             self.saved.push(SavedProject {
                 name: self.entries[index].name.clone(),
                 path,
+                archived: self.entries[index].archived,
             });
         }
         if let Err(error) = self.save() {
             self.entries[index].name = previous_name;
+            self.saved = previous_saved;
+            return Err(error);
+        }
+        Ok(self.entries[index].clone())
+    }
+
+    pub async fn set_archived(&mut self, id: &str, archived: bool) -> Result<Project, String> {
+        let index = self
+            .entries
+            .iter()
+            .position(|project| project.id == id)
+            .ok_or_else(|| "project is not configured".to_string())?;
+        let previous = self.entries[index].archived;
+        let previous_saved = self.saved.clone();
+        let path = self.entries[index].root.clone();
+        self.entries[index].archived = archived;
+        if let Some(saved) = self.saved.iter_mut().find(|item| item.path == path) {
+            saved.archived = archived;
+        } else {
+            self.saved.push(SavedProject {
+                name: self.entries[index].name.clone(),
+                path,
+                archived,
+            });
+        }
+        if let Err(error) = self.save() {
+            self.entries[index].archived = previous;
             self.saved = previous_saved;
             return Err(error);
         }
@@ -230,6 +263,20 @@ mod tests {
         .unwrap();
         assert_eq!(loaded.entries[0].name, "after");
         assert_eq!(loaded.entries[0].root, project.root);
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+    #[tokio::test]
+    async fn project_archive_state_persists_across_catalog_reload() {
+        let temp =
+            std::env::temp_dir().join(format!("rpi-project-archive-{}", uuid::Uuid::new_v4()));
+        let root = temp.join("projects");
+        let file = temp.join("projects.json");
+        let mut store = Projects::load(Vec::new(), root.clone(), file.clone()).unwrap();
+        let project = store.add("archived", None, false).await.unwrap();
+        let archived = store.set_archived(&project.id, true).await.unwrap();
+        assert!(archived.archived);
+        let loaded = Projects::load(Vec::new(), root, file).unwrap();
+        assert!(loaded.entries[0].archived);
         std::fs::remove_dir_all(temp).unwrap();
     }
     #[tokio::test]

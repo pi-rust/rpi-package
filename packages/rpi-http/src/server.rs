@@ -21,8 +21,8 @@ use rpi_extcore::{
     reply::{IntoReply, ReplyKind, ServiceReply},
     service::{
         self, AuthRefreshRequest, BackendConfig, CreateProjectRequest, CreateSessionRequest,
-        FileQuery, ForkRequest, MetadataRequest, ProjectFoldersQuery, RenameProjectRequest,
-        RenameRequest, Service, SessionListQuery,
+        FileQuery, ForkRequest, MetadataRequest, ProjectFoldersQuery, ProjectMetadataRequest,
+        RenameProjectRequest, RenameRequest, RunTimingsQuery, Service, SessionListQuery,
     },
 };
 use serde::{de::DeserializeOwned, Deserialize};
@@ -157,7 +157,8 @@ pub async fn serve_until(
     };
     let router = routes(state.clone())
         .merge(frontend)
-        .layer(from_fn_with_state(security, crate::security::guard));
+        .layer(from_fn_with_state(security, crate::security::guard))
+        .layer(axum::middleware::from_fn(image_cache_control));
     on_listen(Listening {
         address,
         hosts,
@@ -205,7 +206,26 @@ pub fn router(
         shutdown,
         service_name: config.service_name,
     };
-    routes(state).layer(from_fn_with_state(security, crate::security::guard))
+    routes(state)
+        .layer(from_fn_with_state(security, crate::security::guard))
+        // Outside the guard so authentication and extractor failures are not cached either.
+        .layer(axum::middleware::from_fn(image_cache_control))
+}
+
+async fn image_cache_control(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let image = request.uri().path().starts_with("/api/v1/projects/")
+        && request.uri().path().ends_with("/image");
+    let mut response = next.run(request).await;
+    if image {
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("private, no-store"),
+        );
+    }
+    response
 }
 fn routes(state: AppState) -> Router {
     Router::new()
@@ -214,12 +234,14 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route("/api/v1/project-folders", get(list_project_folders))
         .route("/api/v1/projects/{id}/rename", post(rename_project))
+        .route("/api/v1/projects/{id}/metadata", post(project_metadata))
         .route("/api/v1/projects/{id}/files", get(project_files))
         .route(
             "/api/v1/projects/{id}/upload",
             post(upload_project_file).layer(DefaultBodyLimit::max(20 * 1024 * 1024)),
         )
         .route("/api/v1/projects/{id}/file", get(project_file))
+        .route("/api/v1/projects/{id}/image", get(project_image))
         .route("/api/v1/projects/{id}/git/status", get(project_status))
         .route("/api/v1/projects/{id}/git/diff", get(project_diff))
         .route(
@@ -239,6 +261,7 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/sessions/{id}/metadata", post(session_metadata))
         .route("/api/v1/sessions/{id}/commands", post(command))
         .route("/api/v1/sessions/{id}/snapshot", get(snapshot))
+        .route("/api/v1/sessions/{id}/run-timings/query", post(run_timings))
         .route(
             "/api/v1/sessions/{id}/durable",
             get(durable_state).post(durable_mutation),
@@ -246,6 +269,18 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/sessions/{id}/durable/events", get(durable_events))
         .route("/api/v1/sessions/{id}/events", get(events))
         .with_state(state)
+}
+
+async fn project_metadata(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<ProjectMetadataRequest>,
+) -> HttpReply {
+    HttpReply(
+        service::project_metadata(&state.backend, id, request)
+            .await
+            .into_reply(),
+    )
 }
 
 async fn upload_project_file(
@@ -430,6 +465,21 @@ async fn project_file(
             .into_reply(),
     )
     .into_response()
+}
+
+async fn project_image(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<FileQuery>,
+) -> axum::response::Response {
+    match service::project_image(&state.backend, id, query).await {
+        Ok(image) => (
+            [(axum::http::header::CONTENT_TYPE, image.media_type)],
+            image.bytes,
+        )
+            .into_response(),
+        Err(error) => HttpReply(error.into_reply()).into_response(),
+    }
 }
 
 async fn project_status(
@@ -675,6 +725,23 @@ async fn durable_mutation(
             .into_reply(),
     )
     .into_response()
+}
+
+async fn run_timings(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    query: Result<Json<RunTimingsQuery>, axum::extract::rejection::JsonRejection>,
+) -> HttpReply {
+    let Json(query) = match query {
+        Ok(query) => query,
+        Err(_) => {
+            return HttpReply(ServiceReply {
+                kind: ReplyKind::InvalidInput,
+                value: json!({"error":"invalid JSON request body"}),
+            });
+        }
+    };
+    HttpReply(service::run_timings(&state.backend, id, query).await)
 }
 
 async fn snapshot(

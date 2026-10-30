@@ -62,6 +62,43 @@ work and these endpoints return `503 durable_unavailable`. Tool side effects
 are never replayed, and the queue API is coordination only; it does not start a
 background scheduler.
 
+## Project images
+
+`GET /api/v1/projects/{id}/image?path=artifacts/example.png` returns raw image bytes
+with the detected raster MIME type, rather than the JSON text preview returned by
+`/file`. It uses the same authentication and Host/Origin checks as other project
+reads. Responses, including failures, have `Cache-Control: private, no-store` and
+`X-Content-Type-Options: nosniff`.
+
+Paths are relative to the configured project. Canonical containment and hidden-path
+rules are enforced by core. Only regular files of at most 20 MiB are accepted;
+PNG, JPEG, GIF, WebP and BMP require matching extensions and signatures. SVG,
+HTML, traversal and files outside the project are not served. This does not add
+an arbitrary file server, external-image proxy or replacement `/artifacts` root.
+
+The Web client maps local raster image references to the selected project's image
+endpoint. This requires a backend containing this route; restarting an older
+backend without upgrading it will not add image support.
+
+## Run timings
+
+`POST /api/v1/sessions/{id}/run-timings/query` reads persisted native v4 run
+elapsed metadata for a known session without starting a native host. It uses the
+same cookie authentication, Host/Origin checks and `X-Rpi-Web: 1` marker as other
+POST endpoints.
+
+```json
+{"entryIds":["assistant-entry-id"],"cursor":null}
+```
+
+`entryIds` accepts at most 400 unique, nonempty IDs; `cursor` is optional and
+unknown fields are rejected. The response contains `timings` (each with `runId`,
+`lane`, `finalEntryId`, `startedAt`, `finishedAt`, `elapsedMs`, `outcome`),
+`complete`, `cursor`, `scannedBytes` and `totalBytes`. If `complete` is false,
+repeat the query with the returned cursor to continue the bounded scan. A 409
+invalidates accumulated timings and the cursor; retry without the cursor.
+Invalid requests return 400 and unknown session UUIDs return 404.
+
 ## Embed the API
 
 `router(core, &config, shutdown_receiver)` builds an API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. Rust callers and HTTP clients then observe the same service state.

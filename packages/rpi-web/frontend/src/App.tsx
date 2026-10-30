@@ -2,8 +2,8 @@ import { createPortal } from "react-dom";
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -18,18 +18,14 @@ import {
   ArrowUp,
   Bot,
   Check,
-  ClipboardList,
   CircleDollarSign,
   ChevronDown,
   Code2,
   Copy,
   Database,
   Files,
-  FileText,
-  Folder,
   Gauge,
   GitBranch,
-  Globe,
   History,
   ListTodo,
   Loader2,
@@ -46,12 +42,12 @@ import {
   SquarePen,
   Sigma,
   Sun,
-  Search,
-  Terminal,
   Wrench,
   X,
 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
+import { ShellCommand } from "./ShellCommand";
+import { SessionIssueBadge } from "./SessionIssueBadge";
 import {
   api,
   ApiError,
@@ -80,6 +76,21 @@ import { Splitter, useStoredNumber, Workbench } from "./Workbench";
 import { MenuSelect } from "./MenuSelect";
 import { LoginScreen } from "./LoginScreen";
 import { ProjectContext } from "./ProjectContext";
+import { ZoomableImage } from "./ZoomableImage";
+import { ProjectImageContext, projectImageSource } from "./projectImages";
+import { useTranscriptViewport } from "./useTranscriptViewport";
+import { useRunTimings, timingByRow } from "./useRunTimings";
+import { RunElapsed } from "./RunElapsed";
+import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
+import {
+  ToolDisclosure,
+  TOOL_NAME_MODE_KEY,
+  ToolNameModeContext,
+  toolSummary,
+  useToolExpansion,
+  type ToolExpansion,
+  type ToolNameMode,
+} from "./ToolDisclosure";
 import {
   ConfirmDialog,
   Modal,
@@ -93,6 +104,7 @@ import {
 import {
   rowsFromAssistant,
   rowsFromMessages,
+  rowsFromUser,
   prependRows,
   upsertTool,
   withoutPrefix,
@@ -117,6 +129,13 @@ import {
   textOf,
   type Row,
 } from "./transcript";
+
+function isImageAttachment(name: string, mimeType = "") {
+  return (
+    mimeType.toLowerCase().startsWith("image/") ||
+    /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(name)
+  );
+}
 
 type Attachment = {
   name: string;
@@ -298,7 +317,9 @@ function pathOfArgs(args: unknown) {
     ? record.path
     : typeof record.filePath === "string"
       ? record.filePath
-      : "";
+      : typeof record.file_path === "string"
+        ? record.file_path
+        : "";
 }
 
 function syntaxForPath(path: string) {
@@ -559,7 +580,15 @@ export default function App() {
     useState<Project | null>(null);
   const [renameTarget, setRenameTarget] = useState<SessionSummary | null>(null);
   const [tagsTarget, setTagsTarget] = useState<SessionSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [toolNameMode, setToolNameMode] = useState<ToolNameMode>(() => {
+    try {
+      return localStorage.getItem(TOOL_NAME_MODE_KEY) === "mapped" ? "mapped" : "native";
+    } catch {
+      return "native";
+    }
+  });
   const [mobileSessionPicker, setMobileSessionPicker] = useState(false);
   const [mobileSessionQuery, setMobileSessionQuery] = useState("");
   const [creatingSession, setCreatingSession] = useState(false);
@@ -684,6 +713,25 @@ export default function App() {
   const [firstId, setFirstId] = useState("");
   const [hasMore, setHasMore] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const earlierRequest = useRef<{
+    navigation: number;
+    beforeId: string;
+  } | null>(null);
+  const autoEarlierCursor = useRef<string | null>(null);
+  const continueEarlier = useRef<number | null>(null);
+  const runTimings = useRunTimings(
+    sessionId, rows, `${connectionRevision}:${navigationRevision.current}`,
+    !loadingSession && Boolean(capabilities), settleTick,
+  );
+  const runFooters = useMemo(() => timingByRow(rows, runTimings), [rows, runTimings]);
+  const rememberTranscriptPosition = useTranscriptViewport(
+    transcriptRef,
+    followingRef,
+    `${sessionId}:${connectionRevision}`,
+    Boolean(capabilities),
+    rows,
+    status,
+  );
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
@@ -981,7 +1029,8 @@ export default function App() {
             const text = textOf(event.message);
             const prefix = `u${seq}`;
             currentUser.current = prefix;
-            if (text)
+            const initial = rowsFromUser(event.message, prefix);
+            if (initial.length > 0)
               setRows((previous) => {
                 const optimistic = previous.find(
                   (row) =>
@@ -992,7 +1041,7 @@ export default function App() {
                 );
                 return [
                   ...previous.filter((row) => row.id !== optimistic?.id),
-                  { kind: "text", id: prefix, role: "user", text },
+                  ...initial,
                 ];
               });
             break;
@@ -1015,7 +1064,8 @@ export default function App() {
               const text = textOf(event.message);
               const prefix = currentUser.current ?? `u${seq}`;
               currentUser.current = null;
-              if (text)
+              const rebuilt = rowsFromUser(event.message, prefix);
+              if (rebuilt.length > 0)
                 setRows((previous) => {
                   const optimistic = previous.find(
                     (row) =>
@@ -1025,10 +1075,10 @@ export default function App() {
                       row.text === text,
                   );
                   return [
-                    ...previous.filter(
+                    ...withoutPrefix(previous, prefix).filter(
                       (row) => row.id !== prefix && row.id !== optimistic?.id,
                     ),
-                    { kind: "text", id: prefix, role: "user", text },
+                    ...rebuilt,
                   ];
                 });
             }
@@ -1246,6 +1296,13 @@ export default function App() {
     }
   }, [theme]);
   useEffect(() => {
+    try {
+      localStorage.setItem(TOOL_NAME_MODE_KEY, toolNameMode);
+    } catch {
+      /* optional display preference */
+    }
+  }, [toolNameMode]);
+  useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (
         !authChecked ||
@@ -1312,6 +1369,7 @@ export default function App() {
   useEffect(() => {
     if (!authChecked || (authRequired && !authenticated)) return;
     let cancelled = false;
+    let availableProjects: Project[] = [];
     setLoadingSession(true);
     void (async () => {
       try {
@@ -1321,16 +1379,27 @@ export default function App() {
         if (caps.supportedActions?.includes("projects")) {
           const result = await api.projects();
           if (cancelled) return;
+          availableProjects = result.projects;
           setProjects(result.projects);
           setProjectsRoot(result.projectsRoot ?? "");
-          projectRef.current = result.defaultProjectId;
-          setProjectId(result.defaultProjectId);
+          const defaultProject =
+            result.projects.find(
+              (item) => item.id === result.defaultProjectId && !item.archived,
+            ) ?? result.projects.find((item) => !item.archived);
+          projectRef.current = defaultProject?.id ?? result.defaultProjectId;
+          setProjectId(projectRef.current);
         }
         const list = await refreshSessions();
         if (cancelled || !list) return;
         const requested = new URLSearchParams(location.search).get("session");
         const reusable = list.filter(
-          (session) => session.status !== "closed" && !session.archived,
+          (session) =>
+            session.status !== "closed" &&
+            !session.archived &&
+            (!session.projectId ||
+              availableProjects.some((project) =>
+                project.id === session.projectId && !project.archived,
+              )),
         );
         const match =
           list.find((session) => session.sessionId === requested) ??
@@ -1377,6 +1446,9 @@ export default function App() {
     setModels([]);
     setLeafId("");
     setHistoryHasMore(false);
+    earlierRequest.current = null;
+    autoEarlierCursor.current = null;
+    continueEarlier.current = null;
     setLoadingEarlier(false);
     setMutationPending(false);
     setDialogBusy(false);
@@ -1667,12 +1739,6 @@ export default function App() {
       if (oldest && oldest !== sessionId) rowsBySession.current.delete(oldest);
     }
   }, [rows, sessionId]);
-
-  useLayoutEffect(() => {
-    if (!followingRef.current || !transcriptRef.current) return;
-    const node = transcriptRef.current;
-    node.scrollTop = node.scrollHeight - node.clientHeight;
-  }, [rows, status]);
 
   const refreshDiagnostics = useCallback(
     async (id: string) => {
@@ -2032,9 +2098,11 @@ export default function App() {
         const result = await api.upload(projectId, file);
         uploaded.push({
           ...result,
-          previewUrl: file.type.startsWith("image/")
-            ? URL.createObjectURL(file)
-            : undefined,
+          previewUrl:
+            isImageAttachment(file.name, file.type) ||
+            isImageAttachment(result.name)
+              ? URL.createObjectURL(file)
+              : undefined,
         });
       }
       setAttachments((current) => [...current, ...uploaded]);
@@ -2192,38 +2260,93 @@ export default function App() {
   /** Page backwards through the branch, prepending entries older than the
    * current first row. The bridge forwards `get_messages` unchanged, so this is
    * the same native projection the first snapshot used. */
-  async function loadEarlier() {
+  const loadEarlier = useCallback(
+    async (automatic = false) => {
+      const navigation = navigationRevision.current;
+      if (
+        !sessionId ||
+        !firstId ||
+        !hasMore ||
+        loadingSession ||
+        mutationPending ||
+        earlierRequest.current?.navigation === navigation ||
+        !supported.has("get_messages")
+      )
+        return;
+      const request = { navigation, beforeId: firstId };
+      earlierRequest.current = request;
+      continueEarlier.current = null;
+      // A failed/no-progress cursor is retried only after leaving the top or by button.
+      autoEarlierCursor.current = `${navigation}:${sessionId}:${firstId}`;
+      setLoadingEarlier(true);
+      try {
+        const page = await api.messages(sessionId, {
+          beforeId: firstId,
+          limit: 48,
+        });
+        if (
+          navigation !== navigationRevision.current ||
+          earlierRequest.current !== request
+        )
+          return;
+        const older = rowsFromMessages(page.messages);
+        const nextId = page.firstId ?? "";
+        const more = Boolean(
+          page.hasMore && nextId && nextId !== request.beforeId,
+        );
+        // Capture at response time: the reader may have moved while the request ran.
+        rememberTranscriptPosition();
+        earlierPage.current = {
+          rows: prependRows(older, earlierPage.current?.rows ?? []),
+          firstId: nextId,
+          hasMore: more,
+        };
+        setRows((previous) => prependRows(older, previous));
+        setFirstId(nextId);
+        setHasMore(more);
+        if (automatic && more) continueEarlier.current = navigation;
+      } catch (cause) {
+        if (
+          navigation !== navigationRevision.current ||
+          earlierRequest.current !== request
+        )
+          return;
+        setError(errorText(cause));
+      } finally {
+        if (earlierRequest.current === request) {
+          earlierRequest.current = null;
+          setLoadingEarlier(false);
+        }
+      }
+    },
+    [
+      sessionId,
+      firstId,
+      hasMore,
+      loadingSession,
+      mutationPending,
+      supported,
+      rememberTranscriptPosition,
+    ],
+  );
+
+  useEffect(() => {
+    if (loadingEarlier || continueEarlier.current === null) return;
+    const navigation = continueEarlier.current;
+    continueEarlier.current = null;
+    const node = transcriptRef.current;
+    // A page can advance the native cursor without adding visible rows. At the
+    // absolute top, another wheel gesture may not emit a scroll event at all.
     if (
-      !sessionId ||
-      !firstId ||
-      loadingEarlier ||
-      !supported.has("get_messages")
-    )
-      return;
-    const navigation = navigationRevision.current;
-    setLoadingEarlier(true);
-    try {
-      const page = await api.messages(sessionId, {
-        beforeId: firstId,
-        limit: 400,
-      });
-      if (navigation !== navigationRevision.current) return;
-      const older = rowsFromMessages(page.messages);
-      earlierPage.current = {
-        rows: prependRows(older, earlierPage.current?.rows ?? []),
-        firstId: page.firstId ?? "",
-        hasMore: page.hasMore,
-      };
-      setRows((previous) => prependRows(older, previous));
-      setFirstId(page.firstId ?? "");
-      setHasMore(page.hasMore);
-    } catch (cause) {
-      if (navigation !== navigationRevision.current) return;
-      setError(errorText(cause));
-    } finally {
-      if (navigation === navigationRevision.current) setLoadingEarlier(false);
+      navigation === navigationRevision.current &&
+      node &&
+      node.scrollTop <= 160 &&
+      !followingRef.current &&
+      !connectionFailed
+    ) {
+      void loadEarlier(true);
     }
-  }
+  }, [loadEarlier, loadingEarlier, rows, connectionFailed]);
 
   async function refreshOAuth(provider: string) {
     const navigation = navigationRevision.current;
@@ -2447,16 +2570,30 @@ export default function App() {
     );
   }
 
-  function editQueued(item: QueueItem) {
-    if (!isEditableQueueItem(item)) return;
+  async function editQueued(item: QueueItem) {
+    if (!isEditableQueueItem(item) || !sessionId) return;
+    const navigation = navigationRevision.current;
+    const previous = queueItems;
+    const previousDraft = draft;
     queueDraftRevision.current++;
-    setQueueEditId(item.entryId);
+    setQueueEditId(null);
     setQueueDraft("");
+    setQueueItems((items) => items.filter((queued) => queued.entryId !== item.entryId));
     updateDraft(item.text);
     setQueueKind(item.queue);
     setQueueOpen(false);
     setInspector(false);
     requestAnimationFrame(() => composerInputRef.current?.focus());
+    try {
+      await api.cancelQueued(sessionId, item.entryId);
+      if (navigation === navigationRevision.current) await refreshSessionDiagnostics();
+    } catch (cause) {
+      if (navigation !== navigationRevision.current) return;
+      setQueueItems(previous);
+      setQueueOpen(true);
+      updateDraft(previousDraft);
+      setError(errorText(cause));
+    }
   }
 
   function cancelQueueEdit() {
@@ -2727,6 +2864,61 @@ export default function App() {
     }
   }
 
+  async function permanentlyDeleteSession(session: SessionSummary) {
+    const id = session.sessionId;
+    const wasActive = activeSessionRef.current === id;
+    try {
+      await api.deleteSession(id);
+      draftBySession.current.delete(id);
+      saveDrafts(draftBySession.current);
+      rowsBySession.current.delete(id);
+      const list = await refreshSessions();
+      if (!wasActive) return;
+      const next = list?.find(
+        (entry) => entry.projectId === session.projectId && !entry.archived,
+      );
+      if (next) select(next.sessionId, next.projectId);
+      else {
+        activeSessionRef.current = "";
+        setSessionId("");
+        setRows([]);
+        const url = new URL(location.href);
+        url.searchParams.delete("session");
+        history.replaceState(null, "", url);
+      }
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }
+
+  async function updateProjectMetadata(project: Project, archived: boolean) {
+    try {
+      const result = await api.projectMetadata(project.id, { archived });
+      setProjects((previous) =>
+        previous.map((item) =>
+          item.id === result.project.id ? result.project : item,
+        ),
+      );
+      if (archived && projectRef.current === project.id) {
+        const next = projects.find(
+          (item) => item.id !== project.id && !item.archived,
+        );
+        if (next) selectProject(next);
+        else {
+          projectRef.current = "";
+          setProjectId("");
+          activeSessionRef.current = "";
+          setSessionId("");
+          const url = new URL(location.href);
+          url.searchParams.delete("session");
+          history.replaceState(null, "", url);
+        }
+      }
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }
+
   if (!authChecked || (authRequired && !authenticated)) {
     return (
       <LoginScreen
@@ -2788,6 +2980,24 @@ export default function App() {
           message={textRequest.message}
           onClose={() => resolveTextRequest(null)}
           onConfirm={() => resolveTextRequest("confirmed")}
+        />
+      )}
+      {deleteTarget && (
+        <ConfirmDialog
+          language={language}
+          title={language === "zh" ? "永久删除会话" : "Delete session permanently"}
+          message={
+            language === "zh"
+              ? `确定要永久删除“${deleteTarget.title || "新会话"}”吗？此操作无法撤销。`
+              : `Permanently delete “${deleteTarget.title || "New session"}”? This cannot be undone.`
+          }
+          confirmLabel={language === "zh" ? "永久删除" : "Delete permanently"}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            const target = deleteTarget;
+            setDeleteTarget(null);
+            void permanentlyDeleteSession(target);
+          }}
         />
       )}
       {projectDialog && (
@@ -2879,6 +3089,23 @@ export default function App() {
                 { value: "en", label: "English" },
               ]}
             />
+            <label>{t("toolNames")}</label>
+            <div className="project-mode" role="group" aria-label={t("toolNames")}>
+              <button
+                type="button"
+                aria-pressed={toolNameMode === "native"}
+                onClick={() => setToolNameMode("native")}
+              >
+                {t("nativeToolNames")}
+              </button>
+              <button
+                type="button"
+                aria-pressed={toolNameMode === "mapped"}
+                onClick={() => setToolNameMode("mapped")}
+              >
+                {t("mappedToolNames")}
+              </button>
+            </div>
             <div className="shortcut-list">
               <span>{t("newSession")}</span>
               <kbd>Ctrl / ⌘ N</kbd>
@@ -2927,7 +3154,9 @@ export default function App() {
               onNewProject={() => setProjectDialog(true)}
               onRename={setRenameTarget}
               onRenameProject={setProjectRenameTarget}
+              onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}
+              onDelete={setDeleteTarget}
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom">
@@ -3185,6 +3414,7 @@ export default function App() {
                             {entryRunning && ` · ${t("running")}`}
                           </small>
                         </span>
+                        <SessionIssueBadge session={entry} language={language} />
                         {selected && <Check size={15} />}
                       </button>
                     );
@@ -3251,19 +3481,42 @@ export default function App() {
             <div
               className="transcript"
               ref={transcriptRef}
+              onClickCapture={(event) => {
+                if (
+                  !(event.target instanceof Element) ||
+                  !event.target.closest(
+                    ".tool-card > summary, .message-attachment > summary",
+                  )
+                )
+                  return;
+                // Opening details is a reading action, not a request to follow
+                // output growth to the bottom. Capture before the native toggle.
+                followingRef.current = false;
+                setFollowing(false);
+                rememberTranscriptPosition();
+              }}
               onScroll={(event) => {
                 const node = event.currentTarget;
                 const nearBottom =
                   node.scrollHeight - node.scrollTop - node.clientHeight < 80;
                 followingRef.current = nearBottom;
                 setFollowing(nearBottom);
+                rememberTranscriptPosition();
+                if (node.scrollTop > 160) {
+                  autoEarlierCursor.current = null;
+                } else if (!nearBottom && !loadingSession && !connectionFailed) {
+                  const cursor = `${navigationRevision.current}:${sessionId}:${firstId}`;
+                  if (autoEarlierCursor.current !== cursor)
+                    void loadEarlier(true);
+                }
               }}
             >
               <div className="message-list">
                 {hasMore && (
-                  <div className="load-earlier">
+                  <div className="load-earlier" aria-busy={loadingEarlier}>
                     <button
                       type="button"
+                      title={t("scrollForEarlier")}
                       onClick={() => void loadEarlier()}
                       disabled={loadingEarlier}
                     >
@@ -3273,6 +3526,11 @@ export default function App() {
                       />
                       {t("loadEarlier")}
                     </button>
+                    {loadingEarlier && (
+                      <span className="sr-only" role="status">
+                        {t("loadingEarlierMessages")}
+                      </span>
+                    )}
                   </div>
                 )}
 
@@ -3367,9 +3625,22 @@ export default function App() {
                   </div>
                 )}
 
-                {rows.map((row) => (
-                  <RowView row={row} key={row.id} language={language} />
-                ))}
+                <ProjectImageContext.Provider value={project}>
+                  <ToolNameModeContext.Provider value={toolNameMode}>
+                    {rows.map((row) => (
+                      <div
+                        className="transcript-row"
+                        data-transcript-row={row.id}
+                        key={row.id}
+                      >
+                        <RowView row={row} language={language} />
+                        {runFooters.get(row.id)?.map((timing) => (
+                          <RunElapsed key={timing.runId} timing={timing} language={language} />
+                        ))}
+                      </div>
+                    ))}
+                  </ToolNameModeContext.Provider>
+                </ProjectImageContext.Provider>
 
                 {busy && rows.length > 0 && (
                   <div className="working-indicator">
@@ -3423,12 +3694,12 @@ export default function App() {
                   <button
                     type="button"
                     className="composer-queue-heading"
+                    aria-label={t(queueOpen ? "closeQueue" : "viewQueue")}
                     aria-expanded={queueOpen}
                     onClick={() => setQueueOpen((value) => !value)}
                   >
                     <span>
-                      <ListTodo size={13} />
-                      <strong>{t("queue")}</strong>
+                      <ListTodo size={13} aria-hidden="true" />
                       <em>{pendingQueueItems.length}</em>
                       {!queueOpen && pendingQueueItems[0]?.text && (
                         <span className="composer-queue-preview">
@@ -3520,23 +3791,12 @@ export default function App() {
                     aria-label={t("attachedFiles")}
                   >
                     {attachments.map((file) => (
-                      <div className="composer-attachment" key={file.path}>
-                        {file.previewUrl ? (
-                          <img src={file.previewUrl} alt="" />
-                        ) : (
-                          <FileText size={13} />
-                        )}
-                        <span title={file.path}>{file.name}</span>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label={`${t("removeAttachment")}: ${file.name}`}
-                          title={t("removeAttachment")}
-                          onClick={() => removeAttachment(file.path)}
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
+                      <AttachmentCard
+                        key={file.path}
+                        {...file}
+                        language={language}
+                        onRemove={() => removeAttachment(file.path)}
+                      />
                     ))}
                   </div>
                 )}
@@ -4748,61 +5008,23 @@ function ThinkingPicker({
   );
 }
 
-function toolIcon(name: string) {
-  switch (name.trim().toLowerCase()) {
-    case "read":
-    case "read_file":
-    case "readfile":
-    case "cat":
-      return <FileText size={14} />;
-    case "edit":
-    case "write":
-    case "write_file":
-    case "writefile":
-    case "apply_patch":
-      return <SquarePen size={14} />;
-    case "grep":
-    case "glob":
-    case "find":
-    case "search":
-    case "search_files":
-    case "file_search":
-    case "rg":
-      return <Search size={14} />;
-    case "list":
-    case "ls":
-    case "list_files":
-    case "list_directory":
-      return <Folder size={14} />;
-    case "web_fetch":
-    case "web_search":
-    case "fetch":
-    case "http_get":
-    case "browser":
-    case "open_url":
-      return <Globe size={14} />;
-    case "git":
-    case "git_status":
-    case "git_log":
-    case "git_diff":
-      return <GitBranch size={14} />;
-    case "plan":
-      return <ClipboardList size={14} />;
-    case "todo":
-      return <ListTodo size={14} />;
-    default:
-      return <Wrench size={14} />;
-  }
-}
-
-function ImagePreview({ image }: { image: ImageBlock }) {
-  const source =
+function ImagePreview({
+  image,
+  language,
+}: {
+  image: ImageBlock;
+  language: Language;
+}) {
+  const project = useContext(ProjectImageContext);
+  const source = projectImageSource(
     image.url ??
-    (image.data
-      ? image.data.startsWith("data:")
-        ? image.data
-        : `data:${image.mimeType || "image/png"};base64,${image.data}`
-      : "");
+      (image.data
+        ? image.data.startsWith("data:")
+          ? image.data
+          : `data:${image.mimeType || "image/png"};base64,${image.data}`
+        : ""),
+    project,
+  );
   const isSafeImage =
     source.startsWith("data:image/") ||
     source.startsWith("/") ||
@@ -4816,7 +5038,7 @@ function ImagePreview({ image }: { image: ImageBlock }) {
     return null;
   return (
     <figure className="transcript-image">
-      <img src={source} alt={image.alt ?? ""} loading="lazy" />
+      <ZoomableImage src={source} alt={image.alt ?? ""} language={language} />
     </figure>
   );
 }
@@ -4829,6 +5051,7 @@ const RowView = memo(function RowView({
   language: Language;
 }) {
   const t = (key: MessageKey) => translate(language, key);
+  if (row.kind === "boundary") return null;
   if (row.kind === "note") {
     const values = row.translation?.values;
     const isRunStatus =
@@ -4858,7 +5081,7 @@ const RowView = memo(function RowView({
   }
 
   if (row.kind === "image") {
-    return <ImagePreview image={row.image} />;
+    return <ImagePreview image={row.image} language={language} />;
   }
   if (row.kind === "thinking") {
     return (
@@ -4871,71 +5094,105 @@ const RowView = memo(function RowView({
     );
   }
 
-  if (row.kind === "tool") {
-    const plan = row.name === "plan" ? planInfo(row.args, row.result) : null;
-    if (plan) return <PlanCard plan={plan} language={language} />;
-    const todos = row.name === "todo" ? todoItems(row.result) : null;
-    if (todos) return <TodoCard items={todos} language={language} />;
-    if (isShellTool(row.name))
-      return <ShellCard row={row} language={language} />;
-    const edits = editInfo(row.name, row.args);
-    if (edits) return <EditCard row={row} edits={edits} language={language} />;
-    const resultText = typeof row.result === "string" ? row.result : null;
-    const readResultText =
-      row.name === "read" && row.status !== "error"
-        ? readOutput(row.result)
-        : null;
-    const readResult = readResultText !== null;
-    const readPath = row.name === "read" ? pathOfArgs(row.args) : "";
-    const showArgs = row.result === undefined && row.args !== undefined;
-    return (
-      <details
-        className={`tool-card tool-${row.status} ${row.status === "error" ? "failed" : ""}`}
-        open={row.status === "error"}
-      >
-        <summary>
-          {toolIcon(row.name)}
-          <strong>{row.name}</strong>
-          {row.timing && (
-            <ToolElapsed timing={row.timing} language={language} />
-          )}
-          <span className="tool-status">
-            {toolStatusLabel(row.status, language)}
-          </span>
-        </summary>
-        <div className="tool-detail">
-          {row.images?.map((image, index) => (
-            <ImagePreview key={`${row.id}-image-${index}`} image={image} />
-          ))}
-          {showArgs ? (
-            <>
-              <h4>{t("input")}</h4>
-              <pre>{safeJson(row.args)}</pre>
-            </>
-          ) : readResult ? (
-            <ReadCode
-              path={readPath}
-              text={readResultText ?? ""}
-              language={language}
-            />
-          ) : resultText !== null ? (
-            isMarkdownText(resultText) ? (
-              <MarkdownBody text={resultText} language={language} />
-            ) : (
-              <pre className="tool-result-pre">{resultText}</pre>
-            )
-          ) : row.result !== undefined ? (
-            <pre>{safeJson(row.result)}</pre>
-          ) : (
-            <pre className="muted">{t("noOutput")}</pre>
-          )}
-        </div>
-      </details>
-    );
-  }
+  if (row.kind === "tool") return <ToolRowView row={row} language={language} />;
 
   return <MessageRow row={row} language={language} />;
 });
+
+function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
+  const expansion = useToolExpansion(row.status);
+  const t = (key: MessageKey) => translate(language, key);
+  const plan = row.name === "plan" ? planInfo(row.args, row.result) : null;
+  if (plan)
+    return (
+      <PlanCard
+        expansion={expansion}
+        row={row}
+        plan={plan}
+        language={language}
+      />
+    );
+  const todos = row.name === "todo" ? todoItems(row.result) : null;
+  if (todos)
+    return (
+      <TodoCard
+        expansion={expansion}
+        row={row}
+        items={todos}
+        language={language}
+      />
+    );
+  if (isShellTool(row.name))
+    return <ShellCard expansion={expansion} row={row} language={language} />;
+  const edits = editInfo(row.name, row.args);
+  if (edits)
+    return (
+      <EditCard
+        expansion={expansion}
+        row={row}
+        edits={edits}
+        language={language}
+      />
+    );
+  const resultText = typeof row.result === "string" ? row.result : null;
+  const isRead = ["read", "read_file", "readfile", "cat"].includes(
+    row.name
+      .trim()
+      .toLowerCase()
+      .replace(/^functions\./, ""),
+  );
+  const readResultText =
+    isRead && row.status !== "error" ? readOutput(row.result) : null;
+  const readResult = readResultText !== null;
+  const readPath = isRead ? pathOfArgs(row.args) : "";
+  const summary = toolSummary(row.name, row.args, row.status, language);
+  return (
+    <ToolDisclosure
+      expansion={expansion}
+      toolName={row.name}
+      {...summary}
+      status={row.status}
+      language={language}
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
+    >
+      <div className="tool-detail">
+        {row.images?.map((image, index) => (
+          <ImagePreview
+            key={`${row.id}-image-${index}`}
+            image={image}
+            language={language}
+          />
+        ))}
+        {row.args !== undefined && (
+          <>
+            <h4>{t("input")}</h4>
+            <pre className="tool-arguments">{safeJson(row.args)}</pre>
+          </>
+        )}
+        <h4>{t("output")}</h4>
+        {readResult ? (
+          <ReadCode
+            path={readPath}
+            text={readResultText ?? ""}
+            language={language}
+          />
+        ) : resultText !== null ? (
+          isMarkdownText(resultText) ? (
+            <MarkdownBody text={resultText} language={language} />
+          ) : (
+            <pre className="tool-result-pre">{resultText}</pre>
+          )
+        ) : row.result !== undefined ? (
+          <pre>{safeJson(row.result)}</pre>
+        ) : (
+          <pre className="muted">{t("noOutput")}</pre>
+        )}
+      </div>
+    </ToolDisclosure>
+  );
+}
 
 function MessageRow({
   row,
@@ -4960,20 +5217,14 @@ function MessageRow({
   return (
     <article className={`message ${row.role}`}>
       <div className="message-heading">
-        {row.role === "assistant" ? (
-          <Mark />
-        ) : (
-          <span className="user-avatar">{t("you").slice(0, 1)}</span>
-        )}
+        {row.role === "assistant" && <Mark />}
         <strong>{row.role === "assistant" ? "rpi" : t("you")}</strong>
       </div>
       <div className="message-body">
         {row.role === "assistant" ? (
           <MarkdownBody text={row.text} language={language} />
         ) : (
-          <div className="prose plain-message">
-            <p>{row.text}</p>
-          </div>
+          <UserMessageBody text={row.text} language={language} />
         )}
       </div>
       {row.role === "assistant" && (
@@ -4994,17 +5245,31 @@ function MessageRow({
   );
 }
 
-function PlanCard({ plan, language }: { plan: PlanInfo; language: Language }) {
+function PlanCard({
+  expansion,
+  row,
+  plan,
+  language,
+}: {
+  expansion: ToolExpansion;
+  row: ToolRow;
+  plan: PlanInfo;
+  language: Language;
+}) {
   const t = (key: MessageKey) => translate(language, key);
   return (
-    <details className="tool-card plan-card" open={plan.active}>
-      <summary>
-        <ClipboardList size={14} />
-        <strong>{t("plan")}</strong>
-        <span className={`tool-status ${plan.active ? "" : "done"}`}>
-          {plan.active ? t("planActive") : t("planDone")}
-        </span>
-      </summary>
+    <ToolDisclosure
+      expansion={expansion}
+      toolName={row.name}
+      className="plan-card"
+      action={t("plan")}
+      status={row.status}
+      language={language}
+      meta={plan.active ? t("planActive") : t("planDone")}
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
+    >
       <div className="tool-detail plan-detail">
         {plan.outline.length > 0 && (
           <ol className="plan-outline">
@@ -5018,14 +5283,18 @@ function PlanCard({ plan, language }: { plan: PlanInfo; language: Language }) {
         )}
         <MarkdownBody text={plan.plan} language={language} />
       </div>
-    </details>
+    </ToolDisclosure>
   );
 }
 
 function TodoCard({
+  expansion,
+  row,
   items,
   language,
 }: {
+  expansion: ToolExpansion;
+  row: ToolRow;
   items: TodoItem[];
   language: Language;
 }) {
@@ -5033,14 +5302,18 @@ function TodoCard({
     translate(language, key, values);
   const done = items.filter((item) => item.done).length;
   return (
-    <details className="tool-card todo-card" open>
-      <summary>
-        <ListTodo size={14} />
-        <strong>{t("todos")}</strong>
-        <span className="tool-status">
-          {t("todoDone", { done, total: items.length })}
-        </span>
-      </summary>
+    <ToolDisclosure
+      expansion={expansion}
+      toolName={row.name}
+      className="todo-card"
+      action={t("todos")}
+      status={row.status}
+      language={language}
+      meta={t("todoDone", { done, total: items.length })}
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
+    >
       <div className="tool-detail todo-detail">
         <ul className="todo-list">
           {items.map((item, index) => (
@@ -5056,62 +5329,70 @@ function TodoCard({
           ))}
         </ul>
       </div>
-    </details>
+    </ToolDisclosure>
   );
 }
 
-function compactToolPath(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length <= 2 && normalized.length <= 42) return normalized;
-  return `…/${parts.slice(-2).join("/")}`;
+function editLines(text: string): string[] {
+  return text ? text.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n") : [];
 }
 
 function EditCard({
+  expansion,
   row,
   edits,
   language,
 }: {
+  expansion: ToolExpansion;
   row: ToolRow;
   edits: EditInfo;
   language: Language;
 }) {
   const t = (key: MessageKey, values?: Record<string, string | number>) =>
     translate(language, key, values);
+  const added = edits.edits.reduce(
+    (n, edit) => n + editLines(edit.newText).length,
+    0,
+  );
+  const removed = edits.edits.reduce(
+    (n, edit) => n + editLines(edit.oldText).length,
+    0,
+  );
+  const summary = toolSummary(row.name, row.args, row.status, language);
   return (
-    <details
-      className={`tool-card edit-card tool-${row.status} ${row.status === "error" ? "failed" : ""}`}
-      open={row.status === "error"}
-    >
-      <summary>
-        <SquarePen size={14} />
-        <span className="tool-action">edit</span>
-        <code
-          className="shell-command edit-summary-path"
-          title={edits.path || row.name}
-        >
-          {compactToolPath(edits.path || row.name)}
-        </code>
-        {row.timing && <ToolElapsed timing={row.timing} language={language} />}
-        <span className="tool-status">
-          {toolStatusLabel(row.status, language)}
+    <ToolDisclosure
+      expansion={expansion}
+      toolName={row.name}
+      {...summary}
+      status={row.status}
+      language={language}
+      className="edit-card"
+      targetClassName="edit-summary-path"
+      meta={
+        <span className="edit-count">
+          <span className="add">+{added}</span>
+          <span className="remove">−{removed}</span>
         </span>
-      </summary>
+      }
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
+    >
       <div className="tool-detail edit-detail">
         {edits.path && <div className="edit-path">{edits.path}</div>}
-        <details className="edit-content" open={row.status === "error"}>
-          <summary>
+        <div className="edit-content">
+          <div className="edit-content-heading">
             <span className="edit-content-label">{t("editDiff")}</span>
             <span className="edit-content-count">
               {t(edits.edits.length === 1 ? "editChange" : "editChanges", {
                 count: edits.edits.length,
               })}
             </span>
-          </summary>
+          </div>
           <div className="edit-content-body">
             {edits.edits.map((edit, index) => {
-              const oldLines = edit.oldText ? edit.oldText.split("\\n") : [];
-              const newLines = edit.newText ? edit.newText.split("\\n") : [];
+              const oldLines = editLines(edit.oldText);
+              const newLines = editLines(edit.newText);
               return (
                 <div
                   className="edit-hunk"
@@ -5136,17 +5417,29 @@ function EditCard({
                 </div>
               );
             })}
-            {typeof row.result === "string" && row.result.trim() && (
-              <div className="edit-result">{row.result}</div>
+            {row.result !== undefined && (
+              <pre className="edit-result">
+                {typeof row.result === "string"
+                  ? row.result
+                  : safeJson(row.result)}
+              </pre>
             )}
           </div>
-        </details>
+        </div>
       </div>
-    </details>
+    </ToolDisclosure>
   );
 }
 
-function ShellCard({ row, language }: { row: ToolRow; language: Language }) {
+function ShellCard({
+  expansion,
+  row,
+  language,
+}: {
+  expansion: ToolExpansion;
+  row: ToolRow;
+  language: Language;
+}) {
   const t = (key: MessageKey) => translate(language, key);
   const { command, meta } = shellCommand(row.args);
   const output = shellOutput(row.result);
@@ -5185,21 +5478,23 @@ function ShellCard({ row, language }: { row: ToolRow; language: Language }) {
     }
   }
   return (
-    <details
-      className={`tool-card shell-card tool-${row.status} ${row.status === "error" ? "failed" : ""}`}
-      open={row.status === "error"}
+    <ToolDisclosure
+      expansion={expansion}
+      toolName={row.name}
+      className="shell-card"
+      status={row.status}
+      language={language}
+      action={t(
+        row.status === "running" || row.status === "pending"
+          ? "toolRunningCommand"
+          : "toolRan",
+      )}
+      target={command || row.name}
+      targetClassName="shell-command"
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
     >
-      <summary>
-        <Terminal size={14} />
-        <span className="tool-action">Ran</span>
-        <code className="shell-command" title={command || row.name}>
-          {command ? command.replace(/\s+/g, " ").trim() : row.name}
-        </code>
-        {row.timing && <ToolElapsed timing={row.timing} language={language} />}
-        <span className="tool-status">
-          {toolStatusLabel(row.status, language)}
-        </span>
-      </summary>
       <div className="tool-detail shell-detail">
         <div className="shell-window">
           <div className="shell-command-heading">
@@ -5219,11 +5514,7 @@ function ShellCard({ row, language }: { row: ToolRow; language: Language }) {
             )}
           </div>
           <div className="shell-body">
-            {command && (
-              <pre className="shell-input">
-                <code>{command}</code>
-              </pre>
-            )}
+            {command && <ShellCommand command={command} language={language} />}
             {output ? (
               <pre className="shell-output">{output}</pre>
             ) : (
@@ -5235,7 +5526,7 @@ function ShellCard({ row, language }: { row: ToolRow; language: Language }) {
           <p className="shell-meta">{metaParts.join(" · ")}</p>
         )}
       </div>
-    </details>
+    </ToolDisclosure>
   );
 }
 
@@ -5268,24 +5559,6 @@ function ToolElapsed({
       {duration}
     </span>
   );
-}
-
-function toolStatusLabel(
-  status: Row extends never ? never : string,
-  language: Language,
-) {
-  switch (status) {
-    case "pending":
-      return translate(language, "toolPending");
-    case "running":
-      return translate(language, "toolRunning");
-    case "done":
-      return translate(language, "toolDone");
-    case "error":
-      return translate(language, "toolError");
-    default:
-      return status;
-  }
 }
 
 function RuntimePanel({

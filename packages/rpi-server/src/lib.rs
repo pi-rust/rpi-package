@@ -661,6 +661,7 @@ const SERVER_PARAMETERS: &str = r#"{
     "systemPrompt":{"type":"string"},
     "appendSystemPrompt":{"type":"array","items":{"type":"string"}},
     "thinking":{"type":"string","enum":["off","minimal","low","medium","high","xhigh","max"]},
+    "rpcMessageUpdates":{"type":"string","enum":["snapshot","compact-deltas"],"description":"Native RPC delta payload mode; omitted uses the executable default (compatible with older hosts)."},
     "name":{"type":"string"},
     "session":{"type":"string"},
     "sessionId":{"type":"string"},
@@ -795,6 +796,44 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--provider", "anthropic"]));
         assert!(args.windows(2).any(|w| w == ["--model", "claude-3"]));
         assert!(args.contains(&"--no-session".to_string()));
+    }
+
+    #[test]
+    fn rpc_message_updates_is_explicit_and_strict() {
+        let (_, args) = launch_args(&json!({})).unwrap();
+        assert!(!args
+            .iter()
+            .any(|arg| arg.starts_with("--rpc-message-updates")));
+        for mode in ["snapshot", "compact-deltas"] {
+            let (_, args) = launch_args(&json!({"rpcMessageUpdates":mode})).unwrap();
+            assert_eq!(
+                args,
+                vec!["--mode", "rpc", &format!("--rpc-message-updates={mode}")]
+            );
+        }
+        for invalid in [
+            json!(""),
+            json!("compact"),
+            json!("SNAPSHOT"),
+            json!(null),
+            json!(true),
+            json!(1),
+            json!([]),
+            json!({}),
+        ] {
+            assert_eq!(
+                launch_args(&json!({"rpcMessageUpdates":invalid})).unwrap_err(),
+                "rpcMessageUpdates must be snapshot or compact-deltas"
+            );
+        }
+        let schema: Value = serde_json::from_str(SERVER_PARAMETERS).unwrap();
+        assert_eq!(
+            schema["properties"]["rpcMessageUpdates"]["enum"],
+            json!(["snapshot", "compact-deltas"])
+        );
+        assert!(schema["properties"]["rpcMessageUpdates"]
+            .get("default")
+            .is_none());
     }
 
     #[test]

@@ -2461,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.1.20"
+version = "0.2.3"
 dependencies = [
  "axum",
  "futures-util",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-durable"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "rpi-durable-core",
  "rpi-plugin-sdk 0.3.20",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-durable-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2578,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-extcore"
-version = "0.1.5"
+version = "0.2.3"
 dependencies = [
  "futures-util",
  "process-wrap",
@@ -2617,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.1.11"
+version = "0.2.0"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde",
@@ -2626,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.1.4"
+version = "0.1.11"
 dependencies = [
  "axum",
  "futures-util",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-plan-mode"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2770,7 +2770,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-providers"
-version = "0.1.5"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2801,7 +2801,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-server"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "async-trait",
  "rpi-plugin-sdk 0.3.20",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-todo"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2877,7 +2877,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.15"
+version = "0.1.23"
 dependencies = [
  "axum",
  "rpi-extcore",

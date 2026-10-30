@@ -217,6 +217,17 @@ fn allowed(key: &str) -> bool {
     )
 }
 
+fn type_name_value(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(value) => Some(value),
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|value| !value.eq_ignore_ascii_case("null")),
+        _ => None,
+    }
+}
+
 pub fn to_gemini_schema(schema: &Value, options: Options) -> Value {
     let Some(schema) = schema.as_object() else {
         return schema.clone();
@@ -317,8 +328,12 @@ pub fn to_gemini_schema(schema: &Value, options: Options) -> Value {
             continue;
         }
         match key.as_str() {
-            "type" if value.is_string() => {
-                set(&mut result, &key, value.as_str().unwrap().to_uppercase());
+            "type" => {
+                if let Some(type_name) = type_name_value(value) {
+                    set(&mut result, &key, type_name.to_uppercase());
+                } else if !value.is_array() {
+                    set(&mut result, &key, value.clone());
+                }
             }
             "properties" if value.is_object() || value.is_array() => {
                 set(

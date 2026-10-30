@@ -122,38 +122,51 @@ impl driver::Source for Live {
         deadline: &Deadline,
         secrets: &mut Secrets,
     ) -> Result<Response<LiveBody>, String> {
-        let access = options["apiKey"]
+        let stored = options["apiKey"]
             .as_str()
             .filter(|key| !key.is_empty())
-            .ok_or("Missing Antigravity OAuth access token")?
-            .to_owned();
+            .ok_or("Missing Antigravity OAuth access token")?;
+        // The stored value is `<token>` or `<token>|<project>`; only the token leaves the process.
+        let (token, bound) = auth::parse_access(stored);
+        if token.is_empty() {
+            return Err("Missing Antigravity OAuth access token".into());
+        }
+        let token = token.to_owned();
+        secrets.credential(&token);
         if catalog::is_retired(model["id"].as_str().unwrap_or_default()) {
             return Err(catalog::RETIRED_MESSAGE.into());
         }
-        let packed = shared()
-            .credentials
-            .lock()
-            .unwrap()
-            .get(&access)
-            .unwrap_or_default()
-            .to_owned();
-        let parts = auth::parse_refresh(&packed);
-        for project in [parts.project_id, parts.managed_project_id]
-            .into_iter()
-            .flatten()
-        {
-            secrets.project(&project);
-        }
-        let project = deadline
-            .wait(shared().projects.ensure(
-                self.net.clone(),
-                json!({"type":"oauth","refresh":packed,"access":access,"expires":now_ms() + 60_000}),
-            ))
-            .await?;
-        let project = project["effectiveProjectId"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
+        let project = match bound {
+            // The login or refresh that stored this access already bound the project, so the
+            // stream uses it without project discovery, even after a restart.
+            Some(project) => project.to_owned(),
+            None => {
+                let packed = shared()
+                    .credentials
+                    .lock()
+                    .unwrap()
+                    .get(&token)
+                    .unwrap_or_default()
+                    .to_owned();
+                let parts = auth::parse_refresh(&packed);
+                for project in [parts.project_id, parts.managed_project_id]
+                    .into_iter()
+                    .flatten()
+                {
+                    secrets.project(&project);
+                }
+                let resolved = deadline
+                    .wait(shared().projects.ensure(
+                        self.net.clone(),
+                        json!({"type":"oauth","refresh":packed,"access":token,"expires":now_ms() + 60_000}),
+                    ))
+                    .await?;
+                resolved["effectiveProjectId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            }
+        };
         secrets.project(&project);
         let prepared: PreparedRequest = {
             let mut sessions = shared().sessions.lock().unwrap();
@@ -168,7 +181,7 @@ impl driver::Source for Live {
         };
         deadline.check()?;
         let response = deadline
-            .wait(self.dispatch(&prepared, &access, &project))
+            .wait(self.dispatch(&prepared, &token, &project))
             .await?;
         Ok(Response {
             status: response.status().as_u16(),
@@ -183,7 +196,7 @@ impl Live {
     async fn dispatch(
         &self,
         prepared: &PreparedRequest,
-        access: &str,
+        token: &str,
         project: &str,
     ) -> Result<reqwest::Response, String> {
         // Pi sends `Accept-Encoding: gzip`; the workspace reqwest has no decoder, so none is requested.
@@ -193,7 +206,7 @@ impl Live {
                 "{}/v1internal:streamGenerateContent?alt=sse",
                 self.root
             ))
-            .header("Authorization", format!("Bearer {access}"))
+            .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", "application/json")
             .header("User-Agent", self.net.user_agent.as_str())
             .body(prepared.body(project))

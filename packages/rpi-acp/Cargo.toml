@@ -1,6 +1,6 @@
 [package]
 name = "rpi-acp"
-version = "0.1.20"
+version = "0.2.3"
 edition.workspace = true
 rust-version = "1.85"
 license.workspace = true
@@ -22,7 +22,7 @@ name = "rpi-acp-bridge"
 path = "src/main.rs"
 
 [dependencies]
-rpi-extcore = { path = "../rpi-extcore", version = "0.1.5" }
+rpi-extcore = { path = "../rpi-extcore", version = "0.2.3" }
 rpi-plugin-sdk = { workspace = true, features = ["stdio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
@@ -48,4 +48,4 @@ tokio = { version = "1", features = [
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json"] }
 tokio-tungstenite = "0.29"
 futures-util = { version = "0.3", features = ["sink"] }
-rpi-extcore = { path = "../rpi-extcore", version = "0.1.5", features = ["test-support"] }
+rpi-extcore = { path = "../rpi-extcore", version = "0.2.3", features = ["test-support"] }

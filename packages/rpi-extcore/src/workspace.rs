@@ -11,6 +11,7 @@ use std::{
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
+const IMAGE_LIMIT: u64 = 20 * 1024 * 1024;
 const FILE_LIMIT: u64 = 1024 * 1024;
 const OUTPUT_LIMIT: u64 = 2 * 1024 * 1024;
 const UPLOAD_LIMIT: usize = 20 * 1024 * 1024;
@@ -21,6 +22,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
+    pub archived: bool,
     #[serde(skip)]
     pub root: PathBuf,
 }
@@ -51,6 +53,7 @@ impl Project {
                 .to_string_lossy()
                 .into(),
             path: display,
+            archived: false,
             root,
         })
     }
@@ -231,6 +234,89 @@ pub async fn upload(project: &Project, filename: &str, bytes: &[u8]) -> Reply {
         "path": format!(".rpi/uploads/{stored_name}"),
         "size": bytes.len(),
     }))
+}
+
+/// Bounded raster content, independent of any transport or JSON encoding.
+#[derive(Debug)]
+pub struct ProjectImage {
+    pub bytes: Vec<u8>,
+    pub media_type: &'static str,
+}
+
+/// Read a project-relative raster image. Errors use the existing neutral reply contract.
+pub async fn image(project: &Project, relative: &str) -> Result<ProjectImage, (ReplyKind, Value)> {
+    let path = resolve(&project.root, relative)?;
+    let extension = Path::new(relative)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let media_type = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        _ => {
+            return Err(failure(
+                ReplyKind::UnsupportedContent,
+                "unsupported image format",
+            ))
+        }
+    };
+    fn check(metadata: &std::fs::Metadata) -> Result<(), (ReplyKind, Value)> {
+        if !metadata.is_file() {
+            return Err(failure(ReplyKind::InvalidInput, "select a regular file"));
+        }
+        if metadata.len() > IMAGE_LIMIT {
+            return Err(failure(
+                ReplyKind::LimitExceeded,
+                "images are limited to 20 MiB",
+            ));
+        }
+        Ok(())
+    }
+    // Reject devices/FIFOs and oversized files before opening, then recheck the handle.
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| failure(ReplyKind::NotFound, "image not found"))?;
+    check(&metadata)?;
+    let handle = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| failure(ReplyKind::NotFound, "image not found"))?;
+    check(
+        &handle
+            .metadata()
+            .await
+            .map_err(|_| failure(ReplyKind::AccessDenied, "cannot inspect image"))?,
+    )?;
+    let mut bytes = Vec::new();
+    handle
+        .take(IMAGE_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| failure(ReplyKind::AccessDenied, "cannot read image"))?;
+    if bytes.len() as u64 > IMAGE_LIMIT {
+        return Err(failure(
+            ReplyKind::LimitExceeded,
+            "images are limited to 20 MiB",
+        ));
+    }
+    let matches = match media_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(b"\xff\xd8\xff"),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+        "image/bmp" => bytes.starts_with(b"BM"),
+        _ => false,
+    };
+    if !matches {
+        return Err(failure(
+            ReplyKind::UnsupportedContent,
+            "image signature does not match extension",
+        ));
+    }
+    Ok(ProjectImage { bytes, media_type })
 }
 
 pub async fn file(project: &Project, relative: &str) -> Reply {
@@ -474,6 +560,156 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         path
     }
+    const PNG: &[u8] = include_bytes!("../tests/fixtures/project-image.png");
+
+    #[tokio::test]
+    async fn images_are_scoped_bounded_regular_rasters() {
+        let root = fixture();
+        let project = Project::new(&root).unwrap();
+        std::fs::write(root.join("actual.PNG"), PNG).unwrap();
+        let actual = image(&project, "actual.PNG").await.unwrap();
+        assert_eq!(actual.media_type, "image/png");
+        assert_eq!(actual.bytes, PNG);
+        for (name, bytes, media_type) in [
+            ("photo.jpg", &b"\xff\xd8\xff\xe0"[..], "image/jpeg"),
+            ("photo.jpeg", &b"\xff\xd8\xff\xe1"[..], "image/jpeg"),
+            ("old.gif", &b"GIF87a"[..], "image/gif"),
+            ("new.gif", &b"GIF89a"[..], "image/gif"),
+            ("photo.webp", &b"RIFF\0\0\0\0WEBP"[..], "image/webp"),
+            ("photo.bmp", &b"BM"[..], "image/bmp"),
+        ] {
+            // These exercise signature recognition, not image decoding.
+            std::fs::write(root.join(name), bytes).unwrap();
+            assert_eq!(image(&project, name).await.unwrap().media_type, media_type);
+        }
+        for name in [
+            "fake.png",
+            "fake.jpg",
+            "fake.gif",
+            "fake.webp",
+            "fake.bmp",
+            "fake.svg",
+            "fake.html",
+        ] {
+            std::fs::write(root.join(name), b"<html>not an image</html>").unwrap();
+            assert_eq!(
+                image(&project, name).await.unwrap_err().0,
+                ReplyKind::UnsupportedContent,
+                "{name}"
+            );
+        }
+        std::fs::write(root.join("mismatch.jpg"), PNG).unwrap();
+        std::fs::write(root.join("empty.png"), []).unwrap();
+        std::fs::write(root.join("bad.webp"), b"RIFFxxxxNOTP").unwrap();
+        for name in ["mismatch.jpg", "empty.png", "bad.webp"] {
+            assert_eq!(
+                image(&project, name).await.unwrap_err().0,
+                ReplyKind::UnsupportedContent
+            );
+        }
+        for name in [
+            "../outside.png",
+            "/actual.PNG",
+            "C:/actual.PNG",
+            "a\\b.png",
+            ".git/image.png",
+            ".rpi/image.png",
+            "node_modules/image.png",
+            "target/image.png",
+            ".deploy/image.png",
+            ".env/image.png",
+        ] {
+            assert!(image(&project, name).await.is_err(), "{name}");
+        }
+        assert_eq!(
+            image(&project, "missing.png").await.unwrap_err().0,
+            ReplyKind::NotFound
+        );
+        std::fs::create_dir(root.join("folder.png")).unwrap();
+        assert_eq!(
+            image(&project, "folder.png").await.unwrap_err().0,
+            ReplyKind::InvalidInput
+        );
+        let large = std::fs::File::create(root.join("large.png")).unwrap();
+        large.set_len(IMAGE_LIMIT + 1).unwrap();
+        drop(large);
+        assert_eq!(
+            image(&project, "large.png").await.unwrap_err().0,
+            ReplyKind::LimitExceeded
+        );
+        let mut boundary = PNG.to_vec();
+        boundary.resize(IMAGE_LIMIT as usize, 0);
+        std::fs::write(root.join("boundary.png"), &boundary).unwrap();
+        assert_eq!(
+            image(&project, "boundary.png").await.unwrap().bytes.len(),
+            IMAGE_LIMIT as usize
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn image_junctions_cannot_escape_or_alias_hidden_directories() {
+        let root = fixture();
+        let outside = fixture();
+        std::fs::write(outside.join("image.png"), PNG).unwrap();
+        std::fs::create_dir(root.join(".deploy")).unwrap();
+        std::fs::write(root.join(".deploy/image.png"), PNG).unwrap();
+        let project = Project::new(&root).unwrap();
+        for (name, target) in [("escape", outside.clone()), ("alias", root.join(".deploy"))] {
+            let link = root.join(name);
+            // Directory junctions do not require Windows symlink privileges.
+            assert!(std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&target)
+                .stdout(Stdio::null())
+                .status()
+                .unwrap()
+                .success());
+            assert_eq!(
+                image(&project, &format!("{name}/image.png"))
+                    .await
+                    .unwrap_err()
+                    .0,
+                ReplyKind::AccessDenied
+            );
+            std::fs::remove_dir(link).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn image_fifos_and_symlink_escapes_are_rejected() {
+        let root = fixture();
+        let outside = fixture();
+        let project = Project::new(&root).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(root.join("pipe.png"))
+            .status()
+            .unwrap()
+            .success());
+        let result = tokio::time::timeout(Duration::from_millis(200), image(&project, "pipe.png"))
+            .await
+            .unwrap();
+        assert_eq!(result.unwrap_err().0, ReplyKind::InvalidInput);
+        std::fs::write(outside.join("image.png"), PNG).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        std::fs::create_dir(root.join(".deploy")).unwrap();
+        std::fs::write(root.join(".deploy/image.png"), PNG).unwrap();
+        std::os::unix::fs::symlink(root.join(".deploy"), root.join("alias")).unwrap();
+        for name in ["escape/image.png", "alias/image.png"] {
+            assert_eq!(
+                image(&project, name).await.unwrap_err().0,
+                ReplyKind::AccessDenied
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
     #[tokio::test]
     async fn oversized_git_output_is_rejected_and_next_request_still_works() {
         let root = fixture();

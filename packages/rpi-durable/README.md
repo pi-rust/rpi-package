@@ -110,8 +110,13 @@ worker, scheduler, or exactly-once delivery system.
   restore puts the store in a failed state: it reports the error, exposes no
   fabricated/empty healthy state, and blocks mutations until an explicit
   successful `SessionStart` or `SessionTree` reload reconciles the branch.
-- If the host lacks the required runtime action, the extension fails clearly;
-  it does not silently fall back to a shared project file.
+- The host must support `GetSessionBranch` with
+  `{"customTypes":["durable-state"]}` and explicitly return `filtered: true`
+  with an `entries` array of matching native custom entries. Missing/false or
+  non-boolean confirmation, rejected filters, and invalid entry envelopes fail
+  restore and block mutations until a successful explicit reload. Older hosts
+  must be upgraded; there is no unfiltered full-branch fallback or shared
+  project-file fallback.
 
 This makes the state branch-aware and restartable while preserving native rpi's
 transcript ownership and event ordering. It provides safe recovery metadata but
@@ -120,43 +125,51 @@ model run, or claim exactly-once tool execution after process termination.
 
 ## Journal format and compatibility
 
-New writes use a versioned `rpi-durable-journal` record in the native session
-branch. The first write on a branch (and the first write after a legacy
-snapshot) is a complete `snapshot`; later writes are typed `delta` records,
-with a complete snapshot at least every 32 meaningful commits or whenever a
-delta would not be smaller. Deltas carry their base revision and the native
+> **Breaking preview upgrade — no migration:** only canonical versioned
+> `rpi-durable-journal` records under `durable-state` are supported. Historical
+> `rpi-durable-runtime` entries are not requested, restored, or migrated, and
+> plain unversioned `DurableState` snapshots are no longer restore bases. Use a
+> new session/branch without unsupported durable history; there is no automatic
+> migration or compatibility mode. Existing canonical journals remain readable.
+> Upgrade the native host together with the plugin to support required branch
+> filtering.
+
+Writes use a versioned `rpi-durable-journal` record in the native session
+branch. The first write on a branch is a complete `snapshot`; later writes are
+typed `delta` records, with a complete snapshot at least every 32 meaningful
+commits or whenever a delta would not be smaller. Deltas carry their base
+revision and the native
 `id` of the previous durable record (the append response calls this value
 `entryId`). Replay validates the selected complete snapshot, its suffix
 revision sequence, branch anchors, state bounds, and operation paths before
 installing any state. A failed `AppendEntry` therefore leaves the in-memory
 state, revision, snapshot cadence, and anchor unchanged.
 
-The reader explicitly accepts legacy plain `DurableState` data, including old
-records that omit run, queue, and revision fields, followed by versioned records
-on an upgraded branch. A legacy record after versioned records is rejected.
-A malformed or unsupported durable record before the newest valid
-self-contained snapshot is treated as obsolete prefix data. Records after that
-snapshot, or any journal without a valid self-contained snapshot, still fail
-closed rather than falling back to stale/default state; a later successful
-session-start/tree restore can recover the extension. A running restored run is
-checkpointed as interrupted using the same commit-before-publish ordering and
-is never automatically replayed.
+Unversioned snapshots alone, or after the selected canonical snapshot, are
+rejected rather than migrated. A malformed or unsupported durable payload
+before the newest valid self-contained snapshot is treated as obsolete prefix
+data, never as a migration source. Invalid native entry envelopes or unexpected
+custom types in a filtered response are always rejected. Records after that
+snapshot, or any non-empty journal without a valid self-contained snapshot,
+still fail closed rather than falling back to stale/default state; a later
+successful session-start/tree restore can recover the extension. A running
+restored run is checkpointed as interrupted using the same commit-before-publish
+ordering and is never automatically replayed.
 
 A complete snapshot is self-contained for restore: when a branch is truncated
 before the latest snapshot, that snapshot's own revision and native entry ID
 become the replay anchor, and only its following deltas must have contiguous
-revisions and exact predecessor IDs. The current reader still scans the full
-branch to locate that snapshot; bounded cursor/limit reads require native
+revisions and exact predecessor IDs. The reader scans all filtered canonical
+entries to locate that snapshot; bounded cursor/limit reads require native
 runtime support and are a separate optimization.
 
-Older extension builds understand only plain snapshots and cannot read the new
-journal deltas. Downgrading while a branch contains versioned records is
-therefore unsupported: use a branch snapshot created by an older build or
-continue with a journal-aware build. A successful append with an unusable
-acknowledgement (missing ID or invalid JSON) cannot be retried against the old
-anchor; reload the branch explicitly before continuing. New tool records may
-also contain an optional `callKey` used to preserve long tool identity; older
-records without it remain readable.
+Older extension builds understand only plain snapshots and cannot read the
+journal deltas. Downgrading a canonical journal to those builds is unsupported;
+start a separate session with the older build instead. A successful append with
+an unusable acknowledgement (missing ID or invalid JSON) cannot be retried
+against the old anchor; reload the branch explicitly before continuing. New
+tool records may also contain an optional `callKey` used to preserve long tool
+identity; older records without it remain readable.
 
 ## Build and install
 
@@ -164,6 +177,17 @@ records without it remain readable.
 cargo test --locked -p rpi-durable
 cargo build --release --locked -p rpi-durable
 ```
+
+Run the real-host filtered-query and DLL restart smoke with matching preview
+artifacts (no model calls, isolated temporary profile/session):
+
+```bash
+python packages/rpi-durable/tests/native_branch_smoke.py --rpi /path/to/rpi --extension /path/to/rpi_durable.dll
+```
+
+Use the platform's `.so`/`.dylib` path on Linux/macOS. The check covers modern
+queries, retired query rejection, snapshot/delta writes, and restoration after
+restarting the native host. It does not install or replace the running agent.
 
 Install from this workspace during development:
 

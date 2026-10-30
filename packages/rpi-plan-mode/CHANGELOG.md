@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-plan-mode-v0.1.6...rpi-plan-mode-v0.2.0) - 2026-10-29
+
+### Other
+
+- *(durable)* [**breaking**] require canonical filtered branch recovery ([#109](https://github.com/pi-rust/rpi-package/pull/109))
+
 ## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-plan-mode-v0.1.5...rpi-plan-mode-v0.1.6) - 2026-10-14
 
 ### Added

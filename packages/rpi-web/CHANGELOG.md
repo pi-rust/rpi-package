@@ -2,6 +2,109 @@
 
 ## [Unreleased]
 
+## [0.1.23](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.22...rpi-web-v0.1.23) - 2026-10-30
+
+### Added
+
+- *(web)* default to native tool names with mapped toggle
+- *(web)* flag interrupted sessions in chat lists
+- *(web)* render Mermaid flowcharts in chat Markdown
+- *(web)* show authoritative elapsed time for completed runs
+- *(web)* show uploaded files as readable attachment cards
+- *(web)* present tools as compact Codex-style disclosures
+- *(web)* page older messages automatically on upward scroll
+
+### Fixed
+
+- *(web)* remove redundant composer queue heading
+- *(web)* align tool icons and trailing disclosure controls
+- *(web)* preview long commands before expanding full text
+- *(web)* unify user bubble corners and sender labels
+
+### Other
+
+- Merge pull request #119 from pi-rust/fix/web-image-rendering
+
+## [0.1.22](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.21...rpi-web-v0.1.22) - 2026-10-30
+
+### Added
+
+- *(web)* enlarge transcript and Markdown images in a viewer
+
+### Fixed
+
+- *(web)* serve project raster image artifacts securely
+- *(web)* render inline and user message images
+
+### Added
+
+- Add Settings → Tool names to switch between exact native names (the default) and mapped/localized action labels across all tool cards. Save the choice locally, preserve expansion, targets, details and timings, and leave native calls and transcript data unchanged.
+- Show compact translated interruption/resume hints in desktop and mobile session lists from existing error and settlement metadata, with accessible explanations and no per-session RPC reads. Active retries suppress old errors; normal stops, declined operations, and offline/closed sessions without evidence are not mislabeled. This does not add persistent crash detection for registry-only offline sessions.
+- Render fenced `mermaid` flowcharts (`flowchart`/`graph`) and sequence diagrams locally as zoomable SVG images, with source/copy controls, theme updates, mobile containment and debounced streaming recovery. Lazy-load the pinned Mermaid dependency; reject authored configuration, shape metadata, HTML/images and custom CSS before rendering, retaining exact source for invalid, unsupported or oversized diagrams.
+- Show Codex-style total elapsed time after completed conversation runs, including stopped/failed runs, in both live and historical views. Use matching native operation start/finish records through a bounded, resumable core/HTTP query; never estimate from individual tool times or browser clocks. Requires the matching backend update; unavailable or incomplete timing metadata is omitted.
+- Open transcript and Markdown images in an accessible, keyboard-operated viewer with fit-to-window and scrollable original-size modes.
+- Load earlier transcript messages automatically when scrolling near the top, using smaller 48-entry pages with request deduplication and stable reading position, including late-loading images.
+- Present tool calls as compact Codex-style activity summaries with paths, commands, change counts and timings; reveal code, outputs, images, diffs and structured plans with one click or keyboard activation. Place tool/status icons on the left and the expand/collapse chevron at the far right. Preserve expansion through live updates without jumping to the bottom.
+- Preview long shell commands as four rendered lines inside tool details, with a separate localized expand/collapse control. Keep short commands uncollapsed and copy the complete original command even from the preview.
+- Display uploaded documents as compact filename/type cards instead of UUID-prefixed internal paths; expand to inspect or copy the unchanged upload path. Preserve inline user commentary and show known file sizes and image previews before sending.
+
+### Fixed
+
+- Omit the redundant visible Queue label above pending composer messages while preserving the count, preview, item actions and localized accessible expand/collapse names.
+- Use equal user-message corner radii and show the localized sender label only once instead of repeating it in both avatar and name.
+- Render inline Markdown `data:image` sources without allowing data URLs in links or raw HTML.
+- Preserve user image blocks in snapshots, reloads and live message events, including image-only messages, without duplicating start/end rows.
+- Resolve local raster image references against the active project and serve authenticated image bytes through the project API instead of receiving the Web/Vite SPA HTML fallback. Requires the matching backend update.
+
+## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.20...rpi-web-v0.1.21) - 2026-10-29
+
+### Fixed
+
+- *(web)* keep project archive actions visible without hover
+
+## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.19...rpi-web-v0.1.20) - 2026-10-29
+
+### Added
+
+- *(web)* add permanent session deletion
+- *(web)* add project archiving
+
+### Fixed
+
+- *(web)* restore archived chats and unblock production regression checks
+- *(web)* preview image attachments without mime type
+- *(web)* withdraw queued message when editing
+
+### Other
+
+- Merge main into feature-1028 and preserve canonical durable recovery
+- Merge remote-tracking branch 'origin/feat/project-archive' into HEAD
+- *(web)* align e2e expectations with queue UI
+
+## [0.1.19](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.18...rpi-web-v0.1.19) - 2026-10-29
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.18](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.17...rpi-web-v0.1.18) - 2026-10-28
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.17](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.16...rpi-web-v0.1.17) - 2026-10-28
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.16](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.15...rpi-web-v0.1.16) - 2026-10-28
+
+### Other
+
+- *(transcript)* reduce session snapshot and branch polling cost
+
 ## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.14...rpi-web-v0.1.15) - 2026-10-28
 
 ### Other
