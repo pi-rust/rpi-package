@@ -418,6 +418,14 @@ The visible row stays anchored when a page is prepended or an older image
 finishes loading. `total` remains the full branch projection count, while
 `truncated` is retained as a compatibility alias for `hasMore`.
 
+Tool calls use compact activity summaries: an action and file path, command or
+query, followed by change counts and timings when available. They start
+collapsed; click the summary or use Enter/Space to show code, output, images,
+diffs or structured plans/tasks. Failures open automatically but can be
+collapsed. Live result/timing updates preserve the reader's choice, including
+when a result changes a generic call into a structured checklist. Expanding
+stops bottom-follow so long output does not move the reader away from its header.
+
 Sessions also keep the last 512 projected events in memory with a monotonic
 `seq`; SSE frames carry `id: <seq>`. That buffer is what makes `?after=` work, and
 it is the fallback path for a host that does not advertise `get_messages`.

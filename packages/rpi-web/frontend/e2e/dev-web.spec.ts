@@ -5215,7 +5215,7 @@ test("edit tool renders a file diff and powershell renders as a terminal", async
   await expect(page.locator(".edit-card")).toHaveCSS("border-radius", "0px");
   await page.locator(".edit-card > summary").click();
   await expect(page.locator(".edit-path")).toContainText("src/app.ts");
-  await page.locator(".edit-content > summary").click();
+  await expect(page.locator(".edit-line.remove")).toBeVisible();
   await expect(page.locator(".edit-line.remove")).toContainText("const a = 1;");
   await expect(page.locator(".edit-line.add")).toContainText("const a = 2;");
   await expect(page.locator(".shell-card")).toBeVisible();
@@ -6024,4 +6024,641 @@ test("upward paging: an invisible page advances automatically without another sc
     page.getByText("Visible earlier history", { exact: true }),
   ).toBeVisible();
   expect(cursors).toEqual(["scroll-current-0", "invisible-old"]);
+});
+
+// Codex-style disclosure regressions: these fixtures deliberately retain both
+// arguments and results, so a compact summary must not replace either payload.
+test("tool disclosures keep read paths and search queries visible while closed on desktop and mobile", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 9,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-read",
+                name: "read",
+                arguments: { path: "src/disclosure-example.ts" },
+              },
+              {
+                type: "toolCall",
+                id: "disclosure-search",
+                name: "websearch",
+                arguments: { query: "Codex disclosure keyboard accessibility" },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-read",
+            toolName: "read",
+            content: [
+              { type: "text", text: "export const disclosureExample = true;" },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-search",
+            toolName: "websearch",
+            content: [
+              {
+                type: "text",
+                text: "Search result: accessible disclosure patterns",
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/");
+    const cards = page.locator(".tool-card.tool-done");
+    await expect(cards).toHaveCount(2);
+    const read = cards.filter({
+      has: page.locator("code.tool-target", {
+        hasText: "src/disclosure-example.ts",
+      }),
+    });
+    const search = cards.filter({
+      has: page.locator("code.tool-target", {
+        hasText: "Codex disclosure keyboard accessibility",
+      }),
+    });
+    await expect(read).toHaveJSProperty("open", false);
+    await expect(search).toHaveJSProperty("open", false);
+    await expect(read.locator(":scope > summary .tool-action")).toHaveText(
+      "Read",
+    );
+    await expect(search.locator(":scope > summary .tool-action")).toHaveText(
+      "Searched",
+    );
+    await expect(
+      read.locator(":scope > summary code.tool-target"),
+    ).toBeVisible();
+    await expect(
+      search.locator(":scope > summary code.tool-target"),
+    ).toBeVisible();
+    await read.locator(":scope > summary").click();
+    await expect(read).toHaveJSProperty("open", true);
+    await expect(
+      read.getByText("export const disclosureExample = true;", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await search.locator(":scope > summary").click();
+    await expect(
+      search.getByText("Search result: accessible disclosure patterns", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
+});
+
+test("unknown tool preserves its real name and exposes full arguments and result with Enter", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 9,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-unknown",
+                name: "custom_inventory_probe",
+                arguments: {
+                  warehouse: "north-depot",
+                  filters: { includeArchived: true },
+                  ids: [17, 42],
+                },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-unknown",
+            toolName: "custom_inventory_probe",
+            content: [
+              {
+                type: "text",
+                text: "Inventory probe result: 42 widgets available",
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  const card = page.locator(".tool-card.tool-done");
+  const summary = card.locator(":scope > summary");
+  await expect(card).toHaveJSProperty("open", false);
+  await expect(summary).toContainText("custom_inventory_probe");
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(card).toHaveJSProperty("open", true);
+  const args = card.locator("pre.tool-arguments");
+  await expect(args).toBeVisible();
+  expect(JSON.parse((await args.textContent()) ?? "null")).toEqual({
+    warehouse: "north-depot",
+    filters: { includeArchived: true },
+    ids: [17, 42],
+  });
+  await expect(
+    card.getByText("Inventory probe result: 42 widgets available", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(card).toHaveJSProperty("open", false);
+  await expect(args).toBeHidden();
+});
+
+test("multiline edit opens in one click with real diff lines and addition/removal counts on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 9,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-edit",
+                name: "edit",
+                arguments: {
+                  path: "src/multiline.ts",
+                  edits: [
+                    {
+                      oldText: "const before = 1;\nconst removed = true;",
+                      newText:
+                        "const after = 2;\nconst added = true;\nexport { after };",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-edit",
+            toolName: "edit",
+            content: [{ type: "text", text: "Edited src/multiline.ts" }],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  const card = page.locator(".edit-card.tool-done");
+  const summary = card.locator(":scope > summary");
+  await expect(card).toHaveJSProperty("open", false);
+  await expect(summary.locator("code.tool-target")).toHaveText(
+    "src/multiline.ts",
+  );
+  await expect(summary.locator(".tool-action")).toHaveText("Edited");
+  await expect(summary.locator(".edit-count")).toContainText("+3");
+  await expect(summary.locator(".edit-count")).toContainText("−2");
+  await expect(card.locator("summary")).toHaveCount(1);
+  await summary.click();
+  await expect(card).toHaveJSProperty("open", true);
+  const removed = card.locator(".edit-line.remove");
+  const added = card.locator(".edit-line.add");
+  await expect(removed).toHaveCount(2);
+  await expect(added).toHaveCount(3);
+  await expect(removed).toContainText([
+    "const before = 1;",
+    "const removed = true;",
+  ]);
+  await expect(added).toContainText([
+    "const after = 2;",
+    "const added = true;",
+    "export { after };",
+  ]);
+  for (const line of [...(await removed.all()), ...(await added.all())])
+    await expect(line).toBeVisible();
+});
+
+test("plan and todo disclosures start closed and reveal structured bodies in one click", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 9,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-plan",
+                name: "plan",
+                arguments: {
+                  plan: "# Disclosure plan\n\n- Inspect controls\n- Verify keyboard\n\nKeep details accessible.",
+                },
+              },
+              {
+                type: "toolCall",
+                id: "disclosure-todo",
+                name: "todo",
+                arguments: {},
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-plan",
+            toolName: "plan",
+            content: [
+              {
+                type: "text",
+                text: "# Disclosure plan\n\n- Inspect controls\n- Verify keyboard\n\nKeep details accessible.",
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "disclosure-todo",
+            toolName: "todo",
+            content: [
+              {
+                type: "text",
+                text: "1/2 completed\n[✓] #0: Inspect controls\n[ ] #1: Verify keyboard",
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  const plan = page.locator(".plan-card");
+  const todo = page.locator(".todo-card");
+  await expect(plan).toHaveJSProperty("open", false);
+  await expect(todo).toHaveJSProperty("open", false);
+  await expect(plan.locator(".plan-outline")).toBeHidden();
+  await expect(todo.locator(".todo-list")).toBeHidden();
+  await plan.locator(":scope > summary").click();
+  await expect(plan.locator(".plan-outline li")).toHaveCount(2);
+  await expect(plan.locator(".plan-detail")).toContainText(
+    "Keep details accessible.",
+  );
+  await expect(plan.locator(".plan-detail")).toBeVisible();
+  await todo.locator(":scope > summary").click();
+  await expect(todo.locator(".todo-list li")).toHaveCount(2);
+  await expect(todo.locator(".todo-list li.done")).toHaveCount(1);
+  await expect(todo.locator(".todo-list")).toBeVisible();
+  await expect(todo.locator(":scope > summary")).toContainText("1/2");
+});
+
+test("a new tool error autoopens but manual collapse survives later SSE output and timing updates", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let releaseError!: () => void;
+  let releaseUpdate!: () => void;
+  const errorGate = new Promise<void>((resolve) => {
+    releaseError = resolve;
+  });
+  const updateGate = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-error",
+                name: "custom_failure_probe",
+                arguments: { path: "missing.txt" },
+                webTiming: { elapsedMs: 100, running: true },
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  let requests = 0;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events?*`,
+    async (route) => {
+      const attempt = requests++;
+      await (attempt === 0 ? errorGate : updateGate);
+      const event = {
+        type: "tool_execution_end",
+        toolCallId: "disclosure-error",
+        toolName: "custom_failure_probe",
+        isError: true,
+        result:
+          attempt === 0
+            ? "Missing file: initial failure"
+            : "Missing file: refreshed diagnostics",
+        webTiming: { elapsedMs: attempt === 0 ? 1200 : 2400, running: false },
+      };
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `retry: 100\nid: ${5 + attempt}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+      });
+    },
+  );
+  try {
+    await page.goto("/");
+    const card = page.locator(".tool-card");
+    await expect(card).toHaveClass(/tool-running/);
+    await expect(card).toHaveJSProperty("open", false);
+    releaseError();
+    await expect(card).toHaveClass(/tool-error/);
+    await expect(card).toHaveJSProperty("open", true);
+    await expect(
+      card.getByText("Missing file: initial failure", { exact: false }),
+    ).toBeVisible();
+    await card.locator(":scope > summary").click();
+    await expect(card).toHaveJSProperty("open", false);
+    releaseUpdate();
+    await expect(card.locator(".tool-elapsed")).toHaveText("2.4s");
+    await expect(card).toHaveJSProperty("open", false);
+    await card.locator(":scope > summary").click();
+    await expect(
+      card.getByText("Missing file: refreshed diagnostics", { exact: false }),
+    ).toBeVisible();
+  } finally {
+    releaseError();
+    releaseUpdate();
+  }
+});
+
+test("opening a running shell tool survives elapsed ticks and its completed SSE result", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHost(page);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "disclosure-live",
+                name: "bash",
+                arguments: { command: "printf 'disclosure complete'" },
+                webTiming: { elapsedMs: 100, running: true },
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events?*`,
+    async (route) => {
+      await gate;
+      const event = {
+        type: "tool_execution_end",
+        toolCallId: "disclosure-live",
+        toolName: "bash",
+        isError: false,
+        result: "disclosure complete",
+        webTiming: { elapsedMs: 1600, running: false },
+      };
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `retry: 60000\nid: 5\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+      });
+    },
+  );
+  try {
+    await page.goto("/");
+    const card = page.locator(".tool-card.tool-running");
+    await expect(card).toHaveJSProperty("open", false);
+    await expect(card.locator(".shell-command")).toHaveText(
+      "printf 'disclosure complete'",
+    );
+    await card.locator(":scope > summary").click();
+    await expect(card).toHaveJSProperty("open", true);
+    const timer = card.locator(".tool-elapsed");
+    const initial = await timer.innerText();
+    await expect.poll(() => timer.innerText()).not.toBe(initial);
+    await expect(card).toHaveJSProperty("open", true);
+    release();
+    const done = page.locator(".tool-card.tool-done");
+    await expect(done).toHaveJSProperty("open", true);
+    await expect(done.locator(".tool-elapsed")).toHaveText("1.6s");
+    await expect(done.locator(".shell-output")).toHaveText(
+      "disclosure complete",
+    );
+    await expect(done.locator(".shell-output")).toBeVisible();
+    await done.locator(":scope > summary").click();
+    await expect(done).toHaveJSProperty("open", false);
+  } finally {
+    release();
+  }
+});
+
+
+for (const name of ["todo", "plan"]) {
+  test(`a manually opened ${name} stays open when its result selects a structured renderer`, async ({
+    page,
+  }) => {
+    await mockHost(page);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "running",
+          lastSeq: 4,
+          events: [],
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "structured-transition",
+                  name,
+                  arguments: {},
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        await gate;
+        const event = {
+          type: "tool_execution_end",
+          toolCallId: "structured-transition",
+          toolName: name,
+          isError: false,
+          result:
+            name === "todo"
+              ? "1/2 completed\n[✓] #0: Inspect controls\n[ ] #1: Verify keyboard"
+              : "# Structured result\n\n- Inspect controls\n- Verify keyboard",
+        };
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body: `retry: 60000
+id: 5
+event: ${event.type}
+data: ${JSON.stringify(event)}
+
+`,
+        });
+      },
+    );
+    try {
+      await page.goto("/");
+      const card = page.locator(".tool-card");
+      await expect(card).toHaveClass(/tool-(pending|running)/);
+      await expect(card).toHaveJSProperty("open", false);
+      await card.locator(":scope > summary").click();
+      await expect(card).toHaveJSProperty("open", true);
+      release();
+      await expect(card).toHaveClass(new RegExp(`${name}-card`));
+      await expect(card).toHaveJSProperty("open", true);
+      await expect(
+        card.locator(name === "todo" ? ".todo-list" : ".plan-outline"),
+      ).toBeVisible();
+    } finally {
+      release();
+    }
+  });
+}
+
+test("expanding a tool at latest keeps its header in place instead of following output to the bottom", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "ready",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          ...upwardPagingMessages,
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "long-tool",
+                name: "bash",
+                arguments: { command: "npm test" },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "long-tool",
+            toolName: "bash",
+            content: [
+              {
+                type: "text",
+                text: Array.from(
+                  { length: 100 },
+                  (_, i) => `Passing test ${i}`,
+                ).join("\n"),
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/");
+  const summary = page.locator(".shell-card > summary");
+  await expect(summary).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .locator(".transcript")
+        .evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop),
+    )
+    .toBeLessThan(3);
+  const before = await summary.boundingBox();
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".shell-card")).toHaveJSProperty("open", true);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  const after = await summary.boundingBox();
+  expect(Math.abs(after!.y - before!.y)).toBeLessThan(3);
+  await expect
+    .poll(() =>
+      page
+        .locator(".transcript")
+        .evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop),
+    )
+    .toBeGreaterThan(100);
 });

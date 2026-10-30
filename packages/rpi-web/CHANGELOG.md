@@ -6,6 +6,7 @@
 
 - Open transcript and Markdown images in an accessible, keyboard-operated viewer with fit-to-window and scrollable original-size modes.
 - Load earlier transcript messages automatically when scrolling near the top, using smaller 48-entry pages with request deduplication and stable reading position, including late-loading images.
+- Present tool calls as compact Codex-style activity summaries with paths, commands, change counts and timings; reveal code, outputs, images, diffs and structured plans with one click or keyboard activation. Preserve expansion through live updates without jumping to the bottom.
 
 ### Fixed
 

@@ -18,7 +18,6 @@ import {
   ArrowUp,
   Bot,
   Check,
-  ClipboardList,
   CircleDollarSign,
   ChevronDown,
   Code2,
@@ -26,10 +25,8 @@ import {
   Database,
   Files,
   FileText,
-  Folder,
   Gauge,
   GitBranch,
-  Globe,
   History,
   ListTodo,
   Loader2,
@@ -46,8 +43,6 @@ import {
   SquarePen,
   Sigma,
   Sun,
-  Search,
-  Terminal,
   Wrench,
   X,
 } from "lucide-react";
@@ -83,6 +78,12 @@ import { ProjectContext } from "./ProjectContext";
 import { ZoomableImage } from "./ZoomableImage";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
 import { useTranscriptViewport } from "./useTranscriptViewport";
+import {
+  ToolDisclosure,
+  toolSummary,
+  useToolExpansion,
+  type ToolExpansion,
+} from "./ToolDisclosure";
 import {
   ConfirmDialog,
   Modal,
@@ -309,7 +310,9 @@ function pathOfArgs(args: unknown) {
     ? record.path
     : typeof record.filePath === "string"
       ? record.filePath
-      : "";
+      : typeof record.file_path === "string"
+        ? record.file_path
+        : "";
 }
 
 function syntaxForPath(path: string) {
@@ -3434,6 +3437,18 @@ export default function App() {
             <div
               className="transcript"
               ref={transcriptRef}
+              onClickCapture={(event) => {
+                if (
+                  !(event.target instanceof Element) ||
+                  !event.target.closest(".tool-card > summary")
+                )
+                  return;
+                // Opening details is a reading action, not a request to follow
+                // output growth to the bottom. Capture before the native toggle.
+                followingRef.current = false;
+                setFollowing(false);
+                rememberTranscriptPosition();
+              }}
               onScroll={(event) => {
                 const node = event.currentTarget;
                 const nearBottom =
@@ -4953,53 +4968,6 @@ function ThinkingPicker({
   );
 }
 
-function toolIcon(name: string) {
-  switch (name.trim().toLowerCase()) {
-    case "read":
-    case "read_file":
-    case "readfile":
-    case "cat":
-      return <FileText size={14} />;
-    case "edit":
-    case "write":
-    case "write_file":
-    case "writefile":
-    case "apply_patch":
-      return <SquarePen size={14} />;
-    case "grep":
-    case "glob":
-    case "find":
-    case "search":
-    case "search_files":
-    case "file_search":
-    case "rg":
-      return <Search size={14} />;
-    case "list":
-    case "ls":
-    case "list_files":
-    case "list_directory":
-      return <Folder size={14} />;
-    case "web_fetch":
-    case "web_search":
-    case "fetch":
-    case "http_get":
-    case "browser":
-    case "open_url":
-      return <Globe size={14} />;
-    case "git":
-    case "git_status":
-    case "git_log":
-    case "git_diff":
-      return <GitBranch size={14} />;
-    case "plan":
-      return <ClipboardList size={14} />;
-    case "todo":
-      return <ListTodo size={14} />;
-    default:
-      return <Wrench size={14} />;
-  }
-}
-
 function ImagePreview({
   image,
   language,
@@ -5085,71 +5053,104 @@ const RowView = memo(function RowView({
     );
   }
 
-  if (row.kind === "tool") {
-    const plan = row.name === "plan" ? planInfo(row.args, row.result) : null;
-    if (plan) return <PlanCard plan={plan} language={language} />;
-    const todos = row.name === "todo" ? todoItems(row.result) : null;
-    if (todos) return <TodoCard items={todos} language={language} />;
-    if (isShellTool(row.name))
-      return <ShellCard row={row} language={language} />;
-    const edits = editInfo(row.name, row.args);
-    if (edits) return <EditCard row={row} edits={edits} language={language} />;
-    const resultText = typeof row.result === "string" ? row.result : null;
-    const readResultText =
-      row.name === "read" && row.status !== "error"
-        ? readOutput(row.result)
-        : null;
-    const readResult = readResultText !== null;
-    const readPath = row.name === "read" ? pathOfArgs(row.args) : "";
-    const showArgs = row.result === undefined && row.args !== undefined;
-    return (
-      <details
-        className={`tool-card tool-${row.status} ${row.status === "error" ? "failed" : ""}`}
-        open={row.status === "error"}
-      >
-        <summary>
-          {toolIcon(row.name)}
-          <strong>{row.name}</strong>
-          {row.timing && (
-            <ToolElapsed timing={row.timing} language={language} />
-          )}
-          <span className="tool-status">
-            {toolStatusLabel(row.status, language)}
-          </span>
-        </summary>
-        <div className="tool-detail">
-          {row.images?.map((image, index) => (
-            <ImagePreview key={`${row.id}-image-${index}`} image={image} language={language} />
-          ))}
-          {showArgs ? (
-            <>
-              <h4>{t("input")}</h4>
-              <pre>{safeJson(row.args)}</pre>
-            </>
-          ) : readResult ? (
-            <ReadCode
-              path={readPath}
-              text={readResultText ?? ""}
-              language={language}
-            />
-          ) : resultText !== null ? (
-            isMarkdownText(resultText) ? (
-              <MarkdownBody text={resultText} language={language} />
-            ) : (
-              <pre className="tool-result-pre">{resultText}</pre>
-            )
-          ) : row.result !== undefined ? (
-            <pre>{safeJson(row.result)}</pre>
-          ) : (
-            <pre className="muted">{t("noOutput")}</pre>
-          )}
-        </div>
-      </details>
-    );
-  }
+  if (row.kind === "tool") return <ToolRowView row={row} language={language} />;
 
   return <MessageRow row={row} language={language} />;
 });
+
+function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
+  const expansion = useToolExpansion(row.status);
+  const t = (key: MessageKey) => translate(language, key);
+  const plan = row.name === "plan" ? planInfo(row.args, row.result) : null;
+  if (plan)
+    return (
+      <PlanCard
+        expansion={expansion}
+        row={row}
+        plan={plan}
+        language={language}
+      />
+    );
+  const todos = row.name === "todo" ? todoItems(row.result) : null;
+  if (todos)
+    return (
+      <TodoCard
+        expansion={expansion}
+        row={row}
+        items={todos}
+        language={language}
+      />
+    );
+  if (isShellTool(row.name))
+    return <ShellCard expansion={expansion} row={row} language={language} />;
+  const edits = editInfo(row.name, row.args);
+  if (edits)
+    return (
+      <EditCard
+        expansion={expansion}
+        row={row}
+        edits={edits}
+        language={language}
+      />
+    );
+  const resultText = typeof row.result === "string" ? row.result : null;
+  const isRead = ["read", "read_file", "readfile", "cat"].includes(
+    row.name
+      .trim()
+      .toLowerCase()
+      .replace(/^functions\./, ""),
+  );
+  const readResultText =
+    isRead && row.status !== "error" ? readOutput(row.result) : null;
+  const readResult = readResultText !== null;
+  const readPath = isRead ? pathOfArgs(row.args) : "";
+  const summary = toolSummary(row.name, row.args, row.status, language);
+  return (
+    <ToolDisclosure
+      expansion={expansion}
+      {...summary}
+      status={row.status}
+      language={language}
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
+    >
+      <div className="tool-detail">
+        {row.images?.map((image, index) => (
+          <ImagePreview
+            key={`${row.id}-image-${index}`}
+            image={image}
+            language={language}
+          />
+        ))}
+        {row.args !== undefined && (
+          <>
+            <h4>{t("input")}</h4>
+            <pre className="tool-arguments">{safeJson(row.args)}</pre>
+          </>
+        )}
+        <h4>{t("output")}</h4>
+        {readResult ? (
+          <ReadCode
+            path={readPath}
+            text={readResultText ?? ""}
+            language={language}
+          />
+        ) : resultText !== null ? (
+          isMarkdownText(resultText) ? (
+            <MarkdownBody text={resultText} language={language} />
+          ) : (
+            <pre className="tool-result-pre">{resultText}</pre>
+          )
+        ) : row.result !== undefined ? (
+          <pre>{safeJson(row.result)}</pre>
+        ) : (
+          <pre className="muted">{t("noOutput")}</pre>
+        )}
+      </div>
+    </ToolDisclosure>
+  );
+}
 
 function MessageRow({
   row,
@@ -5208,17 +5209,30 @@ function MessageRow({
   );
 }
 
-function PlanCard({ plan, language }: { plan: PlanInfo; language: Language }) {
+function PlanCard({
+  expansion,
+  row,
+  plan,
+  language,
+}: {
+  expansion: ToolExpansion;
+  row: ToolRow;
+  plan: PlanInfo;
+  language: Language;
+}) {
   const t = (key: MessageKey) => translate(language, key);
   return (
-    <details className="tool-card plan-card" open={plan.active}>
-      <summary>
-        <ClipboardList size={14} />
-        <strong>{t("plan")}</strong>
-        <span className={`tool-status ${plan.active ? "" : "done"}`}>
-          {plan.active ? t("planActive") : t("planDone")}
-        </span>
-      </summary>
+    <ToolDisclosure
+      expansion={expansion}
+      className="plan-card"
+      action={t("plan")}
+      status={row.status}
+      language={language}
+      meta={plan.active ? t("planActive") : t("planDone")}
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
+    >
       <div className="tool-detail plan-detail">
         {plan.outline.length > 0 && (
           <ol className="plan-outline">
@@ -5232,14 +5246,18 @@ function PlanCard({ plan, language }: { plan: PlanInfo; language: Language }) {
         )}
         <MarkdownBody text={plan.plan} language={language} />
       </div>
-    </details>
+    </ToolDisclosure>
   );
 }
 
 function TodoCard({
+  expansion,
+  row,
   items,
   language,
 }: {
+  expansion: ToolExpansion;
+  row: ToolRow;
   items: TodoItem[];
   language: Language;
 }) {
@@ -5247,14 +5265,17 @@ function TodoCard({
     translate(language, key, values);
   const done = items.filter((item) => item.done).length;
   return (
-    <details className="tool-card todo-card" open>
-      <summary>
-        <ListTodo size={14} />
-        <strong>{t("todos")}</strong>
-        <span className="tool-status">
-          {t("todoDone", { done, total: items.length })}
-        </span>
-      </summary>
+    <ToolDisclosure
+      expansion={expansion}
+      className="todo-card"
+      action={t("todos")}
+      status={row.status}
+      language={language}
+      meta={t("todoDone", { done, total: items.length })}
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
+    >
       <div className="tool-detail todo-detail">
         <ul className="todo-list">
           {items.map((item, index) => (
@@ -5270,62 +5291,69 @@ function TodoCard({
           ))}
         </ul>
       </div>
-    </details>
+    </ToolDisclosure>
   );
 }
 
-function compactToolPath(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length <= 2 && normalized.length <= 42) return normalized;
-  return `…/${parts.slice(-2).join("/")}`;
+function editLines(text: string): string[] {
+  return text ? text.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n") : [];
 }
 
 function EditCard({
+  expansion,
   row,
   edits,
   language,
 }: {
+  expansion: ToolExpansion;
   row: ToolRow;
   edits: EditInfo;
   language: Language;
 }) {
   const t = (key: MessageKey, values?: Record<string, string | number>) =>
     translate(language, key, values);
+  const added = edits.edits.reduce(
+    (n, edit) => n + editLines(edit.newText).length,
+    0,
+  );
+  const removed = edits.edits.reduce(
+    (n, edit) => n + editLines(edit.oldText).length,
+    0,
+  );
+  const summary = toolSummary(row.name, row.args, row.status, language);
   return (
-    <details
-      className={`tool-card edit-card tool-${row.status} ${row.status === "error" ? "failed" : ""}`}
-      open={row.status === "error"}
-    >
-      <summary>
-        <SquarePen size={14} />
-        <span className="tool-action">edit</span>
-        <code
-          className="shell-command edit-summary-path"
-          title={edits.path || row.name}
-        >
-          {compactToolPath(edits.path || row.name)}
-        </code>
-        {row.timing && <ToolElapsed timing={row.timing} language={language} />}
-        <span className="tool-status">
-          {toolStatusLabel(row.status, language)}
+    <ToolDisclosure
+      expansion={expansion}
+      {...summary}
+      status={row.status}
+      language={language}
+      className="edit-card"
+      targetClassName="edit-summary-path"
+      meta={
+        <span className="edit-count">
+          <span className="add">+{added}</span>
+          <span className="remove">−{removed}</span>
         </span>
-      </summary>
+      }
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
+    >
       <div className="tool-detail edit-detail">
         {edits.path && <div className="edit-path">{edits.path}</div>}
-        <details className="edit-content" open={row.status === "error"}>
-          <summary>
+        <div className="edit-content">
+          <div className="edit-content-heading">
             <span className="edit-content-label">{t("editDiff")}</span>
             <span className="edit-content-count">
               {t(edits.edits.length === 1 ? "editChange" : "editChanges", {
                 count: edits.edits.length,
               })}
             </span>
-          </summary>
+          </div>
           <div className="edit-content-body">
             {edits.edits.map((edit, index) => {
-              const oldLines = edit.oldText ? edit.oldText.split("\\n") : [];
-              const newLines = edit.newText ? edit.newText.split("\\n") : [];
+              const oldLines = editLines(edit.oldText);
+              const newLines = editLines(edit.newText);
               return (
                 <div
                   className="edit-hunk"
@@ -5350,17 +5378,29 @@ function EditCard({
                 </div>
               );
             })}
-            {typeof row.result === "string" && row.result.trim() && (
-              <div className="edit-result">{row.result}</div>
+            {row.result !== undefined && (
+              <pre className="edit-result">
+                {typeof row.result === "string"
+                  ? row.result
+                  : safeJson(row.result)}
+              </pre>
             )}
           </div>
-        </details>
+        </div>
       </div>
-    </details>
+    </ToolDisclosure>
   );
 }
 
-function ShellCard({ row, language }: { row: ToolRow; language: Language }) {
+function ShellCard({
+  expansion,
+  row,
+  language,
+}: {
+  expansion: ToolExpansion;
+  row: ToolRow;
+  language: Language;
+}) {
   const t = (key: MessageKey) => translate(language, key);
   const { command, meta } = shellCommand(row.args);
   const output = shellOutput(row.result);
@@ -5399,21 +5439,22 @@ function ShellCard({ row, language }: { row: ToolRow; language: Language }) {
     }
   }
   return (
-    <details
-      className={`tool-card shell-card tool-${row.status} ${row.status === "error" ? "failed" : ""}`}
-      open={row.status === "error"}
+    <ToolDisclosure
+      expansion={expansion}
+      className="shell-card"
+      status={row.status}
+      language={language}
+      action={t(
+        row.status === "running" || row.status === "pending"
+          ? "toolRunningCommand"
+          : "toolRan",
+      )}
+      target={command || row.name}
+      targetClassName="shell-command"
+      timing={
+        row.timing && <ToolElapsed timing={row.timing} language={language} />
+      }
     >
-      <summary>
-        <Terminal size={14} />
-        <span className="tool-action">Ran</span>
-        <code className="shell-command" title={command || row.name}>
-          {command ? command.replace(/\s+/g, " ").trim() : row.name}
-        </code>
-        {row.timing && <ToolElapsed timing={row.timing} language={language} />}
-        <span className="tool-status">
-          {toolStatusLabel(row.status, language)}
-        </span>
-      </summary>
       <div className="tool-detail shell-detail">
         <div className="shell-window">
           <div className="shell-command-heading">
@@ -5449,7 +5490,7 @@ function ShellCard({ row, language }: { row: ToolRow; language: Language }) {
           <p className="shell-meta">{metaParts.join(" · ")}</p>
         )}
       </div>
-    </details>
+    </ToolDisclosure>
   );
 }
 
@@ -5482,24 +5523,6 @@ function ToolElapsed({
       {duration}
     </span>
   );
-}
-
-function toolStatusLabel(
-  status: Row extends never ? never : string,
-  language: Language,
-) {
-  switch (status) {
-    case "pending":
-      return translate(language, "toolPending");
-    case "running":
-      return translate(language, "toolRunning");
-    case "done":
-      return translate(language, "toolDone");
-    case "error":
-      return translate(language, "toolError");
-    default:
-      return status;
-  }
 }
 
 function RuntimePanel({
