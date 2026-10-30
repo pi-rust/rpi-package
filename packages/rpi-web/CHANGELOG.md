@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.1.24](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.23...rpi-web-v0.1.24) - 2026-10-30
+
+### Added
+
+- *(web)* scrub conversation turns by dragging the timeline
+- *(web)* slim conversation timeline into a scrollable rail
+- *(web)* add conversation timeline and hide completed notes
+
+### Fixed
+
+- *(web)* keep timeline visible on tool-heavy initial pages
+
+### Other
+
+- Merge pull request #121 from pi-rust/feat/web-conversation-timeline
+
 ## [0.1.23](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.22...rpi-web-v0.1.23) - 2026-10-30
 
 ### Added
