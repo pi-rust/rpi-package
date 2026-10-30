@@ -8749,3 +8749,767 @@ test.describe("tool name display preference", () => {
     } finally { releases.forEach(release => release()); }
   });
 });
+
+test.describe("conversation timeline", () => {
+  const nodes = (page: Page) => page.locator("nav.timeline-panel .timeline-node");
+  const turns = (prefix = "turn", count = 3) => Array.from({ length: count }, (_, index) => [
+    { role: "user", entryId: `${prefix}-${index}`, content: `Question ${index}: ${"bounded preview ".repeat(12)}` },
+    { role: "assistant", entryId: `${prefix}-answer-${index}`, content: [{ type: "text", text: Array.from({ length: 32 }, (_, line) => `Answer ${index}, line ${line}: enough content to scroll.`).join("\n\n") }] },
+  ]).flat();
+  async function snapshot(page: Page, messages: unknown[], extra = {}) {
+    // Keep these ready-session fixtures free of a delayed queued-message banner.
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_queue") return route.fulfill({ json: response({ items: [], count: 0 }, "get_queue") });
+      return route.fallback();
+    });
+    await page.route(snapshotRoute, route => route.fulfill({ json: { sessionId, status: "ready", messages, events: [], lastSeq: 4, hasMore: false, ...extra } }));
+  }
+  async function targetOffset(page: Page, id: string) {
+    return page.locator(".transcript").evaluate((element, target) => {
+      const row = Array.from(element.querySelectorAll<HTMLElement>("[data-transcript-row]")).find(item => item.dataset.transcriptRow === target);
+      if (!row) throw new Error(`Missing target ${target}`);
+      return row.getBoundingClientRect().top - element.getBoundingClientRect().top;
+    }, id);
+  }
+  async function jump(page: Page, index: number) {
+    const id = await nodes(page).nth(index).getAttribute("data-timeline-target");
+    expect(id).toBeTruthy();
+    const windowTop = await page.evaluate(() => window.scrollY);
+    await nodes(page).nth(index).click();
+    await expect.poll(async () => Math.abs(await targetOffset(page, id!) - 12)).toBeLessThanOrEqual(3);
+    expect(await page.evaluate(() => window.scrollY)).toBe(windowTop);
+    await expect(nodes(page).nth(index)).toHaveAttribute("aria-current", "location");
+    return id!;
+  }
+
+  test("hides only generic completed settlements in English and Chinese, snapshot and live", async ({ page }) => {
+    test.setTimeout(60_000);
+    await mockHost(page);
+    const cases = [
+      { source: "restored", event: { outcome: "completed" }, visible: false },
+      { source: "snapshot", event: { outcome: "completed" }, visible: false },
+      { source: "live", event: { outcome: "completed" }, visible: false },
+      { source: "snapshot", event: { outcome: "completed", summary: "Custom completion summary" }, visible: true },
+      { source: "live", event: { outcome: "failed", aborted: true }, visible: true },
+      { source: "snapshot", event: { outcome: "aborted" }, visible: true },
+      { source: "snapshot", event: { outcome: "completed", error: "Meaningful failure reason" }, visible: true },
+    ];
+    let current = cases[0];
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, messages: [{ role: "assistant", entryId: "real-output", content: [{ type: "text", text: "Real assistant output remains" }] }],
+      lastSeq: current.source === "snapshot" ? 5 : 4,
+      events: current.source === "snapshot" ? [{ seq: 5, event: { type: "agent_settled", runId: "timeline-run", ...current.event } }] : [],
+      history: { records: [{ type: "operation_finished", seq: 4, outcome: current.source === "restored" ? current.event.outcome : "completed" }], total: 1, hasMore: false, openOperations: [] },
+    } }));
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, route => route.fulfill({ contentType: "text/event-stream", body: current.source === "live"
+      ? `retry: 60000\nid: 5\nevent: agent_settled\ndata: ${JSON.stringify({ type: "agent_settled", runId: "timeline-run", ...current.event })}\n\n`
+      : 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' }));
+    for (const language of ["en", "zh"] as const) {
+      for (const scenario of cases) {
+        current = scenario;
+        await page.goto("/");
+        if (language === "zh" && scenario === cases[0]) await chooseMenuOption(page, "Language", "zh");
+        await expect(page.locator(".message.assistant")).toContainText("Real assistant output remains");
+        if (scenario.source === "live") await expect(page.locator(".connection")).toContainText(language === "zh" ? "重新连接中" : "reconnecting");
+        await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+        const notes = page.locator(".transcript-note");
+        if (!scenario.visible) await expect(page.locator(".transcript-note.run-status")).toHaveCount(0);
+        else if ("summary" in scenario.event) await expect(notes).toContainText("Custom completion summary");
+        else if ("error" in scenario.event) await expect(notes).toContainText("Meaningful failure reason");
+        else await expect(page.locator(".transcript-note.run-status")).toContainText(language === "zh" ? /失败|中止/ : /failed|aborted/);
+      }
+    }
+  });
+
+  async function railContains(page: Page, selector = '[aria-current="location"]') {
+    return page.locator(".timeline-panel ol").evaluate((list, target) => {
+      const node = list.querySelector(target);
+      if (!node) return false;
+      const box = node.getBoundingClientRect();
+      const viewport = list.getBoundingClientRect();
+      return box.top >= viewport.top - 1 && box.bottom <= viewport.bottom + 1;
+    }, selector);
+  }
+  async function outsideRail(page: Page) {
+    return page.evaluate(() => {
+      const composer = document.querySelector(".composer")!.getBoundingClientRect();
+      return {
+        transcript: document.querySelector(".transcript")!.scrollTop,
+        windowX: window.scrollX, windowY: window.scrollY,
+        composer: { x: composer.x, y: composer.y, width: composer.width, height: composer.height },
+      };
+    });
+  }
+
+  for (const [language, width] of [["en", 1280], ["zh", 390]] as const) {
+    test(`initial tool-only page keeps a visible bounded history entry in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      await snapshot(page, Array.from({ length: 48 }, (_, index) => ({
+        role: "assistant", entryId: `tool-only-${index}`,
+        content: [{ type: "toolCall", id: `tool-${index}`, name: "read", arguments: { path: `src/file-${index}.ts` } }],
+      })), { firstId: "tool-only-0", hasMore: true });
+      const requests: Array<{ beforeId?: string; limit?: number }> = [];
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
+        const body = route.request().postDataJSON();
+        if (body.type !== "get_messages") return route.fallback();
+        requests.push(body);
+        await held;
+        return route.fulfill({ json: response({ messages: turns("loaded", 1), firstId: "loaded-0", hasMore: false }, "get_messages") });
+      });
+      try {
+        await page.goto("/");
+        const rail = page.locator(".conversation-timeline");
+        const load = rail.getByRole("button", { name: language === "en" ? "Show earlier messages in timeline" : "在时间线中显示更早的消息", exact: true });
+        await expect(load).toBeVisible();
+        await expect(nodes(page)).toHaveCount(0);
+        const box = await rail.boundingBox();
+        expect(box!.width).toBeLessThanOrEqual(28);
+        expect(requests).toHaveLength(0);
+        const anchor = await visiblePagingAnchor(page);
+        await load.click();
+        await expect(load).toBeDisabled();
+        await expect(load).toHaveAttribute("aria-busy", "true");
+        expect(requests).toMatchObject([{ beforeId: "tool-only-0", limit: 48 }]);
+        release();
+        await expect(nodes(page)).toHaveCount(1);
+        await expect(page.locator(".timeline-load-earlier")).toHaveCount(0);
+        await expectPagingAnchor(page, anchor);
+        // The clicked history button is replaced beneath the pointer; enter the new tick afresh.
+        await page.locator(".composer textarea").hover();
+        await nodes(page).first().hover();
+        await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("1 / 1");
+        await jump(page, 0);
+        expect(requests).toHaveLength(1);
+      } finally { release(); }
+    });
+  }
+
+  test("a single loaded question is visible and navigable without history paging", async ({ page }) => {
+    await mockHost(page);
+    await snapshot(page, turns("single", 1));
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(1);
+    await expect(page.locator(".timeline-load-earlier")).toHaveCount(0);
+    await nodes(page).first().focus();
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("1 / 1");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => Math.abs(await targetOffset(page, "single-0") - 12)).toBeLessThanOrEqual(3);
+    await expect(nodes(page)).toHaveAttribute("aria-current", "location");
+  });
+
+  test("desktop narrow rail previews user turns and roves focus without navigating until activation", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, [...turns(), { role: "toolResult", toolCallId: "timeline-tool", toolName: "read", content: "Tool output is not a user turn" }], {
+      events: [{ seq: 5, event: { type: "agent_settled", summary: "A note is not a user turn" } }], lastSeq: 5,
+    });
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(3);
+    await expect(page.locator(".transcript-frame > .transcript")).toHaveCount(1);
+    await expect(page.locator(".transcript-frame > .conversation-timeline")).toHaveCount(1);
+    await expect(page.locator(".transcript-frame .composer")).toHaveCount(0);
+    const rail = page.locator(".conversation-timeline");
+    const panel = page.getByRole("navigation", { name: "Conversation timeline", exact: true });
+    await expect(panel).toBeVisible();
+    await expect(rail.locator("button:not(.timeline-node)")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Conversation timeline", exact: true })).toHaveCount(0);
+    const frame = await page.locator(".transcript-frame").boundingBox();
+    const box = await rail.boundingBox();
+    expect(box!.width).toBeLessThanOrEqual(28);
+    expect(box!.height).toBeLessThanOrEqual(280);
+    expect(box!.x).toBeGreaterThan(frame!.x + frame!.width / 2);
+    for (let index = 0; index < 3; index++) {
+      await expect(nodes(page).nth(index)).toHaveAttribute("aria-label", new RegExp(`^Go to message ${index + 1}: Question ${index}:`));
+      await expect(nodes(page).nth(index)).not.toHaveAttribute("title");
+      const target = await nodes(page).nth(index).boundingBox();
+      expect(target!.width).toBeGreaterThanOrEqual(24);
+      expect(target!.height).toBeGreaterThanOrEqual(24);
+    }
+    await expect(panel.locator('.timeline-node[tabindex="0"]')).toHaveCount(1);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.locator(".composer textarea").focus();
+    await nodes(page).first().hover();
+    const preview = page.getByRole("tooltip");
+    await expect(preview).toHaveCount(1);
+    await expect(preview.locator(".timeline-preview-index")).toHaveText("1 / 3");
+    await expect(preview.locator(".timeline-label")).toContainText("Question 0:");
+    await page.screenshot({ path: test.info().outputPath("timeline-desktop.png") });
+    // The hover preview stays readable across its small bridge and does not need focus.
+    await preview.hover();
+    await expect(preview).toBeVisible();
+    await expect(page.locator(".composer textarea")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(preview).toHaveCount(0);
+    await expect(page.locator(".composer textarea")).toBeFocused();
+    await nodes(page).nth(1).hover();
+    await expect(preview).toBeVisible();
+    await page.locator(".composer textarea").hover();
+    await expect(preview).toHaveCount(0);
+    await jump(page, 0);
+    const initial = await outsideRail(page);
+    await nodes(page).first().focus();
+    for (const [key, index] of [["ArrowDown", 1], ["End", 2], ["ArrowUp", 1], ["Home", 0]] as const) {
+      await page.keyboard.press(key);
+      await expect(nodes(page).nth(index)).toBeFocused();
+      await expect(nodes(page).nth(index)).toHaveAttribute("tabindex", "0");
+      await expect(panel.locator('.timeline-node[tabindex="0"]')).toHaveCount(1);
+      await expect(preview).toHaveCount(1);
+      await expect(preview.locator(".timeline-preview-index")).toHaveText(`${index + 1} / 3`);
+      expect(await outsideRail(page)).toEqual(initial);
+      await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    }
+    await page.keyboard.press("ArrowDown");
+    const middleId = (await nodes(page).nth(1).getAttribute("data-timeline-target"))!;
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => Math.abs(await targetOffset(page, middleId) - 12)).toBeLessThanOrEqual(3);
+    await expect(nodes(page).nth(1)).toHaveAttribute("aria-current", "location");
+    await expect(preview).toHaveCount(0);
+    await page.keyboard.press("ArrowDown");
+    await expect(preview).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(preview).toHaveCount(0);
+    await expect(nodes(page).nth(2)).toBeFocused();
+    await page.keyboard.press("Space");
+    const lastId = (await nodes(page).nth(2).getAttribute("data-timeline-target"))!;
+    await expect.poll(async () => Math.abs(await targetOffset(page, lastId) - 12)).toBeLessThanOrEqual(3);
+    await expect(nodes(page).nth(2)).toHaveAttribute("aria-current", "location");
+    expect(await page.evaluate(() => window.scrollY)).toBe(initial.windowY);
+    await scrollPagingTo(page, 0);
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+  });
+
+  test("390px Chinese timeline stays visible with focused previews and an unchanged composer", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    await mockHost(page);
+    await snapshot(page, turns());
+    await page.goto("/");
+    const panel = page.getByRole("navigation", { name: "对话时间线", exact: true });
+    await expect(panel).toBeVisible();
+    await expect(nodes(page)).toHaveCount(3);
+    await expect(page.getByRole("button", { name: "对话时间线", exact: true })).toHaveCount(0);
+    const before = await outsideRail(page);
+    await nodes(page).first().focus();
+    await expect(page.getByRole("tooltip")).toBeVisible();
+    await expect(page.getByRole("tooltip").locator(".timeline-label")).toContainText("Question 0:");
+    const panelBox = await page.locator(".conversation-timeline").boundingBox();
+    const previewBox = await page.getByRole("tooltip").boundingBox();
+    expect(panelBox!.width).toBeLessThanOrEqual(28);
+    expect(panelBox!.height).toBeLessThanOrEqual(280);
+    expect(panelBox!.x).toBeGreaterThanOrEqual(0);
+    expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
+    expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(before.composer.y + 1);
+    expect(previewBox!.x).toBeGreaterThanOrEqual(0);
+    expect(previewBox!.x + previewBox!.width).toBeLessThanOrEqual(390);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await page.locator(".transcript").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await outsideRail(page)).toEqual(before);
+    await page.screenshot({ path: test.info().outputPath("timeline-mobile.png") });
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await expect(nodes(page).first()).toBeFocused();
+    await jump(page, 1);
+    await expect(panel).toBeVisible();
+    expect((await outsideRail(page)).composer).toEqual(before.composer);
+  });
+
+  test("deduplicates text and images, sanitizes previews and safely targets punctuation IDs", async ({ page }) => {
+    await mockHost(page);
+    const image = { type: "image", data: imagePng, mimeType: "image/png" };
+    const oddId = 'odd"entry:[x]#./?';
+    await snapshot(page, [
+      { role: "user", entryId: oddId, content: [{ type: "text", text: '已附加文件:\n- .rpi/uploads/c11ee75a-625a-4aec-a575-401843f7af66-friendly.docx\nPlease review' }, image, image] },
+      { role: "assistant", content: [{ type: "text", text: "Spacer\n\n".repeat(80) }] },
+      { role: "user", entryId: "only-images", content: [image, image] },
+      { role: "user", content: [image, image] },
+      { role: "user", entryId: "plain-preview", content: "[Readable link](https://example.test) <b>literal</b> " + "long ".repeat(40) },
+      ...turns("tail", 1),
+    ]);
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(5);
+    await expect(nodes(page).first()).toHaveAttribute("aria-label", /friendly\.docx/);
+    await expect(nodes(page).nth(1)).toHaveAttribute("aria-label", "Go to message 2: Image message");
+    await expect(nodes(page).nth(2)).toHaveAttribute("aria-label", "Go to message 3: Image message");
+    for (let index = 0; index < 5; index++) {
+      await nodes(page).nth(index).hover();
+      const preview = page.getByRole("tooltip");
+      await expect(preview).toHaveCount(1);
+      const label = (await preview.locator(".timeline-label").textContent())!;
+      expect(label.length).toBeLessThanOrEqual(140);
+      await expect(nodes(page).nth(index)).toHaveAttribute("aria-label", `Go to message ${index + 1}: ${label}`);
+      await expect(preview).not.toContainText(/c11ee75a|base64|iVBOR/);
+      await expect(preview.locator("a, img, b")).toHaveCount(0);
+      if (index === 3) await expect(preview).toContainText("[Readable link](https://example.test) <b>literal</b>");
+    }
+    await jump(page, 0);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await chooseMenuOption(page, "Language", "zh");
+    await expect(nodes(page).nth(1)).toHaveAttribute("aria-label", /图片消息$/);
+    await expect(nodes(page).nth(2)).toHaveAttribute("aria-label", /图片消息$/);
+    await nodes(page).nth(1).hover();
+    await expect(page.getByRole("tooltip").locator(".timeline-label")).toHaveText("图片消息");
+  });
+
+
+  test("indexes loaded history only and prepends a single 48-message page without losing the reading anchor", async ({ page }) => {
+    await mockUpwardPaging(page);
+    const requests: Array<{ beforeId?: string; limit?: number }> = [];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages") return route.fallback();
+      requests.push(body);
+      if (!body.beforeId) return route.fallback();
+      await held;
+      return route.fulfill({ json: response({ messages: Array.from({ length: 48 }, (_, index) => ({ role: "user", entryId: `timeline-older-${index}`, content: `Earlier question ${index}\nBounded historical content` })), firstId: "timeline-older-0", hasMore: false }, "get_messages") });
+    });
+    try {
+      await page.goto("/");
+      await expect(nodes(page)).toHaveCount(20);
+      const description = page.locator(".timeline-description");
+      await expect(page.locator("nav.timeline-panel")).toHaveAttribute("aria-describedby", (await description.getAttribute("id"))!);
+      await expect(description).toContainText(/loaded/i);
+      expect(await description.evaluate(element => {
+        const style = getComputedStyle(element);
+        return style.clipPath === "inset(50%)" && style.overflow === "hidden" && element.getBoundingClientRect().width === 1;
+      })).toBe(true);
+      await expect(page.locator(".timeline-earlier")).toHaveCount(0);
+      await expect.poll(() => railContains(page)).toBe(true);
+      await page.locator('.timeline-node[aria-current="location"]').hover();
+      await expect(page.getByRole("tooltip").locator(".timeline-earlier")).toBeVisible();
+      expect(requests).toHaveLength(0);
+      await page.locator(".composer textarea").hover();
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
+      const previous = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      await scrollPagingTo(page, 120);
+      await expect.poll(() => requests.length).toBe(1);
+      await scrollPagingTo(page, 450);
+      const anchor = await visiblePagingAnchor(page);
+      release();
+      await expect(nodes(page)).toHaveCount(68);
+      await expectPagingAnchor(page, anchor);
+      const targets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      expect(targets.slice(48)).toEqual(previous);
+      expect(new Set(targets).size).toBe(68);
+      await expect(description).not.toContainText(/loaded/i);
+      await expect.poll(() => railContains(page)).toBe(true);
+      await page.locator('.timeline-node[aria-current="location"]').hover();
+      await expect(page.getByRole("tooltip")).toBeVisible();
+      await expect(page.locator(".timeline-earlier")).toHaveCount(0);
+      expect(requests).toMatchObject([{ beforeId: "scroll-current-0", limit: 48 }]);
+    } finally { release(); }
+  });
+
+  test("resets across sessions and binds live appended targets without retaining old nodes or listeners", async ({ page }) => {
+    await mockHost(page);
+    let release!: () => void;
+    let waiting = false;
+    let emitted = false;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await snapshot(page, turns("original", 2));
+    await page.route(url => url.pathname === "/api/v1/sessions/session-2/snapshot", route => route.fulfill({ json: { sessionId: "session-2", messages: turns("other", 1), events: [], lastSeq: 4, hasMore: false } }));
+    await page.route("**/api/v1/sessions/session-2/events?*", async route => {
+      if (emitted) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      emitted = true;
+      waiting = true;
+      await held;
+      const messages = turns("appended", 1);
+      await route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n" + messages.map((message, index) => `id: ${5 + index}\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message })}\n\n`).join("") });
+    });
+    try {
+      await page.goto("/");
+      await expect(nodes(page)).toHaveCount(2);
+      const originalTargets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      await nodes(page).first().hover();
+      await expect(page.getByRole("tooltip")).toBeVisible();
+      const list = page.locator(".timeline-panel ol");
+      const start = (await nodes(page).first().boundingBox())!;
+      const target = (await nodes(page).nth(1).boundingBox())!;
+      await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+      await expect(list).toHaveAttribute("data-scrubbing", "true");
+      await expect(nodes(page).nth(1)).toHaveAttribute("aria-current", "location");
+      // Activate the session switch by keyboard while the pointer remains held.
+      await page.getByRole("button", { name: "New session", exact: false }).first().focus();
+      await page.keyboard.press("Enter");
+      await expect(page.locator(".toolbar h1")).toHaveText("New session");
+      await expect.poll(() => waiting).toBe(true);
+      await expect(nodes(page)).toHaveCount(1);
+      await expect(list).not.toHaveAttribute("data-scrubbing");
+      await page.mouse.up();
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
+      release();
+      await expect(nodes(page)).toHaveCount(2);
+      await expect(page.locator(".message.assistant")).toHaveCount(2);
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
+      const targets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      expect(targets.every(id => !originalTargets.includes(id))).toBe(true);
+      // Live rows use the event-sequence UI id, not the durable entry id.
+      expect(targets).toContain("u5");
+      await jump(page, 1);
+      await page.locator(".composer textarea").hover();
+      await nodes(page).nth(1).hover();
+      await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("2 / 2");
+      await page.locator(".project-session-link").filter({ hasText: "Mock session" }).click();
+      await expect(nodes(page)).toHaveCount(2);
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
+      const restoredTargets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      expect(restoredTargets).toEqual(originalTargets);
+      expect(restoredTargets.every(id => !targets.includes(id))).toBe(true);
+      await jump(page, 0);
+      await page.locator(".composer textarea").focus();
+      await nodes(page).first().focus();
+      await expect(page.getByRole("tooltip")).toHaveCount(1);
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
+      await expect(nodes(page).first()).toBeFocused();
+    } finally { release(); }
+  });
+
+  test("80-user rail consumes native wheel scrolling and does not autosnap while browsing", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, turns("long", 80));
+    const reads: unknown[] = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_messages") reads.push(body);
+      return route.fallback();
+    });
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(80);
+    await page.locator(".composer textarea").hover();
+    await scrollPagingTo(page, 0);
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await expect.poll(() => railContains(page)).toBe(true);
+    const list = page.locator(".timeline-panel ol");
+    expect(await list.evaluate(element => ({ overflow: getComputedStyle(element).overflowY, touch: getComputedStyle(element).touchAction }))).toEqual({ overflow: "auto", touch: "none" });
+    const box = (await list.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    const before = await outsideRail(page);
+    const top = await list.evaluate(element => element.scrollTop);
+    await page.mouse.wheel(0, 360);
+    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(top + 100);
+    let lastTop = -1;
+    let stableFrames = 0;
+    await expect.poll(async () => {
+      const current = await list.evaluate(element => element.scrollTop);
+      stableFrames = current === lastTop ? stableFrames + 1 : 0;
+      lastTop = current;
+      return stableFrames;
+    }, { intervals: [100] }).toBeGreaterThanOrEqual(3);
+    expect(await outsideRail(page)).toEqual(before);
+    const browsedTop = await list.evaluate(element => element.scrollTop);
+    // Active-turn changes must not pull a pointer-browsed rail back to the transcript.
+    await scrollPagingTo(page, await page.locator(".transcript").evaluate(element => element.scrollHeight));
+    await expect(nodes(page).last()).toHaveAttribute("aria-current", "location");
+    expect(await list.evaluate(element => element.scrollTop)).toBe(browsedTop);
+    expect(await railContains(page)).toBe(false);
+    // Focus browsing has the same protection after the pointer leaves.
+    const visibleIndex = await list.evaluate(element => Array.from(element.querySelectorAll(".timeline-node")).findIndex(node => {
+      const box = node.getBoundingClientRect();
+      const viewport = element.getBoundingClientRect();
+      return box.top >= viewport.top && box.bottom <= viewport.bottom;
+    }));
+    expect(visibleIndex).toBeGreaterThan(0);
+    await nodes(page).nth(visibleIndex).focus();
+    await page.locator(".composer textarea").hover();
+    const focusedTop = await list.evaluate(element => element.scrollTop);
+    await scrollPagingTo(page, 0);
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    expect(await list.evaluate(element => element.scrollTop)).toBe(focusedTop);
+    expect(await railContains(page)).toBe(false);
+    // Reveal the offscreen target inside the rail before Playwright can click it.
+    await page.keyboard.press("End");
+    await expect(nodes(page).last()).toBeFocused();
+    await expect.poll(() => railContains(page, "li:last-child .timeline-node")).toBe(true);
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("80 / 80");
+    const windowTop = await page.evaluate(() => window.scrollY);
+    await jump(page, 79);
+    expect(await page.evaluate(() => window.scrollY)).toBe(windowTop);
+    expect((await outsideRail(page)).composer).toEqual(before.composer);
+    expect(reads).toHaveLength(0);
+  });
+
+  test("mouse scrubbing switches turns before release, preserves preview and suppresses the starting click", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, turns("drag", 8));
+    const reads: unknown[] = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_messages") reads.push(body);
+      return route.fallback();
+    });
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(8);
+    await jump(page, 0);
+    const composer = page.locator(".composer textarea");
+    await composer.fill("Keep this draft while scrubbing");
+    const before = await outsideRail(page);
+    const list = page.locator(".timeline-panel ol");
+    const start = (await nodes(page).nth(1).boundingBox())!;
+    const target = (await nodes(page).nth(4).boundingBox())!;
+    const id = (await nodes(page).nth(4).getAttribute("data-timeline-target"))!;
+    const top = await list.evaluate(element => element.scrollTop);
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2 + 3);
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 5 });
+    // All navigation assertions here happen while the real mouse button is still held.
+    await expect(list).toHaveAttribute("data-scrubbing", "true");
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("5 / 8");
+    const middle = (await nodes(page).nth(2).boundingBox())!;
+    await page.mouse.move(middle.x + middle.width / 2, middle.y + middle.height / 2);
+    await expect(nodes(page).nth(2)).toHaveAttribute("aria-current", "location");
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("3 / 8");
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("5 / 8");
+    // Capture keeps the vertical target and preview even outside the narrow rail.
+    await page.mouse.move(target.x - 40, target.y + target.height / 2);
+    await expect(page.getByRole("tooltip")).toBeVisible();
+    const previewBox = (await page.getByRole("tooltip").boundingBox())!;
+    expect(previewBox.x).toBeGreaterThanOrEqual(0);
+    expect(previewBox.x + previewBox.width).toBeLessThanOrEqual(1280);
+    const during = await outsideRail(page);
+    expect(during.transcript).not.toBe(before.transcript);
+    expect({ ...during, transcript: before.transcript }).toEqual(before);
+    expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+    await expect(composer).toHaveValue("Keep this draft while scrubbing");
+    await expect(composer).toBeFocused();
+    // Release at the scrubbed turn; a synthesized click must not return to the pressed turn.
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+    await page.mouse.up();
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.waitForTimeout(100);
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
+    expect(await outsideRail(page)).toEqual(during);
+    await jump(page, 1);
+    expect(reads).toHaveLength(0);
+  });
+
+  test("Escape stops a held scrub without rollback, and right or nonprimary pointers do not scrub", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, turns("cancel", 8));
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(8);
+    await jump(page, 0);
+    const list = page.locator(".timeline-panel ol");
+    const start = (await nodes(page).nth(1).boundingBox())!;
+    const target = (await nodes(page).nth(4).boundingBox())!;
+    const x = start.x + start.width / 2;
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.move(x, target.y + target.height / 2);
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await page.mouse.up({ button: "right" });
+    await nodes(page).nth(1).dispatchEvent("pointerdown", { pointerId: 99, pointerType: "touch", isPrimary: false, button: 0, clientY: start.y });
+    await list.dispatchEvent("pointermove", { pointerId: 99, pointerType: "touch", isPrimary: false, buttons: 1, clientY: target.y });
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, target.y + target.height / 2);
+    await expect(list).toHaveAttribute("data-scrubbing", "true");
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    const reading = await outsideRail(page);
+    await page.keyboard.press("Escape");
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.up();
+    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    expect(await outsideRail(page)).toEqual(reading);
+    await jump(page, 1);
+  });
+
+  test("held long-rail edge scrolling stops on capture loss and the next click still works", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, turns("edge", 80));
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(80);
+    await jump(page, 0);
+    const before = await outsideRail(page);
+    const list = page.locator(".timeline-panel ol");
+    await list.evaluate(element => element.addEventListener("pointerdown", event => {
+      (element as HTMLElement).dataset.testPointerId = String((event as PointerEvent).pointerId);
+    }, { once: true }));
+    const start = (await nodes(page).nth(3).boundingBox())!;
+    const box = (await list.boundingBox())!;
+    const top = await list.evaluate(element => element.scrollTop);
+    const x = box.x + box.width / 2;
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, box.y + box.height + 30);
+    await expect(list).toHaveAttribute("data-scrubbing", "true");
+    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(top + 80);
+    await expect(page.getByRole("tooltip")).toBeVisible();
+    expect((await outsideRail(page)).composer).toEqual(before.composer);
+    expect(await page.evaluate(() => window.scrollY)).toBe(before.windowY);
+    await list.evaluate(element => {
+      const pointerId = Number((element as HTMLElement).dataset.testPointerId);
+      if (!element.hasPointerCapture(pointerId)) throw new Error("Expected a captured mouse pointer");
+      element.releasePointerCapture(pointerId);
+    });
+    // Flush pending capture processing with a real event while still holding the button.
+    await page.mouse.move(x, box.y + box.height + 40);
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    expect(await list.evaluate(element => element.hasPointerCapture(Number((element as HTMLElement).dataset.testPointerId)))).toBe(false);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const stopped = await list.evaluate(element => element.scrollTop);
+    const current = await page.locator('.timeline-node[aria-current="location"]').getAttribute("data-timeline-target");
+    const reading = await outsideRail(page);
+    await page.mouse.move(x, box.y + box.height + 60);
+    await page.waitForTimeout(200);
+    expect(await list.evaluate(element => element.scrollTop)).toBe(stopped);
+    await expect(page.locator('.timeline-node[aria-current="location"]')).toHaveAttribute("data-timeline-target", current!);
+    expect(await outsideRail(page)).toEqual(reading);
+    await page.mouse.up();
+    const visibleIndex = await list.evaluate(element => Array.from(element.querySelectorAll(".timeline-node")).findIndex(node => {
+      const box = node.getBoundingClientRect();
+      const viewport = element.getBoundingClientRect();
+      return box.top >= viewport.top && box.bottom <= viewport.bottom;
+    }));
+    expect(visibleIndex).toBeGreaterThan(0);
+    await jump(page, visibleIndex);
+  });
+
+  test("releasing the primary mouse button stops a chorded edge scrub", async ({ page }) => {
+    await mockHost(page);
+    await snapshot(page, turns("chord", 80));
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(80);
+    await jump(page, 0);
+    const list = page.locator(".timeline-panel ol");
+    const box = (await list.boundingBox())!;
+    const start = (await nodes(page).nth(2).boundingBox())!;
+    const x = box.x + box.width / 2;
+    await page.mouse.move(x, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, box.y + box.height + 20);
+    await expect(list).toHaveAttribute("data-scrubbing", "true");
+    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(40);
+    await page.mouse.down({ button: "right" });
+    await page.mouse.up({ button: "left" });
+    await expect(list).not.toHaveAttribute("data-scrubbing");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    const stopped = await list.evaluate(element => element.scrollTop);
+    const reading = await outsideRail(page);
+    await page.waitForTimeout(150);
+    expect(await list.evaluate(element => element.scrollTop)).toBe(stopped);
+    expect(await outsideRail(page)).toEqual(reading);
+    await page.mouse.up({ button: "right" });
+    await jump(page, 0);
+  });
+
+  test("native mobile touch scrubs before touchEnd, cancels cleanly and accepts the next tap", async ({ browser, browserName, baseURL }) => {
+    test.skip(browserName !== "chromium", "Native touch injection uses Chromium CDP");
+    const context = await browser.newContext({ baseURL, isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 } });
+    try {
+      const page = await context.newPage();
+      await mockHost(page);
+      await snapshot(page, turns("touch", 8));
+      const reads: unknown[] = [];
+      await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+        const body = route.request().postDataJSON();
+        if (body.type === "get_messages") reads.push(body);
+        return route.fallback();
+      });
+      await page.goto("/");
+      expect(await page.evaluate(() => navigator.maxTouchPoints > 0 && "ontouchstart" in window && matchMedia("(pointer: coarse)").matches)).toBe(true);
+      await expect(nodes(page)).toHaveCount(8);
+      await scrollPagingTo(page, 0);
+      await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+      await expect.poll(() => railContains(page)).toBe(true);
+      const list = page.locator(".timeline-panel ol");
+      await expect(list).toBeVisible();
+      expect(await list.evaluate(element => getComputedStyle(element).touchAction)).toBe("none");
+      const start = (await nodes(page).nth(1).boundingBox())!;
+      const target = (await nodes(page).nth(5).boundingBox())!;
+      const id = (await nodes(page).nth(5).getAttribute("data-timeline-target"))!;
+      const before = await outsideRail(page);
+      const top = await list.evaluate(element => element.scrollTop);
+      const cdp = await context.newCDPSession(page);
+      try {
+        const x = start.x + start.width / 2;
+        const y = start.y + start.height / 2;
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+        for (let step = 1; step <= 6; step++) {
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + (target.y + target.height / 2 - y) * step / 6, id: 1 }] });
+          await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+        }
+        // Genuine mobile pointer events must navigate during the gesture, not on tap release.
+        await expect(list).toHaveAttribute("data-scrubbing", "true");
+        await expect(nodes(page).nth(5)).toHaveAttribute("aria-current", "location");
+        await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
+        await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("6 / 8");
+        const during = await outsideRail(page);
+        expect(during.transcript).not.toBe(before.transcript);
+        expect({ ...during, transcript: before.transcript }).toEqual(before);
+        expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+        const preview = (await page.getByRole("tooltip").boundingBox())!;
+        expect(preview.x).toBeGreaterThanOrEqual(0);
+        expect(preview.x + preview.width).toBeLessThanOrEqual(390);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await expect(list).not.toHaveAttribute("data-scrubbing");
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        await page.waitForTimeout(100);
+        await expect(nodes(page).nth(5)).toHaveAttribute("aria-current", "location");
+        expect(await outsideRail(page)).toEqual(during);
+        // A second real drag is cancelled while active; keep its latest reading target.
+        const cancelTarget = (await nodes(page).nth(3).boundingBox())!;
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 2 }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: cancelTarget.y + cancelTarget.height / 2, id: 2 }] });
+        await expect(list).toHaveAttribute("data-scrubbing", "true");
+        await expect(nodes(page).nth(3)).toHaveAttribute("aria-current", "location");
+        const cancelled = await outsideRail(page);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+        await expect(list).not.toHaveAttribute("data-scrubbing");
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+        await page.waitForTimeout(100);
+        await expect(nodes(page).nth(3)).toHaveAttribute("aria-current", "location");
+        expect(await outsideRail(page)).toEqual(cancelled);
+        expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+        const tap = (await nodes(page).nth(2).boundingBox())!;
+        await page.touchscreen.tap(tap.x + tap.width / 2, tap.y + tap.height / 2);
+        await expect(nodes(page).nth(2)).toHaveAttribute("aria-current", "location");
+        const tapId = (await nodes(page).nth(2).getAttribute("data-timeline-target"))!;
+        await expect.poll(async () => Math.abs(await targetOffset(page, tapId) - 12)).toBeLessThanOrEqual(3);
+        const afterTap = await outsideRail(page);
+        expect({ ...afterTap, transcript: before.transcript }).toEqual(before);
+        // Gesture interception is confined to the rail: normal chat swiping still scrolls.
+        const chat = (await page.locator(".transcript").boundingBox())!;
+        const chatX = chat.x + chat.width / 2;
+        const chatY = chat.y + chat.height * 0.7;
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: chatX, y: chatY, id: 3 }] });
+        for (let step = 1; step <= 8; step++) {
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: chatX, y: chatY - step * 14, id: 3 }] });
+          await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+        }
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await expect.poll(() => page.locator(".transcript").evaluate(element => element.scrollTop)).toBeGreaterThan(afterTap.transcript + 40);
+        expect((await outsideRail(page)).composer).toEqual(before.composer);
+        expect(await page.evaluate(() => window.scrollY)).toBe(before.windowY);
+        expect(reads).toHaveLength(0);
+      } finally { await cdp.detach(); }
+    } finally { await context.close(); }
+  });
+});

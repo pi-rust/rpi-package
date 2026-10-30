@@ -38,6 +38,7 @@
 
 ### Added
 
+- Add a tiny right-side conversation rail for loaded user messages: hold and drag vertically with a mouse or finger to switch questions in real time, scroll with a wheel to browse without navigating, hover/focus for a single localized preview, and click/tap or use keyboard arrows plus Enter to navigate. Held drags scroll long rails at their edges; release, Escape, pointer cancellation and session changes stop cleanly without a synthetic-click jump back. Keep active reading markers, mobile containment, image/attachment grouping and upward history paging without a full-session scan or extra timeline RPCs. Show even a single loaded question, and retain an ↑ history button when a tool-only initial page has no questions; explicit clicks reuse the existing bounded page loader.
 - Add Settings → Tool names to switch between exact native names (the default) and mapped/localized action labels across all tool cards. Save the choice locally, preserve expansion, targets, details and timings, and leave native calls and transcript data unchanged.
 - Show compact translated interruption/resume hints in desktop and mobile session lists from existing error and settlement metadata, with accessible explanations and no per-session RPC reads. Active retries suppress old errors; normal stops, declined operations, and offline/closed sessions without evidence are not mislabeled. This does not add persistent crash detection for registry-only offline sessions.
 - Render fenced `mermaid` flowcharts (`flowchart`/`graph`) and sequence diagrams locally as zoomable SVG images, with source/copy controls, theme updates, mobile containment and debounced streaming recovery. Lazy-load the pinned Mermaid dependency; reject authored configuration, shape metadata, HTML/images and custom CSS before rendering, retaining exact source for invalid, unsupported or oversized diagrams.
@@ -50,6 +51,7 @@
 
 ### Fixed
 
+- Omit generic successful-completion chat notes (Run completed / 运行状态：已完成) while keeping meaningful summaries, error/stopped states, elapsed footers and native settlement/history behavior.
 - Omit the redundant visible Queue label above pending composer messages while preserving the count, preview, item actions and localized accessible expand/collapse names.
 - Use equal user-message corner radii and show the localized sender label only once instead of repeating it in both avatar and name.
 - Render inline Markdown `data:image` sources without allowing data URLs in links or raw HTML.

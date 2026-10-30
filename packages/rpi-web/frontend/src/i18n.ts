@@ -208,6 +208,14 @@ const messages = {
     signOut: "Sign out",
     language: "Language",
     toolNames: "Tool names",
+    conversationTimeline: "Conversation timeline",
+    timelineGoToMessage: "Go to message {index}: {preview}",
+    timelineImageMessage: "Image message",
+    timelineLoadEarlier: "Show earlier messages in timeline",
+    timelineScrollHint:
+      "Drag up or down to switch messages. Scroll to browse; use Up and Down to preview, Enter to jump.",
+    timelineLoadedOnly:
+      "Loaded messages only. Scroll up in the conversation to load earlier messages.",
     nativeToolNames: "Native names",
     mappedToolNames: "Mapped names",
     english: "English",
@@ -481,6 +489,13 @@ const messages = {
     signOut: "退出登录",
     language: "语言",
     toolNames: "工具名称",
+    conversationTimeline: "对话时间线",
+    timelineGoToMessage: "跳转到第 {index} 条消息：{preview}",
+    timelineImageMessage: "图片消息",
+    timelineLoadEarlier: "在时间线中显示更早的消息",
+    timelineScrollHint:
+      "按住侧栏上下滑动切换消息，滚轮浏览。上下方向键预览，回车跳转。",
+    timelineLoadedOnly: "仅显示已加载的消息，在对话中向上滚动可加载更早记录。",
     nativeToolNames: "原生名称",
     mappedToolNames: "映射名称",
     english: "English",

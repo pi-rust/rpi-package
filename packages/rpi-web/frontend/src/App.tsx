@@ -48,6 +48,7 @@ import {
 import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
 import { SessionIssueBadge } from "./SessionIssueBadge";
+import { ConversationTimeline } from "./ConversationTimeline";
 import {
   api,
   ApiError,
@@ -3478,6 +3479,7 @@ export default function App() {
           <div
             className={`conversation-column ${rows.length === 0 && !loadingSession && !creatingSession ? "empty-conversation" : ""}`}
           >
+            <div className="transcript-frame">
             <div
               className="transcript"
               ref={transcriptRef}
@@ -3649,6 +3651,26 @@ export default function App() {
                   </div>
                 )}
               </div>
+            </div>
+            {!loadingSession && (
+              <ConversationTimeline
+                key={`${sessionId}:${connectionRevision}:${navigationRevision.current}`}
+                rows={rows}
+                transcript={transcriptRef}
+                language={language}
+                hasMore={hasMore}
+                loadingEarlier={loadingEarlier}
+                onLoadEarlier={() => void loadEarlier()}
+                onNavigate={(target) => {
+                  const node = transcriptRef.current;
+                  if (!node || !node.contains(target)) return;
+                  followingRef.current = false;
+                  setFollowing(false);
+                  node.scrollTop += target.getBoundingClientRect().top - node.getBoundingClientRect().top - 12;
+                  rememberTranscriptPosition();
+                }}
+              />
+            )}
             </div>
             {!following && rows.length > 0 && (
               <button
@@ -5057,6 +5079,7 @@ const RowView = memo(function RowView({
     const isRunStatus =
       row.translation?.key === "liveRun" ||
       row.translation?.key === "restoredRun";
+    if (isRunStatus && values?.outcome === "completed" && !values.aborted && !values.reason) return null;
     return (
       <p className={`transcript-note muted${isRunStatus ? " run-status" : ""}`}>
         {row.translation
