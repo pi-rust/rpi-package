@@ -5,9 +5,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
   type RefObject,
 } from "react";
-import { ListTree, X } from "lucide-react";
 import type { Row } from "./transcript";
 import { userMessageParts } from "./attachments";
 import { translate, type Language } from "./i18n";
@@ -69,10 +69,20 @@ export function ConversationTimeline({
   const targets = useRef(new Map<string, HTMLElement>());
   const root = useRef<HTMLElement>(null);
   const list = useRef<HTMLOListElement>(null);
-  const toggle = useRef<HTMLButtonElement>(null);
+  const tooltip = useRef<HTMLDivElement>(null);
+  const browsing = useRef({
+    pointer: false,
+    focus: false,
+    touch: false,
+    until: 0,
+  });
   const [active, setActive] = useState("");
-  const [open, setOpen] = useState(false);
-  const panelId = useId();
+  const [focused, setFocused] = useState("");
+  const [preview, setPreview] = useState<{ id: string; top: number } | null>(
+    null,
+  );
+  const descriptionId = useId();
+  const previewId = useId();
   const t = (
     key: Parameters<typeof translate>[1],
     values?: Record<string, string | number>,
@@ -127,109 +137,218 @@ export function ConversationTimeline({
     // Previews may change while typing; only new/replaced targets require rebinding.
   }, [transcript, targetKey]);
 
-  useEffect(() => {
+  const reveal = (button: HTMLElement) => {
     const container = list.current;
-    const selected = container?.querySelector<HTMLElement>(
-      '[aria-current="location"]',
-    );
-    if (!container || !selected) return;
-    const offset = selected.offsetTop;
+    if (!container) return;
+    const offset = button.offsetTop;
     if (offset < container.scrollTop) container.scrollTop = offset;
     else if (
-      offset + selected.offsetHeight >
+      offset + button.offsetHeight >
       container.scrollTop + container.clientHeight
     )
       container.scrollTop =
-        offset + selected.offsetHeight - container.clientHeight;
-  }, [active, open, targetKey]);
+        offset + button.offsetHeight - container.clientHeight;
+  };
 
   useEffect(() => {
-    if (!open) return;
-    const dismiss = (event: PointerEvent) => {
-      if (event.target instanceof Node && !root.current?.contains(event.target))
-        setOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+    if (
+      browsing.current.pointer ||
+      browsing.current.focus ||
+      browsing.current.touch ||
+      performance.now() < browsing.current.until
+    )
+      return;
+    const selected = list.current?.querySelector<HTMLElement>(
+      '[aria-current="location"]',
+    );
+    if (selected) reveal(selected);
+  }, [active, targetKey]);
+
+  const previewEntry = entries.find((entry) => entry.rowId === preview?.id);
+  const hasPreview = Boolean(previewEntry);
+  useEffect(() => {
+    if (!hasPreview) return;
+    const dismiss = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
       event.stopPropagation();
-      setOpen(false);
-      toggle.current?.focus();
+      setPreview(null);
     };
-    document.addEventListener("pointerdown", dismiss);
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("pointerdown", dismiss);
-      document.removeEventListener("keydown", escape);
-    };
-  }, [open]);
+    document.addEventListener("keydown", dismiss, true);
+    return () => document.removeEventListener("keydown", dismiss, true);
+  }, [hasPreview]);
+  useLayoutEffect(() => {
+    const rail = root.current;
+    const node = tooltip.current;
+    if (!preview || !rail || !node) return;
+    const half = node.offsetHeight / 2;
+    const top = Math.max(half, Math.min(preview.top, rail.clientHeight - half));
+    if (top !== preview.top) setPreview({ ...preview, top });
+  }, [preview, previewEntry?.preview]);
+
+  const showPreview = (button: HTMLElement, id: string) => {
+    const rail = root.current;
+    if (!rail) return;
+    const box = button.getBoundingClientRect();
+    setPreview({
+      id,
+      top: box.top + box.height / 2 - rail.getBoundingClientRect().top,
+    });
+  };
+  const navigate = (rowId: string) => {
+    const target = targets.current.get(rowId);
+    if (!target || !transcript.current?.contains(target)) return;
+    onNavigate(target);
+    setActive(rowId);
+    setPreview(null);
+  };
+  const moveFocus = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      setPreview(null);
+      return;
+    }
+    const next =
+      event.key === "ArrowUp"
+        ? Math.max(0, index - 1)
+        : event.key === "ArrowDown"
+          ? Math.min(entries.length - 1, index + 1)
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? entries.length - 1
+              : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    const button =
+      list.current?.querySelectorAll<HTMLButtonElement>(".timeline-node")[next];
+    if (!button) return;
+    reveal(button);
+    button.focus({ preventScroll: true });
+    showPreview(button, entries[next].rowId);
+  };
+  const tabTarget = entries.some((entry) => entry.rowId === focused)
+    ? focused
+    : active || entries[0]?.rowId;
 
   if (entries.length < 2) return null;
   return (
     <aside
-      className={`conversation-timeline${open ? " expanded" : ""}`}
+      className="conversation-timeline"
       ref={root}
+      onPointerEnter={(event) => {
+        if (event.pointerType !== "touch") browsing.current.pointer = true;
+      }}
+      onPointerLeave={() => {
+        browsing.current.pointer = false;
+        setPreview(null);
+      }}
     >
-      <button
-        type="button"
-        className="timeline-toggle"
-        ref={toggle}
-        aria-label={t("conversationTimeline")}
-        title={t("conversationTimeline")}
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={() => setOpen((value) => !value)}
-      >
-        {open ? (
-          <X size={15} aria-hidden="true" />
-        ) : (
-          <ListTree size={15} aria-hidden="true" />
-        )}
-      </button>
       <nav
-        id={panelId}
         className="timeline-panel"
         aria-label={t("conversationTimeline")}
+        aria-describedby={descriptionId}
+        onFocusCapture={() => {
+          browsing.current.focus = true;
+        }}
+        onBlurCapture={(event) => {
+          if (
+            event.relatedTarget instanceof Node &&
+            event.currentTarget.contains(event.relatedTarget)
+          )
+            return;
+          browsing.current.focus = false;
+          setFocused("");
+          setPreview(null);
+        }}
       >
-        <div className="timeline-heading">
-          {t("conversationTimeline")} <span>{entries.length}</span>
-        </div>
-        <ol ref={list}>
+        <p id={descriptionId} className="timeline-description">
+          {t("timelineScrollHint")}
+          {hasMore ? ` ${t("timelineLoadedOnly")}` : ""}
+        </p>
+        <ol
+          ref={list}
+          onTouchStart={() => {
+            browsing.current.touch = true;
+          }}
+          onTouchEnd={() => {
+            browsing.current.touch = false;
+            browsing.current.until = performance.now() + 1000;
+          }}
+          onTouchCancel={() => {
+            browsing.current.touch = false;
+          }}
+          onScroll={() => {
+            const button = document.activeElement;
+            if (
+              preview &&
+              button instanceof HTMLElement &&
+              button.dataset.timelineTarget === preview.id &&
+              list.current?.contains(button)
+            )
+              showPreview(button, preview.id);
+            else setPreview(null);
+          }}
+        >
           {entries.map((entry, index) => (
             <li key={entry.id}>
               <button
                 type="button"
                 className="timeline-node"
-                title={entry.preview}
                 data-timeline-target={entry.rowId}
+                tabIndex={entry.rowId === tabTarget ? 0 : -1}
                 aria-label={t("timelineGoToMessage", {
                   index: index + 1,
                   preview: entry.preview,
                 })}
                 aria-current={active === entry.rowId ? "location" : undefined}
-                onClick={() => {
-                  const target = targets.current.get(entry.rowId);
-                  if (!target || !transcript.current?.contains(target)) return;
-                  onNavigate(target);
-                  setActive(entry.rowId);
-                  if (open) {
-                    setOpen(false);
-                    toggle.current?.focus();
-                  }
+                aria-describedby={
+                  previewEntry?.id === entry.id ? previewId : undefined
+                }
+                onPointerEnter={(event) => {
+                  if (event.pointerType !== "touch")
+                    showPreview(event.currentTarget, entry.rowId);
                 }}
+                onFocus={(event) => {
+                  setFocused(entry.rowId);
+                  showPreview(event.currentTarget, entry.rowId);
+                }}
+                onKeyDown={(event) => moveFocus(event, index)}
+                onClick={() => navigate(entry.rowId)}
               >
                 <span className="timeline-mark" aria-hidden="true" />
-                <span className="timeline-label">
-                  <small>{index + 1}</small>
-                  {entry.preview}
-                </span>
               </button>
             </li>
           ))}
         </ol>
-        {hasMore && (
-          <p className="timeline-earlier">{t("timelineLoadedOnly")}</p>
-        )}
       </nav>
+      {previewEntry && preview && (
+        <div
+          id={previewId}
+          role="tooltip"
+          className="timeline-preview"
+          ref={tooltip}
+          style={{
+            top: preview.top,
+            maxWidth: Math.min(
+              240,
+              Math.max(0, (transcript.current?.clientWidth ?? 304) - 64),
+            ),
+          }}
+        >
+          <span className="timeline-preview-index">
+            {entries.indexOf(previewEntry) + 1} / {entries.length}
+          </span>
+          <span className="timeline-label">{previewEntry.preview}</span>
+          {hasMore && (
+            <small className="timeline-earlier">
+              {t("timelineLoadedOnly")}
+            </small>
+          )}
+        </div>
+      )}
     </aside>
   );
 }

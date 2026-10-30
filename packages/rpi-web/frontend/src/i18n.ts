@@ -211,7 +211,10 @@ const messages = {
     conversationTimeline: "Conversation timeline",
     timelineGoToMessage: "Go to message {index}: {preview}",
     timelineImageMessage: "Image message",
-    timelineLoadedOnly: "Loaded messages only. Scroll up to load earlier messages.",
+    timelineScrollHint:
+      "Scroll or swipe this rail to browse messages. Use Up and Down to preview, Enter to jump.",
+    timelineLoadedOnly:
+      "Loaded messages only. Scroll up in the conversation to load earlier messages.",
     nativeToolNames: "Native names",
     mappedToolNames: "Mapped names",
     english: "English",
@@ -488,7 +491,9 @@ const messages = {
     conversationTimeline: "对话时间线",
     timelineGoToMessage: "跳转到第 {index} 条消息：{preview}",
     timelineImageMessage: "图片消息",
-    timelineLoadedOnly: "仅显示已加载的消息，向上滚动可加载更早记录。",
+    timelineScrollHint:
+      "上下滚动或滑动侧栏浏览消息。上下方向键预览，回车跳转。",
+    timelineLoadedOnly: "仅显示已加载的消息，在对话中向上滚动可加载更早记录。",
     nativeToolNames: "原生名称",
     mappedToolNames: "映射名称",
     english: "English",
