@@ -24,7 +24,6 @@ import {
   Copy,
   Database,
   Files,
-  FileText,
   Gauge,
   GitBranch,
   History,
@@ -78,6 +77,7 @@ import { ProjectContext } from "./ProjectContext";
 import { ZoomableImage } from "./ZoomableImage";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
 import { useTranscriptViewport } from "./useTranscriptViewport";
+import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
 import {
   ToolDisclosure,
   toolSummary,
@@ -3440,7 +3440,9 @@ export default function App() {
               onClickCapture={(event) => {
                 if (
                   !(event.target instanceof Element) ||
-                  !event.target.closest(".tool-card > summary")
+                  !event.target.closest(
+                    ".tool-card > summary, .message-attachment > summary",
+                  )
                 )
                   return;
                 // Opening details is a reading action, not a request to follow
@@ -3740,23 +3742,12 @@ export default function App() {
                     aria-label={t("attachedFiles")}
                   >
                     {attachments.map((file) => (
-                      <div className="composer-attachment" key={file.path}>
-                        {file.previewUrl ? (
-                          <img src={file.previewUrl} alt="" />
-                        ) : (
-                          <FileText size={13} />
-                        )}
-                        <span title={file.path}>{file.name}</span>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label={`${t("removeAttachment")}: ${file.name}`}
-                          title={t("removeAttachment")}
-                          onClick={() => removeAttachment(file.path)}
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
+                      <AttachmentCard
+                        key={file.path}
+                        {...file}
+                        language={language}
+                        onRemove={() => removeAttachment(file.path)}
+                      />
                     ))}
                   </div>
                 )}
@@ -5186,9 +5177,7 @@ function MessageRow({
         {row.role === "assistant" ? (
           <MarkdownBody text={row.text} language={language} />
         ) : (
-          <div className="prose plain-message">
-            <p>{row.text}</p>
-          </div>
+          <UserMessageBody text={row.text} language={language} />
         )}
       </div>
       {row.role === "assistant" && (

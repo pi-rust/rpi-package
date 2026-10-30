@@ -426,6 +426,13 @@ collapsed. Live result/timing updates preserve the reader's choice, including
 when a result changes a generic call into a structured checklist. Expanding
 stops bottom-follow so long output does not move the reader away from its header.
 
+User upload lists display file cards with readable names and types rather than
+storage UUIDs. Expand a card to inspect or copy its original workspace path.
+This is a display-only projection of the bilingual attachment-list text; native
+prompts and history remain unchanged, and no document preview/download API is
+implied. The composer shows known sizes and image previews; historical cards do
+not invent sizes. Code examples, ordinary paths and malformed lists stay as text.
+
 Sessions also keep the last 512 projected events in memory with a monotonic
 `seq`; SSE frames carry `id: <seq>`. That buffer is what makes `?after=` work, and
 it is the fallback path for a host that does not advertise `get_messages`.

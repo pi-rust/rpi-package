@@ -6662,3 +6662,289 @@ test("expanding a tool at latest keeps its header in place instead of following 
     )
     .toBeGreaterThan(100);
 });
+
+// Attachment projection must remain display-only: native text and upload paths stay intact.
+test.describe("attachment cards", () => {
+  const docxPath =
+    ".rpi/uploads/c11ee75a-625a-4aec-a575-401843f7af66-电话卡分销小程序.docx";
+  const actualUserText =
+    "已附加文件:\n- .rpi/uploads/c11ee75a-625a-4aec-a575-401843f7af66-电话卡分销小程序.docx  这个附件显示需要优化";
+
+  async function attachmentSnapshot(page: Page, messages: unknown[]) {
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: { sessionId, status: "ready", lastSeq: 4, events: [], messages },
+      }),
+    );
+  }
+
+  test("projects the real Chinese DOCX and trailing prose on desktop and 390px", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await attachmentSnapshot(page, [
+      { role: "user", content: [{ type: "text", text: actualUserText }] },
+    ]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      if (width === 1280) await page.goto("/");
+      else await page.reload();
+      const card = page.locator(".message.user details.message-attachment");
+      await expect(card).toHaveCount(1);
+      await expect(card).toHaveJSProperty("open", false);
+      const summary = card.locator(":scope > summary");
+      await expect(summary.locator(".attachment-name")).toHaveText(
+        "电话卡分销小程序.docx",
+      );
+      await expect(summary.locator(".attachment-meta")).toHaveText("DOCX");
+      await expect(summary).not.toContainText("c11ee75a");
+      await expect(page.locator(".message.user .plain-message")).toContainText(
+        "这个附件显示需要优化",
+      );
+      await expect(card.locator(".attachment-path")).toBeHidden();
+      await summary.click();
+      await expect(card).toHaveJSProperty("open", true);
+      await expect(card.locator("div.attachment-path code")).toHaveText(
+        docxPath,
+      );
+      await expect(card.locator(".attachment-path")).not.toContainText(
+        "这个附件显示需要优化",
+      );
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      expect(
+        await page
+          .locator(".transcript")
+          .evaluate((node) => node.scrollWidth <= node.clientWidth),
+      ).toBe(true);
+    }
+  });
+
+  test("supports keyboard expansion and copying the original path without fetching DOCX", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (
+              window as Window & { attachmentCopiedPath?: string }
+            ).attachmentCopiedPath = text;
+          },
+        },
+      });
+    });
+    const fileRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        request.resourceType() === "image" ||
+        /\.docx$/i.test(url.pathname) ||
+        url.pathname.includes("/uploads/") ||
+        /\/projects\/[^/]+\/file$/.test(url.pathname)
+      ) {
+        fileRequests.push(request.url());
+      }
+    });
+    await mockHost(page);
+    await attachmentSnapshot(page, [
+      { role: "user", content: [{ type: "text", text: actualUserText }] },
+    ]);
+    await page.goto("/");
+    const card = page.locator("details.message-attachment");
+    await expect(card).toHaveJSProperty("open", false);
+    await expect(card.locator("img, iframe, object")).toHaveCount(0);
+    const summary = card.locator(":scope > summary");
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await expect(card).toHaveJSProperty("open", true);
+    await expect(card.locator(".attachment-path code")).toHaveText(docxPath);
+    const copy = card.getByRole("button", {
+      name: "Copy file path",
+      exact: true,
+    });
+    await copy.focus();
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { attachmentCopiedPath?: string })
+              .attachmentCopiedPath,
+        ),
+      )
+      .toBe(docxPath);
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    await expect(card).toHaveJSProperty("open", false);
+    expect(fileRequests).toEqual([]);
+  });
+
+  test("keeps multiple English attachment filenames identical in live events and reload snapshots", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const paths = [
+      ".rpi/uploads/11111111-1111-4111-8111-111111111111-quarterly report.docx",
+      ".rpi/uploads/22222222-2222-4222-8222-222222222222-review  final.docx",
+    ];
+    const message = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `Please review both.\n\nAttached files:\n${paths.map((path) => `- ${path}`).join("\n")}`,
+        },
+      ],
+    };
+    let persisted = false;
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          lastSeq: persisted ? 5 : 4,
+          events: [],
+          messages: persisted ? [message] : [],
+        },
+      }),
+    );
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let delivered = false;
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events**`,
+      async (route) => {
+        await gate;
+        const body = delivered
+          ? 'event: ready\ndata: {"type":"ready"}\n\n'
+          : `retry: 60000\nid: 5\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message })}\n\n`;
+        delivered = true;
+        await route.fulfill({ contentType: "text/event-stream", body });
+      },
+    );
+    try {
+      await page.goto("/");
+      await expect(
+        page.getByRole("heading", { name: "Mock session" }),
+      ).toBeVisible();
+      await expect(page.locator("details.message-attachment")).toHaveCount(0);
+      release();
+      for (const reload of [false, true]) {
+        if (reload) {
+          persisted = true;
+          await page.reload();
+        }
+        const cards = page.locator(".message.user details.message-attachment");
+        await expect(cards).toHaveCount(2);
+        await expect(cards.locator(".attachment-name")).toHaveText([
+          "quarterly report.docx",
+          "review  final.docx",
+        ]);
+        await expect(cards.locator(".attachment-meta")).toHaveText([
+          "DOCX",
+          "DOCX",
+        ]);
+        await expect(
+          page.locator(".message.user .plain-message"),
+        ).toContainText("Please review both.");
+        for (let index = 0; index < paths.length; index++) {
+          await expect(cards.nth(index)).toHaveJSProperty("open", false);
+          await cards.nth(index).locator(":scope > summary").click();
+          await expect(
+            cards.nth(index).locator(".attachment-path code"),
+          ).toHaveText(paths[index]);
+        }
+      }
+    } finally {
+      release();
+    }
+  });
+
+  test("leaves code, quotes, ordinary paths, mixed invalid lists and assistant text raw", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const rawTexts = [
+      `\`\`\`text\nAttached files:\n- ${docxPath}\n\`\`\``,
+      `    Attached files:\n    - ${docxPath}`,
+      `> Attached files:\n> - ${docxPath}`,
+      `Ordinary workspace path: ${docxPath}`,
+      `Attached files:\n- ${docxPath}\n- not-an-upload.docx`,
+    ];
+    await attachmentSnapshot(page, [
+      ...rawTexts.map((text) => ({
+        role: "user",
+        content: [{ type: "text", text }],
+      })),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: `Attached files:\n- ${docxPath}` }],
+      },
+    ]);
+    await page.goto("/");
+    const bodies = page.locator(".message.user .message-body");
+    await expect(bodies).toHaveCount(rawTexts.length);
+    for (let index = 0; index < rawTexts.length; index++) {
+      // textContent preserves literal indentation and fences, unlike normalized text assertions.
+      expect(await bodies.nth(index).textContent()).toContain(rawTexts[index]);
+    }
+    await expect(
+      page.locator(".message.assistant .message-body"),
+    ).toContainText(docxPath);
+    await expect(page.locator("details.message-attachment")).toHaveCount(0);
+  });
+
+  test("preserves composer filename, size, removal and the uploaded native prompt path", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await page.goto("/");
+    await expect(
+      page.getByRole("heading", { name: "Mock session" }),
+    ).toBeVisible();
+    const upload = () =>
+      page.locator('input[type="file"]').setInputFiles({
+        name: "notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("hello"),
+      });
+    await upload();
+    const card = page.locator(".composer-attachment");
+    await expect(card).toHaveCount(1);
+    await expect(card.locator(".attachment-name")).toHaveText("notes.txt");
+    await expect(card.locator(".attachment-meta")).toHaveText(
+      /TXT\s*·\s*5\s*B/,
+    );
+    await card
+      .getByRole("button", {
+        name: "Remove attachment: notes.txt",
+        exact: true,
+      })
+      .click();
+    await expect(card).toHaveCount(0);
+    await upload();
+    await expect(card.locator(".attachment-name")).toHaveText("notes.txt");
+    await page.locator(".composer textarea").fill("Please inspect this file");
+    const prompt = page.waitForRequest(
+      (request) =>
+        request.url().includes(`/sessions/${sessionId}/commands`) &&
+        request.method() === "POST" &&
+        request.postDataJSON()?.type === "prompt",
+    );
+    await page.getByRole("button", { name: "Send message" }).click();
+    const body = (await prompt).postDataJSON();
+    expect(body.message).toContain("Please inspect this file");
+    expect(body.message).toMatch(
+      /(?:Attached files:|已附加文件:)\n- \.rpi\/uploads\/notes\.txt$/,
+    );
+    expect(body.message.match(/\.rpi\/uploads\/notes\.txt/g)).toHaveLength(1);
+    await expect(card).toHaveCount(0);
+  });
+});
