@@ -34,6 +34,7 @@ export interface SessionSummary {
   forkEntryId?: string | null;
   latestSettlement?: {
     outcome?: string;
+    pendingResume?: boolean;
     error?: string | null;
     runId?: string;
     seq?: number;

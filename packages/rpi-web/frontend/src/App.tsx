@@ -47,6 +47,7 @@ import {
 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
+import { SessionIssueBadge } from "./SessionIssueBadge";
 import {
   api,
   ApiError,
@@ -3379,6 +3380,7 @@ export default function App() {
                             {entryRunning && ` · ${t("running")}`}
                           </small>
                         </span>
+                        <SessionIssueBadge session={entry} language={language} />
                         {selected && <Check size={15} />}
                       </button>
                     );

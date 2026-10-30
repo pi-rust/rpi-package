@@ -357,6 +357,23 @@ code {
   flex: 1;
   min-width: 0;
 }
+.session-issue {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 450;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.session-issue-resume {
+  color: var(--muted);
+}
+.session-issue > svg {
+  flex-shrink: 0;
+}
 .tree-mark {
   color: var(--muted);
   font-family: var(--mono);

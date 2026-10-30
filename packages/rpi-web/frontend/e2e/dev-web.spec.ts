@@ -8405,3 +8405,128 @@ for (const language of ["en", "zh"] as const) {
     }
   });
 }
+
+test.describe("session issue badges", () => {
+  type Summary = import("../src/api").SessionSummary;
+  const rawError = "PRIVATE_HOST_ERROR_do_not_render";
+  function seed(): Summary[] {
+    const other = (id: string, extra: Partial<Summary>): Summary => ({
+      ...session, sessionId: id, title: id, tags: [], ...extra,
+    });
+    return [
+      { ...session },
+      other("known-failed", { latestSettlement: { outcome: "failed" } }),
+      other("known-interrupted", { latestSettlement: { outcome: "interrupted" } }),
+      other("host-error", { error: rawError }),
+      other("error-status", { status: "error" }),
+      other("recoverable", { status: "error", error: rawError, latestSettlement: { outcome: "interrupted", pendingResume: true } }),
+      other("normal-completed", { latestSettlement: { outcome: "completed" } }),
+      other("normal-aborted", { error: rawError, latestSettlement: { outcome: "aborted" } }),
+      other("normal-declined", { error: rawError, latestSettlement: { outcome: "declined" } }),
+      other("offline-unknown", { status: "offline" }),
+      other("closed-normal", { status: "closed" }),
+      ...["running", "starting", "awaiting_input"].map(status => other(`${status}-with-old-failed`, {
+        status, error: rawError, latestSettlement: { outcome: "failed", pendingResume: true },
+      })),
+    ];
+  }
+  async function setup(page: Page) {
+    await mockHost(page);
+    const state = { sessions: seed(), listReads: 0, otherRequests: [] as string[] };
+    const listRoute = (url: URL) => url.pathname === "/api/v1/sessions";
+    await page.route(listRoute, route => {
+      if (route.request().method() !== "GET") return route.fallback();
+      state.listReads++;
+      return route.fulfill({ json: { sessions: state.sessions } });
+    });
+    page.on("request", request => {
+      const path = new URL(request.url()).pathname;
+      const match = path.match(/^\/api\/v1\/sessions\/([^/]+)(?:\/|$)/);
+      if (match && match[1] !== sessionId) state.otherRequests.push(path);
+    });
+    return state;
+  }
+  const row = (page: Page, title: string) => page.locator(".project-session")
+    .filter({ has: page.locator(".session-title", { hasText: title }) });
+
+  test("desktop shows summary evidence before opening sessions without leaking errors", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    await page.goto("/");
+    const sidebar = page.locator(".project-tree");
+    await expect(sidebar.locator(".session-issue-failed")).toHaveCount(4);
+    await expect(sidebar.locator(".session-issue-resume")).toHaveCount(1);
+    for (const title of ["known-failed", "known-interrupted", "host-error", "error-status"]) {
+      const badge = row(page, title).locator(".session-issue-failed");
+      await expect(badge).toBeVisible();
+      await expect(badge).toHaveText("Interrupted");
+      await expect(badge).toHaveAccessibleName("Interrupted. This session reported an error or failed run. Open it to review and retry.");
+      await expect(badge).toHaveAttribute("title", "This session reported an error or failed run. Open it to review and retry.");
+      await expect(row(page, title).locator(".project-session-link")).toHaveAttribute("title", title);
+    }
+    await expect(row(page, "recoverable").locator(".session-issue-resume")).toHaveText("Needs resume");
+    for (const title of ["Mock session", "normal-completed", "normal-aborted", "normal-declined", "offline-unknown", "closed-normal", "running-with-old-failed", "starting-with-old-failed", "awaiting_input-with-old-failed"])
+      await expect(row(page, title).locator(".session-issue")).toHaveCount(0);
+    await expect(page.locator("body")).not.toContainText(rawError);
+    expect(await sidebar.locator("[title]").evaluateAll(elements => elements.map(el => el.getAttribute("title")).join("\n"))).not.toContain(rawError);
+    expect(state.otherRequests).toEqual([]);
+    await row(page, "known-failed").locator(".project-session-link").click();
+    await expect(row(page, "known-failed")).toHaveClass(/active/);
+  });
+
+  test("English and Chinese labels agree in desktop rows and the 390px mobile picker", async ({ page }) => {
+    const state = await setup(page);
+    await page.goto("/");
+    for (const language of ["en", "zh"] as const) {
+      await page.evaluate(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.setViewportSize({ width: 1280, height: 844 });
+      await page.reload();
+      const failed = language === "zh" ? "异常中断" : "Interrupted";
+      const resume = language === "zh" ? "待恢复" : "Needs resume";
+      await expect(row(page, "known-failed").locator(".session-issue-failed")).toHaveText(failed);
+      await expect(row(page, "recoverable").locator(".session-issue-resume")).toHaveText(resume);
+      await page.setViewportSize({ width: 390, height: 844 });
+      // Start with the mobile defaults instead of desktop overlays left open.
+      await page.reload();
+      await page.getByRole("button", { name: language === "zh" ? "切换会话" : "Switch session", exact: true }).click();
+      const picker = page.locator(".mobile-session-sheet");
+      await expect(picker).toBeVisible();
+      await expect(picker.locator(".session-issue-failed")).toHaveText([failed, failed, failed, failed]);
+      await expect(picker.locator(".session-issue-resume")).toHaveText(resume);
+      for (const badge of await picker.locator(".session-issue").all()) {
+        await expect(badge).toBeVisible();
+        await expect(badge).toHaveAccessibleName(/.+/);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await expect(picker.locator(".mobile-session-option").filter({ hasText: "known-failed" })).toContainText(failed);
+      await expect(picker).not.toContainText(rawError);
+      expect(await picker.locator(".session-issue").evaluateAll(elements => elements.map(el => el.getAttribute("title")).join("\n"))).not.toContain(rawError);
+      await page.getByRole("button", { name: language === "zh" ? "关闭面板" : "Close panel", exact: true }).click();
+    }
+    expect(state.otherRequests).toEqual([]);
+  });
+
+  test("list refresh clears a noncurrent failure for running and completed summaries", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    state.sessions = [state.sessions[0], { ...state.sessions[1], error: rawError }];
+    await page.goto("/");
+    const failedRow = row(page, "known-failed");
+    await expect(failedRow.locator(".session-issue-failed")).toHaveText("Interrupted");
+    await expect(row(page, "Mock session")).toHaveClass(/active/);
+    for (const update of [
+      { status: "running" },
+      { status: "ready", error: null, latestSettlement: { outcome: "completed" } },
+    ]) {
+      state.sessions = [state.sessions[0], { ...state.sessions[1], ...update }];
+      const reads = state.listReads;
+      const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/sessions" && response.request().method() === "GET");
+      await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
+      await refreshed;
+      expect(state.listReads).toBeGreaterThan(reads);
+      await expect(failedRow.locator(".session-issue")).toHaveCount(0);
+      await expect(row(page, "Mock session")).toHaveClass(/active/);
+    }
+    expect(state.otherRequests).toEqual([]);
+  });
+});
