@@ -1572,6 +1572,35 @@ details[open] > summary:before {
   border-radius: 4px;
   background: var(--soft);
 }
+.shell-card .shell-window .shell-command-code {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.6;
+}
+.shell-card .shell-window .shell-command-preview {
+  /* Four rendered lines plus the existing 8px top/bottom input padding. */
+  max-height: calc(6.4em + 16px);
+  overflow: hidden;
+}
+.shell-card .shell-window .shell-command-preview.expanded {
+  max-height: none;
+}
+.shell-command-toggle {
+  display: block;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.shell-command-toggle:hover {
+  background: var(--hover);
+  color: var(--text);
+}
 .shell-card .shell-window .shell-output {
   padding: 0 1px;
   color: var(--text);

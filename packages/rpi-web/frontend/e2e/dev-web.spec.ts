@@ -7716,3 +7716,192 @@ test.describe("run timing regressions", () => {
     expect(queries).toHaveLength(4);
   });
 });
+
+// Command previews must never truncate the native command used for display/copy.
+test.describe("shell command previews", () => {
+  const wrapped = `printf '%s\n' ${Array.from({ length: 90 }, (_, i) => `'argument ${i}'`).join(" ")}`;
+  const heredoc = [
+    "python - <<'PY'",
+    'message = "quoted value"',
+    "values = ['one', 'two']",
+    "for value in values:",
+    "    print(message, value)",
+    "print('last visible only when expanded')",
+    "PY",
+  ].join("\n");
+
+  async function commandSnapshot(page: Page, commands: string[]) {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          lastSeq: 4,
+          events: [],
+          messages: commands.flatMap((command, index) => [
+            {
+              role: "assistant",
+              content: [{
+                type: "toolCall",
+                id: `preview-${index}`,
+                name: "bash",
+                arguments: { command },
+              }],
+            },
+            {
+              role: "toolResult",
+              toolCallId: `preview-${index}`,
+              toolName: "bash",
+              isError: false,
+              content: [{ type: "text", text: "done" }],
+            },
+          ]),
+        },
+      }),
+    );
+  }
+
+  async function assertFits(page: Page) {
+    await expect.poll(() => page.evaluate(() =>
+      document.documentElement.scrollWidth <= innerWidth,
+    )).toBe(true);
+    await expect.poll(() => page.locator(".transcript").evaluate((node) =>
+      node.scrollWidth <= node.clientWidth + 1,
+    )).toBe(true);
+  }
+
+  test("clips wrapped and heredoc commands to four rendered lines on desktop and mobile until explicitly expanded", async ({ page }) => {
+    await commandSnapshot(page, [wrapped, heredoc, "pwd"]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const cards = page.locator(".shell-card");
+      await expect(cards).toHaveCount(3);
+      for (const [index, command] of [wrapped, heredoc, "pwd"].entries()) {
+        const card = cards.nth(index);
+        await expect(card).toHaveJSProperty("open", false);
+        await card.locator(":scope > summary").click();
+        const preview = card.locator("pre.shell-input");
+        const code = preview.locator("code");
+        await expect(code).toBeVisible();
+        expect(await code.textContent()).toBe(command);
+        const show = card.getByRole("button", { name: "Show full command", exact: true });
+        if (index === 2) {
+          await expect(show).toHaveCount(0);
+          continue;
+        }
+        await expect(show).toHaveAttribute("aria-expanded", "false");
+        const codeId = await code.getAttribute("id");
+        expect(codeId).toBeTruthy();
+        await expect(show).toHaveAttribute("aria-controls", codeId!);
+        expect(await show.evaluate((node) => node.closest("pre") === null)).toBe(true);
+        const assertClipped = async () => {
+          await expect.poll(() => preview.evaluate((node) => {
+            const style = getComputedStyle(node);
+            const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+            return node.scrollHeight > node.clientHeight + 1 &&
+              Math.abs(node.clientHeight - padding - 4 * parseFloat(style.lineHeight)) <= 2;
+          })).toBe(true);
+        };
+        await assertClipped();
+        await show.click();
+        const collapse = card.getByRole("button", { name: "Collapse command", exact: true });
+        await expect(collapse).toHaveAttribute("aria-expanded", "true");
+        await expect(collapse).toHaveAttribute("aria-controls", codeId!);
+        await expect.poll(() => preview.evaluate((node) =>
+          node.scrollHeight <= node.clientHeight + 1,
+        )).toBe(true);
+        expect(await code.textContent()).toBe(command);
+        await assertFits(page);
+        await collapse.click();
+        await expect(show).toHaveAttribute("aria-expanded", "false");
+        await assertClipped();
+        await expect(card).toHaveJSProperty("open", true);
+      }
+      await assertFits(page);
+    }
+  });
+
+  test("copies the exact full collapsed command and supports Enter and Space expansion", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (window as Window & { shellCopiedCommand?: string }).shellCopiedCommand = text;
+          },
+        },
+      });
+    });
+    await commandSnapshot(page, [heredoc]);
+    await page.goto("/");
+    const card = page.locator(".shell-card");
+    await expect(card).toHaveJSProperty("open", false);
+    await card.locator(":scope > summary").click();
+    const show = card.getByRole("button", { name: "Show full command", exact: true });
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await card.getByRole("button", { name: "Copy command", exact: true }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as Window & { shellCopiedCommand?: string }).shellCopiedCommand,
+    )).toBe(heredoc);
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    for (const key of ["Enter", "Space"]) {
+      await show.focus();
+      await page.keyboard.press(key);
+      const collapse = card.getByRole("button", { name: "Collapse command", exact: true });
+      await expect(collapse).toHaveAttribute("aria-expanded", "true");
+      await expect.poll(() => card.locator("pre.shell-input").evaluate((node) =>
+        node.scrollHeight <= node.clientHeight + 1,
+      )).toBe(true);
+      await collapse.focus();
+      await page.keyboard.press(key);
+      await expect(show).toHaveAttribute("aria-expanded", "false");
+      await expect(card).toHaveJSProperty("open", true);
+    }
+    expect(await card.locator(".shell-input code").textContent()).toBe(heredoc);
+  });
+
+  test("localizes command controls in Chinese and detects overflow after a mobile resize without changing native text", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    // Under four rendered lines at 1280px, but over four at 390px.
+    const command = `printf '%s\n' ${Array.from({ length: 24 }, () => "token").join(" ")}`;
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await commandSnapshot(page, [command]);
+    await page.goto("/");
+    await page.getByRole("button", { name: "关闭项目面板", exact: true }).click();
+    const card = page.locator(".shell-card");
+    await expect(card).toHaveJSProperty("open", false);
+    await card.locator(":scope > summary").click();
+    const preview = card.locator("pre.shell-input");
+    const code = preview.locator("code");
+    await expect(code).toBeVisible();
+    expect(await code.textContent()).toBe(command);
+    await expect.poll(() => preview.evaluate((node) =>
+      node.scrollHeight <= node.clientHeight + 1,
+    )).toBe(true);
+    const show = card.getByRole("button", { name: "展开完整命令", exact: true });
+    await expect(show).toHaveCount(0);
+    // No navigation or new snapshot: ResizeObserver must remeasure the same command.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator(".sidebar .sidebar-brand button").click();
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await expect.poll(() => preview.evaluate((node) =>
+      node.scrollHeight > node.clientHeight + 1,
+    )).toBe(true);
+    expect(await code.textContent()).toBe(command);
+    await show.click();
+    const collapse = card.getByRole("button", { name: "收起命令", exact: true });
+    await expect(collapse).toHaveAttribute("aria-expanded", "true");
+    await expect.poll(() => preview.evaluate((node) =>
+      node.scrollHeight <= node.clientHeight + 1,
+    )).toBe(true);
+    await assertFits(page);
+    await collapse.click();
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await expect(show).toHaveCount(0);
+    await expect(card).toHaveJSProperty("open", true);
+    expect(await code.textContent()).toBe(command);
+  });
+});

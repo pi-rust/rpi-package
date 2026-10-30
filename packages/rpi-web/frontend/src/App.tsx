@@ -46,6 +46,7 @@ import {
   X,
 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
+import { ShellCommand } from "./ShellCommand";
 import {
   api,
   ApiError,
@@ -5470,11 +5471,7 @@ function ShellCard({
             )}
           </div>
           <div className="shell-body">
-            {command && (
-              <pre className="shell-input">
-                <code>{command}</code>
-              </pre>
-            )}
+            {command && <ShellCommand command={command} language={language} />}
             {output ? (
               <pre className="shell-output">{output}</pre>
             ) : (
