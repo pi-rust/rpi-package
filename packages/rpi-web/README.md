@@ -409,9 +409,14 @@ older transcript pages when the native host returned a truncated tail.
 The native `get_messages` response keeps the newest `limit` entries by default
 and returns `firstId`, `lastId`, and `hasMore`. Sending `beforeId: firstId` asks
 for the previous page. Each projected message carries its session `entryId`, so
-rows remain stable across reloads and pages; the UI uses that cursor for its
-"Load earlier messages" action. `total` remains the full branch projection
-count, while `truncated` is retained as a compatibility alias for `hasMore`.
+rows remain stable across reloads and pages. Scrolling within 160px of the top
+loads earlier messages automatically in 48-entry pages, without fetching all
+history on initial load. A keyboard-accessible button remains for short chats
+and retries. Only one page request is active; errors do not retry in a loop,
+and obsolete navigation responses cannot prepend into a different branch.
+The visible row stays anchored when a page is prepended or an older image
+finishes loading. `total` remains the full branch projection count, while
+`truncated` is retained as a compatibility alias for `hasMore`.
 
 Sessions also keep the last 512 projected events in memory with a monotonic
 `seq`; SSE frames carry `id: <seq>`. That buffer is what makes `?after=` work, and

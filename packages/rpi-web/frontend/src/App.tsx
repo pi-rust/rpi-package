@@ -4,7 +4,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -83,6 +82,7 @@ import { LoginScreen } from "./LoginScreen";
 import { ProjectContext } from "./ProjectContext";
 import { ZoomableImage } from "./ZoomableImage";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
+import { useTranscriptViewport } from "./useTranscriptViewport";
 import {
   ConfirmDialog,
   Modal,
@@ -696,6 +696,20 @@ export default function App() {
   const [firstId, setFirstId] = useState("");
   const [hasMore, setHasMore] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const earlierRequest = useRef<{
+    navigation: number;
+    beforeId: string;
+  } | null>(null);
+  const autoEarlierCursor = useRef<string | null>(null);
+  const continueEarlier = useRef<number | null>(null);
+  const rememberTranscriptPosition = useTranscriptViewport(
+    transcriptRef,
+    followingRef,
+    `${sessionId}:${connectionRevision}`,
+    Boolean(capabilities),
+    rows,
+    status,
+  );
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
@@ -1403,6 +1417,9 @@ export default function App() {
     setModels([]);
     setLeafId("");
     setHistoryHasMore(false);
+    earlierRequest.current = null;
+    autoEarlierCursor.current = null;
+    continueEarlier.current = null;
     setLoadingEarlier(false);
     setMutationPending(false);
     setDialogBusy(false);
@@ -1693,12 +1710,6 @@ export default function App() {
       if (oldest && oldest !== sessionId) rowsBySession.current.delete(oldest);
     }
   }, [rows, sessionId]);
-
-  useLayoutEffect(() => {
-    if (!followingRef.current || !transcriptRef.current) return;
-    const node = transcriptRef.current;
-    node.scrollTop = node.scrollHeight - node.clientHeight;
-  }, [rows, status]);
 
   const refreshDiagnostics = useCallback(
     async (id: string) => {
@@ -2220,38 +2231,93 @@ export default function App() {
   /** Page backwards through the branch, prepending entries older than the
    * current first row. The bridge forwards `get_messages` unchanged, so this is
    * the same native projection the first snapshot used. */
-  async function loadEarlier() {
+  const loadEarlier = useCallback(
+    async (automatic = false) => {
+      const navigation = navigationRevision.current;
+      if (
+        !sessionId ||
+        !firstId ||
+        !hasMore ||
+        loadingSession ||
+        mutationPending ||
+        earlierRequest.current?.navigation === navigation ||
+        !supported.has("get_messages")
+      )
+        return;
+      const request = { navigation, beforeId: firstId };
+      earlierRequest.current = request;
+      continueEarlier.current = null;
+      // A failed/no-progress cursor is retried only after leaving the top or by button.
+      autoEarlierCursor.current = `${navigation}:${sessionId}:${firstId}`;
+      setLoadingEarlier(true);
+      try {
+        const page = await api.messages(sessionId, {
+          beforeId: firstId,
+          limit: 48,
+        });
+        if (
+          navigation !== navigationRevision.current ||
+          earlierRequest.current !== request
+        )
+          return;
+        const older = rowsFromMessages(page.messages);
+        const nextId = page.firstId ?? "";
+        const more = Boolean(
+          page.hasMore && nextId && nextId !== request.beforeId,
+        );
+        // Capture at response time: the reader may have moved while the request ran.
+        rememberTranscriptPosition();
+        earlierPage.current = {
+          rows: prependRows(older, earlierPage.current?.rows ?? []),
+          firstId: nextId,
+          hasMore: more,
+        };
+        setRows((previous) => prependRows(older, previous));
+        setFirstId(nextId);
+        setHasMore(more);
+        if (automatic && more) continueEarlier.current = navigation;
+      } catch (cause) {
+        if (
+          navigation !== navigationRevision.current ||
+          earlierRequest.current !== request
+        )
+          return;
+        setError(errorText(cause));
+      } finally {
+        if (earlierRequest.current === request) {
+          earlierRequest.current = null;
+          setLoadingEarlier(false);
+        }
+      }
+    },
+    [
+      sessionId,
+      firstId,
+      hasMore,
+      loadingSession,
+      mutationPending,
+      supported,
+      rememberTranscriptPosition,
+    ],
+  );
+
+  useEffect(() => {
+    if (loadingEarlier || continueEarlier.current === null) return;
+    const navigation = continueEarlier.current;
+    continueEarlier.current = null;
+    const node = transcriptRef.current;
+    // A page can advance the native cursor without adding visible rows. At the
+    // absolute top, another wheel gesture may not emit a scroll event at all.
     if (
-      !sessionId ||
-      !firstId ||
-      loadingEarlier ||
-      !supported.has("get_messages")
-    )
-      return;
-    const navigation = navigationRevision.current;
-    setLoadingEarlier(true);
-    try {
-      const page = await api.messages(sessionId, {
-        beforeId: firstId,
-        limit: 400,
-      });
-      if (navigation !== navigationRevision.current) return;
-      const older = rowsFromMessages(page.messages);
-      earlierPage.current = {
-        rows: prependRows(older, earlierPage.current?.rows ?? []),
-        firstId: page.firstId ?? "",
-        hasMore: page.hasMore,
-      };
-      setRows((previous) => prependRows(older, previous));
-      setFirstId(page.firstId ?? "");
-      setHasMore(page.hasMore);
-    } catch (cause) {
-      if (navigation !== navigationRevision.current) return;
-      setError(errorText(cause));
-    } finally {
-      if (navigation === navigationRevision.current) setLoadingEarlier(false);
+      navigation === navigationRevision.current &&
+      node &&
+      node.scrollTop <= 160 &&
+      !followingRef.current &&
+      !connectionFailed
+    ) {
+      void loadEarlier(true);
     }
-  }
+  }, [loadEarlier, loadingEarlier, rows, connectionFailed]);
 
   async function refreshOAuth(provider: string) {
     const navigation = navigationRevision.current;
@@ -3374,13 +3440,22 @@ export default function App() {
                   node.scrollHeight - node.scrollTop - node.clientHeight < 80;
                 followingRef.current = nearBottom;
                 setFollowing(nearBottom);
+                rememberTranscriptPosition();
+                if (node.scrollTop > 160) {
+                  autoEarlierCursor.current = null;
+                } else if (!nearBottom && !loadingSession && !connectionFailed) {
+                  const cursor = `${navigationRevision.current}:${sessionId}:${firstId}`;
+                  if (autoEarlierCursor.current !== cursor)
+                    void loadEarlier(true);
+                }
               }}
             >
               <div className="message-list">
                 {hasMore && (
-                  <div className="load-earlier">
+                  <div className="load-earlier" aria-busy={loadingEarlier}>
                     <button
                       type="button"
+                      title={t("scrollForEarlier")}
                       onClick={() => void loadEarlier()}
                       disabled={loadingEarlier}
                     >
@@ -3390,6 +3465,11 @@ export default function App() {
                       />
                       {t("loadEarlier")}
                     </button>
+                    {loadingEarlier && (
+                      <span className="sr-only" role="status">
+                        {t("loadingEarlierMessages")}
+                      </span>
+                    )}
                   </div>
                 )}
 
@@ -3486,7 +3566,13 @@ export default function App() {
 
                 <ProjectImageContext.Provider value={project}>
                   {rows.map((row) => (
-                    <RowView row={row} key={row.id} language={language} />
+                    <div
+                      className="transcript-row"
+                      data-transcript-row={row.id}
+                      key={row.id}
+                    >
+                      <RowView row={row} language={language} />
+                    </div>
                   ))}
                 </ProjectImageContext.Provider>
 

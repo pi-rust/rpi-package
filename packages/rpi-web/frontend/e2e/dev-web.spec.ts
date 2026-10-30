@@ -5544,3 +5544,484 @@ test("mobile composer footer keeps model picker usable beside session metrics", 
   await page.getByRole("option", { name: "Mobile model" }).click();
   await expect(popover).toBeHidden();
 });
+
+// Keep the initial transcript tall enough that top paging cannot be confused
+// with bottom-following, including at mobile widths.
+const upwardPagingMessages = Array.from({ length: 20 }, (_, index) => ({
+  role: "user",
+  entryId: `scroll-current-${index}`,
+  content: Array.from(
+    { length: 8 },
+    (_, line) =>
+      `Current message ${index}, line ${line}: enough history to scroll.`,
+  ).join("\n"),
+}));
+
+async function mockUpwardPaging(page: Page) {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: upwardPagingMessages,
+        events: [],
+        lastSeq: 4,
+        firstId: "scroll-current-0",
+        hasMore: true,
+      },
+    }),
+  );
+}
+
+async function scrollPagingTo(page: Page, top: number) {
+  await page.locator(".transcript").evaluate(async (element, value) => {
+    element.scrollTop = value;
+    // Also exercise repeated events at the same position (trackpad/held scroll).
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  }, top);
+}
+
+async function visiblePagingAnchor(page: Page) {
+  return page.locator(".transcript").evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    const row = Array.from(
+      element.querySelectorAll("[data-transcript-row]"),
+    ).find((item) => item.getBoundingClientRect().bottom > top + 20);
+    if (!row) throw new Error("Expected a visible transcript row");
+    return {
+      id: row.getAttribute("data-transcript-row")!,
+      offset: row.getBoundingClientRect().top - top,
+    };
+  });
+}
+
+async function expectPagingAnchor(
+  page: Page,
+  anchor: { id: string; offset: number },
+) {
+  await expect
+    .poll(() =>
+      page.locator(".transcript").evaluate((element, saved) => {
+        const row = Array.from(
+          element.querySelectorAll("[data-transcript-row]"),
+        ).find((item) => item.getAttribute("data-transcript-row") === saved.id);
+        if (!row) return Number.MAX_SAFE_INTEGER;
+        return Math.abs(
+          row.getBoundingClientRect().top -
+            element.getBoundingClientRect().top -
+            saved.offset,
+        );
+      }, anchor),
+    )
+    .toBeLessThanOrEqual(3);
+}
+
+for (const viewport of [
+  { name: "desktop", width: 1280, height: 900 },
+  { name: "mobile", width: 390, height: 844 },
+]) {
+  test(`upward paging: ${viewport.name} auto-loads 48 without a button click and stops at exhaustion`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({
+      width: viewport.width,
+      height: viewport.height,
+    });
+    await mockUpwardPaging(page);
+    const requests: Array<{ beforeId: string; limit: number }> = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages" || !body.beforeId)
+        return route.fallback();
+      requests.push(body);
+      return route.fulfill({
+        json: response(
+          {
+            messages: [
+              {
+                role: "user",
+                entryId: "scroll-oldest",
+                content: "Oldest auto-loaded message",
+              },
+            ],
+            firstId: "scroll-oldest",
+            hasMore: false,
+          },
+          "get_messages",
+        ),
+      });
+    });
+    await page.goto("/");
+    await expect(page.locator(".message.user")).toHaveCount(20);
+    await expect(
+      page.getByRole("button", { name: "Load earlier messages" }),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        page.locator(".transcript").evaluate((element) => element.scrollTop),
+      )
+      .toBeGreaterThan(160);
+    await page.waitForTimeout(250);
+    expect(requests).toHaveLength(0); // No initial automatic fetch.
+    await scrollPagingTo(page, 161);
+    expect(requests).toHaveLength(0);
+    await scrollPagingTo(page, 120);
+    await expect(
+      page.getByText("Oldest auto-loaded message", { exact: true }),
+    ).toBeVisible();
+    expect(requests).toMatchObject([
+      { beforeId: "scroll-current-0", limit: 48 },
+    ]);
+    await expect(
+      page.getByRole("button", { name: "Load earlier messages" }),
+    ).toHaveCount(0);
+    for (const top of [400, 100, 0, 400, 0]) await scrollPagingTo(page, top);
+    await page.waitForTimeout(250);
+    expect(requests).toHaveLength(1);
+  });
+}
+
+test("upward paging: held scrolling deduplicates requests and prepending preserves the visible row", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages" || !body.beforeId)
+        return route.fallback();
+      requests++;
+      await held;
+      return route.fulfill({
+        json: response(
+          {
+            messages: Array.from({ length: 8 }, (_, index) => ({
+              role: "user",
+              entryId: `scroll-older-${index}`,
+              content: `Prepended history ${index}\nSecond line\nThird line\nFourth line`,
+            })),
+            firstId: "scroll-older-0",
+            hasMore: true,
+          },
+          "get_messages",
+        ),
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect.poll(() => requests).toBe(1);
+  try {
+    for (const top of [110, 90, 130, 80, 100]) await scrollPagingTo(page, top);
+    await expect(
+      page.getByRole("button", { name: "Load earlier messages" }),
+    ).toBeDisabled();
+    expect(requests).toBe(1);
+    // Move while the request is held: capture must happen at response time.
+    await scrollPagingTo(page, 450);
+    const anchor = await visiblePagingAnchor(page);
+    release();
+    await expect(page.locator(".message.user")).toHaveCount(28);
+    await expectPagingAnchor(page, anchor);
+    await page.waitForTimeout(250);
+    await expectPagingAnchor(page, anchor);
+    expect(requests).toBe(1);
+  } finally {
+    release();
+  }
+});
+
+test("upward paging: a failed automatic cursor stays quiet until leaving and reentering the top", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  const cursors: string[] = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    cursors.push(body.beforeId);
+    if (cursors.length === 1)
+      return route.fulfill({
+        status: 503,
+        json: { error: "Temporary earlier history failure" },
+      });
+    return route.fulfill({
+      json: response(
+        {
+          messages: [
+            {
+              role: "user",
+              entryId: "scroll-retried",
+              content: "Retried earlier history",
+            },
+          ],
+          firstId: "scroll-retried",
+          hasMore: false,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect.poll(() => cursors.length).toBe(1);
+  const fallback = page.getByRole("button", { name: "Load earlier messages" });
+  await expect(fallback).toBeEnabled();
+  for (const top of [100, 60, 0, 120, 40]) await scrollPagingTo(page, top);
+  await page.waitForTimeout(350);
+  expect(cursors).toEqual(["scroll-current-0"]);
+  await scrollPagingTo(page, 400);
+  await scrollPagingTo(page, 120);
+  await expect(
+    page.getByText("Retried earlier history", { exact: true }),
+  ).toBeVisible();
+  expect(cursors).toEqual(["scroll-current-0", "scroll-current-0"]);
+});
+
+test("upward paging: a no-progress cursor ends paging even when the host reports hasMore", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  let requests = 0;
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    requests++;
+    return route.fulfill({
+      json: response(
+        {
+          messages: [upwardPagingMessages[0]],
+          firstId: body.beforeId,
+          hasMore: true,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect.poll(() => requests).toBe(1);
+  await expect(
+    page.getByRole("button", { name: "Load earlier messages" }),
+  ).toHaveCount(0);
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  for (const top of [400, 0, 400, 100, 0]) await scrollPagingTo(page, top);
+  await page.waitForTimeout(350);
+  expect(requests).toBe(1);
+});
+
+test("upward paging: advances the cursor for the next page without duplicate rows", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  const cursors: string[] = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    cursors.push(body.beforeId);
+    return route.fulfill({
+      json: response(
+        {
+          messages: [
+            {
+              role: "user",
+              entryId: `page-${cursors.length}`,
+              content: `Earlier page ${cursors.length}`,
+            },
+          ],
+          firstId: `page-${cursors.length}`,
+          hasMore: cursors.length < 2,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect(page.locator(".message.user")).toHaveCount(21);
+  await scrollPagingTo(page, 400);
+  await scrollPagingTo(page, 120);
+  await expect(page.locator(".message.user")).toHaveCount(22);
+  expect(cursors).toEqual(["scroll-current-0", "page-1"]);
+  await expect(
+    page.getByRole("button", { name: "Load earlier messages" }),
+  ).toHaveCount(0);
+});
+
+test("upward paging: a late older image does not move the reader's row", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let imageRequested = false;
+  await page.route("**/late-history.svg", async (route) => {
+    imageRequested = true;
+    await held;
+    return route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="960"><rect width="640" height="960" fill="blue"/></svg>',
+    });
+  });
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    return route.fulfill({
+      json: response(
+        {
+          messages: [
+            {
+              role: "assistant",
+              entryId: "late-image",
+              content: [
+                {
+                  type: "text",
+                  text: "![Late earlier image](/late-history.svg)",
+                },
+              ],
+            },
+            ...Array.from({ length: 5 }, (_, i) => ({
+              role: "user",
+              entryId: `late-old-${i}`,
+              content: `Older row ${i}\nMore text\nMore text`,
+            })),
+          ],
+          firstId: "late-image",
+          hasMore: false,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  const anchor = await visiblePagingAnchor(page);
+  try {
+    await expect(page.locator(".message.user")).toHaveCount(25);
+    await expectPagingAnchor(page, anchor);
+    // Simulate an image request started earlier but completing after it scrolls
+    // above the reader. Chromium may otherwise defer an offscreen lazy image.
+    await page
+      .getByAltText("Late earlier image")
+      .evaluate((i: HTMLImageElement) => {
+        i.loading = "eager";
+      });
+    await expect.poll(() => imageRequested).toBe(true);
+    release();
+    await expect
+      .poll(() =>
+        page
+          .getByAltText("Late earlier image")
+          .evaluate((i: HTMLImageElement) => i.naturalHeight),
+      )
+      .toBe(960);
+    await expectPagingAnchor(page, anchor);
+  } finally {
+    release();
+  }
+});
+
+test("upward paging: jumping to latest during a pending page keeps bottom follow", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let pending = false;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages" || !body.beforeId)
+        return route.fallback();
+      pending = true;
+      await held;
+      return route.fulfill({
+        json: response(
+          {
+            messages: [
+              {
+                role: "user",
+                entryId: "old-follow",
+                content: "Old follow row",
+              },
+            ],
+            firstId: "old-follow",
+            hasMore: false,
+          },
+          "get_messages",
+        ),
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 120);
+  await expect.poll(() => pending).toBe(true);
+  await scrollPagingTo(page, 1000000);
+  release();
+  await expect(page.locator(".message.user")).toHaveCount(21);
+  await expect
+    .poll(() =>
+      page
+        .locator(".transcript")
+        .evaluate((n) => n.scrollHeight - n.clientHeight - n.scrollTop),
+    )
+    .toBeLessThan(3);
+});
+
+test("upward paging: an invisible page advances automatically without another scroll", async ({
+  page,
+}) => {
+  await mockUpwardPaging(page);
+  const cursors: string[] = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+    cursors.push(body.beforeId);
+    return route.fulfill({
+      json: response(
+        {
+          messages:
+            cursors.length === 1
+              ? []
+              : [
+                  {
+                    role: "user",
+                    entryId: "visible-old",
+                    content: "Visible earlier history",
+                  },
+                ],
+          firstId: cursors.length === 1 ? "invisible-old" : "visible-old",
+          hasMore: cursors.length === 1,
+        },
+        "get_messages",
+      ),
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toHaveCount(20);
+  await scrollPagingTo(page, 0);
+  await expect(
+    page.getByText("Visible earlier history", { exact: true }),
+  ).toBeVisible();
+  expect(cursors).toEqual(["scroll-current-0", "invisible-old"]);
+});

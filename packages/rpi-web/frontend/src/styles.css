@@ -864,6 +864,9 @@ code {
   max-width: 760px;
   margin: auto;
 }
+.transcript-row {
+  display: flow-root;
+}
 .message {
   padding: 0 0 28px;
 }
@@ -1346,7 +1349,8 @@ details[open] > summary:before {
   border-radius: 0;
   background: transparent;
 }
-.tool-card + .tool-card {
+.tool-card + .tool-card,
+.transcript-row:has(> .tool-card) + .transcript-row > .tool-card {
   border-top: 0;
 }
 .tool-card > summary {
@@ -3329,7 +3333,7 @@ details[open] > summary:before {
   background: var(--danger);
 }
 
-/* "Load earlier" sits above the transcript, outside the message column. */
+/* Automatic top paging retains a keyboard-accessible retry/short-chat fallback. */
 .load-earlier {
   display: flex;
   justify-content: center;
