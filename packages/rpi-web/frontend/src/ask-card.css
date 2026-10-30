@@ -1,0 +1,97 @@
+.ask-card > summary {
+  overflow: hidden;
+}
+.ask-detail {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ask-question {
+  min-width: 0;
+}
+.ask-header {
+  color: var(--muted);
+  font-size: 11px;
+}
+.ask-detail .ask-prompt {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.ask-prompt svg {
+  flex: none;
+}
+.ask-context,
+.ask-result p,
+.ask-answer-text {
+  margin: 6px 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.ask-context {
+  color: var(--muted);
+}
+.ask-options,
+.ask-values {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+.ask-options li {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-left: 2px solid var(--line);
+}
+.ask-options li.selected {
+  border-color: var(--green);
+  background: var(--soft);
+}
+.ask-choice-mark {
+  width: 14px;
+  flex: none;
+  color: var(--green);
+}
+.ask-options small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+.ask-answer strong,
+.ask-result strong {
+  font-size: 10px;
+  color: var(--muted);
+}
+.ask-values li {
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.ask-confirmation,
+.ask-cancelled,
+.ask-empty {
+  font-size: 12px;
+  margin: 6px 0;
+}
+.ask-error {
+  color: var(--danger);
+}
+.ask-raw {
+  min-width: 0;
+  color: var(--muted);
+}
+.ask-raw > summary {
+  cursor: pointer;
+  font-size: 11px;
+}
+.ask-raw pre {
+  max-width: 100%;
+}

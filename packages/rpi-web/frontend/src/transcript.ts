@@ -9,6 +9,7 @@
 
 import type { MessageKey } from "./i18n";
 import type { SeqEvent } from "./api";
+import { isAskTool } from "./ask";
 
 function snapshotMessageKey(message: unknown): string | null {
   if (!message || typeof message !== "object") return null;
@@ -569,8 +570,14 @@ export function rowsFromAssistant(
   return rows;
 }
 
-/** Result payload of a `toolResult` message, reduced to the useful text. */
+/** Most tools need only text; ask history also needs its native answer metadata. */
 export function resultOf(message: Record<string, unknown>): unknown {
+  if (
+    isAskTool(String(message.toolName ?? "")) &&
+    message.details &&
+    typeof message.details === "object"
+  )
+    return { content: message.content, details: message.details };
   const texts = textBlocks(message);
   if (texts.length > 0) return texts.join("\n");
   return (message.content as unknown) ?? "";
