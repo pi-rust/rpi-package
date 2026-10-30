@@ -13,6 +13,7 @@ import {
   ListChecks,
   Loader2,
   MessageCircleQuestion,
+  Network,
   Pencil,
   Search,
   Terminal,
@@ -31,6 +32,7 @@ function iconForTool(name: string) {
     .toLowerCase()
     .replace(/^functions\./, "");
   if (isShellTool(tool)) return Terminal;
+  if (tool === "delegate_task") return Network;
   if (["read", "read_file", "readfile", "cat"].includes(tool)) return FileText;
   if (
     ["edit", "apply_patch", "write", "write_file", "writefile"].includes(tool)

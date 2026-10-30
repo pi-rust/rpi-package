@@ -52,6 +52,8 @@ import { SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
 import { AskCard } from "./AskCard";
 import { askInfo, isAskTool } from "./ask";
+import { DelegationCard } from "./DelegationCard";
+import { delegationInfo, isDelegationTool } from "./delegation";
 import {
   api,
   ApiError,
@@ -5191,6 +5193,22 @@ function ToolRowView({
       ))}
     </details>
   ) : null;
+  const delegation =
+    isDelegationTool(row.name) && !row.images?.length
+      ? delegationInfo(row.args, row.result)
+      : null;
+  if (delegation)
+    return (
+      <DelegationCard
+        expansion={expansion}
+        row={row}
+        info={delegation}
+        language={language}
+        timing={
+          row.timing && <ToolElapsed timing={row.timing} language={language} />
+        }
+      />
+    );
   const ask = isAskTool(row.name) ? askInfo(row.args, row.result) : null;
   if (ask)
     return (

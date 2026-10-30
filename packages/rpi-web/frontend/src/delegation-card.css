@@ -1,0 +1,75 @@
+.delegation-card > summary {
+  overflow: hidden;
+}
+.delegation-detail {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.delegation-detail > *,
+.delegation-detail dl,
+.delegation-detail dl > div,
+.delegation-detail dd {
+  min-width: 0;
+}
+.delegation-detail h4 {
+  margin: 0 0 6px;
+}
+.delegation-task {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.delegation-detail dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+}
+.delegation-detail dl > div {
+  display: grid;
+  grid-template-columns: minmax(70px, auto) minmax(0, 1fr);
+  gap: 12px;
+}
+.delegation-detail dt {
+  color: var(--muted);
+}
+.delegation-detail dd {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.delegation-limit,
+.delegation-empty {
+  margin: 0;
+  font-size: 12px;
+}
+.delegation-limit {
+  color: var(--muted);
+}
+.delegation-error {
+  color: var(--danger);
+}
+.delegation-report {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.delegation-report pre {
+  max-width: 100%;
+}
+.delegation-execution > summary,
+.delegation-raw > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.delegation-execution dl {
+  margin-top: 8px;
+}
+.delegation-raw pre {
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
