@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Explicit `rpcMessageUpdates` launch configuration (`snapshot` or `compact-deltas`), including strict validation and tool schema. Omission uses the native executable's own default without injecting a flag unknown to older hosts. Upgrade consumers before deploying a native CLI that defaults to compact deltas; snapshot is only a temporary migration fallback.
+
 ## [0.3.6](https://github.com/pi-rust/rpi-package/compare/rpi-server-v0.3.5...rpi-server-v0.3.6) - 2026-10-14
 
 ### Other

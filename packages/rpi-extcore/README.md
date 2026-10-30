@@ -63,6 +63,28 @@ Ok(())
 
 `HostSession::subscribe_raw` is an internal adapter feed, including native response frames. Request callers receive their original IDs; native request IDs are isolated internally. Slow live subscribers receive an explicit resync requirement rather than silently truncated success. ACP treats overflow of its prompt stream as a failed run and stops that backend, retaining its established behavior.
 
+### Compact native message updates
+
+Native hosts may advertise `ready.semantics.messageUpdates` as `compact-deltas`;
+absence means the older `snapshot` mode. Compact text/thinking/tool-call deltas
+retain `eventType`, `contentIndex`, `delta` and the nested event, but omit the
+top-level cumulative message and nested partial. Structural events and final
+`message_end` remain authoritative. This changes the default native wire format;
+upgrade adapters and clients before upgrading the host, or explicitly request
+`--rpc-message-updates=snapshot` as a temporary migration fallback.
+
+The raw feed remains unchanged. The projected/replay feed supplements compact
+text/thinking deltas with a live message assembled from structural snapshots so
+existing Web row projection continues to stream. Compact tool deltas may also
+carry the provider's current cumulative `id`/`toolName`; the projection uses
+those identities without guessing, and updates arguments when their raw JSON
+stream parses completely. While JSON is incomplete, it retains the last native
+argument snapshot rather than fabricating a value. Initial block content
+is retained, snapshots are never appended twice, and final metadata comes from
+the host. This downstream snapshot projection is not a guarantee of linear SSE
+traffic or lossless event reconstruction; compact native RPC and adapter/UI
+projection have different contracts.
+
 `rpi-durable-core` contains the protocol-neutral canonical schema and journal
 replay. `durable::DurableRuntime` is only a branch-backed projection: it reads
 `durable-state`/`rpi-durable-journal`, forwards mutations through the registered

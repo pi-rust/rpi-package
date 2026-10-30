@@ -238,6 +238,7 @@ impl HostRuntime {
 
 #[derive(Debug)]
 struct HostState {
+    live_message: crate::message::LiveMessageProjection,
     status: String,
     last_error: Option<String>,
     latest_settlement: Option<Value>,
@@ -357,6 +358,7 @@ impl HostSession {
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let created_at = now_ms();
         let state = Arc::new(RwLock::new(HostState {
+            live_message: Default::default(),
             status: "ready".into(),
             last_error: None,
             latest_settlement: None,
@@ -593,6 +595,7 @@ impl HostSession {
                 events: broadcast::channel(capacity).0,
                 pending,
                 state: Arc::new(RwLock::new(HostState {
+                    live_message: Default::default(),
                     status: "ready".into(),
                     last_error: None,
                     latest_settlement: None,
@@ -907,15 +910,13 @@ async fn publish(
     history: &Arc<Mutex<VecDeque<BufferedEvent>>>,
     state: &Arc<RwLock<HostState>>,
     seq: &AtomicU64,
-    value: Value,
+    mut value: Value,
 ) {
-    let kind = value
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("message");
     let next = seq.fetch_add(1, Ordering::SeqCst) + 1;
     {
         let mut state = state.write().await;
+        state.live_message.project(&mut value);
+        let kind = value["type"].as_str().unwrap_or("message");
         state.last_seq = next;
         state.updated_at = now_ms();
         match kind {
@@ -976,6 +977,55 @@ async fn publish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn compact_live_projection_is_replayable_without_changing_raw_frames() {
+        let (writer, _peer) = tokio::io::duplex(4096);
+        let (session, _injector) = HostSession::test_connection(writer, 32);
+        let mut raw_receiver = session.subscribe_raw();
+        let mut projected_receiver = session.subscribe();
+        let frames: Vec<Value> =
+            serde_json::from_str(include_str!("../tests/fixtures/compact-deltas.json")).unwrap();
+        let mut tracker = crate::run::RunTracker::new(json!("prompt"));
+        tracker.observe(
+            &json!({"type":"response","id":"prompt","success":true,"data":{"accepted":true}}),
+            false,
+        );
+        for (index, raw) in frames.iter().enumerate() {
+            // Same ordering as the native reader: raw first, projection second.
+            session.runtime.raw_events.send(raw.clone()).unwrap();
+            publish(
+                &session.runtime.events,
+                &session.runtime.history,
+                &session.runtime.state,
+                &session.runtime.seq,
+                raw.clone(),
+            )
+            .await;
+            assert_eq!(raw_receiver.recv().await.unwrap(), *raw);
+            let projected = projected_receiver.recv().await.unwrap();
+            assert_eq!(projected.seq, index as u64 + 1);
+            let replay = session.history(Some(index as u64)).await;
+            assert_eq!(replay.len(), 1);
+            assert_eq!(replay[0].value, projected.value);
+            if raw["eventType"] == "text_delta" || raw["eventType"] == "thinking_delta" {
+                assert!(raw.get("message").is_none());
+                assert_eq!(projected.value["message"]["role"], "assistant");
+            }
+            let progress = tracker.observe(raw, false);
+            if raw["type"] == "agent_settled" {
+                assert_eq!(
+                    progress.outcome,
+                    Some(Ok(crate::run::RunOutcome::Completed))
+                );
+            } else {
+                assert!(progress.outcome.is_none(), "message_end is not settlement");
+            }
+        }
+        assert_eq!(session.snapshot().await.status, "ready");
+        assert_eq!(session.snapshot().await.last_seq, frames.len() as u64);
+        session.shutdown().await;
+    }
 
     #[tokio::test]
     async fn branch_query_uses_one_custom_types_request_and_preserves_native_order() {
@@ -1231,6 +1281,7 @@ mod tests {
         let (events, _) = broadcast::channel(16);
         let history = Arc::new(Mutex::new(VecDeque::new()));
         let state = Arc::new(RwLock::new(HostState {
+            live_message: Default::default(),
             status: "ready".into(),
             last_error: None,
             latest_settlement: None,

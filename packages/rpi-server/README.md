@@ -65,6 +65,29 @@ rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动 TCP �
 }
 ```
 
+### RPC 消息更新模式
+
+新版 native `rpi --mode rpc` 默认使用 `compact-deltas`：文本、思考和工具参数
+的高频 delta 不再携带两份累计消息快照；结构事件和最终 `message_end` 仍然完整。
+原始 TCP 事件按子进程输出透传，不由 `rpi-server` 重新补入快照。
+
+`rpc_server` 的启动参数可以显式选择模式：
+
+```json
+{"action":"start","rpcMessageUpdates":"compact-deltas"}
+```
+
+迁移期需兼容尚未升级的消费者时，显式使用 `"rpcMessageUpdates":"snapshot"`。
+仅接受这两个值，其他值（包括 `null`）报错。省略参数时不添加新 CLI flag，使用
+所选 native executable 自身的默认值，因此仍可启动不认识此参数的旧 CLI。
+这是服务器启动配置，不是 `start_session` 的逐会话选项。
+
+客户端应检查 `ready.semantics.messageUpdates`；字段缺失表示旧 snapshot 模式。
+推荐先升级支持两种模式的客户端及 Web/ACP 适配器，再升级 native CLI。
+若升级 native CLI 而不升级旧远程 TUI，其依赖累计 `message` 的流式显示可能停止。
+旧模式仅作为临时回退，后续计划移除；新集成应直接消费 delta，并在完整边界消息
+到达时校准状态。compact 不代表整个事件流完全无快照、严格线性或可无损重放。
+
 ### 客户端连接
 
 #### 方式一：使用 nc 测试

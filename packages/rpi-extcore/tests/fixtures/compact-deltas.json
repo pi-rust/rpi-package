@@ -1,0 +1,11 @@
+[
+  {"type":"message_start","message":{"role":"assistant","timestamp":1,"content":[{"type":"thinking","thinking":"初"},{"type":"text","text":"Hello"}]}},
+  {"type":"message_update","eventType":"thinking_delta","contentIndex":0,"delta":"想🌊","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"想🌊"}},
+  {"type":"message_update","eventType":"text_delta","contentIndex":1,"delta":" world","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":" world"}},
+  {"type":"message_update","eventType":"text_end","contentIndex":1,"message":{"role":"assistant","timestamp":1,"content":[{"type":"thinking","thinking":"初想🌊"},{"type":"text","text":"Hello world"}]}},
+  {"type":"message_update","eventType":"text_delta","contentIndex":1,"delta":"!"},
+  {"type":"message_update","eventType":"toolcall_start","contentIndex":2,"message":{"role":"assistant","timestamp":1,"content":[{"type":"thinking","thinking":"初想🌊"},{"type":"text","text":"Hello world!"},{"type":"toolCall","id":"t","name":"read","arguments":{}}]}},
+  {"type":"message_update","eventType":"toolcall_delta","contentIndex":2,"delta":"{\"path\":\"file\"}","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":2,"delta":"{\"path\":\"file\"}"}},
+  {"type":"message_end","message":{"role":"assistant","timestamp":1,"stopReason":"stop","content":[{"type":"thinking","thinking":"初想🌊好了"},{"type":"text","text":"Hello world! Saved."},{"type":"toolCall","id":"t","name":"read","arguments":{"path":"file"}}]}},
+  {"type":"agent_settled","outcome":"completed","finalText":"Hello world! Saved."}
+]
