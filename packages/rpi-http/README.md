@@ -80,6 +80,25 @@ The Web client maps local raster image references to the selected project's imag
 endpoint. This requires a backend containing this route; restarting an older
 backend without upgrading it will not add image support.
 
+## Run timings
+
+`POST /api/v1/sessions/{id}/run-timings/query` reads persisted native v4 run
+elapsed metadata for a known session without starting a native host. It uses the
+same cookie authentication, Host/Origin checks and `X-Rpi-Web: 1` marker as other
+POST endpoints.
+
+```json
+{"entryIds":["assistant-entry-id"],"cursor":null}
+```
+
+`entryIds` accepts at most 400 unique, nonempty IDs; `cursor` is optional and
+unknown fields are rejected. The response contains `timings` (each with `runId`,
+`lane`, `finalEntryId`, `startedAt`, `finishedAt`, `elapsedMs`, `outcome`),
+`complete`, `cursor`, `scannedBytes` and `totalBytes`. If `complete` is false,
+repeat the query with the returned cursor to continue the bounded scan. A 409
+invalidates accumulated timings and the cursor; retry without the cursor.
+Invalid requests return 400 and unknown session UUIDs return 404.
+
 ## Embed the API
 
 `router(core, &config, shutdown_receiver)` builds an API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. Rust callers and HTTP clients then observe the same service state.

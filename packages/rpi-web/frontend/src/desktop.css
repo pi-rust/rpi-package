@@ -1703,6 +1703,14 @@
   background: transparent;
   white-space: pre-wrap;
 }
+.workspace .shell-card .shell-window .shell-command-preview {
+  /* Four rendered lines plus this layout's 6px/8px vertical padding. */
+  max-height: calc(6.4em + 14px);
+  overflow: hidden;
+}
+.workspace .shell-card .shell-window .shell-command-preview.expanded {
+  max-height: none;
+}
 .workspace .shell-card .shell-window .shell-input code {
   min-width: 0;
   overflow-wrap: anywhere;

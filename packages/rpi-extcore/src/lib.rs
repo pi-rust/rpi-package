@@ -34,6 +34,7 @@ pub mod protocol;
 pub mod registry;
 pub mod reply;
 pub mod run;
+pub mod run_timing;
 pub mod service;
 pub mod timing;
 pub mod workspace;

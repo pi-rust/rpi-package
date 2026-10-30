@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { api, type Project, type SessionSummary } from "./api";
 import { translate, type Language } from "./i18n";
+import { SessionIssueBadge } from "./SessionIssueBadge";
 import { createPortal } from "react-dom";
 type FolderNode = {
   name: string;
@@ -900,6 +901,7 @@ export function ProjectSidebar({
             {session.relation && <span className="fork-label">↳ </span>}
             {title}
           </span>
+          <SessionIssueBadge session={session} language={language} />
           {draftSessionIds.has(session.sessionId) && (
             <span
               className="session-draft"

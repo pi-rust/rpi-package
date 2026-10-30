@@ -22,7 +22,7 @@ use rpi_extcore::{
     service::{
         self, AuthRefreshRequest, BackendConfig, CreateProjectRequest, CreateSessionRequest,
         FileQuery, ForkRequest, MetadataRequest, ProjectFoldersQuery, ProjectMetadataRequest,
-        RenameProjectRequest, RenameRequest, Service, SessionListQuery,
+        RenameProjectRequest, RenameRequest, RunTimingsQuery, Service, SessionListQuery,
     },
 };
 use serde::{de::DeserializeOwned, Deserialize};
@@ -261,6 +261,7 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/sessions/{id}/metadata", post(session_metadata))
         .route("/api/v1/sessions/{id}/commands", post(command))
         .route("/api/v1/sessions/{id}/snapshot", get(snapshot))
+        .route("/api/v1/sessions/{id}/run-timings/query", post(run_timings))
         .route(
             "/api/v1/sessions/{id}/durable",
             get(durable_state).post(durable_mutation),
@@ -724,6 +725,23 @@ async fn durable_mutation(
             .into_reply(),
     )
     .into_response()
+}
+
+async fn run_timings(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    query: Result<Json<RunTimingsQuery>, axum::extract::rejection::JsonRejection>,
+) -> HttpReply {
+    let Json(query) = match query {
+        Ok(query) => query,
+        Err(_) => {
+            return HttpReply(ServiceReply {
+                kind: ReplyKind::InvalidInput,
+                value: json!({"error":"invalid JSON request body"}),
+            });
+        }
+    };
+    HttpReply(service::run_timings(&state.backend, id, query).await)
 }
 
 async fn snapshot(

@@ -14,6 +14,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { translate, type Language } from "./i18n";
 import { ZoomableImage } from "./ZoomableImage";
+import { MermaidBlock } from "./MermaidBlock";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
 
 const remarkPlugins = [remarkGfm, remarkBreaks];
@@ -116,9 +117,18 @@ export const MarkdownBody = memo(function MarkdownBody({
           <table>{children}</table>
         </div>
       ),
-      pre: ({ children }) => (
-        <CodeBlock language={language}>{children}</CodeBlock>
-      ),
+      pre: ({ children }) => {
+        const props = isValidElement(children)
+          ? (children.props as { className?: string })
+          : undefined;
+        return /(?:^|\s)language-mermaid(?:\s|$)/i.test(
+          props?.className ?? "",
+        ) ? (
+          <MermaidBlock source={codeText(children)} language={language} />
+        ) : (
+          <CodeBlock language={language}>{children}</CodeBlock>
+        );
+      },
     }),
     [language],
   );
