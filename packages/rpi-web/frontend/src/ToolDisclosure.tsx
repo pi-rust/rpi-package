@@ -12,6 +12,7 @@ import {
   Globe,
   ListChecks,
   Loader2,
+  MessageCircleQuestion,
   Pencil,
   Search,
   Terminal,
@@ -36,6 +37,7 @@ function iconForTool(name: string) {
   )
     return Pencil;
   if (["plan", "todo"].includes(tool)) return ListChecks;
+  if (["ask_user", "ask"].includes(tool)) return MessageCircleQuestion;
   if (["fetch", "webfetch", "web_fetch", "http_get", "open_url"].includes(tool))
     return Globe;
   if (

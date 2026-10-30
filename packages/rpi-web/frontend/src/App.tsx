@@ -49,6 +49,8 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
 import { SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
+import { AskCard } from "./AskCard";
+import { askInfo, isAskTool } from "./ask";
 import {
   api,
   ApiError,
@@ -5125,6 +5127,19 @@ const RowView = memo(function RowView({
 function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
   const expansion = useToolExpansion(row.status);
   const t = (key: MessageKey) => translate(language, key);
+  const ask = isAskTool(row.name) ? askInfo(row.args, row.result) : null;
+  if (ask)
+    return (
+      <AskCard
+        expansion={expansion}
+        row={row}
+        info={ask}
+        language={language}
+        timing={
+          row.timing && <ToolElapsed timing={row.timing} language={language} />
+        }
+      />
+    );
   const plan = row.name === "plan" ? planInfo(row.args, row.result) : null;
   if (plan)
     return (
