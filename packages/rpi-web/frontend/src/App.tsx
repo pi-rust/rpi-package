@@ -5440,43 +5440,49 @@ function TodoCard({
       }
     >
       <div className="tool-detail todo-detail">
-        {items.length < total && (
+        {items.length > 0 && items.length < total && (
           <p className="muted todo-scope">
             {t("todoListed", { shown: items.length, total })}
           </p>
         )}
-        {total === 0 && <p className="muted">{t("todoEmpty")}</p>}
-        <ul className="todo-list">
-          {items.map((item, index) => (
-            <li
-              key={`${index}-${item.text.slice(0, 16)}`}
-              className={
-                item.done ? "done" : item.inProgress ? "in-progress" : ""
-              }
-            >
-              <span className="todo-check" aria-hidden="true">
-                {item.done ? (
-                  <Check size={12} />
-                ) : item.inProgress ? (
-                  <Loader2 size={12} className="spin" />
-                ) : null}
-              </span>
-              <span>
-                <span className="sr-only">
-                  {t(
-                    item.done
-                      ? "todoCompleted"
-                      : item.inProgress
-                        ? "todoInProgress"
-                        : "todoPending",
-                  )}
-                  {": "}
+        {items.length === 0 && (
+          <p className={`muted ${total > 0 ? "todo-summary-only" : "todo-empty"}`}>
+            {t(total > 0 ? "todoSummaryOnly" : "todoEmpty")}
+          </p>
+        )}
+        {items.length > 0 && (
+          <ul className="todo-list">
+            {items.map((item, index) => (
+              <li
+                key={`${index}-${item.text.slice(0, 16)}`}
+                className={
+                  item.done ? "done" : item.inProgress ? "in-progress" : ""
+                }
+              >
+                <span className="todo-check" aria-hidden="true">
+                  {item.done ? (
+                    <Check size={12} />
+                  ) : item.inProgress ? (
+                    <Loader2 size={12} className="spin" />
+                  ) : null}
                 </span>
-                {item.text}
-              </span>
-            </li>
-          ))}
-        </ul>
+                <span>
+                  <span className="sr-only">
+                    {t(
+                      item.done
+                        ? "todoCompleted"
+                        : item.inProgress
+                          ? "todoInProgress"
+                          : "todoPending",
+                    )}
+                    {": "}
+                  </span>
+                  {item.text}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
         {history}
       </div>
     </ToolDisclosure>

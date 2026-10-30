@@ -9640,10 +9640,16 @@ test.describe("todo progress regression", () => {
         await card.locator(":scope > summary").click();
         await expect(card.locator(".todo-list li")).toHaveCount(entry.shown!);
         await expect(card.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
-        if (entry.shown! < entry.total!) {
+        if (entry.shown! > 0 && entry.shown! < entry.total!) {
           await expect(card.locator(".todo-scope")).toHaveText(scopeText(language, entry.shown!, entry.total!));
         } else {
           await expect(card.locator(".todo-scope")).toHaveCount(0);
+        }
+        if (entry.shown === 0) {
+          await expect(card.locator(".todo-list")).toHaveCount(0);
+          if (entry.total! > 0) await expect(card.locator(".todo-summary-only")).toHaveText(language === "zh"
+            ? "本次结果仅包含进度汇总，未返回任务明细。"
+            : "This result contains only a progress summary; task details were not returned.");
         }
         if (entry.total === 0) await expect(card.locator(".todo-detail")).toContainText(language === "zh" ? "暂无待办任务。" : "No tasks.");
         if (index === 2) {
@@ -10861,4 +10867,109 @@ test("delegation tool card bounds deeply nested envelopes and rejects unsafe num
   expect(delegationInfo({ task: "Inspect", maxTurns: 999, timeoutSeconds: -1 }, output)).toMatchObject({ report: "", unknownResult: true, maxTurns: undefined, timeoutSeconds: undefined });
   expect(delegationInfo({}, output)).toBeNull();
   expect(delegationInfo({ task: "Inspect" }, { kind: "rpi-delegation", turns: Number.MAX_SAFE_INTEGER + 1, turnLimited: "true", report: "Report" })).toMatchObject({ turns: undefined, turnLimited: false, status: "" });
+});
+
+test.describe("todo summary-only results", () => {
+  const timing = { elapsedMs: 0, running: false };
+  const call = (id: string) => ({ type: "toolCall", id, name: "todo", arguments: { action: "list", includeDone: false }, webTiming: timing });
+  const result = (id: string, text: string) => ({ role: "toolResult", toolName: "todo", toolCallId: id, content: [{ type: "text", text }], webTiming: timing });
+  const noDetails = (language: "en" | "zh") => language === "zh"
+    ? "本次结果仅包含进度汇总，未返回任务明细。"
+    : "This result contains only a progress summary; task details were not returned.";
+  const progress = (language: "en" | "zh", done: number, total: number) => language === "zh"
+    ? `${done}/${total} 项任务已完成` : `${done}/${total} tasks completed`;
+  async function setup(page: Page, language: "en" | "zh") {
+    await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+    await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    await mockHost(page);
+  }
+
+  for (const language of ["en", "zh"] as const) {
+    test(`4/4 and other header-only results are not empty task lists in ${language}`, async ({ page }) => {
+      await setup(page, language);
+      const oldTasks = `0/4 completed\n${Array.from({ length: 4 }, (_, i) => `[ ] #${i}: Earlier task ${i}`).join("\n")}`;
+      const cases = [{ text: "4/4 completed", done: 4, total: 4 }, { text: "1/4 completed", done: 1, total: 4 }, { text: "0/4 completed", done: 0, total: 4 }, { text: "No todos", done: 0, total: 0 }];
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: "ready", lastSeq: 4, events: [], messages: [
+          { role: "assistant", content: [call("summary-previous")] }, result("summary-previous", oldTasks),
+          ...cases.flatMap((entry, i) => [
+            ...(i ? [{ role: "assistant", content: [{ type: "text", text: `Independent summary ${i}` }] }] : []),
+            { role: "assistant", content: [call(`summary-${i}`)] }, result(`summary-${i}`, entry.text),
+          ]),
+        ],
+      } }));
+      await page.goto("/");
+      const cards = page.locator(".transcript-row > .todo-card");
+      await expect(cards).toHaveCount(cases.length);
+      for (const [i, entry] of cases.entries()) {
+        const card = cards.nth(i);
+        await expect(card.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, entry.done, entry.total));
+        await expect(card.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await card.locator(":scope > summary").click();
+        const current = card.locator(":scope > .todo-detail");
+        await expect(current.locator(":scope > .todo-list, :scope > .todo-scope")).toHaveCount(0);
+        if (entry.total) {
+          await expect(current.locator(":scope > .todo-summary-only")).toHaveText(noDetails(language));
+          await expect(current.locator(":scope > .todo-empty")).toHaveCount(0);
+        } else {
+          await expect(current.locator(":scope > .todo-empty")).toHaveText(language === "zh" ? "暂无待办任务。" : "No tasks.");
+          await expect(current.locator(":scope > .todo-summary-only")).toHaveCount(0);
+        }
+      }
+      const latest = cards.first(), history = latest.locator(".todo-history");
+      await expect(history).toHaveJSProperty("open", false);
+      await expect(history.locator(".todo-list")).toBeHidden();
+      await latest.screenshot({ path: test.info().outputPath(`todo-summary-${language}.png`) });
+      await history.locator(":scope > summary").click();
+      const previous = history.locator(".todo-card");
+      await expect(previous.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 0, 4));
+      await previous.locator(":scope > summary").click();
+      await expect(previous.locator(".todo-list li")).toHaveCount(4);
+      await expect(previous.locator(".todo-list li.done")).toHaveCount(0);
+      await expect(latest.locator(":scope > .todo-detail > .todo-list")).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+
+    test(`partial list to 4/4 summary removes the empty checklist live and after reload in ${language}`, async ({ page }) => {
+      await setup(page, language);
+      let reloaded = false;
+      const messages = [{ role: "assistant", content: [call("summary-live")] }];
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 6 : 4, events: [],
+        messages: reloaded ? [...messages, result("summary-live", "4/4 completed")] : messages,
+      } }));
+      const releases: Array<() => void> = [];
+      const gates = Array.from({ length: 2 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      let attempts = 0;
+      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+        const index = attempts++;
+        if (index > 1) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+        await gates[index];
+        const event = index === 0
+          ? { seq: 5, type: "tool_execution_update", toolCallId: "summary-live", toolName: "todo", partialResult: { text: "3/4 completed\n[ ] #3: Final check" }, webTiming: { elapsedMs: 0, running: true } }
+          : { seq: 6, type: "tool_execution_end", toolCallId: "summary-live", toolName: "todo", result: { content: [{ type: "text", text: "4/4 completed" }] }, webTiming: timing };
+        return route.fulfill({ contentType: "text/event-stream", body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
+      });
+      try {
+        await page.goto("/");
+        const card = page.locator(".transcript-row > .tool-card");
+        await card.locator(":scope > summary").click();
+        releases[0]();
+        await expect(card.locator(".todo-scope")).toBeVisible();
+        await expect(card.locator(".todo-list li")).toHaveCount(1);
+        releases[1]();
+        await expect(card).toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", true);
+        await expect(card.locator(".todo-summary-only")).toHaveText(noDetails(language));
+        await expect(card.locator(".todo-list, .todo-scope, .todo-empty")).toHaveCount(0);
+        await expect(card.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        reloaded = true;
+        await page.reload();
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 4, 4));
+        await expect(card.locator(".todo-summary-only")).toHaveText(noDetails(language));
+        await expect(card.locator(".todo-list, .todo-scope, .todo-empty")).toHaveCount(0);
+      } finally { releases.forEach(release => release()); }
+    });
+  }
 });
