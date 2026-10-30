@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add a compact conversation timeline for loaded user messages, with active reading markers, expandable localized previews, keyboard-accessible jumps, mobile collapse, image/attachment grouping and compatibility with upward history paging. No full-session history scan or extra timeline RPCs.
 - Add Settings → Tool names to switch between exact native names (the default) and mapped/localized action labels across all tool cards. Save the choice locally, preserve expansion, targets, details and timings, and leave native calls and transcript data unchanged.
 - Show compact translated interruption/resume hints in desktop and mobile session lists from existing error and settlement metadata, with accessible explanations and no per-session RPC reads. Active retries suppress old errors; normal stops, declined operations, and offline/closed sessions without evidence are not mislabeled. This does not add persistent crash detection for registry-only offline sessions.
 - Render fenced `mermaid` flowcharts (`flowchart`/`graph`) and sequence diagrams locally as zoomable SVG images, with source/copy controls, theme updates, mobile containment and debounced streaming recovery. Lazy-load the pinned Mermaid dependency; reject authored configuration, shape metadata, HTML/images and custom CSS before rendering, retaining exact source for invalid, unsupported or oversized diagrams.
@@ -16,6 +17,7 @@
 
 ### Fixed
 
+- Omit generic successful-completion chat notes (Run completed / 运行状态：已完成) while keeping meaningful summaries, error/stopped states, elapsed footers and native settlement/history behavior.
 - Omit the redundant visible Queue label above pending composer messages while preserving the count, preview, item actions and localized accessible expand/collapse names.
 - Use equal user-message corner radii and show the localized sender label only once instead of repeating it in both avatar and name.
 - Render inline Markdown `data:image` sources without allowing data URLs in links or raw HTML.

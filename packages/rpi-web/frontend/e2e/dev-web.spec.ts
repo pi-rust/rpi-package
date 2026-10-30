@@ -8749,3 +8749,260 @@ test.describe("tool name display preference", () => {
     } finally { releases.forEach(release => release()); }
   });
 });
+
+test.describe("conversation timeline", () => {
+  const nodes = (page: Page) => page.locator(".conversation-timeline .timeline-node");
+  const toggle = (page: Page, zh = false) => page.getByRole("button", { name: zh ? "对话时间线" : "Conversation timeline", exact: true });
+  const turns = (prefix = "turn", count = 3) => Array.from({ length: count }, (_, index) => [
+    { role: "user", entryId: `${prefix}-${index}`, content: `Question ${index}: ${"bounded preview ".repeat(12)}` },
+    { role: "assistant", entryId: `${prefix}-answer-${index}`, content: [{ type: "text", text: Array.from({ length: 32 }, (_, line) => `Answer ${index}, line ${line}: enough content to scroll.`).join("\n\n") }] },
+  ]).flat();
+  async function snapshot(page: Page, messages: unknown[], extra = {}) {
+    await page.route(snapshotRoute, route => route.fulfill({ json: { sessionId, status: "ready", messages, events: [], lastSeq: 4, hasMore: false, ...extra } }));
+  }
+  async function targetOffset(page: Page, id: string) {
+    return page.locator(".transcript").evaluate((element, target) => {
+      const row = Array.from(element.querySelectorAll<HTMLElement>("[data-transcript-row]")).find(item => item.dataset.transcriptRow === target);
+      if (!row) throw new Error(`Missing target ${target}`);
+      return row.getBoundingClientRect().top - element.getBoundingClientRect().top;
+    }, id);
+  }
+  async function jump(page: Page, index: number) {
+    const id = await nodes(page).nth(index).getAttribute("data-timeline-target");
+    expect(id).toBeTruthy();
+    const windowTop = await page.evaluate(() => window.scrollY);
+    await nodes(page).nth(index).click();
+    await expect.poll(async () => Math.abs(await targetOffset(page, id!) - 12)).toBeLessThanOrEqual(3);
+    expect(await page.evaluate(() => window.scrollY)).toBe(windowTop);
+    await expect(nodes(page).nth(index)).toHaveAttribute("aria-current", "location");
+    return id!;
+  }
+
+  test("hides only generic completed settlements in English and Chinese, snapshot and live", async ({ page }) => {
+    test.setTimeout(60_000);
+    await mockHost(page);
+    const cases = [
+      { source: "restored", event: { outcome: "completed" }, visible: false },
+      { source: "snapshot", event: { outcome: "completed" }, visible: false },
+      { source: "live", event: { outcome: "completed" }, visible: false },
+      { source: "snapshot", event: { outcome: "completed", summary: "Custom completion summary" }, visible: true },
+      { source: "live", event: { outcome: "failed", aborted: true }, visible: true },
+      { source: "snapshot", event: { outcome: "aborted" }, visible: true },
+      { source: "snapshot", event: { outcome: "completed", error: "Meaningful failure reason" }, visible: true },
+    ];
+    let current = cases[0];
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, messages: [{ role: "assistant", entryId: "real-output", content: [{ type: "text", text: "Real assistant output remains" }] }],
+      lastSeq: current.source === "snapshot" ? 5 : 4,
+      events: current.source === "snapshot" ? [{ seq: 5, event: { type: "agent_settled", runId: "timeline-run", ...current.event } }] : [],
+      history: { records: [{ type: "operation_finished", seq: 4, outcome: current.source === "restored" ? current.event.outcome : "completed" }], total: 1, hasMore: false, openOperations: [] },
+    } }));
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, route => route.fulfill({ contentType: "text/event-stream", body: current.source === "live"
+      ? `retry: 60000\nid: 5\nevent: agent_settled\ndata: ${JSON.stringify({ type: "agent_settled", runId: "timeline-run", ...current.event })}\n\n`
+      : 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' }));
+    for (const language of ["en", "zh"] as const) {
+      for (const scenario of cases) {
+        current = scenario;
+        await page.goto("/");
+        if (language === "zh" && scenario === cases[0]) await chooseMenuOption(page, "Language", "zh");
+        await expect(page.locator(".message.assistant")).toContainText("Real assistant output remains");
+        if (scenario.source === "live") await expect(page.locator(".connection")).toContainText(language === "zh" ? "重新连接中" : "reconnecting");
+        await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+        const notes = page.locator(".transcript-note");
+        if (!scenario.visible) await expect(page.locator(".transcript-note.run-status")).toHaveCount(0);
+        else if ("summary" in scenario.event) await expect(notes).toContainText("Custom completion summary");
+        else if ("error" in scenario.event) await expect(notes).toContainText("Meaningful failure reason");
+        else await expect(page.locator(".transcript-note.run-status")).toContainText(language === "zh" ? /失败|中止/ : /failed|aborted/);
+      }
+    }
+  });
+
+  test("desktop rail targets only user turns, scrolls its transcript and supports keyboard dismissal", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await mockHost(page);
+    await snapshot(page, [...turns(), { role: "toolResult", toolCallId: "timeline-tool", toolName: "read", content: "Tool output is not a user turn" }], {
+      events: [{ seq: 5, event: { type: "agent_settled", summary: "A note is not a user turn" } }], lastSeq: 5,
+    });
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(3);
+    await expect(page.locator(".transcript-frame > .transcript")).toHaveCount(1);
+    await expect(page.locator(".transcript-frame > .conversation-timeline")).toHaveCount(1);
+    await expect(page.locator(".transcript-frame .composer")).toHaveCount(0);
+    const rail = page.locator(".conversation-timeline");
+    const frame = await page.locator(".transcript-frame").boundingBox();
+    const box = await rail.boundingBox();
+    expect(box!.width).toBeLessThan(80);
+    expect(box!.x).toBeGreaterThan(frame!.x + frame!.width / 2);
+    const panel = page.getByRole("navigation", { name: "Conversation timeline", exact: true });
+    await expect(toggle(page)).toHaveAttribute("aria-controls", (await panel.getAttribute("id"))!);
+    await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+    for (let index = 0; index < 3; index++) {
+      await expect(nodes(page).nth(index)).toHaveAttribute("aria-label", new RegExp(`^Go to message ${index + 1}: Question ${index}:`));
+      expect((await nodes(page).nth(index).getAttribute("title"))!.length).toBeLessThanOrEqual(140);
+    }
+    await jump(page, 0);
+    const middleId = await jump(page, 1);
+    const middleTop = await page.locator(".transcript").evaluate(element => element.scrollTop);
+    await scrollPagingTo(page, 0);
+    await expect(nodes(page).nth(0)).toHaveAttribute("aria-current", "location");
+    await scrollPagingTo(page, middleTop);
+    await expect(nodes(page).nth(1)).toHaveAttribute("aria-current", "location");
+    await expect.poll(async () => Math.abs(await targetOffset(page, middleId) - 12)).toBeLessThanOrEqual(3);
+    await toggle(page).focus();
+    await page.keyboard.press("Enter");
+    await expect(rail).toHaveClass(/expanded/);
+    await expect(nodes(page).nth(1).locator(".timeline-label")).toBeVisible();
+    await nodes(page).nth(1).focus();
+    await page.keyboard.press("Escape");
+    await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle(page)).toBeFocused();
+    await toggle(page).click();
+    await page.locator(".composer textarea").click();
+    await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("390px Chinese timeline opens previews without overflowing or covering the composer", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    await mockHost(page);
+    await snapshot(page, turns());
+    await page.goto("/");
+    const panel = page.getByRole("navigation", { name: "对话时间线", exact: true, includeHidden: true });
+    await expect(toggle(page, true)).toBeVisible();
+    await expect(panel).toBeHidden();
+    await toggle(page, true).click();
+    await expect(panel).toBeVisible();
+    await expect(nodes(page).first().locator(".timeline-label")).toBeVisible();
+    const panelBox = await panel.boundingBox();
+    const composer = await page.locator(".composer").boundingBox();
+    expect(panelBox!.x).toBeGreaterThanOrEqual(0);
+    expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
+    expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(composer!.y + 1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await page.locator(".transcript").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath("timeline-mobile.png") });
+    await jump(page, 1);
+    await expect(panel).toBeHidden();
+    await expect(toggle(page, true)).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle(page, true)).toBeFocused();
+  });
+
+  test("deduplicates text and images, sanitizes previews and safely targets punctuation IDs", async ({ page }) => {
+    await mockHost(page);
+    const image = { type: "image", data: imagePng, mimeType: "image/png" };
+    const oddId = 'odd"entry:[x]#./?';
+    await snapshot(page, [
+      { role: "user", entryId: oddId, content: [{ type: "text", text: '已附加文件:\n- .rpi/uploads/c11ee75a-625a-4aec-a575-401843f7af66-friendly.docx\nPlease review' }, image, image] },
+      { role: "assistant", content: [{ type: "text", text: "Spacer\n\n".repeat(80) }] },
+      { role: "user", entryId: "only-images", content: [image, image] },
+      { role: "user", content: [image, image] },
+      { role: "user", entryId: "plain-preview", content: "[Readable link](https://example.test) <b>literal</b> " + "long ".repeat(40) },
+      ...turns("tail", 1),
+    ]);
+    await page.goto("/");
+    await expect(nodes(page)).toHaveCount(5);
+    await toggle(page).click();
+    const panel = page.locator(".timeline-panel");
+    await expect(nodes(page).first()).toHaveAttribute("title", /friendly\.docx/);
+    await expect(nodes(page).nth(1)).toHaveAttribute("title", "Image message");
+    await expect(nodes(page).nth(2)).toHaveAttribute("title", "Image message");
+    await expect(panel).not.toContainText(/c11ee75a|base64|iVBOR/);
+    await expect(panel.locator("a, img, b")).toHaveCount(0);
+    for (const title of await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("title")!))) expect(title.length).toBeLessThanOrEqual(140);
+    await jump(page, 0);
+    await expect(toggle(page)).toBeFocused();
+    await chooseMenuOption(page, "Language", "zh");
+    await expect(nodes(page).nth(1)).toHaveAttribute("title", "图片消息");
+    await expect(nodes(page).nth(2)).toHaveAttribute("title", "图片消息");
+  });
+
+
+  test("indexes loaded history only and prepends a single 48-message page without losing the reading anchor", async ({ page }) => {
+    await mockUpwardPaging(page);
+    const requests: Array<{ beforeId?: string; limit?: number }> = [];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages") return route.fallback();
+      requests.push(body);
+      if (!body.beforeId) return route.fallback();
+      await held;
+      return route.fulfill({ json: response({ messages: Array.from({ length: 48 }, (_, index) => ({ role: "user", entryId: `timeline-older-${index}`, content: `Earlier question ${index}\nBounded historical content` })), firstId: "timeline-older-0", hasMore: false }, "get_messages") });
+    });
+    try {
+      await page.goto("/");
+      await expect(nodes(page)).toHaveCount(20);
+      await toggle(page).click();
+      await expect(page.locator(".timeline-earlier")).toBeVisible();
+      expect(requests).toHaveLength(0);
+      await page.keyboard.press("Escape");
+      const previous = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      await scrollPagingTo(page, 120);
+      await expect.poll(() => requests.length).toBe(1);
+      await scrollPagingTo(page, 450);
+      const anchor = await visiblePagingAnchor(page);
+      release();
+      await expect(nodes(page)).toHaveCount(68);
+      await expectPagingAnchor(page, anchor);
+      const targets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      expect(targets.slice(48)).toEqual(previous);
+      expect(new Set(targets).size).toBe(68);
+      await expect(page.locator(".timeline-earlier")).toHaveCount(0);
+      await toggle(page).click();
+      await expect(page.locator(".timeline-panel")).toBeVisible();
+      await expect.poll(() => page.locator(".timeline-panel ol").evaluate(list => {
+        const active = list.querySelector('[aria-current="location"]')!;
+        const box = active.getBoundingClientRect();
+        const viewport = list.getBoundingClientRect();
+        return box.top >= viewport.top - 1 && box.bottom <= viewport.bottom + 1;
+      })).toBe(true);
+      await page.keyboard.press("Escape");
+      expect(requests).toMatchObject([{ beforeId: "scroll-current-0", limit: 48 }]);
+    } finally { release(); }
+  });
+
+  test("resets across sessions and binds live appended targets without retaining old nodes or listeners", async ({ page }) => {
+    await mockHost(page);
+    let release!: () => void;
+    let waiting = false;
+    let emitted = false;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await snapshot(page, turns("original", 2));
+    await page.route(url => url.pathname === "/api/v1/sessions/session-2/snapshot", route => route.fulfill({ json: { sessionId: "session-2", messages: turns("other", 1), events: [], lastSeq: 4, hasMore: false } }));
+    await page.route("**/api/v1/sessions/session-2/events?*", async route => {
+      if (emitted) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      emitted = true;
+      waiting = true;
+      await held;
+      const messages = turns("appended", 1);
+      await route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n" + messages.map((message, index) => `id: ${5 + index}\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message })}\n\n`).join("") });
+    });
+    try {
+      await page.goto("/");
+      await expect(nodes(page)).toHaveCount(2);
+      await toggle(page).click();
+      await page.getByRole("button", { name: "New session", exact: false }).first().click();
+      await expect(page.locator(".toolbar h1")).toHaveText("New session");
+      await expect.poll(() => waiting).toBe(true);
+      await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+      release();
+      await expect(nodes(page)).toHaveCount(2);
+      await expect(page.locator(".message.assistant")).toHaveCount(2);
+      await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+      const targets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      expect(targets.every(id => !id!.includes("original"))).toBe(true);
+      await jump(page, 1);
+      await toggle(page).click();
+      await page.locator(".project-session-link").filter({ hasText: "Mock session" }).click();
+      await expect(nodes(page)).toHaveCount(2);
+      await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+      const restoredTargets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      expect(restoredTargets.every(id => !targets.includes(id))).toBe(true);
+      await jump(page, 0);
+      await toggle(page).click();
+      await page.keyboard.press("Escape");
+      await expect(toggle(page)).toBeFocused();
+    } finally { release(); }
+  });
+});

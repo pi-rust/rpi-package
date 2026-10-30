@@ -7,6 +7,7 @@ import "./desktop.css";
 import "./composer-refinement.css";
 import "./login.css";
 import "./markdown.css";
+import "./conversation-timeline.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
