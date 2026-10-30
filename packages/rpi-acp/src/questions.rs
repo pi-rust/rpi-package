@@ -136,6 +136,65 @@ pub fn elicitation_request(event: &Value, session_id: &str) -> Option<Value> {
     }))
 }
 
+/// Build a standard ACP URL elicitation request from the neutral native UI
+/// event. Native producers use `ui.kind = "url"` with `ui.url` and may supply
+/// a stable `ui.elicitationId`; the ACP request id remains in `_meta` so the
+/// response can be correlated back to the native dialog mailbox.
+pub fn elicitation_url_request(event: &Value, session_id: &str) -> Option<Value> {
+    let ui = event.get("ui")?;
+    if !matches!(
+        ui.get("purpose").and_then(Value::as_str),
+        None | Some("question")
+    ) || ui.get("kind").and_then(Value::as_str) != Some("url")
+    {
+        return None;
+    }
+    let request_id = event.get("requestId")?.as_str()?.trim();
+    let url = ui.get("url")?.as_str()?.trim();
+    let message = ui
+        .get("question")
+        .or_else(|| ui.get("message"))
+        .and_then(Value::as_str)?
+        .trim();
+    let parsed_url = url::Url::parse(url).ok()?;
+    if request_id.is_empty()
+        || message.is_empty()
+        || message.len() > MAX_TEXT
+        || !matches!(parsed_url.scheme(), "https" | "http")
+        || parsed_url.host_str().is_none()
+        || !parsed_url.username().is_empty()
+        || parsed_url.password().is_some()
+    {
+        return None;
+    }
+    Some(json!({
+        "mode": "url",
+        "sessionId": session_id,
+        "toolCallId": event.get("toolCallId"),
+        "elicitationId": ui.get("elicitationId").and_then(Value::as_str).unwrap_or(request_id),
+        "url": url,
+        "message": message,
+        "_meta": {"rpi": {"requestId": request_id}},
+    }))
+}
+
+/// Convert the ACP URL action into a protocol-neutral native dialog response.
+/// URL mode has no form content in ACP; the native consumer receives the
+/// explicit action rather than a fabricated answer string.
+pub fn elicitation_url_answer(request_id: &str, result: &Value) -> Value {
+    let action = result
+        .get("action")
+        .and_then(Value::as_str)
+        .filter(|action| matches!(*action, "accept" | "decline" | "cancel"))
+        .unwrap_or("cancel");
+    json!({
+        "type": "ui_dialog_response",
+        "requestId": request_id,
+        "urlElicitation": {"action": action},
+        "cancelled": action != "accept",
+    })
+}
+
 /// Convert a standard ACP elicitation response to the native dialog response.
 pub fn elicitation_answer(request_id: &str, ui: &Value, result: &Value) -> Value {
     if result.get("action").and_then(Value::as_str) != Some("accept") {
@@ -288,6 +347,35 @@ mod tests {
             json!({"type":"ui_dialog_response","requestId":"q1","answer":{"values":["Rust"]}})
         );
     }
+    #[test]
+    fn standard_url_request_and_actions_preserve_identity() {
+        let event = json!({
+            "requestId":"url-1", "toolCallId":"auth-1",
+            "ui": {
+                "kind":"url", "question":"Sign in", "url":"https://example.test/login",
+                "elicitationId":"el-1"
+            }
+        });
+        let request = elicitation_url_request(&event, "session-1").unwrap();
+        assert_eq!(request["mode"], "url");
+        assert_eq!(request["elicitationId"], "el-1");
+        assert_eq!(request["url"], "https://example.test/login");
+        assert_eq!(request["_meta"]["rpi"]["requestId"], "url-1");
+        assert_eq!(
+            elicitation_url_answer("url-1", &json!({"action":"accept"})),
+            json!({"type":"ui_dialog_response","requestId":"url-1","urlElicitation":{"action":"accept"},"cancelled":false})
+        );
+        assert_eq!(
+            elicitation_url_answer("url-1", &json!({"action":"decline"}))["cancelled"],
+            true
+        );
+        for invalid in ["https://", "https://user:secret@example.test/login", "javascript:alert(1)"] {
+            let mut bad = event.clone();
+            bad["ui"]["url"] = json!(invalid);
+            assert!(elicitation_url_request(&bad, "session-1").is_none());
+        }
+    }
+
     #[test]
     fn standard_multiple_and_input_responses_are_normalized() {
         let mut multiple = ui();

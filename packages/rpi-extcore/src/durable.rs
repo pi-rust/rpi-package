@@ -6,9 +6,9 @@
 //! forwards mutations through the registered extension command, and publishes
 //! an in-memory projection.
 use crate::host::HostSession;
-use futures_util::{Stream, StreamExt, stream};
+use futures_util::{stream, Stream, StreamExt};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -28,6 +28,7 @@ pub struct DurableChange {
     pub state: DurableState,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum DurableStreamItem {
     Change(DurableChange),
     ResyncRequired { dropped: u64 },
@@ -75,13 +76,11 @@ pub fn replay_changes(
 }
 
 pub use rpi_durable_core::{
-    DurableMutation, DurableState, MAX_QUEUE_ITEMS, MAX_SUMMARY_CHARS, MAX_TOOL_ENTRIES, QueueItem,
-    QueueStatus, RunCheckpoint, RunStatus, ToolCheckpoint, ToolStatus, apply_entries,
+    apply_entries, DurableMutation, DurableState, QueueItem, QueueStatus, RunCheckpoint, RunStatus,
+    ToolCheckpoint, ToolStatus, MAX_QUEUE_ITEMS, MAX_SUMMARY_CHARS, MAX_TOOL_ENTRIES,
 };
 
 /// Branch-backed durable projection shared by protocol adapters.
-
-///
 /// The runtime never appends a durable entry. Mutations are sent to the
 /// registered `rpi-durable` command and state is reloaded from the native
 /// branch after the command commits.
@@ -406,12 +405,10 @@ mod tests {
             json!({"type":"ready","protocol":"rpi","supportedCommands":[]}),
         );
 
-        assert!(
-            DurableRuntime::try_attach(session.clone())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(DurableRuntime::try_attach(session.clone())
+            .await
+            .unwrap()
+            .is_none());
         session.shutdown().await;
     }
 

@@ -1,16 +1,66 @@
-use serde_json::{Value, json};
+/// Explicit process-lifetime opt-ins; never inherited from the adapter environment.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RuntimeFeatures {
+    pub child_events: bool,
+}
+
+use serde_json::{json, Value};
+
+/// Ordered provider-neutral user input. No adapter or provider wire types.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PromptContent {
+    Text { text: String },
+    Image { data: String, #[serde(rename = "mimeType")] mime_type: String },
+    Audio { data: String, #[serde(rename = "mimeType")] mime_type: String },
+}
+
+fn ordered_prompt_command(parts: &[PromptContent], ordered: bool) -> Result<Value, String> {
+    // Keep aggregate input below the existing native 1 MiB JSONL frame limit.
+    if parts.len() > 256 || serde_json::to_vec(parts).map_err(|e| e.to_string())?.len() > 900_000 {
+        return Err("prompt content exceeds native input limits".into());
+    }
+    if ordered {
+        return Ok(json!({"type":"prompt", "message":"", "content":parts}));
+    }
+    let mut phase = 0;
+    let mut text = Vec::new();
+    let mut images = Vec::new();
+    let mut audio = Vec::new();
+    for part in parts {
+        let next = match part {
+            PromptContent::Text { .. } => 0,
+            PromptContent::Image { .. } => 1,
+            PromptContent::Audio { .. } => 2,
+        };
+        if next < phase {
+            return Err("native host does not support ordered mixed prompt content (promptContentVersion 1 required)".into());
+        }
+        phase = next;
+        match part {
+            PromptContent::Text { text: value } => text.push(value.as_str()),
+            PromptContent::Image { data, mime_type } => images.push(json!({"data":data,"mimeType":mime_type})),
+            PromptContent::Audio { data, mime_type } => audio.push(json!({"data":data,"mimeType":mime_type})),
+        }
+    }
+    let mut command = json!({"type":"prompt", "message":text.join("\n")});
+    if !images.is_empty() { command["images"] = json!(images); }
+    if !audio.is_empty() { command["audio"] = json!(audio); }
+    Ok(command)
+}
+
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{
-        Arc, Mutex as StdMutex,
         atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::{Mutex, RwLock, broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, Mutex, RwLock},
 };
 
 /// How many projected events a session keeps so a page reload can rebuild the
@@ -152,6 +202,22 @@ pub struct BufferedEvent {
     pub value: Value,
 }
 
+/// Optional client-owned text and shell backends. This is a native launch
+/// contract, independent of ACP capability names or transport types.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientToolOptions {
+    pub read_text: bool,
+    pub write_text: bool,
+    pub terminal: bool,
+}
+
+impl ClientToolOptions {
+    pub fn enabled(self) -> bool {
+        self.read_text || self.write_text || self.terminal
+    }
+}
+
 /// Native launch settings independent of any client protocol.
 #[derive(Clone, Debug)]
 pub struct SessionOptions {
@@ -164,17 +230,20 @@ pub struct SessionOptions {
     pub timings_dir: PathBuf,
     pub model: Option<String>,
     pub provider: Option<String>,
+    pub additional_directories: Vec<PathBuf>,
     pub permission_gate: bool,
     pub bypass: bool,
 }
 
 pub struct HostSession {
+    instance_id: uuid::Uuid,
     worker: Worker,
     shutdown_gate: Mutex<()>,
     ready: Value,
     runtime: Arc<HostRuntime>,
     run_gate: Arc<Mutex<()>>,
     cancellation: tokio::sync::watch::Sender<u64>,
+    process: Arc<Mutex<Option<tokio::process::Child>>>,
     writer_abort: StdMutex<Option<tokio::task::AbortHandle>>,
     commands: mpsc::Sender<Outbound>,
 }
@@ -193,13 +262,21 @@ struct HostRuntime {
 }
 
 impl HostRuntime {
-    async fn terminate(self: Arc<Self>, worker: Worker) {
+    async fn terminate(
+        self: Arc<Self>,
+        worker: Worker,
+        process: Arc<Mutex<Option<tokio::process::Child>>>,
+    ) {
         let mut worker = worker.lock().await;
         if let Some(task) = worker.as_mut() {
             task.abort();
             let _ = task.await;
         }
         worker.take();
+        if let Some(mut child) = process.lock().await.take() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
         self.finish().await;
     }
 
@@ -301,6 +378,7 @@ impl HostSession {
             timings_dir,
             model: None,
             provider: None,
+            additional_directories: Vec::new(),
             permission_gate: false,
             bypass: false,
         })
@@ -308,6 +386,21 @@ impl HostSession {
     }
 
     pub async fn spawn_options(options: SessionOptions) -> Result<Arc<Self>, String> {
+        Self::spawn_options_with_client_tools(options, ClientToolOptions::default()).await
+    }
+
+    pub async fn spawn_options_with_client_tools(
+        options: SessionOptions,
+        client_tools: ClientToolOptions,
+    ) -> Result<Arc<Self>, String> {
+        Self::spawn_options_with_features(options, client_tools, RuntimeFeatures::default()).await
+    }
+
+    pub async fn spawn_options_with_features(
+        options: SessionOptions,
+        client_tools: ClientToolOptions,
+        features: RuntimeFeatures,
+    ) -> Result<Arc<Self>, String> {
         let session_id = &options.session_id;
         let mut timings = crate::timing::ToolTimings::load(options.timings_dir.join(format!(
             "{}.json",
@@ -315,7 +408,39 @@ impl HostSession {
         )))?;
         timings.set_session(session_id);
         let mut command = crate::process::background_command(&options.executable);
+        // The ACP bridge is often launched with an isolated extension directory
+        // for a session-specific plugin fixture. Forward it explicitly instead
+        // of relying only on the child's environment: some process launchers
+        // sanitize inherited extension variables. Removing the variable after
+        // translating it also avoids loading the same DLL twice (the native
+        // CLI itself parses RPI_EXTENSIONS_DIR).
+        if let Ok(raw) = std::env::var("RPI_EXTENSIONS_DIR") {
+            let separator = if cfg!(windows) { ';' } else { ':' };
+            for directory in raw
+                .split(separator)
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+            {
+                command.arg("--extensions-dir").arg(directory);
+            }
+            command.env_remove("RPI_EXTENSIONS_DIR");
+        }
         command.arg("--mode").arg("rpc");
+        command.env_remove("RPI_CHILD_EVENTS");
+        if features.child_events {
+            command.env("RPI_CHILD_EVENTS", "1");
+        }
+        // Never inherit another session's remote-tool policy accidentally.
+        command.env_remove("RPI_CLIENT_TOOLS");
+        if client_tools.enabled() {
+            let mut config = serde_json::to_value(client_tools).map_err(|e| e.to_string())?;
+            config["version"] = json!(1);
+            let roots = std::iter::once(&options.project)
+                .chain(options.additional_directories.iter())
+                .collect::<Vec<_>>();
+            config["workspaceRoots"] = json!(roots);
+            command.env("RPI_CLIENT_TOOLS", config.to_string());
+        }
         if let Some(path) = &options.saved_session {
             command.arg("--session").arg(path);
         } else if let Some(source) = &options.fork_source {
@@ -332,6 +457,16 @@ impl HostSession {
         if let Some(provider) = &options.provider {
             command.arg("--provider").arg(provider);
         }
+        if !options.additional_directories.is_empty() {
+            let separator = if cfg!(windows) { ';' } else { ':' };
+            let roots = options
+                .additional_directories
+                .iter()
+                .map(|path| path.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(&separator.to_string());
+            command.env("RPI_ACP_ADDITIONAL_DIRECTORIES", roots);
+        }
         crate::process::configure_permission_gate(
             &mut command,
             options.bypass,
@@ -340,6 +475,7 @@ impl HostSession {
         let project = options.project;
         let rpi_bin = options.executable;
         let mut child = command
+            .kill_on_drop(true)
             .current_dir(project)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -348,6 +484,7 @@ impl HostSession {
             .map_err(|error| format!("failed to start {}: {error}", rpi_bin.display()))?;
         let stdin = child.stdin.take().ok_or("rpi host stdin unavailable")?;
         let stdout = child.stdout.take().ok_or("rpi host stdout unavailable")?;
+        let process = Arc::new(Mutex::new(Some(child)));
         let mut reader = BufReader::new(stdout);
         let ready = read_ready(&mut reader, Duration::from_secs(15)).await?;
 
@@ -380,6 +517,7 @@ impl HostSession {
             closed_signal: tokio::sync::watch::channel(false).0,
         });
         let session = Arc::new(Self {
+            instance_id: uuid::Uuid::new_v4(),
             worker: Arc::new(Mutex::new(None)),
             shutdown_gate: Mutex::new(()),
             ready: ready.clone(),
@@ -387,6 +525,7 @@ impl HostSession {
             run_gate: Arc::new(Mutex::new(())),
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(None),
+            process: process.clone(),
             commands,
         });
 
@@ -404,6 +543,7 @@ impl HostSession {
         let state_reader = state.clone();
         let history_reader = history.clone();
         let seq_reader = seq.clone();
+        let process_for_worker = process.clone();
         let worker = tokio::spawn(async move {
             let mut lines = reader.lines();
             loop {
@@ -486,7 +626,10 @@ impl HostSession {
             let _ = finish.await;
             writer.abort();
             let _ = writer.await;
-            let _ = child.kill().await;
+            if let Some(mut child) = process_for_worker.lock().await.take() {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
         });
 
         *session.worker.lock().await = Some(worker);
@@ -508,12 +651,55 @@ impl HostSession {
             .map_err(|_| "a prompt is already running".into())
     }
     pub async fn begin_prompt(&self, message: String) -> Result<crate::run::PromptRun, String> {
+        self.begin_prompt_with_images(message, Vec::new()).await
+    }
+
+    pub async fn begin_prompt_with_images(
+        &self,
+        message: String,
+        images: Vec<serde_json::Value>,
+    ) -> Result<crate::run::PromptRun, String> {
+        self.begin_prompt_with_media(message, images, Vec::new())
+            .await
+    }
+
+    /// Start ordered input with the same lease, subscription and cancellation
+    /// ownership as legacy prompts. Older hosts get only order-equivalent input.
+    pub async fn begin_prompt_content(
+        &self,
+        parts: Vec<PromptContent>,
+    ) -> Result<crate::run::PromptRun, String> {
+        let mut command = ordered_prompt_command(
+            &parts,
+            self.ready["promptContentVersion"].as_u64() == Some(1),
+        )?;
         let lease = self.try_run_lease()?;
         let events = self.subscribe_raw();
         let cancellation = self.cancellation.subscribe();
         let id = json!(uuid::Uuid::new_v4().to_string());
-        self.notify(json!({"type":"prompt","id":id,"message":message}))
-            .await?;
+        command["id"] = id.clone();
+        self.notify(command).await?;
+        Ok(crate::run::PromptRun::new(events, cancellation, id, lease))
+    }
+
+    pub async fn begin_prompt_with_media(
+        &self,
+        message: String,
+        images: Vec<serde_json::Value>,
+        audio: Vec<serde_json::Value>,
+    ) -> Result<crate::run::PromptRun, String> {
+        let lease = self.try_run_lease()?;
+        let events = self.subscribe_raw();
+        let cancellation = self.cancellation.subscribe();
+        let id = json!(uuid::Uuid::new_v4().to_string());
+        let mut command = json!({"type":"prompt","id":id,"message":message});
+        if !images.is_empty() {
+            command["images"] = Value::Array(images);
+        }
+        if !audio.is_empty() {
+            command["audio"] = Value::Array(audio);
+        }
+        self.notify(command).await?;
         Ok(crate::run::PromptRun::new(events, cancellation, id, lease))
     }
     pub async fn abort_run(&self) -> Result<(), String> {
@@ -550,7 +736,12 @@ impl HostSession {
         }
         // This cleanup owns the join handle even if its caller is cancelled.
         // The shared worker lock also serializes concurrent cleanup attempts.
-        let _ = tokio::spawn(self.runtime.clone().terminate(self.worker.clone())).await;
+        let _ = tokio::spawn(
+            self.runtime
+                .clone()
+                .terminate(self.worker.clone(), self.process.clone()),
+        )
+        .await;
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -581,12 +772,14 @@ impl HostSession {
         let writer = tokio::spawn(write_commands(stdin, outbound, pending.clone()));
         let abort = writer.abort_handle();
         let session = Arc::new(Self {
+            instance_id: uuid::Uuid::new_v4(),
             worker: Arc::new(Mutex::new(None)),
             shutdown_gate: Mutex::new(()),
             ready,
             run_gate: Arc::new(Mutex::new(())),
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(Some(abort)),
+            process: Arc::new(Mutex::new(None)),
             commands,
             runtime: Arc::new(HostRuntime {
                 raw_events,
@@ -610,6 +803,12 @@ impl HostSession {
             }),
         });
         (session.clone(), TestEvents(session))
+    }
+
+    /// Identifies this child attachment, not its persisted transcript. Event
+    /// sequences restart on attachment, so resumable cursors must carry both.
+    pub fn instance_id(&self) -> uuid::Uuid {
+        self.instance_id
     }
 
     pub fn ready(&self) -> Value {
@@ -645,6 +844,14 @@ impl HostSession {
             .filter(|event| after.map_or(true, |after| event.seq > after))
             .cloned()
             .collect()
+    }
+
+    /// Capture retained replay and its committed sequence in one cut.
+    /// Lock order is always history then state, matching publication.
+    pub(crate) async fn replay_boundary(&self) -> (Vec<BufferedEvent>, u64) {
+        let history = self.runtime.history.lock().await;
+        let state = self.runtime.state.read().await;
+        (history.iter().cloned().collect(), state.last_seq)
     }
 
     /// The first prompt becomes the sidebar title. Returns whether it was set.
@@ -735,14 +942,63 @@ impl HostSession {
             .clone())
     }
 
+    /// Discover the native extension commands registered for this session.
+    pub async fn available_commands(&self) -> Result<Value, String> {
+        self.runtime_command("get_commands", json!({})).await
+    }
+
+    pub async fn execute_command(&self, command: &str, args: &str) -> Result<Value, String> {
+        self.runtime_command("execute_command", json!({"command": command, "args": args}))
+            .await
+    }
+
+    /// Compact under the foreground run lease, returning native's terminal
+    /// outcome rather than its asynchronous acceptance acknowledgement.
+    pub async fn compact(self: &Arc<Self>, instructions: Option<&str>) -> Result<Value, String> {
+        let lease = self.try_run_lease()?;
+        let events = self.subscribe_raw();
+        let cancellation = self.cancellation.subscribe();
+        crate::compaction::compact(
+            self.clone(),
+            instructions.map(str::to_owned),
+            events,
+            cancellation,
+            lease,
+            crate::compaction::Limits::default(),
+        )
+        .await
+    }
+
+    /// Read context usage from native's compaction accounting. This is not the
+    /// cumulative billing total exposed by `get_stats`.
+    pub async fn context_usage(&self) -> Result<Value, String> {
+        self.runtime_command("get_context_usage", json!({})).await
+    }
+
+    /// Read native cumulative statistics for optional ACP cost reporting.
+    pub async fn stats(&self) -> Result<Value, String> {
+        self.runtime_command("get_stats", json!({})).await
+    }
+
+    pub async fn set_compaction_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.runtime_command("set_compaction_enabled", json!({"enabled": enabled}))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn modes(&self) -> Result<Value, String> {
+        self.runtime_command("get_modes", json!({})).await
+    }
+
+    pub async fn set_mode(&self, mode_id: &str) -> Result<Value, String> {
+        self.runtime_command("set_mode", json!({"modeId": mode_id}))
+            .await
+    }
     /// Read the child's state without acquiring the prompt lock. Used by
-    /// `session/set_config_option`, which must also work while a prompt runs
-    /// (the locked [`Self::state`] would reject it).
+    /// configuration changes while a prompt may be in flight.
     pub async fn state_unlocked(&self) -> Result<Value, String> {
         self.runtime_command("get_state", json!({})).await
     }
-
-    /// Switch the child's active model (`set_model`).
     pub async fn set_model(&self, model_id: &str, provider: Option<&str>) -> Result<(), String> {
         let mut params = serde_json::Map::new();
         params.insert("modelId".to_string(), json!(model_id));
@@ -929,7 +1185,11 @@ impl Drop for HostSession {
         self.runtime.finish_timings();
         self.runtime.fail_pending();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(self.runtime.clone().terminate(self.worker.clone()));
+            handle.spawn(
+                self.runtime
+                    .clone()
+                    .terminate(self.worker.clone(), self.process.clone()),
+            );
         }
     }
 }
@@ -968,9 +1228,14 @@ async fn publish(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("message");
+    // History is the publication gate. Acquire both locks before allocating a
+    // sequence or changing state, and keep them through the synchronous send.
+    // There must be no await after mutation starts: cancellation then leaves
+    // either the old cut or the entire new event, never a partial publication.
+    let mut history = history.lock().await;
+    let mut state = state.write().await;
     let next = seq.fetch_add(1, Ordering::SeqCst) + 1;
     {
-        let mut state = state.write().await;
         state.last_seq = next;
         state.updated_at = now_ms();
         match kind {
@@ -1018,19 +1283,223 @@ async fn publish(
         }
     }
     let buffered = BufferedEvent { seq: next, value };
-    {
-        let mut history = history.lock().await;
-        if history.len() >= HISTORY_LIMIT {
-            history.pop_front();
-        }
-        history.push_back(buffered.clone());
+    if history.len() >= HISTORY_LIMIT {
+        history.pop_front();
     }
+    history.push_back(buffered.clone());
     let _ = events.send(buffered);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_prompt_serialization_and_old_host_fallback() {
+        let parts = vec![
+            PromptContent::Text { text: "before".into() },
+            PromptContent::Image { data: "AA==".into(), mime_type: "image/png".into() },
+            PromptContent::Text { text: "after".into() },
+        ];
+        let command = ordered_prompt_command(&parts, true).unwrap();
+        assert_eq!(command["content"], json!([
+            {"type":"text","text":"before"},
+            {"type":"image","data":"AA==","mimeType":"image/png"},
+            {"type":"text","text":"after"},
+        ]));
+        assert!(ordered_prompt_command(&parts, false).unwrap_err().contains("does not support ordered"));
+        let legacy = ordered_prompt_command(&parts[..2], false).unwrap();
+        assert_eq!(legacy["message"], "before");
+        assert_eq!(legacy["images"][0]["data"], "AA==");
+        assert!(legacy.get("content").is_none());
+        assert!(ordered_prompt_command(&vec![parts[0].clone(); 257], true).is_err());
+        assert!(ordered_prompt_command(&[PromptContent::Text { text: "x".repeat(900_001) }], true).is_err());
+        assert!(serde_json::from_value::<PromptContent>(json!({"type":"other"})).is_err());
+        assert!(serde_json::from_value::<PromptContent>(json!({"type":"text","text":"ok","extra":1})).is_err());
+    }
+
+    async fn emit(session: &HostSession, value: Value) {
+        publish(
+            &session.runtime.events,
+            &session.runtime.history,
+            &session.runtime.state,
+            &session.runtime.seq,
+            value,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_publishers_commit_ordered_state_history_and_live_events() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (session, _injector) = HostSession::test_connection(tokio::io::sink(), 2048);
+            let mut live = session.subscribe();
+            let mut workers = Vec::new();
+            for writer in 0..8 {
+                let session = session.clone();
+                workers.push(tokio::spawn(async move {
+                    for index in 0..96 {
+                        emit(
+                            &session,
+                            json!({"type":"agent_settled", "writer":writer, "index":index}),
+                        )
+                        .await;
+                        tokio::task::yield_now().await;
+                    }
+                }));
+            }
+            for _ in 0..192 {
+                let (retained, latest) = session.replay_boundary().await;
+                assert_eq!(retained.last().map(|event| event.seq).unwrap_or(0), latest);
+                assert!(retained
+                    .windows(2)
+                    .all(|pair| pair[1].seq == pair[0].seq + 1));
+                assert!(retained.len() <= HISTORY_LIMIT);
+                tokio::task::yield_now().await;
+            }
+            for worker in workers {
+                worker.await.unwrap();
+            }
+            let snapshot = session.snapshot().await;
+            assert_eq!(snapshot.last_seq, 768);
+            let retained = session.history(None).await;
+            assert_eq!(retained.len(), HISTORY_LIMIT);
+            assert_eq!(retained.first().unwrap().seq, 257);
+            assert_eq!(
+                snapshot.latest_settlement,
+                Some(retained.last().unwrap().value.clone())
+            );
+            for seq in 1..=768 {
+                let event = live.recv().await.unwrap();
+                assert_eq!(event.seq, seq);
+                if seq >= 257 {
+                    assert_eq!(event.value, retained[(seq - 257) as usize].value);
+                }
+            }
+            assert!(matches!(
+                live.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+        })
+        .await
+        .expect("publication or replay deadlocked");
+    }
+
+    #[tokio::test]
+    async fn cancelled_publication_does_not_advance_snapshot_or_sequence() {
+        let (session, _injector) = HostSession::test_connection(tokio::io::sink(), 16);
+        let mut live = session.subscribe();
+        let history = session.runtime.history.lock().await;
+        assert!(tokio::time::timeout(
+            Duration::from_millis(20),
+            emit(&session, json!({"type":"agent_start"})),
+        )
+        .await
+        .is_err());
+        let snapshot = session.snapshot().await;
+        assert_eq!(snapshot.last_seq, 0);
+        assert_eq!(snapshot.status, "ready");
+        assert_eq!(session.runtime.seq.load(Ordering::SeqCst), 0);
+        assert!(history.is_empty());
+        drop(history);
+
+        // Cancellation while waiting for the second lock must be safe too.
+        let state = session.runtime.state.read().await;
+        assert!(tokio::time::timeout(
+            Duration::from_millis(20),
+            emit(&session, json!({"type":"agent_start"})),
+        )
+        .await
+        .is_err());
+        assert_eq!(session.runtime.seq.load(Ordering::SeqCst), 0);
+        drop(state);
+        assert!(session.history(None).await.is_empty());
+        assert!(matches!(
+            live.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        emit(&session, json!({"type":"agent_start"})).await;
+        assert_eq!(session.snapshot().await.last_seq, 1);
+        assert_eq!(session.history(None).await[0].seq, 1);
+        assert_eq!(live.recv().await.unwrap().seq, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn subscription_cut_remains_contiguous_during_concurrent_eviction() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (session, _injector) = HostSession::test_connection(tokio::io::sink(), 2048);
+            let empty = crate::events::Subscription::new(&session, Some(0)).await;
+            assert!(empty.replay.is_empty());
+            assert!(!empty.gap);
+            assert!(
+                crate::events::Subscription::new(&session, Some(1))
+                    .await
+                    .gap
+            );
+            for _ in 0..HISTORY_LIMIT {
+                emit(&session, json!({"type":"message"})).await;
+            }
+            let publishing = session.clone();
+            let publisher = tokio::spawn(async move {
+                for _ in 0..HISTORY_LIMIT {
+                    emit(&publishing, json!({"type":"message"})).await;
+                    tokio::task::yield_now().await;
+                }
+            });
+            let mut subscriptions = Vec::new();
+            for _ in 0..32 {
+                let subscription = crate::events::Subscription::new(&session, Some(512)).await;
+                assert!(!subscription.gap);
+                assert!(subscription
+                    .replay
+                    .windows(2)
+                    .all(|pair| pair[1].seq == pair[0].seq + 1));
+                subscriptions.push(subscription);
+                tokio::task::yield_now().await;
+            }
+            publisher.await.unwrap();
+            for subscription in subscriptions {
+                use futures_util::StreamExt;
+                let stream = crate::events::replay_stream(
+                    subscription.replay,
+                    subscription.receiver,
+                    subscription.after,
+                );
+                tokio::pin!(stream);
+                for seq in 513..=1024 {
+                    match stream.next().await.unwrap() {
+                        crate::events::StreamItem::Event(event) => assert_eq!(event.seq, seq),
+                        crate::events::StreamItem::ResyncRequired { .. } => {
+                            panic!("unexpected lag")
+                        }
+                    }
+                }
+            }
+            let evicted = crate::events::Subscription::new(&session, Some(511)).await;
+            assert!(evicted.gap);
+            assert_eq!(evicted.replay.first().unwrap().seq, 513);
+            let unpositioned = crate::events::Subscription::new(&session, None).await;
+            assert!(!unpositioned.gap);
+            assert_eq!(unpositioned.replay.len(), HISTORY_LIMIT);
+            assert!(
+                !crate::events::Subscription::new(&session, Some(512))
+                    .await
+                    .gap
+            );
+            assert!(
+                !crate::events::Subscription::new(&session, Some(1024))
+                    .await
+                    .gap
+            );
+            assert!(
+                crate::events::Subscription::new(&session, Some(1025))
+                    .await
+                    .gap
+            );
+        })
+        .await
+        .expect("subscription cut or replay deadlocked");
+    }
 
     #[tokio::test]
     async fn forced_close_and_shutdown_timeout_finalize_all_session_observers_once() {
@@ -1074,14 +1543,12 @@ mod tests {
                 session.terminate().await;
             }
             assert!(worker_abort.is_finished());
-            assert!(
-                tokio::time::timeout(Duration::from_secs(1), request)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap_err()
-                    .contains("closed")
-            );
+            assert!(tokio::time::timeout(Duration::from_secs(1), request)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err()
+                .contains("closed"));
             assert_eq!(raw.recv().await.unwrap()["type"], "host_closed");
             let closed = projected.recv().await.unwrap();
             assert_eq!(closed.value["type"], "host_closed");
@@ -1149,14 +1616,14 @@ mod tests {
         assert!(session.worker.lock().await.is_some());
         assert!(!abort.is_finished());
 
-        // Delay the finalizer midway through publication, then cancel its caller.
+        // Block publication before it changes state, then cancel its caller.
         let history = session.runtime.history.lock().await;
         let mut projected = session.subscribe();
         let mut raw = session.subscribe_raw();
         let closing = session.clone();
         let caller = tokio::spawn(async move { closing.terminate().await });
         tokio::time::timeout(Duration::from_secs(1), async {
-            while session.snapshot().await.status != "closed" {
+            while !abort.is_finished() {
                 tokio::task::yield_now().await;
             }
         })
@@ -1460,12 +1927,10 @@ mod tests {
             .unwrap();
         let (writer, reader) = tokio::io::duplex(64);
         drop(reader);
-        assert!(
-            write_commands(writer, outbound, pending)
-                .await
-                .unwrap_err()
-                .contains("failed to write")
-        );
+        assert!(write_commands(writer, outbound, pending)
+            .await
+            .unwrap_err()
+            .contains("failed to write"));
     }
 
     #[tokio::test]
@@ -1473,26 +1938,20 @@ mod tests {
         let mut valid = &b"{\"type\":\"ready\",\"protocol\":\"rpi\"}\n"[..];
         assert!(read_ready(&mut valid, Duration::from_secs(1)).await.is_ok());
         let mut invalid = &b"{\"type\":\"ready\",\"protocol\":\"other\"}\n"[..];
-        assert!(
-            read_ready(&mut invalid, Duration::from_secs(1))
-                .await
-                .is_err()
-        );
+        assert!(read_ready(&mut invalid, Duration::from_secs(1))
+            .await
+            .is_err());
         let large = vec![b'x'; 1024 * 1024 + 1];
         let mut oversized = large.as_slice();
-        assert!(
-            read_ready(&mut oversized, Duration::from_secs(1))
-                .await
-                .is_err()
-        );
+        assert!(read_ready(&mut oversized, Duration::from_secs(1))
+            .await
+            .is_err());
         assert_eq!(oversized.len(), 1);
         let (silent, _writer) = tokio::io::duplex(64);
         let mut silent = BufReader::new(silent);
-        assert!(
-            read_ready(&mut silent, Duration::from_millis(20))
-                .await
-                .unwrap_err()
-                .contains("timed out")
-        );
+        assert!(read_ready(&mut silent, Duration::from_millis(20))
+            .await
+            .unwrap_err()
+            .contains("timed out"));
     }
 }

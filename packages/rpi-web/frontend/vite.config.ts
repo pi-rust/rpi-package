@@ -26,11 +26,14 @@ export default defineConfig({
     allowedHosts: true,
     port: 18087,
     strictPort: true,
-    hmr: {
-      host: "work-dev.bigfisharc.cn",
-      protocol: "wss",
-      clientPort: 443,
-    },
+    hmr:
+      process.env.VITE_E2E_HMR === "1"
+        ? { host: "127.0.0.1", protocol: "ws", clientPort: 4191 }
+        : {
+            host: "work-dev.bigfisharc.cn",
+            protocol: "wss",
+            clientPort: 443,
+          },
     proxy: {
       "/api": {
         target: "http://127.0.0.1:18088",

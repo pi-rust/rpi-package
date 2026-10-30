@@ -6,7 +6,6 @@ mod control;
 mod http;
 mod jsonrpc;
 mod kit;
-mod process;
 mod runtime;
 mod transport;
 
@@ -19,10 +18,10 @@ pub use control::Control;
 pub use jsonrpc::{
     call_result_text, tool_list, ErrorObject, Notification, Request, Response, Tool,
 };
+pub use rpi_mcp_core::{DiscoveredServer, McpRuntime, RequestContext, ResourceUpdate};
 pub use runtime::{
     call_from_config, call_from_config_with_timeout, close_from_config, discover_from_config,
-    resources_from_config, shutdown_connections, take_resource_updates, DiscoveredServer,
-    ResourceUpdate,
+    resources_from_config, shutdown_connections, take_resource_updates,
 };
 use serde_json::{json, Value};
 pub use transport::{http_request, StdioTransport};
@@ -152,14 +151,19 @@ extern "C" fn session_shutdown(
         .map(|_| 0)
         .unwrap_or(1)
 }
-// The SDK entrypoint validates the API and contains registration panics.
-rpi_plugin_sdk::export_plugin!(|api| {
-    let Some(register) = api.register_tool else {
-        return 1;
-    };
-    // A reload must not leave old workers or sessions owned by this DLL.
-    shutdown_connections();
-    let tools: [(&str, &str, &str, rpi_plugin_sdk::ToolExecuteFn); 4] = [
+// The SDK generates a safe C export that forwards the host-owned API pointer
+// to its unsafe registration helper. Keep that SDK-macro lint exception local.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+mod plugin_entrypoint {
+    use super::*;
+    // The SDK entrypoint validates the API and contains registration panics.
+    rpi_plugin_sdk::export_plugin!(|api| {
+        let Some(register) = api.register_tool else {
+            return 1;
+        };
+        // A reload must not leave old workers or sessions owned by this DLL.
+        shutdown_connections();
+        let tools: [(&str, &str, &str, rpi_plugin_sdk::ToolExecuteFn); 4] = [
     ("mcp_request", "Send a raw HTTP JSON-RPC request. For managed MCP sessions use mcp_call or mcp_list.",
      r#"{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string"},"params":{},"id":{"type":["string","integer"]},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":300}},"required":["url","method"]}"#, request_execute),
     ("mcp_call", "Call a tool using a persistent stdio or HTTP MCP connection. Use mcp_list to discover tool names and argument schemas. Supply configPath and server, or url.",
@@ -169,47 +173,48 @@ rpi_plugin_sdk::export_plugin!(|api| {
     ("mcp_resource", "List, read, subscribe to, or unsubscribe from an MCP server's resources. Subscribing makes the server push resources/updated notifications, which are read and shown to you at the next turn. Supply configPath+server, or url.",
      r#"{"type":"object","properties":{"url":{"type":"string"},"configPath":{"type":"string"},"server":{"type":"string"},"action":{"type":"string","enum":["list","read","subscribe","unsubscribe"]},"uri":{"type":"string"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":300}},"oneOf":[{"required":["configPath"],"not":{"required":["url"]}},{"required":["url"],"not":{"anyOf":[{"required":["configPath"]},{"required":["server"]}]}}]}"#, resource_execute),
 ];
-    for (name, description, parameters, execute) in tools {
-        let schema = kit::schema(name, description, parameters);
-        let rc = register(
-            &schema,
-            execute,
-            tool_poll,
-            tool_cancel,
-            tool_destroy,
-            kit::plugin_free_string,
-        );
-        // The registrar consumes schema strings via plugin_free_string.
-        // Only the stack schema container remains ours after this call.
-        if rc != 0 {
-            return rc;
+        for (name, description, parameters, execute) in tools {
+            let schema = kit::schema(name, description, parameters);
+            let rc = register(
+                &schema,
+                execute,
+                tool_poll,
+                tool_cancel,
+                tool_destroy,
+                kit::plugin_free_string,
+            );
+            // The registrar consumes schema strings via plugin_free_string.
+            // Only the stack schema container remains ours after this call.
+            if rc != 0 {
+                return rc;
+            }
         }
-    }
-    // Remember the host API so the TurnEnd handler can append resource updates.
-    let _ = RUNTIME.set(*api);
-    if let Some(register) = api.register_event_handler {
-        // SessionShutdown is a marker without session identity: release all
-        // connections in this extension instance.
-        if register(
-            rpi_plugin_sdk::EventTag::SessionShutdown,
-            session_shutdown,
-            std::ptr::null_mut(),
-        ) != 0
-        {
-            return 1;
+        // Remember the host API so the TurnEnd handler can append resource updates.
+        let _ = RUNTIME.set(*api);
+        if let Some(register) = api.register_event_handler {
+            // SessionShutdown is a marker without session identity: release all
+            // connections in this extension instance.
+            if register(
+                rpi_plugin_sdk::EventTag::SessionShutdown,
+                session_shutdown,
+                std::ptr::null_mut(),
+            ) != 0
+            {
+                return 1;
+            }
+            // TurnEnd: show resource updates read since the last turn (a safe boundary).
+            if register(
+                rpi_plugin_sdk::EventTag::TurnEnd,
+                turn_end,
+                std::ptr::null_mut(),
+            ) != 0
+            {
+                return 1;
+            }
         }
-        // TurnEnd: show resource updates read since the last turn (a safe boundary).
-        if register(
-            rpi_plugin_sdk::EventTag::TurnEnd,
-            turn_end,
-            std::ptr::null_mut(),
-        ) != 0
-        {
-            return 1;
-        }
-    }
-    0
-});
+        0
+    });
+}
 
 #[cfg(test)]
 mod tests {

@@ -16,8 +16,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rpi-plugin-sdk = { version = "0.3.16", features = ["process"] }
-serde = { workspace = true }
+rpi-mcp-core = { version = "0.2.4", path = "../rpi-mcp-core" }
 serde_json = { workspace = true }
-reqwest = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net"] }
-url = { workspace = true }

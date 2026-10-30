@@ -32,7 +32,7 @@ use tokio::io::AsyncWrite;
 use tokio::io::{AsyncBufReadExt, BufReader};
 #[cfg(test)]
 use tokio::process::Command;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::diagln;
@@ -44,6 +44,10 @@ static PERMISSION_BYPASS: AtomicBool = AtomicBool::new(false);
 /// processes retain the policy with which they were launched.
 pub fn set_permission_bypass(enabled: bool) {
     PERMISSION_BYPASS.store(enabled, Ordering::Release);
+}
+
+pub(crate) fn permission_bypass() -> bool {
+    PERMISSION_BYPASS.load(Ordering::Acquire)
 }
 
 #[cfg(test)]
@@ -80,10 +84,25 @@ fn forwarded_model_provider_from(args: &[String]) -> (Option<String>, Option<Str
     (model, provider)
 }
 
+/// The authoritative result of one prompt, including the canonical inserted
+/// user message ID required by ACP v2. v1 callers continue to receive only
+/// the stop reason through [`Session::prompt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptResult {
+    pub stop_reason: &'static str,
+    pub message_id: String,
+}
+
 /// A live ACP session backed by one `rpi --mode rpc` child process.
 pub struct Session {
     rpc: Arc<HostSession>,
     durable: Option<Arc<DurableRuntime>>,
+    mcp: tokio::sync::Mutex<Option<rpi_extcore::mcp::McpBinding>>,
+    pub(crate) mcp_owner: rpi_extcore::mcp::McpOwner,
+    child_watcher: tokio::sync::Mutex<Option<crate::subagents::Watcher>>,
+    mcp_config: tokio::sync::Mutex<crate::mcp::Servers>,
+    mcp_input_scope: crate::mcp_input::Scope,
+    sampling_owner: tokio::sync::Mutex<Option<rpi_extcore::sampling::NativeSamplingOwner>>,
     #[cfg(test)]
     events: Option<rpi_extcore::host::TestEvents>,
 }
@@ -92,11 +111,39 @@ impl Session {
     pub async fn spawn(
         id: String,
         cwd: PathBuf,
+        additional_directories: Vec<PathBuf>,
         saved: Option<&Path>,
     ) -> Result<Arc<Self>, String> {
+        Self::spawn_with_client_tools(id, cwd, additional_directories, saved, Default::default()).await
+    }
+
+    pub async fn spawn_with_client_tools(
+        id: String,
+        cwd: PathBuf,
+        additional_directories: Vec<PathBuf>,
+        saved: Option<&Path>,
+        client_tools: rpi_extcore::host::ClientToolOptions,
+    ) -> Result<Arc<Self>, String> {
+        Self::spawn_with_features(id, cwd, additional_directories, saved, client_tools, None).await
+    }
+
+    pub(crate) async fn spawn_with_features(
+        id: String,
+        cwd: PathBuf,
+        additional_directories: Vec<PathBuf>,
+        saved: Option<&Path>,
+        client_tools: rpi_extcore::host::ClientToolOptions,
+        writer: Option<Arc<Writer>>,
+    ) -> Result<Arc<Self>, String> {
+        let child_events = writer.as_ref().is_some_and(|w| w.supports_subagents());
+        let root = id.clone();
+        let mcp_input_scope = crate::mcp_input::Scope {
+            session_id: id.clone(),
+            directories: std::iter::once(cwd.clone()).chain(additional_directories.iter().cloned()).collect(),
+        };
         let directory = crate::history::session_directory(&id)?;
         let (model, provider) = forwarded_model_provider();
-        let rpc = HostSession::spawn_options(SessionOptions {
+        let rpc = HostSession::spawn_options_with_features(SessionOptions {
             executable: resolve_rpi_executable(),
             project: cwd,
             session_id: id,
@@ -106,10 +153,15 @@ impl Session {
             timings_dir: directory.join("tool-timings"),
             model,
             provider,
+            additional_directories,
             permission_gate: !env_flag("RPI_ACP_NO_PERMISSION_GATE"),
             bypass: PERMISSION_BYPASS.load(Ordering::Acquire),
-        })
+        }, client_tools, rpi_extcore::host::RuntimeFeatures { child_events })
         .await?;
+        // Subscribe before durable attachment or any other native request. A
+        // legacy native binary may ignore the opt-in; do not assume support.
+        let child_watcher = writer.filter(|_| child_events && rpc.ready()["childEventsVersion"] == 1)
+            .map(|writer| crate::subagents::Watcher::start(rpc.clone(), writer, root));
         let durable = match DurableRuntime::try_attach(rpc.clone()).await {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -122,13 +174,85 @@ impl Session {
         Ok(Arc::new(Self {
             rpc,
             durable,
+            mcp: Default::default(), mcp_owner: Default::default(),
+            child_watcher: tokio::sync::Mutex::new(child_watcher),
+            sampling_owner: Default::default(),
+            mcp_config: Default::default(),
+            mcp_input_scope,
             #[cfg(test)]
             events: None,
         }))
     }
 
+    /// Produce one native agent-to-client request and bridge the correlated
+    /// response through ACP. This is used by native extensions/tools that need
+    /// client-owned filesystem or terminal capabilities.
+    pub async fn client_request(
+        &self,
+        writer: &Arc<Writer>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        if !CLIENT_REQUEST_METHODS.contains(&method) {
+            return Err("unsupported client request method".to_owned());
+        }
+        validate_client_params(method, &params)?;
+        let correlation = uuid::Uuid::new_v4().to_string();
+        let mut events = self.rpc.subscribe_raw();
+        let command = self.rpc.command(
+            "client_request",
+            json!({"method": method, "params": params, "correlationId": correlation}),
+            std::time::Duration::from_secs(75),
+        );
+        tokio::pin!(command);
+        loop {
+            tokio::select! {
+                result = &mut command => return result,
+                event = events.recv() => match event {
+                    Ok(event) if event.get("type").and_then(Value::as_str) == Some("client_request")
+                        && event.get("method").and_then(Value::as_str) == Some(method)
+                        && event.get("correlationId").and_then(Value::as_str) == Some(correlation.as_str()) => {
+                        let request_id = event.get("requestId").and_then(Value::as_str).unwrap_or_default();
+                        let target = match writer.interaction_target(&self.mcp_input_scope.session_id, &event).await {
+                            Ok(target) => target,
+                            Err(error) => {
+                                self.rpc.terminate().await;
+                                return Err(error);
+                            }
+                        };
+                        let mut params = event.get("params").cloned().unwrap_or_else(|| json!({}));
+                        params["sessionId"] = json!(target);
+                        let response = writer.request(method, params).await;
+                        let response = if response.is_null() {
+                            json!({"type":"client_response","requestId":request_id,"cancelled":true})
+                        } else {
+                            match validate_client_response(method, &response) {
+                                Ok(result) => json!({"type":"client_response","requestId":request_id,"result":result}),
+                                Err(error) => json!({"type":"client_response","requestId":request_id,"error":error}),
+                            }
+                        };
+                        self.send(response).await?;
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => return Err(format!("native client request event stream lost {skipped} events")),
+                    Err(broadcast::error::RecvError::Closed) => return Err("native client request event stream closed".to_owned()),
+                }
+            }
+        }
+    }
+
     async fn send(&self, value: Value) -> Result<(), String> {
         self.rpc.notify(value).await
+    }
+
+    /// Acquire a neutral bounded history reader and its full-replay run lease.
+    pub async fn history_read(&self) -> Result<rpi_extcore::history::page::HistoryRead, String> {
+        rpi_extcore::history::page::HistoryRead::begin(self.rpc.clone()).await
+    }
+
+    /// Observe runtime state without taking the foreground run lease.
+    pub async fn runtime_snapshot(&self) -> rpi_extcore::host::HostSnapshot {
+        self.rpc.snapshot().await
     }
 
     /// Wait for backend startup and obtain the authoritative active branch.
@@ -136,11 +260,46 @@ impl Session {
         self.rpc.state().await
     }
 
-    pub async fn available_models(&self) -> Result<Value, String> {
-        self.rpc.available_models().await
+    pub fn supports_command(&self, command: &str) -> bool {
+        self.rpc.supports_command(command)
     }
+
+    pub async fn available_commands(&self) -> Result<Value, String> {
+        self.rpc.available_commands().await
+    }
+    pub async fn context_usage(&self) -> Result<Value, String> {
+        self.rpc.context_usage().await
+    }
+
+    pub async fn stats(&self) -> Result<Value, String> {
+        self.rpc.stats().await
+    }
+    pub async fn set_compaction_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.rpc.set_compaction_enabled(enabled).await
+    }
+    pub async fn execute_command(&self, command: &str, args: &str) -> Result<Value, String> {
+        self.rpc.execute_command(command, args).await
+    }
+    pub async fn compact(&self, instructions: Option<&str>) -> Result<Value, String> {
+        self.rpc.compact(instructions).await
+    }
+
+    pub async fn modes(&self) -> Result<Value, String> {
+        self.rpc.modes().await
+    }
+    pub async fn set_mode(&self, mode_id: &str) -> Result<Value, String> {
+        self.rpc.set_mode(mode_id).await
+    }
+    /// Apply ACP lifecycle instructions through the neutral idle-only core API.
+    pub async fn configure_system_prompt(&self, prompt: &crate::system_prompt::SystemPrompt) -> Result<(), String> {
+        rpi_extcore::system_prompt::configure(&self.rpc, prompt.mode, &prompt.text).await
+    }
+
     pub async fn state_unlocked(&self) -> Result<Value, String> {
         self.rpc.state_unlocked().await
+    }
+    pub async fn available_models(&self) -> Result<Value, String> {
+        self.rpc.available_models().await
     }
     pub async fn set_model(&self, model_id: &str, provider: Option<&str>) -> Result<(), String> {
         self.rpc.set_model(model_id, provider).await
@@ -205,17 +364,102 @@ impl Session {
         self.rpc.abort_run().await
     }
 
-    /// Run one prompt turn to completion, streaming `session/update`
-    /// notifications to the client. Returns the ACP `stopReason` or a run error.
+    /// v1-compatible prompt entry point. The v2-capable entry point below
+    /// retains the canonical assistant message ID.
     pub async fn prompt(
         self: &Arc<Self>,
         writer: &Arc<Writer>,
         acp_session_id: &str,
         blocks: &[ContentBlock],
     ) -> Result<&'static str, String> {
-        let mut run = self.rpc.begin_prompt(prompt_text(blocks)).await?;
+        Ok(self
+            .prompt_with_result(writer, acp_session_id, blocks)
+            .await?
+            .stop_reason)
+    }
+
+    pub async fn prompt_with_result(
+        self: &Arc<Self>,
+        writer: &Arc<Writer>,
+        acp_session_id: &str,
+        blocks: &[ContentBlock],
+    ) -> Result<PromptResult, String> {
+        self.prompt_with_responder(writer, acp_session_id, blocks, None).await
+    }
+
+    pub(crate) async fn prompt_with_responder(
+        self: &Arc<Self>,
+        writer: &Arc<Writer>,
+        acp_session_id: &str,
+        blocks: &[ContentBlock],
+        mut responder: Option<&mut crate::protocol::PromptResponder>,
+    ) -> Result<PromptResult, String> {
+        let content = prompt_text(blocks);
+        let parts = prompt_content(blocks);
+        let has_media = blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. } | ContentBlock::Audio { .. }));
+        let mut user_message_id = String::new();
+        // v2 requires native insertion, including for slash input. Local v1
+        // shortcuts must not manufacture a retained conversation message.
+        if let Some((command, args)) = slash_command(&content).filter(|_| !writer.supports_v2() && !has_media) {
+            if command == "compact" {
+                let compacted = self.run_compaction(writer, acp_session_id, &args).await;
+                if writer.supports_v2() {
+                    if let Ok(stop_reason) = &compacted {
+                        emit_v2_idle(writer, acp_session_id, stop_reason).await;
+                    }
+                }
+                return compacted.map(|stop_reason| PromptResult {
+                    stop_reason,
+                    message_id: user_message_id.clone(),
+                });
+            }
+            if self.supports_command("get_commands") && self.supports_command("execute_command") {
+                let known = self
+                    .available_commands()
+                    .await
+                    .ok()
+                    .and_then(|commands| commands.get("commands").cloned())
+                    .and_then(|commands| commands.as_array().cloned())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| item.get("name").and_then(Value::as_str).map(str::to_owned))
+                    .any(|name| name.trim_start_matches('/') == command);
+                if known {
+                    let result = self.execute_command_and_wait(&command, &args).await?;
+                    let text = command_result_text(&result);
+                    if !text.is_empty() {
+                        writer
+                            .notify(
+                                "session/update",
+                                json!({
+                                    "sessionId": acp_session_id,
+                                    "update": text_update_with_id(
+                                        json!({"kind":"text","text":text}),
+                                        &format!("command:{acp_session_id}:{}", uuid::Uuid::new_v4()),
+                                    ),
+                                }),
+                            )
+                            .await;
+                    }
+                    self.emit_usage(writer, acp_session_id).await;
+                    if writer.supports_v2() {
+                        emit_v2_idle(writer, acp_session_id, "end_turn").await;
+                    }
+                    return Ok(PromptResult {
+                        stop_reason: "end_turn",
+                        message_id: user_message_id.clone(),
+                    });
+                }
+            }
+        }
+        let mut run = self
+            .rpc
+            .begin_prompt_content(parts)
+            .await?;
+        let mut message_ids = MessageIds::new(acp_session_id);
         let mut cancelled = false;
         let mut dialogs = DialogTasks::default();
+        let mut client_requests = ClientRequestTasks::default();
 
         let stop_reason = 'prompt: loop {
             let event = tokio::select! {
@@ -223,26 +467,54 @@ impl Session {
                 _ = run.cancellation.changed(), if !cancelled => {
                     cancelled = true;
                     dialogs.cancel_all(writer, acp_session_id).await;
+                    client_requests.cancel_interactive();
                     continue;
                 }
-                result = dialogs.tasks.join_next(), if !dialogs.tasks.is_empty() => {
-                    if let Some(Ok(id)) = result { dialogs.pending.remove(&id); }
+                result = client_requests.tasks.join_next(), if !client_requests.tasks.is_empty() => {
+                    if let Some(Ok(id)) = result { client_requests.pending.remove(&id); }
                     continue;
                 }
                 event = run.events.recv() => event,
             };
             match event {
-                Ok(value) => {
+                Ok(mut value) => {
+                    if matches!(value["type"].as_str(), Some("client_request" | "ui_dialog_request")) {
+                        let target = match writer.interaction_target(acp_session_id, &value).await {
+                            Ok(target) => target,
+                            Err(error) => {
+                                crate::diagln!("[rpi-acp] interaction routing failed: {error}; terminating native host");
+                                self.rpc.terminate().await;
+                                break 'prompt Err(error);
+                            }
+                        };
+                        value["sessionId"] = json!(target);
+                        if value["params"].is_object() {
+                            value["params"]["sessionId"] = json!(target);
+                        }
+                    }
+                    message_ids.observe(&value);
+                    if user_message_id.is_empty() {
+                        if let Some(id) = canonical_user_message_id(&value) {
+                            user_message_id = id.to_owned();
+                            if writer.supports_v2() {
+                                emit_v2_prompt_start(writer, acp_session_id, &user_message_id, blocks).await;
+                                if let Some(response) = responder.as_deref_mut() {
+                                    response.inserted(writer, &user_message_id).await;
+                                }
+                            }
+                        }
+                    }
                     let progress = run.tracker.observe(&value, cancelled);
                     for delta in progress.deltas {
                         writer
                             .notify(
                                 "session/update",
-                                json!({"sessionId":acp_session_id,"update":text_update(delta)}),
+                                json!({"sessionId":acp_session_id,"update":text_update_with_ids(delta, &message_ids)}),
                             )
                             .await;
                     }
                     if let Some(outcome) = progress.outcome {
+                        self.emit_usage(writer, acp_session_id).await;
                         break 'prompt outcome.map(|outcome| match outcome {
                             rpi_extcore::run::RunOutcome::Completed => "end_turn",
                             rpi_extcore::run::RunOutcome::Cancelled => "cancelled",
@@ -251,8 +523,27 @@ impl Session {
                     }
                     // A plugin opened a UI dialog (e.g. a permission gate). Ask
                     // the ACP client, then answer the plugin.
+                    if value.get("type").and_then(Value::as_str) == Some("client_request") {
+                        let target = value["sessionId"].as_str().unwrap();
+                        let cleanup = is_terminal_cleanup(&value, target);
+                        if (cancelled || writer.is_input_closed()) && !cleanup {
+                            if let Some(request_id) = value.get("requestId").and_then(Value::as_str)
+                            {
+                                let _ = self.send(json!({"type":"client_response","requestId":request_id,"cancelled":true})).await;
+                            }
+                        } else {
+                            client_requests.open(self.clone(), writer.clone(), value, cleanup);
+                        }
+                        continue;
+                    }
+                    if value.get("type").and_then(Value::as_str) == Some("client_request_closed") {
+                        if let Some(id) = value.get("requestId").and_then(Value::as_str) {
+                            client_requests.close(id).await;
+                        }
+                        continue;
+                    }
                     if value.get("type").and_then(Value::as_str) == Some("ui_dialog_request") {
-                        if cancelled {
+                        if cancelled || writer.is_input_closed() {
                             if let Some(request_id) = value.get("requestId").and_then(Value::as_str)
                             {
                                 let _ = self.send(json!({"type":"ui_dialog_response","requestId":request_id,"cancelled":true})).await;
@@ -261,7 +552,7 @@ impl Session {
                             dialogs.open(
                                 self.clone(),
                                 writer.clone(),
-                                acp_session_id.to_owned(),
+                                value["sessionId"].as_str().unwrap().to_owned(),
                                 value,
                             );
                         }
@@ -282,12 +573,38 @@ impl Session {
                         translate_event(&value).into_iter().collect::<Vec<_>>()
                     };
                     for update in updates {
+                        let update = if writer.supports_v2() {
+                            crate::v2::map_session_update(update)
+                        } else {
+                            update
+                        };
                         writer
                             .notify(
                                 "session/update",
                                 json!({"sessionId": acp_session_id, "update": update}),
                             )
                             .await;
+                    }
+                    if let Some(compaction) = compaction_update(&value, self, acp_session_id).await
+                    {
+                        if writer.supports_compaction() {
+                            writer
+                                .notify(
+                                    "session/update",
+                                    json!({"sessionId":acp_session_id,"update":compaction}),
+                                )
+                                .await;
+                        }
+                    }
+                    if let Some(notice) = notice_update(&value) {
+                        if writer.supports_notices() {
+                            writer
+                                .notify(
+                                    "session/update",
+                                    json!({"sessionId":acp_session_id,"update":notice}),
+                                )
+                                .await;
+                        }
                     }
                     if let Some(plan) = translate_plan_event(&value) {
                         writer
@@ -318,12 +635,269 @@ impl Session {
                 }
             }
         };
+        // Native settlement follows resource-owner cleanup. Do not cancel
+        // already-forwarded kill/release calls while reporting an idle state.
+        client_requests.cancel_interactive();
+        client_requests.drain().await;
         dialogs.cancel_all(writer, acp_session_id).await;
-        stop_reason
+        let child_failure = self.child_watcher.lock().await.as_ref().and_then(|w| w.failure());
+        let stop_reason = if let Some(error) = child_failure {
+            Err(format!("subagent forwarding failed: {error}"))
+        } else if writer.supports_v2() && user_message_id.is_empty() {
+            Err("native prompt settled without canonical user insertion".to_owned())
+        } else if cancelled && stop_reason.is_err() {
+            Ok("cancelled")
+        } else {
+            stop_reason
+        };
+        let result = stop_reason.map(|stop_reason| PromptResult {
+            stop_reason,
+            message_id: user_message_id,
+        });
+        if writer.supports_v2() {
+            if let Ok(result) = &result {
+                writer
+                    .notify(
+                        "session/update",
+                        json!({
+                            "sessionId": acp_session_id,
+                            "update": {
+                                "sessionUpdate": "state_update",
+                                "state": "idle",
+                                "stopReason": result.stop_reason
+                            }
+                        }),
+                    )
+                    .await;
+            }
+        }
+        result
+    }
+
+    async fn execute_command_and_wait(&self, command: &str, args: &str) -> Result<Value, String> {
+        // Subscribe before dispatch. An extension command may hand work to the
+        // native run lane and return its run ID before the authoritative
+        // settlement event; subscribing afterwards loses that boundary.
+        let mut events = self.rpc.subscribe_raw();
+        let result = self.execute_command(command, args).await?;
+        let Some(run_id) = result
+            .get("runId")
+            .or_else(|| result.get("run_id"))
+            .and_then(Value::as_str)
+        else {
+            return Ok(result);
+        };
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let event = events
+                    .recv()
+                    .await
+                    .map_err(|error| format!("command event stream failed: {error}"))?;
+                if event.get("type").and_then(Value::as_str) != Some("agent_settled") {
+                    continue;
+                }
+                if event.get("runId").and_then(Value::as_str) != Some(run_id) {
+                    continue;
+                }
+                break Ok::<Value, String>(event);
+            }
+        })
+        .await
+        .map_err(|_| "command run settlement timed out".to_owned())??;
+        match settled.get("outcome").and_then(Value::as_str) {
+            Some("completed") => Ok(result),
+            Some("aborted") | Some("cancelled") => Err("command run was cancelled".to_owned()),
+            Some(outcome) => Err(settled
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("command run ended with {outcome}"))),
+            None => Err("command run settled without an outcome".to_owned()),
+        }
+    }
+
+    async fn emit_usage(&self, writer: &Arc<Writer>, session_id: &str) {
+        // Optional RPC queries must be capability-gated. Older native hosts (and
+        // the compatibility fixture) do not answer them; querying one after a
+        // settled prompt would otherwise delay the ACP response until the RPC
+        // timeout and make a successful run look hung.
+        if !self.supports_command("get_context_usage") {
+            return;
+        }
+        let Ok(context) =
+            tokio::time::timeout(std::time::Duration::from_millis(750), self.context_usage())
+                .await
+                .unwrap_or_else(|_| Err("context usage query timed out".to_owned()))
+        else {
+            return;
+        };
+        let Some(used) = context.get("tokens").and_then(Value::as_u64) else {
+            return;
+        };
+        let Some(size) = context.get("window").and_then(Value::as_u64) else {
+            return;
+        };
+        let mut update = json!({
+            "sessionUpdate": "usage_update",
+            "used": used,
+            "size": size,
+        });
+        if self.supports_command("get_stats") {
+            if let Ok(Ok(stats)) =
+                tokio::time::timeout(std::time::Duration::from_millis(750), self.stats()).await
+            {
+                if let Some(amount) = stats.get("costTotal").and_then(Value::as_f64) {
+                    if amount.is_finite() {
+                        update["cost"] = json!({"amount": amount, "currency": "USD"});
+                    }
+                }
+            }
+        }
+        writer
+            .notify(
+                "session/update",
+                json!({"sessionId": session_id, "update": update}),
+            )
+            .await;
+    }
+
+    async fn run_compaction(
+        &self,
+        writer: &Arc<Writer>,
+        session_id: &str,
+        instructions: &str,
+    ) -> Result<&'static str, String> {
+        if !self.supports_command("compact") {
+            return Err("native host does not support compaction".to_owned());
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        if writer.supports_compaction() {
+            writer
+                .notify(
+                    "session/update",
+                    json!({"sessionId":session_id,"update":{
+                        "sessionUpdate":"compaction_update",
+                        "compactionId":id,
+                        "status":"in_progress"
+                    }}),
+                )
+                .await;
+        }
+        let result = self
+            .compact((!instructions.is_empty()).then_some(instructions))
+            .await;
+        let (status, summary, error, reason): (&str, Option<String>, Option<String>, &str) =
+            match result {
+                Ok(value) if value["outcome"] == "compacted" => (
+                    "completed",
+                    value
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    None,
+                    "end_turn",
+                ),
+                Ok(value) if value["outcome"] == "aborted" => (
+                    "cancelled",
+                    value
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    None,
+                    "cancelled",
+                ),
+                Ok(value) => {
+                    let message = value
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| "Native compaction declined".to_owned());
+                    ("failed", Some(message.clone()), Some(message), "end_turn")
+                }
+                Err(error) => ("failed", None, Some(error), "end_turn"),
+            };
+        if writer.supports_compaction() {
+            let mut update = json!({
+                "sessionUpdate":"compaction_update",
+                "compactionId":id,
+                "status":status,
+            });
+            if let Some(summary) = summary {
+                update["summary"] = json!([{"type":"text","text":summary}]);
+            }
+            if let Some(error) = error.as_ref() {
+                update["error"] = json!(error);
+            }
+            writer
+                .notify(
+                    "session/update",
+                    json!({"sessionId":session_id,"update":update}),
+                )
+                .await;
+        }
+        self.emit_usage(writer, session_id).await;
+        match status {
+            "failed" => Err(error.unwrap_or_else(|| "native compaction failed".to_owned())),
+            _ => Ok(reason),
+        }
+    }
+    /// Replace runtime-only MCP resources while holding the native foreground lease.
+    pub async fn configure_mcp(&self, servers: crate::mcp::Servers, id: &str, cwd: &Path, writer: &Arc<Writer>) -> Result<(), String> {
+        crate::mcp_acp::register(writer, &servers.2)?;
+        let mut current = self.mcp_config.lock().await;
+        if *current == servers { return Ok(()); }
+        let mut oauth = if servers.requires_managed_http_auth() {
+            crate::mcp_oauth::options(writer, &self.mcp_input_scope.session_id)?
+        } else {
+            rpi_extcore::mcp::McpOptions::default()
+        };
+        oauth.owner = Some(self.mcp_owner.clone());
+        oauth.catalog = writer.mcp_catalog;
+        let _lease = self.rpc.try_run_lease()?;
+        oauth.sampling = crate::mcp_sampling::options(writer, &self.rpc,
+            &self.mcp_input_scope.session_id, cwd, &servers,
+            &mut *self.sampling_owner.lock().await)?;
+        let sampling = oauth.sampling.clone();
+        let mut binding = self.mcp.lock().await;
+        if let Some(old) = binding.as_mut() {
+            if old.shutdown().await.is_err() {
+                let _ = self.mcp_owner.shutdown().await;
+                if let Some(owner) = self.sampling_owner.lock().await.as_ref() { let _ = owner.shutdown().await; }
+                self.rpc.terminate().await;
+                return Err("MCP shutdown failed; session closed".into());
+            }
+        }
+        *binding = None;
+        let config = servers.clone().config(id, cwd);
+        let attached = if servers.1.is_empty() {
+            rpi_extcore::mcp::attach_with_options(self.rpc.clone(), config, oauth).await
+        } else {
+            rpi_extcore::mcp_external::attach_with_runtime_options(self.rpc.clone(), config,
+                crate::mcp_acp::external(writer, servers.1.clone()),
+                crate::mcp_input::options(writer, &self.mcp_input_scope, sampling, crate::mcp_sampling::configured(&servers))?, oauth).await
+        };
+        match attached {
+            Ok(new) => { *binding = Some(new); *current = servers; Ok(()) }
+            Err(_) => {
+                let _ = self.mcp_owner.shutdown().await;
+                if let Some(owner) = self.sampling_owner.lock().await.as_ref() { let _ = owner.shutdown().await; }
+                self.rpc.terminate().await;
+                Err("MCP attachment failed; session closed".into())
+            }
+        }
     }
 
     /// Kill the child (session/close, process shutdown).
     pub async fn kill(&self) {
+        if let Some(mut watcher) = self.child_watcher.lock().await.take() {
+            watcher.stop().await;
+        }
+        // Cancel and join even unpublished discovery before terminating RPC.
+        let _ = self.mcp_owner.shutdown().await;
+        *self.mcp.lock().await = None;
+        if let Some(owner) = self.sampling_owner.lock().await.as_ref() {
+            let _ = owner.shutdown().await;
+        }
         self.rpc.terminate().await;
     }
 }
@@ -359,13 +933,139 @@ impl StreamText {
         Ok(self.0.complete(text)?.map(text_update))
     }
 }
-fn text_update(delta: Value) -> Value {
+async fn compaction_update(event: &Value, _session: &Session, _session_id: &str) -> Option<Value> {
+    let kind = event.get("type").and_then(Value::as_str)?;
+    let (status, id) = match kind {
+        "compaction_started" => ("in_progress", event.get("compactionId")?.as_str()?),
+        "compaction_finished" => (
+            event
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("failed"),
+            event.get("compactionId")?.as_str()?,
+        ),
+        _ => return None,
+    };
+    let mut update = json!({
+        "sessionUpdate": "compaction_update",
+        "compactionId": id,
+        "status": status,
+    });
+    if let Some(summary) = event.get("summary").and_then(Value::as_str) {
+        update["summary"] = json!([{"type":"text","text":summary}]);
+    }
+    if let Some(error) = event.get("error").and_then(Value::as_str) {
+        update["error"] = json!(error);
+    }
+    Some(update)
+}
+
+fn notice_update(event: &Value) -> Option<Value> {
+    if event.get("type").and_then(Value::as_str) != Some("retry_scheduled") {
+        return None;
+    }
+    let attempt = event.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+    let max = event.get("maxRetries").and_then(Value::as_u64).unwrap_or(0);
+    let delay = event.get("delayMs").and_then(Value::as_u64).unwrap_or(0);
+    let detail = event
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("provider retry");
+    Some(json!({
+        "sessionUpdate": "notice",
+        "severity": "warning",
+        "title": "Retry scheduled",
+        "description": format!("Attempt {attempt}/{max} in {delay} ms: {detail}"),
+    }))
+}
+fn slash_command(text: &str) -> Option<(String, String)> {
+    let line = text.lines().next()?.trim();
+    let command = line.strip_prefix('/')?;
+    let (name, args) = command.split_once(' ').unwrap_or((command, ""));
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some((name.to_owned(), args.trim().to_owned()))
+}
+
+fn command_result_text(value: &Value) -> String {
+    for candidate in ["text", "message", "output"] {
+        if let Some(text) = value.get(candidate).and_then(Value::as_str) {
+            return text.to_owned();
+        }
+    }
+    let result = value.get("result").unwrap_or(value);
+    match result {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        _ => result.to_string(),
+    }
+}
+
+struct MessageIds {
+    assistant: String,
+    thought: String,
+}
+
+impl MessageIds {
+    fn new(session_id: &str) -> Self {
+        let assistant = format!("assistant:{session_id}:fallback:{}", uuid::Uuid::new_v4());
+        Self {
+            thought: format!("{assistant}:thought"),
+            assistant,
+        }
+    }
+
+    fn observe(&mut self, event: &Value) {
+        if !matches!(
+            event["type"].as_str(),
+            Some("message_start" | "message_update" | "message_end")
+        ) || event["message"]["role"] != "assistant"
+        {
+            return;
+        }
+        let Some(id) = event["message"]["messageId"]
+            .as_str()
+            .or_else(|| event["message"]["id"].as_str())
+            .or_else(|| event["messageId"].as_str())
+            .filter(|id| !id.is_empty())
+        else {
+            return;
+        };
+        self.assistant = id.to_owned();
+        self.thought = format!("{id}:thought");
+    }
+
+    fn for_kind(&self, kind: &str) -> &str {
+        if kind == "thinking" {
+            &self.thought
+        } else {
+            &self.assistant
+        }
+    }
+}
+
+fn text_update_with_id(delta: Value, message_id: &str) -> Value {
     let kind = if delta["kind"] == "thinking" {
         "agent_thought_chunk"
     } else {
         "agent_message_chunk"
     };
-    json!({"sessionUpdate":kind,"content":{"type":"text","text":delta["text"]}})
+    json!({
+        "sessionUpdate":kind,
+        "content":{"type":"text","text":delta["text"]},
+        "messageId":message_id,
+    })
+}
+
+fn text_update_with_ids(delta: Value, ids: &MessageIds) -> Value {
+    let kind = delta["kind"].as_str().unwrap_or("text").to_owned();
+    text_update_with_id(delta, ids.for_kind(&kind))
+}
+
+#[cfg(test)]
+fn text_update(delta: Value) -> Value {
+    text_update_with_id(delta, "test:assistant")
 }
 
 #[cfg(test)]
@@ -384,11 +1084,276 @@ use rpi_extcore::process::sibling_rpi;
 /// is `rpi-acp`, so spawning it would recurse instead of starting an agent.
 pub use rpi_extcore::process::{is_rpi_binary, resolve_rpi_executable};
 
+/// Owns native-triggered agent → client filesystem and terminal requests.
+/// Each request has a cancellation channel separate from the native event
+/// stream, so a stalled client cannot stop event processing or survive session
+/// cancellation.
+#[derive(Default)]
+struct ClientRequestTasks {
+    tasks: JoinSet<String>,
+    pending: HashMap<String, (watch::Sender<bool>, bool)>,
+}
+
+impl ClientRequestTasks {
+    fn open(&mut self, session: Arc<Session>, writer: Arc<Writer>, event: Value, cleanup: bool) {
+        let Some(request_id) = event
+            .get("requestId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+        else {
+            return;
+        };
+        if self.pending.contains_key(request_id) {
+            return;
+        }
+        let request_id = request_id.to_owned();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let completed_id = request_id.clone();
+        self.tasks.spawn(async move {
+            handle_client_request(&session, &writer, &event, cancel_rx).await;
+            completed_id
+        });
+        self.pending.insert(request_id, (cancel_tx, cleanup));
+    }
+
+    async fn close(&mut self, request_id: &str) {
+        if let Some((cancel, _)) = self.pending.remove(request_id) {
+            let _ = cancel.send(true);
+        }
+    }
+
+    fn cancel_interactive(&mut self) {
+        for (cancel, cleanup) in self.pending.values() {
+            if !cleanup {
+                let _ = cancel.send(true);
+            }
+        }
+    }
+
+    async fn drain(&mut self) {
+        while let Some(result) = self.tasks.join_next().await {
+            if let Ok(id) = result {
+                self.pending.remove(&id);
+            }
+        }
+    }
+}
+
+/// Only native resource-owner teardown may bypass prompt cancellation. Neither
+/// terminal creation/wait nor arbitrary filesystem work is cleanup.
+fn is_terminal_cleanup(event: &Value, session_id: &str) -> bool {
+    event.get("requestId").and_then(Value::as_str).is_some_and(|id| !id.trim().is_empty())
+        && client_request_spec(event).is_ok_and(|(method, params)| {
+            matches!(method, "terminal/kill" | "terminal/release")
+                && params.get("sessionId").and_then(Value::as_str) == Some(session_id)
+        })
+}
+
+fn canonical_user_message_id(event: &Value) -> Option<String> {
+    if !matches!(event["type"].as_str(), Some("message_start" | "message_end"))
+        || (event["message"]["role"] != "user" && event["message"]["kind"] != "user")
+    {
+        return None;
+    }
+    let id = event["message"]["messageId"].as_str()
+        .or_else(|| event["message"]["id"].as_str())
+        .or_else(|| event["messageId"].as_str())
+        .filter(|id| !id.trim().is_empty())?;
+    // Native typed user events carry the committed entry identity. History
+    // namespaces legacy user entries this way; keep insertion and load identical.
+    Some(if event["message"]["kind"] == "user" && !id.starts_with("history:") {
+        format!("history:{id}")
+    } else {
+        id.to_owned()
+    })
+}
+
+const CLIENT_REQUEST_METHODS: &[&str] = &[
+    "fs/read_text_file",
+    "fs/write_text_file",
+    "terminal/create",
+    "terminal/output",
+    "terminal/wait_for_exit",
+    "terminal/kill",
+    "terminal/release",
+];
+
+fn client_request_spec(event: &Value) -> Result<(&str, Value), String> {
+    let method = event
+        .get("method")
+        .and_then(Value::as_str)
+        .filter(|method| CLIENT_REQUEST_METHODS.contains(method))
+        .ok_or_else(|| "unsupported or missing client request method".to_owned())?;
+    let mut params = event
+        .get("params")
+        .cloned()
+        .ok_or_else(|| "client request params are required".to_owned())?;
+    if !params.is_object() {
+        return Err("client request params must be an object".to_owned());
+    }
+    if let Some(session_id) = event.get("sessionId").and_then(Value::as_str) {
+        if params.get("sessionId").is_some_and(|nested| nested.as_str() != Some(session_id)) {
+            return Err("client request params.sessionId conflicts with trusted source".into());
+        }
+        params["sessionId"] = json!(session_id);
+    }
+    validate_client_params(method, &params)?;
+    Ok((method, params))
+}
+
+fn validate_client_params(method: &str, params: &Value) -> Result<(), String> {
+    let object = params
+        .as_object()
+        .ok_or_else(|| "client request params must be an object".to_owned())?;
+    match method {
+        "fs/read_text_file" => {
+            let path = object
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .ok_or_else(|| "fs/read_text_file path is required".to_owned())?;
+            if !Path::new(path).is_absolute() {
+                return Err("fs/read_text_file path must be absolute".to_owned());
+            }
+            for name in ["line", "limit"] {
+                if let Some(value) = object.get(name) {
+                    if !value.is_null() && value.as_u64().is_none() {
+                        return Err(format!(
+                            "fs/read_text_file {name} must be an unsigned integer"
+                        ));
+                    }
+                }
+            }
+        }
+        "fs/write_text_file" => {
+            let path = object
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .ok_or_else(|| "fs/write_text_file path is required".to_owned())?;
+            if !Path::new(path).is_absolute() {
+                return Err("fs/write_text_file path must be absolute".to_owned());
+            }
+            if !object.get("content").is_some_and(Value::is_string) {
+                return Err("fs/write_text_file content must be a string".to_owned());
+            }
+        }
+        "terminal/create" => {
+            if !object
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| !command.trim().is_empty())
+            {
+                return Err("terminal/create command is required".to_owned());
+            }
+            if let Some(cwd) = object.get("cwd").and_then(Value::as_str) {
+                if !Path::new(cwd).is_absolute() {
+                    return Err("terminal/create cwd must be absolute".to_owned());
+                }
+            }
+            if let Some(args) = object.get("args") {
+                if !args.is_array()
+                    || args
+                        .as_array()
+                        .is_some_and(|args| args.iter().any(|arg| !arg.is_string()))
+                {
+                    return Err("terminal/create args must be an array of strings".to_owned());
+                }
+            }
+            if let Some(env) = object.get("env") {
+                if !env.is_array() {
+                    return Err("terminal/create env must be an array".to_owned());
+                }
+            }
+        }
+        "terminal/output" | "terminal/wait_for_exit" | "terminal/kill" | "terminal/release" => {
+            if !object
+                .get("terminalId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.trim().is_empty())
+            {
+                return Err(format!("{method} terminalId is required"));
+            }
+        }
+        _ => return Err("unsupported client request method".to_owned()),
+    }
+    Ok(())
+}
+
+fn validate_client_response(method: &str, result: &Value) -> Result<Value, String> {
+    if let Some(error) = result.get("__acp_error") {
+        return Err(format!("client rejected {method}: {error}"));
+    }
+    let object = result
+        .as_object()
+        .ok_or_else(|| format!("client {method} response must be an object"))?;
+    match method {
+        "fs/read_text_file" => {
+            if !object.get("content").is_some_and(Value::is_string) {
+                return Err("fs/read_text_file response requires string content".to_owned());
+            }
+        }
+        "terminal/create" => {
+            if object
+                .get("terminalId")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                return Err("terminal/create response requires terminalId".to_owned());
+            }
+        }
+        "terminal/output"
+            if !object.get("output").is_some_and(Value::is_string)
+                || !object.get("truncated").is_some_and(Value::is_boolean) =>
+        {
+            return Err("terminal/output response requires output and truncated".to_owned());
+        }
+        _ => {}
+    }
+    Ok(result.clone())
+}
+
+async fn handle_client_request(
+    session: &Session,
+    writer: &Arc<Writer>,
+    event: &Value,
+    mut cancelled: watch::Receiver<bool>,
+) {
+    let request_id = event
+        .get("requestId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let response = match client_request_spec(event) {
+        Ok((method, params)) => {
+            let target = event["sessionId"].as_str().unwrap_or_default();
+            let result = if is_terminal_cleanup(event, target) {
+                writer.request_terminal_cleanup(method, params, &mut cancelled).await
+            } else {
+                writer.request_cancellable(method, params, &mut cancelled).await
+            };
+            if result.is_null() {
+                json!({"type":"client_response","requestId":request_id,"cancelled":true})
+            } else {
+                match validate_client_response(method, &result) {
+                    Ok(result) => {
+                        json!({"type":"client_response","requestId":request_id,"result":result})
+                    }
+                    Err(error) => {
+                        json!({"type":"client_response","requestId":request_id,"error":error})
+                    }
+                }
+            }
+        }
+        Err(error) => json!({"type":"client_response","requestId":request_id,"error":error}),
+    };
+    let _ = session.send(response).await;
+}
+
 /// Owns each pending client request separately, so the event stream keeps advancing.
 #[derive(Default)]
 struct DialogTasks {
     tasks: JoinSet<String>,
-    pending: HashMap<String, AbortHandle>,
+    pending: HashMap<String, (AbortHandle, String)>,
 }
 
 impl DialogTasks {
@@ -411,15 +1376,16 @@ impl DialogTasks {
         }
         let id = id.to_owned();
         let completed_id = id.clone();
+        let target = session_id.clone();
         let task = self.tasks.spawn(async move {
             handle_ui_dialog(&session, &writer, &session_id, &event).await;
             completed_id
         });
-        self.pending.insert(id, task);
+        self.pending.insert(id, (task, target));
     }
 
-    async fn close(&mut self, id: &str, writer: &Writer, session_id: &str) {
-        if let Some(task) = self.pending.remove(id) {
+    async fn close(&mut self, id: &str, writer: &Writer, _session_id: &str) {
+        if let Some((task, session_id)) = self.pending.remove(id) {
             task.abort();
             if writer.supports_questions() && !writer.supports_elicitation() {
                 writer
@@ -448,6 +1414,9 @@ fn permission_request(
     session_id: &str,
 ) -> Option<(Value, Vec<rpi_plugin_sdk::dialogs::PermissionOption>)> {
     let ui = event.get("ui")?;
+    if ui.get("purpose").and_then(Value::as_str) != Some("permission") {
+        return None;
+    }
     let tool_call_id = event
         .get("toolCallId")?
         .as_str()
@@ -508,7 +1477,21 @@ async fn handle_ui_dialog(
         .await
         .unwrap_or(Value::Null);
         permission_answer(request_id, &result, &options)
-    } else if writer.supports_elicitation() {
+    } else if writer.supports_elicitation_url()
+        && event.pointer("/ui/kind").and_then(Value::as_str) == Some("url")
+    {
+        if let Some(params) = crate::questions::elicitation_url_request(event, session_id) {
+            let result = tokio::time::timeout(
+                timeout,
+                writer.request(crate::questions::ELICITATION_METHOD, params),
+            )
+            .await
+            .unwrap_or(Value::Null);
+            crate::questions::elicitation_url_answer(request_id, &result)
+        } else {
+            json!({"type":"ui_dialog_response", "requestId":request_id, "cancelled":true})
+        }
+    } else if writer.supports_elicitation_form() {
         if let Some(params) = crate::questions::elicitation_request(event, session_id) {
             let result = tokio::time::timeout(
                 timeout,
@@ -547,6 +1530,141 @@ async fn handle_ui_dialog(
     let _ = session.send(response).await;
 }
 
+/// Convert ACP input in place; resources use the existing text rendering at
+/// their original position. Adjacent text keeps the legacy newline semantics.
+fn prompt_content(blocks: &[ContentBlock]) -> Vec<rpi_extcore::host::PromptContent> {
+    use rpi_extcore::host::PromptContent;
+    let mut parts = Vec::new();
+    let mut text_blocks = Vec::new();
+    fn flush(text_blocks: &mut Vec<ContentBlock>, parts: &mut Vec<PromptContent>) {
+        let text = prompt_text(text_blocks);
+        if !text.is_empty() { parts.push(PromptContent::Text { text }); }
+        text_blocks.clear();
+    }
+    for block in blocks {
+        match block {
+            ContentBlock::Image { data, mime_type } => {
+                flush(&mut text_blocks, &mut parts);
+                parts.push(PromptContent::Image { data: data.clone(), mime_type: mime_type.clone() });
+            }
+            ContentBlock::Audio { data, mime_type } => {
+                flush(&mut text_blocks, &mut parts);
+                parts.push(PromptContent::Audio { data: data.clone(), mime_type: mime_type.clone() });
+            }
+            _ => text_blocks.push(block.clone()),
+        }
+    }
+    flush(&mut text_blocks, &mut parts);
+    parts
+}
+
+/// Convert ACP image blocks to the native provider-neutral image shape.
+///
+/// The native RPC protocol deliberately carries the provider-neutral
+/// `ImageContent` fields (`data` and `mimeType`) as JSON, so the ACP adapter
+/// does not depend on provider-specific types.
+pub fn prompt_images(blocks: &[ContentBlock]) -> Vec<Value> {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Image { data, mime_type } => Some(json!({
+                "data": data,
+                "mimeType": mime_type,
+            })),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Convert ACP audio blocks to the native provider-neutral audio shape.
+pub fn prompt_audio(blocks: &[ContentBlock]) -> Vec<Value> {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Audio { data, mime_type } => Some(json!({
+                "data": data,
+                "mimeType": mime_type,
+            })),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn emit_v2_prompt_start(
+    writer: &Arc<Writer>,
+    session_id: &str,
+    message_id: &str,
+    blocks: &[ContentBlock],
+) {
+    writer
+        .notify(
+            "session/update",
+            json!({
+                "sessionId": session_id,
+                "update": {"sessionUpdate": "state_update", "state": "running"}
+            }),
+        )
+        .await;
+    writer
+        .notify(
+            "session/update",
+            json!({
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "user_message",
+                    "messageId": message_id,
+                    "content": v2_prompt_content(blocks)
+                }
+            }),
+        )
+        .await;
+}
+
+async fn emit_v2_idle(writer: &Arc<Writer>, session_id: &str, stop_reason: &str) {
+    writer
+        .notify(
+            "session/update",
+            json!({
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "state_update",
+                    "state": "idle",
+                    "stopReason": stop_reason
+                }
+            }),
+        )
+        .await;
+}
+
+fn v2_prompt_content(blocks: &[ContentBlock]) -> Vec<Value> {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
+            ContentBlock::Image { data, mime_type } => Some(json!({
+                "type": "image",
+                "data": data,
+                "mimeType": mime_type,
+            })),
+            ContentBlock::Audio { data, mime_type } => Some(json!({
+                "type": "audio",
+                "data": data,
+                "mimeType": mime_type,
+            })),
+            ContentBlock::ResourceLink { name, uri } => Some(json!({
+                "type": "resource_link",
+                "name": name.as_deref().unwrap_or(uri),
+                "uri": uri,
+            })),
+            ContentBlock::Resource { resource } => Some(crate::v2::prompt_resource(
+                &resource.uri,
+                resource.text.as_deref(),
+            )),
+            ContentBlock::Other => None,
+        })
+        .collect()
+}
+
 /// Flatten ACP prompt content blocks into the text `rpi --mode rpc` accepts.
 ///
 /// Baseline ACP requires Text and ResourceLink support; we also accept embedded
@@ -561,6 +1679,7 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
                     parts.push(text.clone());
                 }
             }
+            ContentBlock::Image { .. } | ContentBlock::Audio { .. } => {}
             ContentBlock::ResourceLink { name, uri } => {
                 parts.push(format!("@{}", resource_display_name(name.as_deref(), uri)));
             }
@@ -578,12 +1697,12 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
 }
 
 fn resource_display_name(name: Option<&str>, uri: &str) -> String {
-    if let Some(name) = name {
-        if !name.is_empty() {
-            return name.to_string();
-        }
+    // A friendly label is not a locator: two attached roots can have the same
+    // basename. Keep the exact URI in native prompts/history without fetching it.
+    match name.filter(|name| !name.is_empty() && *name != uri) {
+        Some(name) => format!("{name} ({uri})"),
+        None => uri.to_owned(),
     }
-    uri.strip_prefix("file://").unwrap_or(uri).to_string()
 }
 
 /// Translate one `rpi --mode rpc` event line into an ACP `session/update`
@@ -886,7 +2005,58 @@ fn tool_result_text(result: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("../tests/fixtures/eof_cleanup_session.rs");
 
+    #[test]
+    fn canonical_user_identity_matches_native_history_without_fallbacks() {
+        for kind in ["message_start", "message_end"] {
+            assert_eq!(canonical_user_message_id(&json!({"type":kind,"message":{"kind":"user","messageId":"entry-a"}})), Some("history:entry-a".into()));
+            assert_eq!(canonical_user_message_id(&json!({"type":kind,"message":{"role":"user","messageId":"legacy-id"}})), Some("legacy-id".into()));
+            assert_eq!(canonical_user_message_id(&json!({"type":kind,"message":{"kind":"user","messageId":"history:entry-a"}})), Some("history:entry-a".into()));
+            for message in [json!({"kind":"user"}), json!({"kind":"user","messageId":" "}), json!({"kind":"assistant","messageId":"assistant-uuid"})] {
+                assert_eq!(canonical_user_message_id(&json!({"type":kind,"message":message})), None);
+            }
+        }
+    }
+
+    #[test]
+    fn client_request_spec_accepts_native_fs_and_terminal_envelopes() {
+        let event = json!({
+            "type": "client_request",
+            "requestId": "r1",
+            "sessionId": "s1",
+            "method": "fs/read_text_file",
+            "params": {"path": "C:/workspace/a.txt"}
+        });
+        let (method, params) = client_request_spec(&event).unwrap();
+        assert_eq!(method, "fs/read_text_file");
+        assert_eq!(params["sessionId"], "s1");
+        assert!(client_request_spec(&json!({
+            "requestId": "r2", "method": "terminal/create", "params": {}
+        }))
+        .is_err());
+        assert!(client_request_spec(&json!({
+            "requestId": "r3", "method": "mcp/call", "sessionId": "s1", "params": {}
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn client_response_validation_rejects_malformed_successes() {
+        assert!(validate_client_response("fs/read_text_file", &json!({"content":"ok"})).is_ok());
+        assert!(validate_client_response("fs/read_text_file", &json!({"content":1})).is_err());
+        assert!(validate_client_response(
+            "terminal/output",
+            &json!({"output":"x","truncated":false})
+        )
+        .is_ok());
+        assert!(validate_client_response("terminal/output", &json!({"output":"x"})).is_err());
+        assert!(validate_client_response(
+            "terminal/create",
+            &json!({"__acp_error":{"code":-1,"message":"denied"}})
+        )
+        .is_err());
+    }
     #[test]
     fn bypass_reaches_children_and_overrides_environment_activation() {
         for no_auto_gate in [false, true] {
@@ -959,6 +2129,11 @@ mod tests {
         let session = Arc::new(Session {
             rpc: rpc.clone(),
             durable: Some(DurableRuntime::empty(rpc)),
+            mcp: Default::default(), mcp_owner: Default::default(),
+            child_watcher: Default::default(),
+            sampling_owner: Default::default(),
+            mcp_config: Default::default(),
+            mcp_input_scope: Default::default(),
             events: Some(events),
         });
         (session, commands)
@@ -981,6 +2156,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_unchanged_and_unrelated_configs_ignore_invalid_oauth_policy() {
+        let (session, _commands) = test_session();
+        let mut writer = Writer::with_output(tokio::io::sink());
+        writer.mcp_oauth_policy = Err("fixed-policy-error");
+        let writer = Arc::new(writer);
+        let cwd = std::env::current_dir().unwrap();
+        // Initial empty config is a real no-op, even with a broken opt-in policy.
+        session.configure_mcp(crate::mcp::Servers::default(), "root", &cwd, &writer).await.unwrap();
+        for v2 in [false, true] {
+            let params = json!({"mcpServers":[{"type":"http", "name":"managed", "url":"https://mcp.example/mcp", "headers":[]}]});
+            let servers = crate::mcp::parse(&params, v2, false).unwrap();
+            // Changed managed HTTP must still fail closed, before attachment.
+            assert_eq!(session.configure_mcp(servers.clone(), "root", &cwd, &writer).await.unwrap_err(), "fixed-policy-error");
+            // Already-configured fast return must not provision again.
+            *session.mcp_config.lock().await = servers.clone();
+            session.configure_mcp(servers, "root", &cwd, &writer).await.unwrap();
+            *session.mcp_config.lock().await = crate::mcp::Servers::default();
+            let static_params = json!({"mcpServers":[{"type":"http", "name":"static", "url":"https://mcp.example/mcp", "headers":[{"name":"aUtHoRiZaTiOn", "value":"Bearer static"}]}]});
+            let servers = crate::mcp::parse(&static_params, v2, false).unwrap();
+            // No native MCP capability in this fixture: reaching attachment proves
+            // the unrelated invalid policy and missing URL capability were skipped.
+            assert_eq!(session.configure_mcp(servers, "root", &cwd, &writer).await.unwrap_err(), "MCP attachment failed; session closed");
+        }
+    }
+
+    #[tokio::test]
+    async fn system_prompt_maps_official_modes_under_native_lease() {
+        let (input, output) = tokio::io::duplex(8192);
+        let (rpc, events) = HostSession::test_connection_with_ready(input, 64,
+            json!({"type":"ready","protocol":"rpi","supportedCommands":["set_system_prompt"]}));
+        let session = Arc::new(Session {
+            rpc: rpc.clone(), durable: None, mcp: Default::default(), mcp_owner: Default::default(),
+            child_watcher: Default::default(),
+            sampling_owner: Default::default(),
+            mcp_config: Default::default(), mcp_input_scope: Default::default(), events: Some(events),
+        });
+        let mut lines = BufReader::new(output).lines();
+        for (mode, native) in [("append", "append"), ("override", "replace")] {
+            let prompt = crate::system_prompt::parse(&json!({"systemPrompt":{
+                "mode":mode,"content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]
+            }}), true).unwrap().unwrap();
+            let owner = session.clone();
+            let call = tokio::spawn(async move { owner.configure_system_prompt(&prompt).await });
+            let command = read_json(&mut lines).await;
+            assert_eq!(command["type"], "set_system_prompt");
+            assert_eq!(command["mode"], native);
+            assert_eq!(command["prompt"], "first\nsecond");
+            assert!(rpc.try_run_lease().is_err());
+            session.events.as_ref().unwrap().send(json!({"type":"response","id":command["id"],"success":true})).unwrap();
+            call.await.unwrap().unwrap();
+            assert!(rpc.try_run_lease().is_ok());
+        }
+        let lease = rpc.try_run_lease().unwrap();
+        let prompt = crate::system_prompt::SystemPrompt { mode: rpi_extcore::system_prompt::Mode::Append, text:"busy".into() };
+        assert!(session.configure_system_prompt(&prompt).await.unwrap_err().contains("already running"));
+        drop(lease);
+        session.kill().await;
+    }
+
+    #[tokio::test]
     async fn durable_lifecycle_event_does_not_mutate_the_projection() {
         let (session, _commands) = test_session();
         let update = session.durable_update("acp-session").await.unwrap();
@@ -994,6 +2229,11 @@ mod tests {
         let unavailable = Session {
             rpc: session.rpc.clone(),
             durable: None,
+            mcp: Default::default(), mcp_owner: Default::default(),
+            child_watcher: Default::default(),
+            sampling_owner: Default::default(),
+            mcp_config: Default::default(),
+            mcp_input_scope: Default::default(),
             events: None,
         };
         let error = unavailable.durable_state().await.unwrap_err();
@@ -1896,7 +3136,86 @@ mod tests {
         let text = prompt_text(&blocks);
         assert!(text.starts_with("explain"));
         assert!(text.contains("@main.rs"));
+        assert!(text.contains("file:///a/main.rs"));
         assert!(text.contains("<file uri=\"file:///a/lib.rs\">\nfn main() {}\n</file>"));
+    }
+
+    #[test]
+    fn resource_links_keep_full_uri_even_with_colliding_display_names() {
+        let blocks = vec![
+            ContentBlock::ResourceLink { name: Some("src".into()), uri: "file:///a/src/".into() },
+            ContentBlock::ResourceLink { name: Some("src".into()), uri: "file:///b/src/".into() },
+            ContentBlock::ResourceLink { name: None, uri: "https://example.invalid/not-fetched".into() },
+            ContentBlock::Resource { resource: crate::protocol::EmbeddedResource {
+                uri: "file:///c/uri-only".into(), text: None,
+            } },
+        ];
+        let text = prompt_text(&blocks);
+        for uri in ["file:///a/src/", "file:///b/src/", "https://example.invalid/not-fetched", "file:///c/uri-only"] {
+            assert!(text.contains(uri), "URI lost: {uri}: {text}");
+        }
+        assert_ne!(prompt_text(&blocks[..1]), prompt_text(&blocks[1..2]));
+    }
+
+    #[test]
+    fn prompt_content_keeps_text_resources_and_media_in_place() {
+        use rpi_extcore::host::PromptContent;
+        let blocks = vec![
+            ContentBlock::Text { text: "before".into() },
+            ContentBlock::Image { data: "AA==".into(), mime_type: "image/png".into() },
+            ContentBlock::Resource { resource: crate::protocol::EmbeddedResource {
+                uri: "file:///a/lib.rs".into(), text: Some("resource body".into()),
+            } },
+            ContentBlock::Audio { data: "AA==".into(), mime_type: "audio/wav".into() },
+            ContentBlock::Text { text: "after".into() },
+        ];
+        let replay = v2_prompt_content(&blocks);
+        assert_eq!(replay.len(), 5);
+        assert_eq!(replay[0]["text"], "before");
+        assert_eq!(replay[1]["type"], "image");
+        assert_eq!(replay[2]["resource"]["text"], "resource body");
+        assert_eq!(replay[3]["type"], "audio");
+        assert_eq!(replay[4]["text"], "after");
+        let uri_only = serde_json::from_value::<ContentBlock>(json!({
+            "type":"resource", "resource":{"uri":"https://example.test/no-fetch"}
+        })).unwrap();
+        assert_eq!(v2_prompt_content(&[uri_only]), vec![json!({
+            "type":"resource_link", "name":"https://example.test/no-fetch",
+            "uri":"https://example.test/no-fetch"
+        })]);
+        let parts = prompt_content(&blocks);
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0], PromptContent::Text { text: "before".into() });
+        assert!(matches!(&parts[1], PromptContent::Image { .. }));
+        assert!(matches!(&parts[2], PromptContent::Text { text } if text.contains("resource body")));
+        assert!(matches!(&parts[3], PromptContent::Audio { .. }));
+        assert_eq!(parts[4], PromptContent::Text { text: "after".into() });
+    }
+
+    #[test]
+    fn prompt_images_preserve_provider_neutral_payload() {
+        let blocks = vec![ContentBlock::Image {
+            data: "aGVsbG8=".into(),
+            mime_type: "image/png".into(),
+        }];
+        assert_eq!(
+            prompt_images(&blocks),
+            vec![json!({"data": "aGVsbG8=", "mimeType": "image/png"})]
+        );
+        assert_eq!(prompt_text(&blocks), "");
+    }
+
+    #[test]
+    fn prompt_audio_preserve_provider_neutral_payload() {
+        let blocks = vec![ContentBlock::Audio {
+            data: "UklGRg==".into(),
+            mime_type: "audio/wav".into(),
+        }];
+        assert_eq!(
+            prompt_audio(&blocks),
+            vec![json!({"data": "UklGRg==", "mimeType": "audio/wav"})]
+        );
+        assert_eq!(prompt_text(&blocks), "");
     }
 
     #[test]

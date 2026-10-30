@@ -18,11 +18,25 @@ test-support = []
 serde = { workspace = true }
 serde_json.workspace = true
 rpi-durable-core = { path = "../rpi-durable-core", version = "0.1.0" }
+rpi-mcp-core = { path = "../rpi-mcp-core", version = "0.2.4" }
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "net", "fs", "signal"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
+process-wrap = { version = "=8.2.2", default-features = false, features = ["tokio1", "job-object", "process-group", "kill-on-drop"] }
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[bin]]
+name = "rpi-extcore-mcp-fixture"
+path = "tests/fixtures/fake_mcp.rs"
+required-features = ["test-support"]
+
+[[bin]]
+name = "rpi-extcore-auth-fixture"
+path = "tests/fixtures/fake_auth.rs"
+required-features = ["test-support"]

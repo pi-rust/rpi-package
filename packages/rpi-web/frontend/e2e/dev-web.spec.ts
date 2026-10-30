@@ -3,6 +3,21 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 
 const sessionId = "session-1";
 
+function assertBoundedSnapshotQuery(url: URL) {
+  expect(url.searchParams.get("limit")).toBe("40");
+  expect(url.searchParams.get("includeHistory")).toBe("false");
+}
+
+async function routeSnapshot(page: Page, handler: (route: Route) => unknown) {
+  await page.route(
+    (url) => url.pathname === `/api/v1/sessions/${sessionId}/snapshot`,
+    (route) => {
+      assertBoundedSnapshotQuery(new URL(route.request().url()));
+      return handler(route);
+    },
+  );
+}
+
 const capabilities = {
   protocol: "rpi",
   piCompatibilityTarget: "1.2.0",
@@ -204,6 +219,7 @@ async function mockHost(page: Page) {
       return route.fulfill({ json: entry });
     }
     if (/\/sessions\/[^/]+\/snapshot$/.test(path)) {
+      assertBoundedSnapshotQuery(url);
       return route.fulfill({
         json: {
           sessionId,
@@ -569,7 +585,9 @@ test("clicking a project folder only expands it without opening a session", asyn
   await folder.click();
   await expect(folder).toHaveAttribute("aria-expanded", "false");
   await expect(project.locator(".project-session-link")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Mock session" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Mock session" }),
+  ).toBeVisible();
   expect(new URL(page.url()).searchParams.get("session")).toBe(sessionId);
   await folder.click();
   await expect(folder).toHaveAttribute("aria-expanded", "true");
@@ -731,7 +749,9 @@ test("project navigation collapses and remembers appearance", async ({
     .click();
   await expect(page.locator(".project-session")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Expand project: pi-rust", exact: true }).first(),
+    page
+      .getByRole("button", { name: "Expand project: pi-rust", exact: true })
+      .first(),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Expand project: pi-rust", exact: true })
@@ -966,31 +986,31 @@ test("an event replay gap reloads the native snapshot", async ({ page }) => {
   await mockHost(page);
   let snapshots = 0;
   let streams = 0;
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/snapshot`,
-    async (route) => {
-      snapshots++;
-      return route.fulfill({
-        json: {
-          sessionId,
-          messages:
-            snapshots > 1
-              ? [
-                  {
-                    role: "user",
-                    entryId: "restored",
-                    content: "Recovered transcript",
-                  },
-                ]
-              : [],
-          events: [],
-          lastSeq: 4,
-          total: 1,
-          hasMore: false,
-        },
-      });
-    },
-  );
+  await routeSnapshot(page, async (route) => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get("limit")).toBe("40");
+    expect(url.searchParams.get("includeHistory")).toBe("false");
+    snapshots++;
+    return route.fulfill({
+      json: {
+        sessionId,
+        messages:
+          snapshots > 1
+            ? [
+                {
+                  role: "user",
+                  entryId: "restored",
+                  content: "Recovered transcript",
+                },
+              ]
+            : [],
+        events: [],
+        lastSeq: 4,
+        total: 1,
+        hasMore: false,
+      },
+    });
+  });
   await page.route(
     `**/api/v1/sessions/${sessionId}/events**`,
     async (route) => {
@@ -1063,7 +1083,7 @@ async function mockMarkdownTranscript(page: Page) {
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="90"><rect width="1800" height="90" fill="#e7e7e3"/><text x="30" y="55" font-size="26" fill="#292927">Responsive image</text></svg>',
     }),
   );
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -1166,7 +1186,10 @@ test("markdown preserves chat line breaks, readable code and contained layouts",
   await expect(
     page.getByRole("button", { name: "Copy as Markdown", exact: true }).first(),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Copy as Markdown", exact: true }).first().click();
+  await page
+    .getByRole("button", { name: "Copy as Markdown", exact: true })
+    .first()
+    .click();
   const table = prose.getByRole("region", {
     name: "Table, scroll horizontally",
   });
@@ -1242,7 +1265,7 @@ test("uploads a file and includes its workspace path in the prompt", async ({
 
 test("renders image blocks returned in the transcript", async ({ page }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -1694,7 +1717,7 @@ test("pagination from a previous chat does not prepend into the current chat", a
   page,
 }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -1865,7 +1888,7 @@ test("snapshot replay keeps a closed dialog and completed recovery state closed"
   page,
 }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -1937,7 +1960,7 @@ test("a failed snapshot is visible and retry restores history before connecting"
     connections++;
     return route.fallback();
   });
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) => {
+  await routeSnapshot(page, (route) => {
     if (failed)
       return route.fulfill({
         status: 503,
@@ -1960,7 +1983,7 @@ test("a rejected permission answer keeps the dialog available for retry", async 
   page,
 }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -2103,7 +2126,7 @@ test("compaction notes survive pagination and update when language changes", asy
   page,
 }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -2158,7 +2181,7 @@ test("compaction notes survive pagination and update when language changes", asy
 
 test("markdown keeps executable URLs and raw HTML inert", async ({ page }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -2267,7 +2290,7 @@ test("rewinding the current chat reloads its native transcript", async ({
   await mockHost(page);
   let rewound = false;
   let snapshots = 0;
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) => {
+  await routeSnapshot(page, (route) => {
     snapshots++;
     return route.fulfill({
       json: {
@@ -2389,7 +2412,7 @@ for (const kind of ["single", "input", "multiple", "cancel"] as const) {
   }) => {
     await mockHost(page);
     let submitted: Record<string, unknown> | undefined;
-    await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+    await routeSnapshot(page, (route) =>
       route.fulfill({
         json: {
           sessionId,
@@ -2494,7 +2517,7 @@ test("history renders before the model catalog finishes loading", async ({
   );
   await page.goto("/");
   try {
-  await expect(page.locator(".transcript-note")).toHaveCount(0);
+    await expect(page.locator(".transcript-note")).toHaveCount(0);
     await expect(
       page.getByRole("status", { name: "Loading conversation" }),
     ).toBeHidden();
@@ -2512,7 +2535,7 @@ test("consecutive permission dialogs remain independent of delayed acknowledgeme
     emitNext = resolve;
   });
   const releases: Array<() => void> = [];
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -2774,7 +2797,7 @@ test("snapshot overlap neither duplicates committed messages nor downgrades comp
       },
     ],
   };
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -2870,7 +2893,7 @@ test("native permission dialog blocks global new-chat shortcuts", async ({
     if (route.request().method() === "POST") created++;
     return route.fallback();
   });
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -3068,28 +3091,25 @@ test("a boundary snapshot buffers live assistant events while restoring a native
     release = resolve;
   });
   let snapshots = 0;
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/snapshot`,
-    async (route) => {
-      if (++snapshots === 1) return route.fallback();
-      await held;
-      return route.fulfill({
-        json: {
-          sessionId,
-          messages: [
-            {
-              role: "user",
-              content: "Native-only prompt",
-              entryId: "native-user",
-              timestamp: 123,
-            },
-          ],
-          lastSeq: 5,
-          events: [],
-        },
-      });
-    },
-  );
+  await routeSnapshot(page, async (route) => {
+    if (++snapshots === 1) return route.fallback();
+    await held;
+    return route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "user",
+            content: "Native-only prompt",
+            entryId: "native-user",
+            timestamp: 123,
+          },
+        ],
+        lastSeq: 5,
+        events: [],
+      },
+    });
+  });
   const events = [
     { type: "agent_start" },
     {
@@ -3139,7 +3159,7 @@ test("run boundary refresh preserves loaded earlier messages and their paginatio
     release = resolve;
   });
   let snapshots = 0;
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) => {
+  await routeSnapshot(page, (route) => {
     snapshots++;
     return route.fulfill({
       json: {
@@ -3254,7 +3274,7 @@ test("snapshot boundary status supersedes an earlier idle runtime read", async (
   page,
 }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -3347,7 +3367,7 @@ for (const source of ["snapshot", "live"]) {
     const second = new Promise<void>((resolve) => {
       releaseSecond = resolve;
     });
-    await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) => {
+    await routeSnapshot(page, (route) => {
       const pending =
         source === "snapshot" || answered.size
           ? dialogs.filter((dialog) => !answered.has(dialog.requestId))
@@ -3502,7 +3522,7 @@ test("a rejected resume keeps its recovery action and releases the busy composer
       },
     }),
   );
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -3606,7 +3626,7 @@ test("late message pagination from before rewind cannot enter the restored branc
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -3722,7 +3742,7 @@ test("a live settlement replaces the matching restored settlement", async ({
   page,
 }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -4101,7 +4121,7 @@ for (const outcome of ["done", "error", "closed"] as const) {
           ]
         : []),
     ];
-    await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+    await routeSnapshot(page, (route) =>
       route.fulfill({
         json: {
           sessionId,
@@ -4173,7 +4193,7 @@ test("bash card folds a multiline command into one line and strips ANSI output",
   await mockHost(page);
   const command =
     "set -e\nnpm test -- --runInBand --maxWorkers=2 --detectOpenHandles\nnpm run lint";
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -4252,14 +4272,11 @@ test("initial snapshot preserves slash feedback entered while history is loading
     release = resolve;
   });
   let requested = false;
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/snapshot`,
-    async (route) => {
-      requested = true;
-      await held;
-      await route.fallback();
-    },
-  );
+  await routeSnapshot(page, async (route) => {
+    requested = true;
+    await held;
+    await route.fallback();
+  });
   await page.goto("/");
   await expect.poll(() => requested).toBe(true);
   const input = page.locator(".composer textarea");
@@ -4277,7 +4294,7 @@ test("plan tool renders a structured outline and markdown body", async ({
   page,
 }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -4325,7 +4342,7 @@ test("todo tool renders a read-only checklist with completion count", async ({
   page,
 }) => {
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -4421,7 +4438,7 @@ test("edit tool renders a file diff and powershell renders as a terminal", async
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockHost(page);
-  await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+  await routeSnapshot(page, (route) =>
     route.fulfill({
       json: {
         sessionId,
@@ -4530,7 +4547,7 @@ for (const mode of [
         return route.fulfill({ json: response({ sessionId, stats }, type) });
       return route.fallback();
     });
-    await page.route(`**/api/v1/sessions/${sessionId}/snapshot`, (route) =>
+    await routeSnapshot(page, (route) =>
       route.fulfill({
         json: {
           sessionId,

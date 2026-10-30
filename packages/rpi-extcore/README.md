@@ -34,6 +34,7 @@ manage credentials, or provide an HTTP/ACP transport.
 | --- | --- |
 | `host` | Native child launch, ready validation, isolated requests, raw/projected subscriptions, runtime settings and shutdown |
 | `run`, `message` | Prompt acceptance, authoritative settlement, cancellation and cumulative text/thinking reconciliation |
+| `compaction` (internal) | Native compact ACK/compaction identity/settlement correlation under the same foreground lease, with bounded cancellation and cleanup |
 | `service` | Project/session operations, forks, clones, organization metadata, transcript snapshots, session lifecycle and OAuth refresh |
 | `events` | Replay boundary, event ordering, duplicate suppression and explicit resync requirements |
 | `history` | Native transcript validation and active-branch recovery without client formatting |
@@ -41,6 +42,47 @@ manage credentials, or provide an HTTP/ACP transport.
 | `registry`, `projects`, `timing` | Durable supplemental metadata, project catalog and tool timings |
 | `workspace`, `process` | Scoped file/Git access and background native processes |
 | `reply`, `protocol` | Neutral operation outcomes and the existing native command contract |
+
+## Native compaction lifecycle
+
+`Arc<HostSession>::compact(instructions)` returns the terminal native outcome,
+not an asynchronous `accepted` acknowledgement. It subscribes before dispatch,
+correlates the response and compaction ID, and retains the foreground run lease
+through `agent_settled` (including `declined`). Legacy synchronous outcomes remain
+supported. The default total deadline is 120 seconds; after submission,
+cancellation or caller-drop owns abort and at most three seconds of settlement
+drain before terminating an unconfirmed backend. Cancellation before queue
+admission sends no abort and leaves the healthy host available. Presentation of
+the outcome remains the adapter's responsibility.
+
+## Opt-in native MCP catalog tools
+
+`mcp::attach_with_options(host, config, McpOptions { catalog: true,
+..Default::default() })` exposes resources and prompts through the native
+host's generic external-tool mechanism. `catalog` defaults to **false**, retaining
+existing tools-only behavior and descriptor counts. Only trusted callers should
+enable it for explicitly configured servers after their own negotiation/policy;
+it is not a model-controlled connection option.
+
+Descriptors are gated on each connection's actual initialize capabilities:
+`resources_list`, `resource_templates_list`, `resources_read`, `prompts_list`, and
+`prompts_get`. Native names are deterministic, hashed, and domain-separated from
+server-selected actual tool names. All tools together retain the existing
+128-descriptor/256 KiB definition bounds. Model arguments cannot override the
+configured server, config file, cwd or scope. Lists fetch one bounded page and
+retain `nextCursor`; returned tool results are limited to 256 KiB without silent
+truncation. Core operations retain cancellation and catalog operation deadlines.
+
+Resource values and complete prompt messages (including roles, images, blobs and
+metadata) are serialized as JSON **data in tool-result text**, not appended as
+system instructions or executed as a new foreground prompt. Native permission
+checks remain in the native external-tool path. Subscriptions and automatic
+resource-update transcript append are deliberately **not advertised**: there is
+no idle/generation-safe native append implementation in this integration.
+
+`tests/mcp_catalog.rs` exercises mock HostSession external requests against real
+stdio and loopback HTTP MCP peers. It does not establish real native/model
+execution; that requires a separate native model fixture.
 
 ## Reuse
 

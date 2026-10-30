@@ -30,11 +30,21 @@
 // `pub` so the standalone `rpi-acp` binary (`src/main.rs`) can run the same ACP
 // server the extension embeds.
 pub mod auth;
+pub mod auth_flow;
 pub mod diag;
 mod history;
+pub mod mcp;
+pub mod mcp_acp;
+mod mcp_input;
+mod mcp_oauth;
+mod mcp_sampling;
 pub mod protocol;
 mod questions;
 pub mod session;
+mod subagents;
+pub mod system_prompt;
+pub mod transport;
+pub mod v2;
 pub mod zed;
 
 use rpi_plugin_sdk::{

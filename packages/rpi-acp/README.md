@@ -48,11 +48,27 @@ New ACP sessions use stable UUIDs and persist native rpi JSONL history under
 absolute directory. The files remain when Zed or the ACP process exits.
 
 `session/load` restores the backend context and replays the active branch's user
-messages, assistant text/thinking, and tool calls/results before responding.
+messages, assistant text/thinking, image/audio blocks, and tool calls/results
+before responding. Media retains native data, MIME, ordering and message IDs;
+replay does not fetch external files or URLs.
 `session/resume` restores context without replay, for clients that already have
 the transcript. An unknown or missing session returns an error rather than
 silently opening an empty conversation. Sessions created by ACP 0.1.1 and older
 were temporary (`--no-session`) and cannot be restored after their backend exits.
+
+### Native modes and compaction
+
+When native advertises both `get_modes` and `set_mode`, valid native modes are
+also exposed as a `mode` select configuration option. Configuration and legacy
+v1 mode setters update the same native policy and refresh configuration; no
+client-only mode is invented. Resource-link labels supplement rather than
+replace the complete URI in native prompt text.
+
+ACP v1 advertises the built-in `/compact` whenever native supports it, including
+on load/resume, independently of extension-command discovery. Native compaction
+acceptance is not completion: extcore retains the foreground lease until native
+settles, or bounded cancellation/cleanup closes it. ACP v2 retains canonical
+native prompt insertion and does not advertise the v1 local compact shortcut.
 
 ### Durable control plane
 
@@ -328,16 +344,30 @@ Registry's handshake (and its pass/fail rule) locally.
 ## Capabilities and limitations
 
 * **Stable ACP v1** with durable sessions. `loadSession` and session resume are
-  advertised; sessions restore native rpi history after reconnection.
-* The client-side `fs/*` and `terminal/*` methods are **not** used: rpi runs its
-  own `read`/`write`/`edit`/`bash` tools in the session `cwd`. This keeps the
-  agent behavior identical to the terminal.
-* Prompt input: `text`, `resource_link`, and embedded `resource` blocks are
-  supported (`promptCapabilities.embeddedContext: true`). Images/audio are not
-  (`rpi --mode rpc` takes a single text prompt).
-* Only `agent_message_chunk`, `agent_thought_chunk`, `tool_call` (with `diff`
-  content for `edit`/`write`), `tool_call_update`, and `plan` updates are
-  emitted.
+  advertised; sessions restore native rpi history after reconnection. v1 keeps
+  the existing `stopReason` prompt response and capability names.
+* **ACP v2 Draft baseline is explicit, not an alias for v1.** A v2 client must
+  send `protocolVersion: 2` together with `info` and `capabilities`. The bridge
+  then uses v2 capability nesting, `auth/login`/`auth/logout`, v2 prompt
+  acknowledgement (`messageId` for the inserted user message), and running/
+  idle `state_update` notifications. Unimplemented v2 extensions remain
+  unadvertised; v1 clients retain the v1 wire shape.
+* Client-side `fs/*` and `terminal/*` requests now have a real lifecycle
+  adapter when the native host emits a `client_request` event: the bridge
+  validates the method/params, correlates the ACP request, validates the
+  result, propagates JSON-RPC errors, sends `$/cancel_request` on cancellation,
+  and cleans up on session close/disconnect. Native producers and a full client
+  fixture are still required before this is advertised as end-to-end support.
+* Prompt input: `text`, `image`, `audio`, `resource_link`, and embedded
+  `resource` blocks are supported (`promptCapabilities.embeddedContext: true`).
+  Image/audio data is forwarded as base64 provider-neutral content; image and
+  audio support depends on the selected native model/provider. OpenAI wire
+  adapters emit `input_audio`; providers without an audio modality do not send
+  native audio. ACP client `fs/*`/`terminal/*` remain separate unsupported
+  capabilities.
+* Only the v1 `agent_message_chunk`, `agent_thought_chunk`, `tool_call` (with
+  `diff` content for `edit`/`write`), `tool_call_update`, and `plan` updates,
+  plus the v2 state/user-message lifecycle updates, are emitted.
 * **`session/request_permission`** is used: when a child's plugin opens a UI
   dialog mid-run (e.g. the `rpi-permission-gate` extension confirming a `bash`
   command), `rpi-acp` maps it to a `session/request_permission` request and
@@ -355,9 +385,12 @@ Registry's handshake (and its pass/fail rule) locally.
 * Prompt templates / slash commands are not advertised as
   `available_commands_update`: `--mode rpc` does not expand prompt templates
   (only the host TUI does), so a client-side command list would be misleading.
-* Authentication is signalled out of band through the terminal method above, so
-  `authenticate` is a tolerant no-op rather than a real handler; rpi never asks
-  the client to collect a secret.
+* Authentication is signalled out of band through the terminal method above.
+  v1 `authenticate` verifies the configured credential through native
+  `rpi auth check --json`; v1 `logout` and v2 `auth/logout` perform native
+  credential logout, while v2 `auth/login` performs the real credential check.
+  The bridge never asks the client to collect a secret, and auth-state/RFD
+  provider callbacks remain separate work.
 
 ## Questions and ACP Elicitation
 
@@ -458,3 +491,128 @@ log line (all diagnostics go to stderr).
 ## License
 
 MIT
+
+### Trusted MCP isolated sampling and catalog (explicit opt-in)
+
+Sampling is **off by default**. Only the ACP process caller may set
+`RPI_ACP_MCP_SAMPLING_POLICY` to an **absolute JSON file path**, at most 64 KiB.
+The connection reads it once; edits require a new connection. Unknown fields,
+invalid identities, duplicate resource/cwd rules and out-of-range limits
+are rejected. Exact schema (all numeric limits are required):
+
+```json
+{
+  "resources": [
+    {
+      "resource": "https://mcp.example/mcp",
+      "cwd": "CANONICAL_ABSOLUTE_EXISTING_PROJECT_DIRECTORY",
+      "maxTokens": 1024,
+      "maxMessages": 16,
+      "maxDurationSeconds": 300,
+      "maxRequests": 10,
+      "requireConsent": true,
+      "allowInsecureLoopback": false
+    }
+  ]
+}
+```
+
+Replace `cwd` with an absolute existing project directory; the loader applies
+Rust `std::fs::canonicalize` before matching and duplicate detection (including
+the extended-length prefix on Windows). `resource` must equal URL-parser
+canonical serialization exactly;
+path, query and trailing slash matter. No wildcard, userinfo or fragment.
+HTTPS is required except literal loopback IP HTTP with
+`allowInsecureLoopback: true` (not the hostname `localhost`). Bounds are
+`maxTokens` 1–16384, `maxMessages` 1–128, `maxDurationSeconds` 1–300 and
+`maxRequests` 1–1024. The two booleans default respectively to true and false.
+
+Rules match **locally configured** enabled HTTP MCP servers, or negotiated
+client-forwarded MCP registrations whose configured `serverId` is that exact
+HTTP resource URL, and the actual root's canonical cwd. Remote prompts,
+`modelPreferences`, target strings and tool arguments never grant permission.
+Unknown server/root/cwd/connection identity is denied. Core-generated native
+connection namespace/generation is pinned on its first trusted callback per
+server; changed identities fail closed (reconfigure the MCP binding to establish
+a new policy instance). MRTR uses a policy-instance UUID and fixed generation.
+
+A viable grant requires native `sample` **and** `cancel_sample` support and a
+real extcore native executor. Without a form-capable ACP client, consent-required
+rules do not enable sampling or create an owner. A caller may explicitly
+preapprove with `requireConsent: false` in this trusted file; it never implies
+acceptance of a UI response. Consent forms identify the configured resource,
+server, known model (or unknown), requested token maximum and a byte-bounded
+2 KiB **untrusted remote prompt** preview. Only `action: "accept"` with exactly
+`content: {"approved": true}` grants execution; decline/cancel/malformed replies
+never do. Attempts are atomically charged **before UI**, shared across all roots
+of the connection; new sessions cannot reset the rule budget.
+
+Consent and execution share one absolute deadline: the earlier of the original
+operation deadline and the policy's maximum duration measured before consent.
+Neither phase resets or extends that budget.
+Sampling uses the native isolated executor, not a foreground prompt/run lease,
+and does not change root model, account or authentication. Tool/context sampling
+semantics remain rejected by core validation. Results preserve the actual model
+and are mapped as MCP input values, not JSON-RPC envelopes. Root teardown joins
+MCP callback producers, then native sampling cancellation acknowledgements,
+before terminating the native host. Sampling is text-only and fails closed for
+providers without isolated byte-budget support; current supported paths are
+OpenAI Completions/Responses and Anthropic, not every configured provider.
+HTTP reverse callbacks are supported on the parent POST response SSE only;
+an independent GET reverse listener/reconnect/replay path is not implemented.
+Queue overflow explicitly fails the exchange rather than silently dropping
+replies. The native owner watchdog gives **all RPC teardown** (including healthy
+EOF/stop) a two-second grace, not only failed-writer shutdown. Unrecoverable
+stalls or teardown overruns escalate to whole-process `exit(1)`, not just a
+writer-thread abort; destructors and durable flush are not guaranteed after
+fatal escalation. This is not a successful cancellation acknowledgement.
+
+### Wire-final evidence and remaining scope (2026-10-30 16:25 +08:00)
+
+The frozen review pair is native `acp-reviewed-final-bin/rpi.exe` (SHA-256
+`b1b371966a3dfe6227e863e8a90655059dea86218d49d8bda4ef9564eb241888`, unchanged) and
+`acp-wire-final-bin/rpi-acp-bridge.exe` (SHA-256
+`759eaf88e486ffd624c8f3d764666eeb819b03786692faf54fb144559c852e6a`), under
+`C:/Users/bigfish/.cargo/target/`. These are review artifacts, not an installation
+or deployment claim. Current local-fixture native/ACP sampling **13/22**, hostile
+budget **9**, backpressure **4**, modalities/roots **34**, and child **5** all
+pass. Fake HTTP providers drive real native execution; no external AI or
+third-party OAuth account acceptance is claimed.
+
+Native child **phase 1 persistence/reopen is done**: nine actual child headers,
+five settled normal reopens with 14 messages each and zero model calls, without
+child/root byte changes. Only `ToolResult.details: null` versus native serde
+None omission is normalized; other fields remain exact. This is not ACP
+parent-restart replay. Native-authoritative child list/get pages, extcore
+bounded child history and ACP replay remain absent. Child capabilities stay
+`{}`; no direct child load/resume/mutations or child external tools are enabled.
+Parent-call correlation is private `_meta["rpi/parentToolCallId"]`, not a standard
+field in the pinned RFD.
+
+**Overall ACTIVE / INCOMPLETE.** Actual `acp-wire-current-all-tests.log` recount:
+**463 top-level PASS +1 nested TLS subprocess PASS, 0 failed, 3 ignored**;
+scoped strict `acp-wire-current-clippy.log` PASS, not whole-native acceptance.
+Latest actual bidirectional `acp-wire-schema-final-parent.json`: **427 frames,
+354 validated, 0 failed, 0 unbound replies, 73 unsupported, 4 pending requests,
+28 controls; INCOMPLETE**. Cancel/EOF terminal wait/kill/release requests remain
+intentionally unanswered; cleanup emission is not remote acknowledgement.
+The prior b1b/713 bidirectional audit actually failed two bound v2 `session/new`
+responses (352 validated /2 failed /427 frames). Current v2 response/notification
+configOptions map `id` to `configId` and grouped `group` to `groupId`; v1 is
+unchanged. The old failed audit is preserved, not relabelled PASS.
+Latest 759/b1b ACP22, OAuth16, modalities34 and child5 logs all pass; native-only
+sampling13/hostile9/backpressure4 remain valid on unchanged b1b, bridge irrelevant.
+Actual b1b/713 OAuth16 and HTTP/2+WS2 logs now exist and PASS. At this cutoff
+`acp-wire-remote-final.log` is absent: remote acceptance is prior-pair-only,
+not inherited by 759. Independent GET reverse
+listening and the full MCP matrix remain incomplete; browser dev99/prod99 used
+route-mocked backends, not native-browser E2E. See the
+[coverage matrix](../../docs/architecture/acp-capability-coverage.md) and
+[progress journal](../../docs/architecture/acp-1029-progress.md) for actual log
+paths, identities, scoped package checks and remaining gaps. Sampling/catalog
+policy remains explicitly opt-in as described here.
+
+`RPI_ACP_MCP_CATALOG=1` separately opts in to the already implemented MCP
+resource/prompt catalog tools. It is read from caller environment once per ACP
+connection, not from MCP server configuration or model arguments. Other values
+leave catalog disabled.

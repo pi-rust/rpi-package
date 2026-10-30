@@ -623,7 +623,7 @@ export default function App() {
     (inputTokenCount(runtime?.stats) ?? 0) <= 0 &&
     (outputTokenCount(runtime?.stats) ?? 0) <= 0 &&
     messageStats?.sessionId === sessionId &&
-    !!messageStats.stats;
+    !!messageStats?.stats;
   const displayStats = usingMessageStats
     ? { ...runtime?.stats, ...messageStats!.stats! }
     : runtime?.stats;

@@ -13,6 +13,7 @@ export default defineConfig({
   },
   webServer: {
     command: "npm run dev -- --port 4191",
+    env: { VITE_E2E_HMR: "1" },
     url: "http://127.0.0.1:4191",
     reuseExistingServer: false,
     timeout: 120_000,

@@ -124,6 +124,12 @@ pub fn setup(provider: &str) -> i32 {
     }
 }
 
+/// Provider selection shared by terminal setup, request auth, and local status.
+pub(crate) fn configured_provider() -> Result<String, String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    Ok(provider_arg(&args)?.unwrap_or_else(|| DEFAULT_PROVIDER.to_owned()))
+}
+
 /// The `--provider <id>` / `--provider=<id>` value, when given.
 fn provider_arg(args: &[String]) -> Result<Option<String>, String> {
     let mut index = 0;
@@ -193,16 +199,19 @@ pub fn logout() -> Result<(), String> {
 /// disconnect cannot leave a credential helper running after its request task
 /// is cancelled.
 pub async fn logout_async() -> Result<(), String> {
-    let status = tokio::process::Command::new(crate::session::resolve_rpi_executable())
-        .arg("auth")
-        .arg("logout")
+    let provider = configured_provider()?;
+    let status = tokio::time::timeout(CHECK_TIMEOUT,
+        tokio::process::Command::new(crate::session::resolve_rpi_executable())
+        .args(["auth", "logout", "--provider", &provider])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit())
+        // Provider callbacks can include credential material in diagnostics.
+        .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
-        .status()
+        .status())
         .await
-        .map_err(|error| format!("spawn `rpi auth logout`: {error}"))?;
+        .map_err(|_| "credential logout timed out".to_owned())?
+        .map_err(|_| "credential logout failed".to_owned())?;
     if status.success() {
         Ok(())
     } else {
@@ -221,7 +230,7 @@ pub(crate) enum Verdict {
 }
 
 /// Credential state reported by `rpi auth check --provider <id> --json`.
-fn check(provider: &str) -> Result<Verdict, String> {
+pub(crate) fn check(provider: &str) -> Result<Verdict, String> {
     let output = std::process::Command::new(crate::session::resolve_rpi_executable())
         .arg("auth")
         .arg("check")
@@ -230,19 +239,90 @@ fn check(provider: &str) -> Result<Verdict, String> {
         .arg("--json")
         .output()
         .map_err(|error| format!("spawn `rpi auth check`: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    verdict(&stdout)
+    checked_verdict(provider, output.status, &output.stdout)
+}
+
+/// Credential checks are local-only and should complete quickly. Bound both
+/// their running time and captured output; neither is controlled by the peer.
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const CHECK_STDOUT_LIMIT: usize = 64 * 1024;
+const CHECK_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Own the helper directly in the request future, not in a detached task.
+/// Dropping this future (cancellation/disconnect) drops the kill-on-drop child.
+async fn check_command(
+    mut command: tokio::process::Command,
+    provider: &str,
+    deadline: std::time::Duration,
+) -> Result<Verdict, String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("spawn `rpi auth check`: {error}"))?;
+    let mut stdout = child.stdout.take().expect("piped auth stdout");
+    let result = tokio::time::timeout(deadline, async {
+        let mut bytes = Vec::new();
+        (&mut stdout)
+            .take((CHECK_STDOUT_LIMIT + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|error| format!("read `rpi auth check`: {error}"))?;
+        if bytes.len() > CHECK_STDOUT_LIMIT {
+            return Err("`rpi auth check` stdout exceeded 65536 bytes".to_string());
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| format!("wait `rpi auth check`: {error}"))?;
+        checked_verdict(provider, status, &bytes)
+    })
+    .await
+    .unwrap_or_else(|_| Err("`rpi auth check` timed out".to_string()));
+    // On timeout, read failure or overflow, explicitly kill and reap. The
+    // fallback drop still kills if cancellation interrupts this bounded cleanup.
+    if result.is_err() {
+        let _ = child.start_kill();
+        drop(stdout);
+        let _ = tokio::time::timeout(CHECK_CLEANUP_TIMEOUT, child.wait()).await;
+    }
+    result
+}
+
+fn checked_verdict(
+    provider: &str,
+    status: std::process::ExitStatus,
+    stdout: &[u8],
+) -> Result<Verdict, String> {
+    let stdout =
+        std::str::from_utf8(stdout).map_err(|error| format!("unreadable auth stdout: {error}"))?;
+    let value = status_object(stdout)?;
+    if value["provider"].as_str() != Some(provider) {
+        return Err("credential status provider does not match requested provider".into());
+    }
+    let verdict = verdict(stdout)?;
+    if !status.success() && verdict != Verdict::Missing {
+        return Err(format!(
+            "`rpi auth check --provider {provider}` returned a ready state with exit status {}",
+            status.code().unwrap_or(1)
+        ));
+    }
+    Ok(verdict)
+}
+
+pub(crate) async fn check_async(provider: &str) -> Result<Verdict, String> {
+    let mut command = tokio::process::Command::new(crate::session::resolve_rpi_executable());
+    command.args(["auth", "check", "--provider", provider, "--json"]);
+    check_command(command, provider, CHECK_TIMEOUT).await
 }
 
 /// Parse the `{ready, provider, source}` object `rpi auth check --json` emits.
 pub(crate) fn verdict(stdout: &str) -> Result<Verdict, String> {
-    let line = stdout
-        .lines()
-        .rev()
-        .find(|line| line.trim_start().starts_with('{'))
-        .ok_or_else(|| "no status object on stdout".to_string())?;
-    let value: Value = serde_json::from_str(line.trim())
-        .map_err(|error| format!("unreadable status object: {error}"))?;
+    let value = status_object(stdout)?;
     if value["ready"].as_bool() == Some(true) {
         let source = value["source"]
             .as_str()
@@ -252,12 +332,174 @@ pub(crate) fn verdict(stdout: &str) -> Result<Verdict, String> {
             source: source.to_string(),
         });
     }
-    Ok(Verdict::Missing)
+    if value["ready"].as_bool() == Some(false) {
+        Ok(Verdict::Missing)
+    } else {
+        Err("credential status must contain a boolean ready field".into())
+    }
+}
+
+fn status_object(stdout: &str) -> Result<Value, String> {
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with('{'))
+        .ok_or_else(|| "no status object on stdout".to_string())?;
+    serde_json::from_str(line.trim()).map_err(|error| format!("unreadable status object: {error}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A subprocess fixture: all configuration is child-local, never set_env.
+    #[test]
+    fn helper_fixture() {
+        let Ok(mode) = std::env::var("RPI_AUTH_UNIT_FIXTURE") else {
+            return;
+        };
+        let _connection = std::env::var("RPI_AUTH_UNIT_ADDRESS")
+            .ok()
+            .map(|address| std::net::TcpStream::connect(address).unwrap());
+        match mode.as_str() {
+            "hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
+            "overflow" => {
+                use std::io::Write;
+                std::io::stdout()
+                    .write_all(&vec![b'x'; CHECK_STDOUT_LIMIT + 1])
+                    .unwrap();
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+            "malformed" => println!("{{broken"),
+            "invalid_utf8" => {
+                use std::io::Write;
+                std::io::stdout().write_all(&[255]).unwrap();
+            }
+            "wrong_provider" => println!(r#"{{"ready":true,"provider":"openai"}}"#),
+            "invalid_status" => println!(r#"{{"provider":"anthropic"}}"#),
+            "missing" => {
+                println!(r#"{{"ready":false,"provider":"anthropic"}}"#);
+                std::process::exit(1);
+            }
+            "failed_ready" => {
+                println!(r#"{{"ready":true,"provider":"anthropic"}}"#);
+                std::process::exit(2);
+            }
+            "ready" => println!(r#"{{"ready":true,"provider":"anthropic","source":"fixture"}}"#),
+            _ => panic!("unknown fixture"),
+        }
+    }
+
+    fn fixture(mode: &str) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "auth::tests::helper_fixture", "--nocapture"]);
+        command.env("RPI_AUTH_UNIT_FIXTURE", mode);
+        command
+    }
+
+    #[tokio::test]
+    async fn async_check_validates_status_errors_and_provider() {
+        let deadline = std::time::Duration::from_secs(5);
+        assert_eq!(
+            check_command(fixture("ready"), DEFAULT_PROVIDER, deadline)
+                .await
+                .unwrap(),
+            Verdict::Ready {
+                source: "fixture".into()
+            }
+        );
+        assert_eq!(
+            check_command(fixture("missing"), DEFAULT_PROVIDER, deadline)
+                .await
+                .unwrap(),
+            Verdict::Missing
+        );
+        for (mode, message) in [
+            ("failed_ready", "exit status 2"),
+            ("wrong_provider", "provider does not match"),
+            ("invalid_status", "boolean ready"),
+            ("malformed", "unreadable status"),
+            ("invalid_utf8", "unreadable auth stdout"),
+            ("overflow", "stdout exceeded"),
+        ] {
+            let error = check_command(fixture(mode), DEFAULT_PROVIDER, deadline)
+                .await
+                .unwrap_err();
+            assert!(error.contains(message), "{mode}: {error}");
+        }
+        let error = check_command(
+            tokio::process::Command::new(
+                std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()),
+            ),
+            DEFAULT_PROVIDER,
+            deadline,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("spawn `rpi auth check`"), "{error}");
+    }
+
+    async fn assert_connection_closed(mut stream: tokio::net::TcpStream) {
+        use tokio::io::AsyncReadExt;
+        let mut byte = [0];
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut byte))
+                .await
+                .expect("helper survived cancellation/timeout");
+        // Windows may reset the connection when terminating the process.
+        assert!(matches!(result, Ok(0) | Err(_)), "unexpected fixture data");
+    }
+
+    #[tokio::test]
+    async fn async_check_cancellation_kills_helper() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut command = fixture("hang");
+        command.env(
+            "RPI_AUTH_UNIT_ADDRESS",
+            listener.local_addr().unwrap().to_string(),
+        );
+        let task = tokio::spawn(check_command(command, DEFAULT_PROVIDER, CHECK_TIMEOUT));
+        let (stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_connection_closed(stream).await;
+    }
+
+    #[tokio::test]
+    async fn async_check_deadline_and_overflow_kill_and_reap_helper() {
+        for mode in ["hang", "overflow"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut command = fixture(mode);
+            command.env(
+                "RPI_AUTH_UNIT_ADDRESS",
+                listener.local_addr().unwrap().to_string(),
+            );
+            let task = tokio::spawn(check_command(
+                command,
+                DEFAULT_PROVIDER,
+                std::time::Duration::from_secs(1),
+            ));
+            let (stream, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let error = task.await.unwrap().unwrap_err();
+            assert!(
+                error.contains(if mode == "hang" {
+                    "timed out"
+                } else {
+                    "stdout exceeded"
+                }),
+                "{error}"
+            );
+            assert_connection_closed(stream).await;
+        }
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| arg.to_string()).collect()

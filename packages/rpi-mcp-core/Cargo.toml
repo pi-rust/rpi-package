@@ -1,0 +1,32 @@
+[package]
+name = "rpi-mcp-core"
+version = "0.2.4"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ABI-free instance-owned stdio and Streamable HTTP MCP runtime"
+
+# Protocol-only fixture used by the stdio integration tests.
+[[bin]]
+name = "mcp-catalog-fixture"
+path = "tests/fixtures/catalog.rs"
+test = false
+bench = false
+
+[dependencies]
+sha2 = { workspace = true }
+getrandom = "0.2"
+mime = "0.3"
+base64 = "0.22"
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net"] }
+url = { workspace = true }
+process-wrap = { version = "=8.2.2", default-features = false, features = ["std", "job-object", "process-group", "tracing"] }
+
+[dev-dependencies]
+rustls = { version = "=0.23.44", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }

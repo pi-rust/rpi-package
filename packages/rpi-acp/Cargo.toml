@@ -27,6 +27,11 @@ rpi-plugin-sdk = { workspace = true, features = ["stdio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+sha2.workspace = true
+url = "2"
+axum = { version = "0.8.9", features = ["ws", "http2"] }
+futures-util = { version = "0.3", features = ["sink"] }
+subtle = "2"
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "sync",
@@ -36,7 +41,11 @@ tokio = { version = "1", features = [
     "io-std",
     "macros",
     "net",
+    "signal",
 ] }
 
 [dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["http2", "json"] }
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", features = ["sink"] }
 rpi-extcore = { path = "../rpi-extcore", version = "0.1.5", features = ["test-support"] }

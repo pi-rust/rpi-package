@@ -52,8 +52,7 @@ pub struct Subscription {
 impl Subscription {
     pub async fn new(session: &crate::host::HostSession, after: Option<u64>) -> Self {
         let receiver = session.subscribe();
-        let retained = session.history(None).await;
-        let latest = session.snapshot().await.last_seq;
+        let (retained, latest) = session.replay_boundary().await;
         let gap =
             crate::service::replay_gap(after, retained.first().map(|event| event.seq), latest);
         let replay = retained
@@ -67,5 +66,70 @@ impl Subscription {
             gap,
             after,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(seq: u64) -> BufferedEvent {
+        BufferedEvent {
+            seq,
+            value: serde_json::json!({"type":"message"}),
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_live_overlap_is_delivered_once_in_sequence() {
+        let (sender, receiver) = broadcast::channel(16);
+        for seq in 2..=5 {
+            sender.send(event(seq)).unwrap();
+        }
+        drop(sender);
+        let stream = replay_stream(vec![event(2), event(3), event(4)], receiver, Some(1));
+        tokio::pin!(stream);
+        for expected in 2..=5 {
+            match stream.next().await.unwrap() {
+                StreamItem::Event(event) => assert_eq!(event.seq, expected),
+                StreamItem::ResyncRequired { .. } => panic!("unexpected lag"),
+            }
+        }
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_replay_preserves_after_cursor_for_live_deduplication() {
+        let (sender, receiver) = broadcast::channel(16);
+        for seq in 1..=4 {
+            sender.send(event(seq)).unwrap();
+        }
+        drop(sender);
+        let stream = replay_stream(vec![], receiver, Some(3));
+        tokio::pin!(stream);
+        assert!(matches!(stream.next().await, Some(StreamItem::Event(event)) if event.seq == 4));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn lag_after_replay_is_explicit_and_overlap_is_still_deduplicated() {
+        let (sender, receiver) = broadcast::channel(2);
+        for seq in 1..=4 {
+            sender.send(event(seq)).unwrap();
+        }
+        drop(sender);
+        let stream = replay_stream(vec![event(1), event(2), event(3)], receiver, None);
+        tokio::pin!(stream);
+        for expected in 1..=3 {
+            assert!(
+                matches!(stream.next().await, Some(StreamItem::Event(event)) if event.seq == expected)
+            );
+        }
+        assert!(matches!(
+            stream.next().await,
+            Some(StreamItem::ResyncRequired { dropped: 2 })
+        ));
+        assert!(matches!(stream.next().await, Some(StreamItem::Event(event)) if event.seq == 4));
+        assert!(stream.next().await.is_none());
     }
 }
