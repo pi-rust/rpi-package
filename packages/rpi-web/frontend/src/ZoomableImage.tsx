@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { translate, type Language } from "./i18n";
+import { ProjectImageContext, projectImageSource } from "./projectImages";
 
 function ImageViewer({
   src,
@@ -95,7 +96,7 @@ function ImageViewer({
 
 /** Reuse the already validated image source; never proxy or navigate to it. */
 export function ZoomableImage({
-  src,
+  src: rawSource,
   alt = "",
   title,
   language,
@@ -105,6 +106,8 @@ export function ZoomableImage({
   title?: string;
   language: Language;
 }) {
+  const project = useContext(ProjectImageContext);
+  const src = rawSource ? projectImageSource(rawSource, project) : undefined;
   const [expanded, setExpanded] = useState<string | null>(null);
   const open = (image: HTMLImageElement) => {
     image.focus({ preventScroll: true });

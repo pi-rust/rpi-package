@@ -2,6 +2,7 @@ import { createPortal } from "react-dom";
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -81,6 +82,7 @@ import { MenuSelect } from "./MenuSelect";
 import { LoginScreen } from "./LoginScreen";
 import { ProjectContext } from "./ProjectContext";
 import { ZoomableImage } from "./ZoomableImage";
+import { ProjectImageContext, projectImageSource } from "./projectImages";
 import {
   ConfirmDialog,
   Modal,
@@ -3482,9 +3484,11 @@ export default function App() {
                   </div>
                 )}
 
-                {rows.map((row) => (
-                  <RowView row={row} key={row.id} language={language} />
-                ))}
+                <ProjectImageContext.Provider value={project}>
+                  {rows.map((row) => (
+                    <RowView row={row} key={row.id} language={language} />
+                  ))}
+                </ProjectImageContext.Provider>
 
                 {busy && rows.length > 0 && (
                   <div className="working-indicator">
@@ -4917,13 +4921,16 @@ function ImagePreview({
   image: ImageBlock;
   language: Language;
 }) {
-  const source =
+  const project = useContext(ProjectImageContext);
+  const source = projectImageSource(
     image.url ??
-    (image.data
-      ? image.data.startsWith("data:")
-        ? image.data
-        : `data:${image.mimeType || "image/png"};base64,${image.data}`
-      : "");
+      (image.data
+        ? image.data.startsWith("data:")
+          ? image.data
+          : `data:${image.mimeType || "image/png"};base64,${image.data}`
+        : ""),
+    project,
+  );
   const isSafeImage =
     source.startsWith("data:image/") ||
     source.startsWith("/") ||

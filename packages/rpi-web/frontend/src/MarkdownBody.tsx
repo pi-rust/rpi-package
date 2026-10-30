@@ -1,6 +1,7 @@
 import {
   isValidElement,
   memo,
+  useContext,
   useMemo,
   useState,
   type ComponentProps,
@@ -13,6 +14,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { translate, type Language } from "./i18n";
 import { ZoomableImage } from "./ZoomableImage";
+import { ProjectImageContext, projectImageSource } from "./projectImages";
 
 const remarkPlugins = [remarkGfm, remarkBreaks];
 // Data URLs are needed for inline images, never for navigable Markdown links.
@@ -94,6 +96,7 @@ export const MarkdownBody = memo(function MarkdownBody({
   text: string;
   language: Language;
 }) {
+  const project = useContext(ProjectImageContext);
   const components = useMemo<Components>(
     () => ({
       img: ({ src, alt, title }) => (
@@ -126,7 +129,15 @@ export const MarkdownBody = memo(function MarkdownBody({
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={components}
-        urlTransform={imageUrlTransform}
+        urlTransform={(url, key, node) =>
+          imageUrlTransform(
+            node.tagName === "img" && key === "src"
+              ? projectImageSource(url, project)
+              : url,
+            key,
+            node,
+          )
+        }
         skipHtml
       >
         {text}

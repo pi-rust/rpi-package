@@ -1601,6 +1601,225 @@ test("snapshot overlap does not duplicate committed user images", async ({
   ).toHaveCount(1);
 });
 
+for (const source of [
+  "/artifacts/theme-design-mobile-390.png",
+  "artifacts/theme-design-mobile-390.png",
+  "./artifacts/theme-design-mobile-390.png",
+  "http://127.0.0.1:4191/artifacts/theme-design-mobile-390.png",
+]) {
+  test(`project image URLs resolve and decode instead of receiving SPA HTML: ${source}`, async ({
+    page,
+    baseURL,
+  }) => {
+    const imageSource = source.replace("http://127.0.0.1:4191", baseURL!);
+    await mockHost(page);
+    await page.route(
+      (url) => url.pathname === "/api/v1/projects/project-a/image",
+      (route) => {
+        expect(new URL(route.request().url()).searchParams.get("path")).toBe(
+          "artifacts/theme-design-mobile-390.png",
+        );
+        return route.fulfill({
+          contentType: "image/png",
+          body: Buffer.from(imagePng, "base64"),
+        });
+      },
+    );
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          messages: [
+            {
+              role: "assistant",
+              entryId: "local-image",
+              content: [
+                { type: "text", text: `![Project image](${imageSource})` },
+                { type: "image_url", image_url: { url: imageSource } },
+              ],
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+    );
+    await page.goto("/");
+    const markdown = page.getByAltText("Project image").first();
+    await expect(markdown).toHaveAttribute(
+      "src",
+      "/api/v1/projects/project-a/image?path=artifacts%2Ftheme-design-mobile-390.png",
+    );
+    await expect
+      .poll(() => markdown.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    const native = page.locator(".transcript-image img");
+    await expect
+      .poll(() => native.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    await markdown.focus();
+    await markdown.press("Enter");
+    const viewer = page.getByRole("dialog", {
+      name: "Image viewer",
+      exact: true,
+    });
+    await expect(viewer).toBeVisible();
+    await expect
+      .poll(() =>
+        viewer.locator("img").evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+  });
+}
+
+test("project image resolution isolates identical paths across projects and reload", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(
+    (url) => url.pathname === "/api/v1/sessions",
+    (route) =>
+      route.fulfill({
+        json: {
+          sessions: [
+            session,
+            {
+              ...session,
+              sessionId: "session-2",
+              projectId: "project-b",
+              title: "Other image session",
+            },
+          ],
+        },
+      }),
+  );
+  await page.route(
+    (url) => /^\/api\/v1\/projects\/project-[ab]\/image$/.test(url.pathname),
+    (route) =>
+      route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(imagePng, "base64"),
+      }),
+  );
+  await page.route(
+    (url) => /\/sessions\/[^/]+\/snapshot$/.test(url.pathname),
+    (route) =>
+      route.fulfill({
+        json: {
+          sessionId: route.request().url().includes("session-2")
+            ? "session-2"
+            : sessionId,
+          messages: [
+            {
+              role: "assistant",
+              entryId: "same-path",
+              content: [
+                { type: "text", text: "![Scoped image](/artifacts/same.png)" },
+              ],
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+  );
+  await page.goto("/");
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-a\/image\?/,
+  );
+  const expand = page
+    .getByRole("region", { name: "rpi-package", exact: true })
+    .locator(".project-collapse");
+  if ((await expand.getAttribute("aria-expanded")) === "false")
+    await expand.click();
+  await page.getByRole("button", { name: /^Other image session/ }).click();
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-b\/image\?/,
+  );
+  await page.reload();
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-b\/image\?/,
+  );
+});
+
+test("project image resolution rejects traversal and unsupported schemes without rewriting external images", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let resourceRequests = 0;
+  await page.route(
+    (url) => url.pathname.endsWith("/image"),
+    (route) => {
+      resourceRequests++;
+      return route.fulfill({
+        status: 403,
+        json: { error: "unexpected local image request" },
+      });
+    },
+  );
+  await page.route("https://example.com/external.png", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(imagePng, "base64"),
+    }),
+  );
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "assistant",
+            entryId: "blocked-images",
+            content: [
+              {
+                type: "text",
+                text: [
+                  "![Parent](../outside.png)",
+                  "![Encoded parent](artifacts/%2e%2e/outside.png)",
+                  "![Local file](file:///private/outside.png)",
+                  "![Script](javascript:alert%281%29)",
+                  "![External](https://example.com/external.png)",
+                ].join("\n\n"),
+              },
+            ],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  for (const alt of ["Parent", "Encoded parent", "Local file", "Script"]) {
+    await expect(page.getByAltText(alt, { exact: true })).not.toHaveAttribute(
+      "src",
+      /.+/,
+    );
+  }
+  await expect(page.getByAltText("External")).toHaveAttribute(
+    "src",
+    "https://example.com/external.png",
+  );
+  await expect
+    .poll(() =>
+      page
+        .getByAltText("External")
+        .evaluate((e: HTMLImageElement) => e.naturalWidth),
+    )
+    .toBeGreaterThan(0);
+  expect(resourceRequests).toBe(0);
+});
+
 async function mockImageViewer(page: Page) {
   await mockHost(page);
   const photo = (alt: string) => ({
