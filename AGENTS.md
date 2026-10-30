@@ -17,6 +17,13 @@ This repository contains the shared native runtime and protocol adapters for rpi
 - Do not put Axum, ACP, frontend, or plugin ABI types in extcore. Do not move `rowsFromMessages()` or presentation logic into extcore.
 - Preserve `--webserver`, `--web`, `.rpi/web.json`, environment compatibility, explicit assets, `/api/v1`, HTTP/SSE, and ACP v1 behavior unless a change explicitly includes compatibility tests.
 
+## Local Web frontend workflow
+
+- Make Web frontend changes directly in the sibling `rpi-package-dev` worktree (`D:/Projects/rpi-package-dev` on this machine), on its `dev/web-hmr` branch. The public `https://work-dev.bigfisharc.cn` Vite server serves `packages/rpi-web/frontend` from that worktree.
+- Before editing, check that worktree's branch and working tree; preserve existing edits. Do not implement frontend changes only in another checkout and leave the live dev worktree behind. Commit and update the feature PR from the dev worktree when ready.
+- Verify changes through the public dev page and HMR, in addition to typecheck and relevant browser tests. Frontend HMR does not update the shared Rust backend.
+- Keep the production frontend, services and installed binaries unchanged unless deployment is explicitly requested.
+
 ## Review and change discipline
 
 - Inspect actual source, call sites, diffs, and tests; commit titles are not evidence.
