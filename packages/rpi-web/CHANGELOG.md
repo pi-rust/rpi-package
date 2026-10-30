@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Open transcript and Markdown images in an accessible, keyboard-operated viewer with fit-to-window and scrollable original-size modes.
+
 ### Fixed
 
 - Render inline Markdown `data:image` sources without allowing data URLs in links or raw HTML.

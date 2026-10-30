@@ -12,6 +12,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
 import { translate, type Language } from "./i18n";
+import { ZoomableImage } from "./ZoomableImage";
 
 const remarkPlugins = [remarkGfm, remarkBreaks];
 // Data URLs are needed for inline images, never for navigable Markdown links.
@@ -95,6 +96,9 @@ export const MarkdownBody = memo(function MarkdownBody({
 }) {
   const components = useMemo<Components>(
     () => ({
+      img: ({ src, alt, title }) => (
+        <ZoomableImage src={src} alt={alt} title={title} language={language} />
+      ),
       table: ({ children }) => (
         <div
           className="markdown-table"

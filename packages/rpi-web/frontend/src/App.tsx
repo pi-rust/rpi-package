@@ -80,6 +80,7 @@ import { Splitter, useStoredNumber, Workbench } from "./Workbench";
 import { MenuSelect } from "./MenuSelect";
 import { LoginScreen } from "./LoginScreen";
 import { ProjectContext } from "./ProjectContext";
+import { ZoomableImage } from "./ZoomableImage";
 import {
   ConfirmDialog,
   Modal,
@@ -4909,7 +4910,13 @@ function toolIcon(name: string) {
   }
 }
 
-function ImagePreview({ image }: { image: ImageBlock }) {
+function ImagePreview({
+  image,
+  language,
+}: {
+  image: ImageBlock;
+  language: Language;
+}) {
   const source =
     image.url ??
     (image.data
@@ -4930,7 +4937,7 @@ function ImagePreview({ image }: { image: ImageBlock }) {
     return null;
   return (
     <figure className="transcript-image">
-      <img src={source} alt={image.alt ?? ""} loading="lazy" />
+      <ZoomableImage src={source} alt={image.alt ?? ""} language={language} />
     </figure>
   );
 }
@@ -4972,7 +4979,7 @@ const RowView = memo(function RowView({
   }
 
   if (row.kind === "image") {
-    return <ImagePreview image={row.image} />;
+    return <ImagePreview image={row.image} language={language} />;
   }
   if (row.kind === "thinking") {
     return (
@@ -5019,7 +5026,7 @@ const RowView = memo(function RowView({
         </summary>
         <div className="tool-detail">
           {row.images?.map((image, index) => (
-            <ImagePreview key={`${row.id}-image-${index}`} image={image} />
+            <ImagePreview key={`${row.id}-image-${index}`} image={image} language={language} />
           ))}
           {showArgs ? (
             <>

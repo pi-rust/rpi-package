@@ -1601,6 +1601,198 @@ test("snapshot overlap does not duplicate committed user images", async ({
   ).toHaveCount(1);
 });
 
+async function mockImageViewer(page: Page) {
+  await mockHost(page);
+  const photo = (alt: string) => ({
+    type: "image",
+    data: imagePng,
+    mimeType: "image/png",
+    alt,
+  });
+  await page.route("**/viewer-large.svg", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"><rect width="3000" height="2000" fill="#387aa5"/></svg>',
+    }),
+  );
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "user",
+            entryId: "viewer-user",
+            content: [photo("User photo")],
+          },
+          {
+            role: "assistant",
+            entryId: "viewer-assistant",
+            content: [
+              photo("Assistant photo"),
+              {
+                type: "text",
+                text: "![Markdown photo](/viewer-large.svg)\n\n[![Linked photo](/viewer-large.svg)](/should-not-navigate)",
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            entryId: "viewer-tool",
+            toolCallId: "photo-tool",
+            toolName: "read",
+            content: [photo("Tool photo")],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 3,
+        hasMore: false,
+      },
+    }),
+  );
+}
+
+for (const label of [
+  "User photo",
+  "Assistant photo",
+  "Tool photo",
+  "Markdown photo",
+  "Linked photo",
+]) {
+  test(`image viewer opens ${label} without navigation and restores focus`, async ({
+    page,
+  }) => {
+    await mockImageViewer(page);
+    let navigations = 0;
+    await page.route("**/should-not-navigate", (route) => {
+      navigations++;
+      return route.fulfill({
+        contentType: "text/html",
+        body: "Unexpected navigation",
+      });
+    });
+    await page.goto("/");
+    if (label === "Tool photo")
+      await page.locator(".tool-card > summary").click();
+    const thumbnail = page.getByAltText(label).first();
+    await thumbnail.scrollIntoViewIfNeeded();
+    await expect
+      .poll(() => thumbnail.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    const source = await thumbnail.evaluate(
+      (e: HTMLImageElement) => e.currentSrc,
+    );
+    const overflow = await page.evaluate(() => document.body.style.overflow);
+    await thumbnail.click();
+    const viewer = page.getByRole("dialog", {
+      name: "Image viewer",
+      exact: true,
+    });
+    await expect(viewer).toBeVisible();
+    await expect(viewer.locator("img")).toHaveAttribute("src", source);
+    await expect
+      .poll(() =>
+        viewer.locator("img").evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe(
+      "hidden",
+    );
+    await viewer.locator("img").click();
+    await expect(viewer).toBeVisible();
+    await viewer.getByRole("button", { name: "Close dialog" }).click();
+    await expect(viewer).toHaveCount(0);
+    await expect(thumbnail).toBeFocused();
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe(
+      overflow,
+    );
+    expect(new URL(page.url()).pathname).toBe("/");
+    expect(navigations).toBe(0);
+  });
+}
+
+test("image viewer supports keyboard open, trapped focus, Escape and backdrop close", async ({
+  page,
+}) => {
+  await mockImageViewer(page);
+  await page.goto("/");
+  const thumbnail = page.getByAltText("User photo").first();
+  await thumbnail.focus();
+  await page.keyboard.press("Enter");
+  const viewer = page.getByRole("dialog", {
+    name: "Image viewer",
+    exact: true,
+  });
+  await expect(viewer).toBeVisible();
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Original size" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Original size" }),
+  ).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(viewer).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(viewer).toBeVisible();
+  await page.mouse.click(2, 2);
+  await expect(viewer).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+});
+
+test("image viewer fits a mobile viewport and toggles original size in Chinese", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() =>
+    localStorage.setItem("rpi-web-language", "zh"),
+  );
+  await mockImageViewer(page);
+  await page.goto("/");
+  await page.getByAltText("Markdown photo").click();
+  const viewer = page.getByRole("dialog", { name: "图片查看器", exact: true });
+  await expect(viewer).toBeVisible();
+  const image = viewer.locator("img");
+  await expect
+    .poll(() => image.evaluate((e: HTMLImageElement) => e.naturalWidth))
+    .toBe(3000);
+  const fitted = await image.boundingBox();
+  expect(fitted!.width).toBeLessThan(390);
+  expect(fitted!.height).toBeLessThan(844);
+  await viewer.getByRole("button", { name: "原始尺寸" }).click();
+  await expect
+    .poll(() =>
+      image.evaluate((e: HTMLImageElement) => e.getBoundingClientRect().width),
+    )
+    .toBe(3000);
+  const viewport = viewer.locator(".image-viewer-viewport");
+  expect(await viewport.evaluate((e) => e.scrollWidth > e.clientWidth)).toBe(
+    true,
+  );
+  await viewer.getByRole("button", { name: "适应窗口" }).click();
+  await expect
+    .poll(() =>
+      image.evaluate((e: HTMLImageElement) => e.getBoundingClientRect().width),
+    )
+    .toBeLessThan(390);
+  await viewer.getByRole("button", { name: "关闭对话框" }).click();
+  await expect(viewer).toHaveCount(0);
+});
+
 test("streamed markdown handles incomplete fences and stays formatted in dark mode", async ({
   page,
 }, testInfo) => {
