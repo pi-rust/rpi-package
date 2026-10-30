@@ -2,6 +2,7 @@ import { createPortal } from "react-dom";
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -80,6 +81,8 @@ import { Splitter, useStoredNumber, Workbench } from "./Workbench";
 import { MenuSelect } from "./MenuSelect";
 import { LoginScreen } from "./LoginScreen";
 import { ProjectContext } from "./ProjectContext";
+import { ZoomableImage } from "./ZoomableImage";
+import { ProjectImageContext, projectImageSource } from "./projectImages";
 import {
   ConfirmDialog,
   Modal,
@@ -93,6 +96,7 @@ import {
 import {
   rowsFromAssistant,
   rowsFromMessages,
+  rowsFromUser,
   prependRows,
   upsertTool,
   withoutPrefix,
@@ -989,7 +993,8 @@ export default function App() {
             const text = textOf(event.message);
             const prefix = `u${seq}`;
             currentUser.current = prefix;
-            if (text)
+            const initial = rowsFromUser(event.message, prefix);
+            if (initial.length > 0)
               setRows((previous) => {
                 const optimistic = previous.find(
                   (row) =>
@@ -1000,7 +1005,7 @@ export default function App() {
                 );
                 return [
                   ...previous.filter((row) => row.id !== optimistic?.id),
-                  { kind: "text", id: prefix, role: "user", text },
+                  ...initial,
                 ];
               });
             break;
@@ -1023,7 +1028,8 @@ export default function App() {
               const text = textOf(event.message);
               const prefix = currentUser.current ?? `u${seq}`;
               currentUser.current = null;
-              if (text)
+              const rebuilt = rowsFromUser(event.message, prefix);
+              if (rebuilt.length > 0)
                 setRows((previous) => {
                   const optimistic = previous.find(
                     (row) =>
@@ -1033,10 +1039,10 @@ export default function App() {
                       row.text === text,
                   );
                   return [
-                    ...previous.filter(
+                    ...withoutPrefix(previous, prefix).filter(
                       (row) => row.id !== prefix && row.id !== optimistic?.id,
                     ),
-                    { kind: "text", id: prefix, role: "user", text },
+                    ...rebuilt,
                   ];
                 });
             }
@@ -3478,9 +3484,11 @@ export default function App() {
                   </div>
                 )}
 
-                {rows.map((row) => (
-                  <RowView row={row} key={row.id} language={language} />
-                ))}
+                <ProjectImageContext.Provider value={project}>
+                  {rows.map((row) => (
+                    <RowView row={row} key={row.id} language={language} />
+                  ))}
+                </ProjectImageContext.Provider>
 
                 {busy && rows.length > 0 && (
                   <div className="working-indicator">
@@ -4906,14 +4914,23 @@ function toolIcon(name: string) {
   }
 }
 
-function ImagePreview({ image }: { image: ImageBlock }) {
-  const source =
+function ImagePreview({
+  image,
+  language,
+}: {
+  image: ImageBlock;
+  language: Language;
+}) {
+  const project = useContext(ProjectImageContext);
+  const source = projectImageSource(
     image.url ??
-    (image.data
-      ? image.data.startsWith("data:")
-        ? image.data
-        : `data:${image.mimeType || "image/png"};base64,${image.data}`
-      : "");
+      (image.data
+        ? image.data.startsWith("data:")
+          ? image.data
+          : `data:${image.mimeType || "image/png"};base64,${image.data}`
+        : ""),
+    project,
+  );
   const isSafeImage =
     source.startsWith("data:image/") ||
     source.startsWith("/") ||
@@ -4927,7 +4944,7 @@ function ImagePreview({ image }: { image: ImageBlock }) {
     return null;
   return (
     <figure className="transcript-image">
-      <img src={source} alt={image.alt ?? ""} loading="lazy" />
+      <ZoomableImage src={source} alt={image.alt ?? ""} language={language} />
     </figure>
   );
 }
@@ -4969,7 +4986,7 @@ const RowView = memo(function RowView({
   }
 
   if (row.kind === "image") {
-    return <ImagePreview image={row.image} />;
+    return <ImagePreview image={row.image} language={language} />;
   }
   if (row.kind === "thinking") {
     return (
@@ -5016,7 +5033,7 @@ const RowView = memo(function RowView({
         </summary>
         <div className="tool-detail">
           {row.images?.map((image, index) => (
-            <ImagePreview key={`${row.id}-image-${index}`} image={image} />
+            <ImagePreview key={`${row.id}-image-${index}`} image={image} language={language} />
           ))}
           {showArgs ? (
             <>

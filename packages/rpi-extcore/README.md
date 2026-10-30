@@ -42,6 +42,24 @@ manage credentials, or provide an HTTP/ACP transport.
 | `workspace`, `process` | Scoped file/Git access and background native processes |
 | `reply`, `protocol` | Neutral operation outcomes and the existing native command contract |
 
+## Project image reads
+
+`workspace::image(&Project, &str)` and
+`service::project_image(&Service, String, FileQuery)` return
+`Result<workspace::ProjectImage, (ReplyKind, serde_json::Value)>`.
+`ProjectImage { bytes: Vec<u8>, media_type: &'static str }` carries binary content
+without a JSON or HTTP dependency. The service resolves the configured project
+ID; the workspace reuses its existing project-relative path resolver, including
+hidden-path and canonical symlink/junction containment checks.
+
+Only regular files up to 20 MiB are accepted, with metadata checks before and
+after opening and a limit-plus-one bounded read. PNG, JPEG (`jpg`/`jpeg`), GIF,
+WebP and BMP extensions must match their raster signatures; SVG, HTML and
+mismatched content are rejected. This is signature validation, not full image
+decoding or sanitization. As with existing workspace reads, canonical resolution
+and opening are separate operations: concurrently hostile local filesystem
+mutation is not protected by a race-free descriptor-relative sandbox.
+
 ## Reuse
 
 Create one `Arc<Service>` per backend instance and pass clones to protocol adapters. Rust clients can call the same operations directly:

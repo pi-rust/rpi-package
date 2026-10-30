@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Open transcript and Markdown images in an accessible, keyboard-operated viewer with fit-to-window and scrollable original-size modes.
+
+### Fixed
+
+- Render inline Markdown `data:image` sources without allowing data URLs in links or raw HTML.
+- Preserve user image blocks in snapshots, reloads and live message events, including image-only messages, without duplicating start/end rows.
+- Resolve local raster image references against the active project and serve authenticated image bytes through the project API instead of receiving the Web/Vite SPA HTML fallback. Requires the matching backend update.
+
 ## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.20...rpi-web-v0.1.21) - 2026-10-29
 
 ### Fixed

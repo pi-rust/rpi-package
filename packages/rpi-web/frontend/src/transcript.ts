@@ -548,6 +548,17 @@ export function resultOf(message: Record<string, unknown>): unknown {
   return (message.content as unknown) ?? "";
 }
 
+/** Keep user text IDs compatible while projecting native image blocks too. */
+export function rowsFromUser(message: unknown, prefix: string): Row[] {
+  const rows: Row[] = [];
+  const text = textOf(message);
+  if (text) rows.push({ kind: "text", id: prefix, role: "user", text });
+  imageBlocksOf(message).forEach((image, index) => {
+    rows.push({ kind: "image", id: `${prefix}:image${index}`, role: "user", image });
+  });
+  return rows;
+}
+
 /**
  * Project a native `get_messages` snapshot into rows, keeping message order and
  * folding each tool result into the row of the call it answers.
@@ -564,8 +575,7 @@ export function rowsFromMessages(raw: unknown[]): Row[] {
       typeof message.entryId === "string" ? message.entryId : `s${index}`;
 
     if (role === "user") {
-      const text = textOf(value);
-      if (text) rows.push({ kind: "text", id: key, role: "user", text });
+      rows.push(...rowsFromUser(message, key));
       return;
     }
 

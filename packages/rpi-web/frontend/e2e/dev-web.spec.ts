@@ -1406,6 +1406,612 @@ test("renders image blocks returned in the transcript", async ({ page }) => {
       .toBeGreaterThan(0);
   }
 });
+const imagePng =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const nativeUserImage = {
+  role: "user",
+  entryId: "user-image",
+  timestamp: 1_700_000_000_000,
+  content: [
+    { type: "text", text: "Inspect this image" },
+    { type: "image", data: imagePng, mimeType: "image/png" },
+  ],
+};
+
+test("Markdown data images decode without allowing unsafe links or HTML", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "assistant",
+            entryId: "markdown-image",
+            content: [
+              {
+                type: "text",
+                text: [
+                  `![inline PNG](data:image/png;base64,${imagePng})`,
+                  `[image link](data:image/png;base64,${imagePng})`,
+                  "[unsafe link](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+                  "[script link](javascript:alert%281%29)",
+                  "![unsafe image](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+                  '<img src="/raw-html-image.png" onerror="alert(1)">',
+                ].join("\n\n"),
+              },
+            ],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  const image = page.getByAltText("inline PNG");
+  await expect(image).toHaveAttribute(
+    "src",
+    `data:image/png;base64,${imagePng}`,
+  );
+  await expect
+    .poll(() => image.evaluate((e: HTMLImageElement) => e.naturalWidth))
+    .toBeGreaterThan(0);
+  for (const label of ["unsafe link", "script link", "image link"]) {
+    await expect(
+      page.locator(".prose a").filter({ hasText: label }),
+    ).not.toHaveAttribute("href", /^(data|javascript):/i);
+  }
+  await expect(page.getByAltText("unsafe image")).not.toHaveAttribute(
+    "src",
+    /^data:/i,
+  );
+  await expect(page.locator('img[src="/raw-html-image.png"]')).toHaveCount(0);
+});
+
+for (const imageOnly of [false, true]) {
+  test(`user ${imageOnly ? "image-only" : "text and image"} messages survive snapshot and reload`, async ({
+    page,
+  }) => {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          messages: [
+            {
+              ...nativeUserImage,
+              content: imageOnly
+                ? nativeUserImage.content.slice(1)
+                : nativeUserImage.content,
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+    );
+    for (const reload of [false, true]) {
+      if (reload) await page.reload();
+      else await page.goto("/");
+      const images = page.locator(".transcript-image img");
+      await expect(images).toHaveCount(1);
+      await expect
+        .poll(() =>
+          images.first().evaluate((e: HTMLImageElement) => e.naturalWidth),
+        )
+        .toBeGreaterThan(0);
+      if (!imageOnly)
+        await expect(
+          page.getByText("Inspect this image", { exact: true }),
+        ).toHaveCount(1);
+    }
+  });
+}
+
+test("live user images render at start and are replaced rather than duplicated at end", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let finish!: () => void;
+  const ended = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [],
+        events: [
+          {
+            seq: 5,
+            event: { type: "message_start", message: nativeUserImage },
+          },
+        ],
+        lastSeq: 5,
+        total: 0,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      await ended;
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `event: ready\ndata: {"type":"ready"}\n\nid: 6\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message: { ...nativeUserImage, content: [{ type: "text", text: "Image received" }, nativeUserImage.content[1]] } })}\n\n`,
+      });
+    },
+  );
+  try {
+    await page.goto("/");
+    const images = page.locator(".transcript-image img");
+    await expect(images).toHaveCount(1);
+    finish();
+    await expect(
+      page.getByText("Image received", { exact: true }),
+    ).toBeVisible();
+    await expect(images).toHaveCount(1);
+    await expect(
+      page.getByText("Inspect this image", { exact: true }),
+    ).toHaveCount(0);
+    await expect
+      .poll(() =>
+        images.first().evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+  } finally {
+    finish();
+  }
+});
+
+test("snapshot overlap does not duplicate committed user images", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [nativeUserImage],
+        events: [
+          {
+            seq: 5,
+            event: { type: "message_start", message: nativeUserImage },
+          },
+          { seq: 6, event: { type: "message_end", message: nativeUserImage } },
+        ],
+        lastSeq: 6,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  await expect(page.locator(".transcript-image img")).toHaveCount(1);
+  await expect(
+    page.getByText("Inspect this image", { exact: true }),
+  ).toHaveCount(1);
+});
+
+for (const source of [
+  "/artifacts/theme-design-mobile-390.png",
+  "artifacts/theme-design-mobile-390.png",
+  "./artifacts/theme-design-mobile-390.png",
+  "http://127.0.0.1:4191/artifacts/theme-design-mobile-390.png",
+]) {
+  test(`project image URLs resolve and decode instead of receiving SPA HTML: ${source}`, async ({
+    page,
+    baseURL,
+  }) => {
+    const imageSource = source.replace("http://127.0.0.1:4191", baseURL!);
+    await mockHost(page);
+    await page.route(
+      (url) => url.pathname === "/api/v1/projects/project-a/image",
+      (route) => {
+        expect(new URL(route.request().url()).searchParams.get("path")).toBe(
+          "artifacts/theme-design-mobile-390.png",
+        );
+        return route.fulfill({
+          contentType: "image/png",
+          body: Buffer.from(imagePng, "base64"),
+        });
+      },
+    );
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          messages: [
+            {
+              role: "assistant",
+              entryId: "local-image",
+              content: [
+                { type: "text", text: `![Project image](${imageSource})` },
+                { type: "image_url", image_url: { url: imageSource } },
+              ],
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+    );
+    await page.goto("/");
+    const markdown = page.getByAltText("Project image").first();
+    await expect(markdown).toHaveAttribute(
+      "src",
+      "/api/v1/projects/project-a/image?path=artifacts%2Ftheme-design-mobile-390.png",
+    );
+    await expect
+      .poll(() => markdown.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    const native = page.locator(".transcript-image img");
+    await expect
+      .poll(() => native.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    await markdown.focus();
+    await markdown.press("Enter");
+    const viewer = page.getByRole("dialog", {
+      name: "Image viewer",
+      exact: true,
+    });
+    await expect(viewer).toBeVisible();
+    await expect
+      .poll(() =>
+        viewer.locator("img").evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+  });
+}
+
+test("project image resolution isolates identical paths across projects and reload", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(
+    (url) => url.pathname === "/api/v1/sessions",
+    (route) =>
+      route.fulfill({
+        json: {
+          sessions: [
+            session,
+            {
+              ...session,
+              sessionId: "session-2",
+              projectId: "project-b",
+              title: "Other image session",
+            },
+          ],
+        },
+      }),
+  );
+  await page.route(
+    (url) => /^\/api\/v1\/projects\/project-[ab]\/image$/.test(url.pathname),
+    (route) =>
+      route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(imagePng, "base64"),
+      }),
+  );
+  await page.route(
+    (url) => /\/sessions\/[^/]+\/snapshot$/.test(url.pathname),
+    (route) =>
+      route.fulfill({
+        json: {
+          sessionId: route.request().url().includes("session-2")
+            ? "session-2"
+            : sessionId,
+          messages: [
+            {
+              role: "assistant",
+              entryId: "same-path",
+              content: [
+                { type: "text", text: "![Scoped image](/artifacts/same.png)" },
+              ],
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+  );
+  await page.goto("/");
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-a\/image\?/,
+  );
+  const expand = page
+    .getByRole("region", { name: "rpi-package", exact: true })
+    .locator(".project-collapse");
+  if ((await expand.getAttribute("aria-expanded")) === "false")
+    await expand.click();
+  await page.getByRole("button", { name: /^Other image session/ }).click();
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-b\/image\?/,
+  );
+  await page.reload();
+  await expect(page.getByAltText("Scoped image")).toHaveAttribute(
+    "src",
+    /\/projects\/project-b\/image\?/,
+  );
+});
+
+test("project image resolution rejects traversal and unsupported schemes without rewriting external images", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let resourceRequests = 0;
+  await page.route(
+    (url) => url.pathname.endsWith("/image"),
+    (route) => {
+      resourceRequests++;
+      return route.fulfill({
+        status: 403,
+        json: { error: "unexpected local image request" },
+      });
+    },
+  );
+  await page.route("https://example.com/external.png", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(imagePng, "base64"),
+    }),
+  );
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "assistant",
+            entryId: "blocked-images",
+            content: [
+              {
+                type: "text",
+                text: [
+                  "![Parent](../outside.png)",
+                  "![Encoded parent](artifacts/%2e%2e/outside.png)",
+                  "![Local file](file:///private/outside.png)",
+                  "![Script](javascript:alert%281%29)",
+                  "![External](https://example.com/external.png)",
+                ].join("\n\n"),
+              },
+            ],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 1,
+        hasMore: false,
+      },
+    }),
+  );
+  await page.goto("/");
+  for (const alt of ["Parent", "Encoded parent", "Local file", "Script"]) {
+    await expect(page.getByAltText(alt, { exact: true })).not.toHaveAttribute(
+      "src",
+      /.+/,
+    );
+  }
+  await expect(page.getByAltText("External")).toHaveAttribute(
+    "src",
+    "https://example.com/external.png",
+  );
+  await expect
+    .poll(() =>
+      page
+        .getByAltText("External")
+        .evaluate((e: HTMLImageElement) => e.naturalWidth),
+    )
+    .toBeGreaterThan(0);
+  expect(resourceRequests).toBe(0);
+});
+
+async function mockImageViewer(page: Page) {
+  await mockHost(page);
+  const photo = (alt: string) => ({
+    type: "image",
+    data: imagePng,
+    mimeType: "image/png",
+    alt,
+  });
+  await page.route("**/viewer-large.svg", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"><rect width="3000" height="2000" fill="#387aa5"/></svg>',
+    }),
+  );
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "user",
+            entryId: "viewer-user",
+            content: [photo("User photo")],
+          },
+          {
+            role: "assistant",
+            entryId: "viewer-assistant",
+            content: [
+              photo("Assistant photo"),
+              {
+                type: "text",
+                text: "![Markdown photo](/viewer-large.svg)\n\n[![Linked photo](/viewer-large.svg)](/should-not-navigate)",
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            entryId: "viewer-tool",
+            toolCallId: "photo-tool",
+            toolName: "read",
+            content: [photo("Tool photo")],
+          },
+        ],
+        events: [],
+        lastSeq: 4,
+        total: 3,
+        hasMore: false,
+      },
+    }),
+  );
+}
+
+for (const label of [
+  "User photo",
+  "Assistant photo",
+  "Tool photo",
+  "Markdown photo",
+  "Linked photo",
+]) {
+  test(`image viewer opens ${label} without navigation and restores focus`, async ({
+    page,
+  }) => {
+    await mockImageViewer(page);
+    let navigations = 0;
+    await page.route("**/should-not-navigate", (route) => {
+      navigations++;
+      return route.fulfill({
+        contentType: "text/html",
+        body: "Unexpected navigation",
+      });
+    });
+    await page.goto("/");
+    if (label === "Tool photo")
+      await page.locator(".tool-card > summary").click();
+    const thumbnail = page.getByAltText(label).first();
+    await thumbnail.scrollIntoViewIfNeeded();
+    await expect
+      .poll(() => thumbnail.evaluate((e: HTMLImageElement) => e.naturalWidth))
+      .toBeGreaterThan(0);
+    const source = await thumbnail.evaluate(
+      (e: HTMLImageElement) => e.currentSrc,
+    );
+    const overflow = await page.evaluate(() => document.body.style.overflow);
+    await thumbnail.click();
+    const viewer = page.getByRole("dialog", {
+      name: "Image viewer",
+      exact: true,
+    });
+    await expect(viewer).toBeVisible();
+    await expect(viewer.locator("img")).toHaveAttribute("src", source);
+    await expect
+      .poll(() =>
+        viewer.locator("img").evaluate((e: HTMLImageElement) => e.naturalWidth),
+      )
+      .toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe(
+      "hidden",
+    );
+    await viewer.locator("img").click();
+    await expect(viewer).toBeVisible();
+    await viewer.getByRole("button", { name: "Close dialog" }).click();
+    await expect(viewer).toHaveCount(0);
+    await expect(thumbnail).toBeFocused();
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe(
+      overflow,
+    );
+    expect(new URL(page.url()).pathname).toBe("/");
+    expect(navigations).toBe(0);
+  });
+}
+
+test("image viewer supports keyboard open, trapped focus, Escape and backdrop close", async ({
+  page,
+}) => {
+  await mockImageViewer(page);
+  await page.goto("/");
+  const thumbnail = page.getByAltText("User photo").first();
+  await thumbnail.focus();
+  await page.keyboard.press("Enter");
+  const viewer = page.getByRole("dialog", {
+    name: "Image viewer",
+    exact: true,
+  });
+  await expect(viewer).toBeVisible();
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Original size" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Original size" }),
+  ).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    viewer.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(viewer).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(viewer).toBeVisible();
+  await page.mouse.click(2, 2);
+  await expect(viewer).toHaveCount(0);
+  await expect(thumbnail).toBeFocused();
+});
+
+test("image viewer fits a mobile viewport and toggles original size in Chinese", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() =>
+    localStorage.setItem("rpi-web-language", "zh"),
+  );
+  await mockImageViewer(page);
+  await page.goto("/");
+  await page.getByAltText("Markdown photo").click();
+  const viewer = page.getByRole("dialog", { name: "图片查看器", exact: true });
+  await expect(viewer).toBeVisible();
+  const image = viewer.locator("img");
+  await expect
+    .poll(() => image.evaluate((e: HTMLImageElement) => e.naturalWidth))
+    .toBe(3000);
+  const fitted = await image.boundingBox();
+  expect(fitted!.width).toBeLessThan(390);
+  expect(fitted!.height).toBeLessThan(844);
+  await viewer.getByRole("button", { name: "原始尺寸" }).click();
+  await expect
+    .poll(() =>
+      image.evaluate((e: HTMLImageElement) => e.getBoundingClientRect().width),
+    )
+    .toBe(3000);
+  const viewport = viewer.locator(".image-viewer-viewport");
+  expect(await viewport.evaluate((e) => e.scrollWidth > e.clientWidth)).toBe(
+    true,
+  );
+  await viewer.getByRole("button", { name: "适应窗口" }).click();
+  await expect
+    .poll(() =>
+      image.evaluate((e: HTMLImageElement) => e.getBoundingClientRect().width),
+    )
+    .toBeLessThan(390);
+  await viewer.getByRole("button", { name: "关闭对话框" }).click();
+  await expect(viewer).toHaveCount(0);
+});
+
 test("streamed markdown handles incomplete fences and stays formatted in dark mode", async ({
   page,
 }, testInfo) => {
