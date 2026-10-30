@@ -3656,12 +3656,12 @@ export default function App() {
                   <button
                     type="button"
                     className="composer-queue-heading"
+                    aria-label={t(queueOpen ? "closeQueue" : "viewQueue")}
                     aria-expanded={queueOpen}
                     onClick={() => setQueueOpen((value) => !value)}
                   >
                     <span>
-                      <ListTodo size={13} />
-                      <strong>{t("queue")}</strong>
+                      <ListTodo size={13} aria-hidden="true" />
                       <em>{pendingQueueItems.length}</em>
                       {!queueOpen && pendingQueueItems[0]?.text && (
                         <span className="composer-queue-preview">

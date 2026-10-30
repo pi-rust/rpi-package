@@ -8371,3 +8371,37 @@ test.describe("Codex tool summary layout", () => {
     }
   });
 });
+
+for (const language of ["en", "zh"] as const) {
+  test(`composer queue omits its visible title but keeps controls and accessible names in ${language}`, async ({ page }) => {
+    await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    await mockHost(page);
+    const close = language === "zh" ? "关闭队列" : "Close queue";
+    const view = language === "zh" ? "查看排队消息" : "View queued messages";
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const panel = page.locator(".composer-queue-panel");
+      const heading = panel.locator(".composer-queue-heading");
+      await expect(panel).toBeVisible();
+      await expect(heading).toHaveAccessibleName(close);
+      await expect(heading).toHaveText("1");
+      await expect(heading.locator("strong")).toHaveCount(0);
+      await expect(panel.locator(".composer-queue-item")).toContainText("pending");
+      const edit = panel.getByRole("button", { name: language === "zh" ? "编辑排队消息" : "Edit queued message", exact: true });
+      await expect(edit).toBeVisible();
+      await heading.click();
+      await expect(heading).toHaveAccessibleName(view);
+      await expect(heading).toHaveAttribute("aria-expanded", "false");
+      await expect(heading.locator(".composer-queue-preview")).toHaveText("pending");
+      expect(await heading.innerText()).not.toContain(language === "zh" ? "队列" : "Queue");
+      await heading.focus();
+      await page.keyboard.press("Enter");
+      await expect(heading).toHaveAccessibleName(close);
+      await expect(heading).toHaveAttribute("aria-expanded", "true");
+      await expect(heading).toHaveText("1");
+      await expect(edit).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  });
+}

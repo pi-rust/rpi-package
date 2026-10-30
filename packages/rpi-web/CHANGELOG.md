@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Omit the redundant visible Queue label above pending composer messages while preserving the count, preview, item actions and localized accessible expand/collapse names.
 - Use equal user-message corner radii and show the localized sender label only once instead of repeating it in both avatar and name.
 - Render inline Markdown `data:image` sources without allowing data URLs in links or raw HTML.
 - Preserve user image blocks in snapshots, reloads and live message events, including image-only messages, without duplicating start/end rows.
