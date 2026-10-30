@@ -1,7 +1,53 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, ChevronRight, CircleAlert, Loader2 } from "lucide-react";
+import {
+  ChevronRight,
+  CircleAlert,
+  FileText,
+  Globe,
+  ListChecks,
+  Loader2,
+  Pencil,
+  Search,
+  Terminal,
+  Wrench,
+} from "lucide-react";
 import { translate, type Language } from "./i18n";
-import type { ToolStatus } from "./transcript";
+import { isShellTool, type ToolStatus } from "./transcript";
+
+function iconForTool(name: string) {
+  const tool = name
+    .trim()
+    .toLowerCase()
+    .replace(/^functions\./, "");
+  if (isShellTool(tool)) return Terminal;
+  if (["read", "read_file", "readfile", "cat"].includes(tool)) return FileText;
+  if (
+    ["edit", "apply_patch", "write", "write_file", "writefile"].includes(tool)
+  )
+    return Pencil;
+  if (["plan", "todo"].includes(tool)) return ListChecks;
+  if (["fetch", "webfetch", "web_fetch", "http_get", "open_url"].includes(tool))
+    return Globe;
+  if (
+    [
+      "grep",
+      "glob",
+      "find",
+      "search",
+      "search_files",
+      "file_search",
+      "rg",
+      "websearch",
+      "web_search",
+      "ls",
+      "list",
+      "list_files",
+      "list_directory",
+    ].includes(tool)
+  )
+    return Search;
+  return Wrench;
+}
 
 export function useToolExpansion(status: ToolStatus) {
   const [open, setOpen] = useState(status === "error");
@@ -18,6 +64,7 @@ export type ToolExpansion = ReturnType<typeof useToolExpansion>;
 /** One compact, keyboard-accessible activity row, with a single detail toggle. */
 export function ToolDisclosure({
   expansion,
+  toolName,
   action,
   target,
   status,
@@ -29,6 +76,7 @@ export function ToolDisclosure({
   children,
 }: {
   expansion: ToolExpansion;
+  toolName: string;
   action: string;
   target?: string;
   status: ToolStatus;
@@ -40,6 +88,7 @@ export function ToolDisclosure({
   children: ReactNode;
 }) {
   const { open, setOpen } = expansion;
+  const Icon = iconForTool(toolName);
   const label = translate(
     language,
     status === "running"
@@ -57,7 +106,16 @@ export function ToolDisclosure({
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary>
-        <ChevronRight size={14} className="tool-chevron" aria-hidden="true" />
+        <span className="tool-status" title={label}>
+          {status === "running" || status === "pending" ? (
+            <Loader2 size={14} className="spin" aria-hidden="true" />
+          ) : status === "error" ? (
+            <CircleAlert size={14} aria-hidden="true" />
+          ) : (
+            <Icon size={14} aria-hidden="true" />
+          )}
+          <span className="sr-only">{label}</span>
+        </span>
         <span className="tool-summary-text">
           <span className="tool-action" title={action}>
             {action}
@@ -70,16 +128,7 @@ export function ToolDisclosure({
         </span>
         {meta && <span className="tool-summary-meta">{meta}</span>}
         {timing}
-        <span className="tool-status" title={label}>
-          {status === "running" || status === "pending" ? (
-            <Loader2 size={12} className="spin" aria-hidden="true" />
-          ) : status === "error" ? (
-            <CircleAlert size={13} aria-hidden="true" />
-          ) : (
-            <Check size={12} aria-hidden="true" />
-          )}
-          <span className="sr-only">{label}</span>
-        </span>
+        <ChevronRight size={14} className="tool-chevron" aria-hidden="true" />
       </summary>
       {children}
     </details>

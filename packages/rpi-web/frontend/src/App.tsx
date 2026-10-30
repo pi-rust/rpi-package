@@ -5111,6 +5111,7 @@ function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
   return (
     <ToolDisclosure
       expansion={expansion}
+      toolName={row.name}
       {...summary}
       status={row.status}
       language={language}
@@ -5221,6 +5222,7 @@ function PlanCard({
   return (
     <ToolDisclosure
       expansion={expansion}
+      toolName={row.name}
       className="plan-card"
       action={t("plan")}
       status={row.status}
@@ -5264,6 +5266,7 @@ function TodoCard({
   return (
     <ToolDisclosure
       expansion={expansion}
+      toolName={row.name}
       className="todo-card"
       action={t("todos")}
       status={row.status}
@@ -5321,6 +5324,7 @@ function EditCard({
   return (
     <ToolDisclosure
       expansion={expansion}
+      toolName={row.name}
       {...summary}
       status={row.status}
       language={language}
@@ -5438,6 +5442,7 @@ function ShellCard({
   return (
     <ToolDisclosure
       expansion={expansion}
+      toolName={row.name}
       className="shell-card"
       status={row.status}
       language={language}

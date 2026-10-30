@@ -1387,6 +1387,7 @@ details[open] > summary:before {
   outline-offset: -2px;
 }
 .tool-chevron {
+  margin-left: auto;
   flex-shrink: 0;
   transition: transform 0.15s;
 }
@@ -1432,6 +1433,9 @@ details[open] > summary:before {
 .tool-status {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
   color: var(--muted);
 }
 .tool-done .tool-status {
@@ -3956,12 +3960,6 @@ details[open] > summary:before {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
-.tool-elapsed + .tool-status {
-  margin-left: 0;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
 .run-elapsed {
   display: flex;
   align-items: center;

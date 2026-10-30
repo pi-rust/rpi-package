@@ -8162,3 +8162,212 @@ test.describe("Mermaid diagrams", () => {
     expect(errors).toEqual([]);
   });
 });
+
+// Keep this fixture local: summary layout must not depend on a live native host.
+test.describe("Codex tool summary layout", () => {
+  type SummaryTool = {
+    name: string;
+    args: Record<string, unknown>;
+    result: string;
+    state?: "done" | "running" | "error";
+  };
+
+  async function summarySnapshot(page: Page, tools: SummaryTool[]) {
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: tools.some((tool) => tool.state === "running") ? "running" : "ready",
+          lastSeq: 9,
+          events: [],
+          messages: [
+            {
+              role: "assistant",
+              content: tools.map((tool, index) => ({
+                type: "toolCall",
+                id: `codex-summary-${index}`,
+                name: tool.name,
+                arguments: tool.args,
+                webTiming: {
+                  elapsedMs: 1234,
+                  running: tool.state === "running",
+                },
+              })),
+            },
+            ...tools.flatMap((tool, index) =>
+              tool.state === "running" ? [] : [{
+                role: "toolResult",
+                toolCallId: `codex-summary-${index}`,
+                toolName: tool.name,
+                isError: tool.state === "error",
+                content: [{ type: "text", text: tool.result }],
+                webTiming: { elapsedMs: 1234, running: false },
+              }],
+            ),
+          ],
+        },
+      }),
+    );
+  }
+
+  async function expectSummaryGeometry(summary: ReturnType<Page["locator"]>) {
+    await summary.scrollIntoViewIfNeeded();
+    await expect(summary.locator(":scope > :first-child")).toHaveClass("tool-status");
+    await expect(summary.locator(":scope > :last-child")).toHaveClass(/tool-chevron/);
+    const geometry = await summary.evaluate((node) => {
+      const box = (element: Element) => {
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x, right: rect.right, width: rect.width };
+      };
+      return {
+        bounds: box(node),
+        viewport: window.innerWidth,
+        parts: [
+          // Measure the stable icon slot, not a spinner's rotating SVG bounds.
+          ".tool-status", ".tool-action", ".tool-target",
+          ".tool-summary-meta", ".tool-elapsed", ".tool-chevron",
+        ].flatMap((selector) => {
+          const element = node.querySelector(selector);
+          return element ? [{ selector, ...box(element) }] : [];
+        }),
+      };
+    });
+    expect(geometry.bounds.x).toBeGreaterThanOrEqual(0);
+    expect(geometry.bounds.right).toBeLessThanOrEqual(geometry.viewport + 1);
+    for (const [index, part] of geometry.parts.entries()) {
+      expect(part.width, part.selector).toBeGreaterThan(0);
+      expect(part.x, part.selector).toBeGreaterThanOrEqual(geometry.bounds.x - 1);
+      expect(part.right, part.selector).toBeLessThanOrEqual(geometry.bounds.right + 1);
+      if (index > 0) {
+        const previous = geometry.parts[index - 1];
+        expect(part.x, `${previous.selector} precedes ${part.selector}`).toBeGreaterThan(previous.x);
+        expect(part.x, "summary parts do not overlap").toBeGreaterThanOrEqual(previous.right - 1);
+      }
+    }
+    const status = summary.locator(".tool-status");
+    const label = await status.getAttribute("title");
+    expect(label).toBeTruthy();
+    await expect(status.locator(".sr-only")).toHaveText(label!);
+    await expect(summary).toHaveAccessibleName(new RegExp(label!));
+    await expect(status.locator("svg")).toHaveAttribute("aria-hidden", "true");
+    await expect(summary.locator(".tool-chevron")).toHaveAttribute("aria-hidden", "true");
+  }
+
+  test("completed tool icons lead and native chevrons trail at desktop and mobile widths", async ({ page }) => {
+    const tools: Array<SummaryTool & { icon: string }> = [
+      { name: "read", args: { path: "src/example.ts" }, result: "export const answer = 42;", icon: "file-text" },
+      { name: "bash", args: { command: "printf summary" }, result: "summary", icon: "terminal" },
+      { name: "edit", args: { path: "src/edit.ts", edits: [{ oldText: "old", newText: "new" }] }, result: "Edited src/edit.ts", icon: "pencil" },
+      { name: "write", args: { path: "src/write.ts", content: "new" }, result: "Wrote src/write.ts", icon: "pencil" },
+      { name: "websearch", args: { query: "summary layout" }, result: "Search result", icon: "search" },
+      { name: "plan", args: { plan: "# Summary plan\n\n- Inspect icons\n- Verify layout" }, result: "# Summary plan\n\n- Inspect icons\n- Verify layout", icon: "list-checks" },
+      { name: "todo", args: {}, result: "1/2 completed\n[✓] #0: Inspect icons\n[ ] #1: Verify layout", icon: "list-checks" },
+      { name: "webfetch", args: { url: "https://example.com" }, result: "Fetched page", icon: "globe" },
+      { name: "custom_summary_probe", args: { path: "probe.txt" }, result: "Unknown tool payload", icon: "wrench" },
+    ];
+    await summarySnapshot(page, tools);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const cards = page.locator(".tool-card");
+      await expect(cards).toHaveCount(tools.length);
+      for (const [index, tool] of tools.entries()) {
+        const card = cards.nth(index);
+        const summary = card.locator(":scope > summary");
+        await expect(card).toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", false);
+        await expect(summary.locator(`.tool-status > svg.lucide-${tool.icon}`)).toHaveCount(1);
+        await expect(summary.locator(".tool-status .spin, .tool-status .lucide-circle-alert")).toHaveCount(0);
+        await expect(summary.locator(".tool-elapsed")).toHaveText("1.2s");
+        await expectSummaryGeometry(summary);
+      }
+      // Metadata is still in the middle, not replaced by either icon.
+      await expect(cards.nth(2).locator("summary .edit-count")).toContainText("+1");
+      await expect(cards.nth(2).locator("summary .edit-count")).toContainText("−1");
+      await expect(cards.nth(5).locator("summary .tool-summary-meta")).not.toBeEmpty();
+      await expect(cards.nth(6).locator("summary .tool-summary-meta")).toContainText("1/2");
+      const read = cards.first();
+      const summary = read.locator(":scope > summary");
+      await summary.locator(":scope > .tool-chevron:last-child").click();
+      await expect(read).toHaveJSProperty("open", true);
+      await expect(read.getByText("export const answer = 42;", { exact: false })).toBeVisible();
+      await summary.focus();
+      await page.keyboard.press("Enter");
+      await expect(read).toHaveJSProperty("open", false);
+      await summary.locator(":scope > .tool-status:first-child").click();
+      await expect(read).toHaveJSProperty("open", true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  });
+
+  test("long targets ellipsize without losing edit metadata or elapsed time on desktop and mobile", async ({ page }) => {
+    const path = `src/${"very-long-directory-segment/".repeat(30)}summary.ts`;
+    await summarySnapshot(page, [{
+      name: "edit",
+      args: { path, edits: [{ oldText: "const before = 1;", newText: "const after = 2;\nexport { after };" }] },
+      result: `Edited ${path}`,
+    }]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const card = page.locator(".edit-card.tool-done");
+      const summary = card.locator(":scope > summary");
+      const target = summary.locator(".tool-target");
+      await expect(card).toHaveJSProperty("open", false);
+      await expect(target).toHaveText(path);
+      await expect(target).toHaveAttribute("title", path);
+      await expect(target).toHaveCSS("text-overflow", "ellipsis");
+      await expect(target).toHaveCSS("overflow-x", "hidden");
+      await expect(target).toHaveCSS("white-space", "nowrap");
+      expect(await target.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
+      await expect(summary.locator(".edit-count")).toContainText("+2");
+      await expect(summary.locator(".edit-count")).toContainText("−1");
+      await expect(summary.locator(".tool-elapsed")).toHaveText("1.2s");
+      await expectSummaryGeometry(summary);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await summary.locator(".tool-chevron").click();
+      await expect(card.locator(".edit-line.add")).toHaveCount(2);
+      await expect(card.locator(".edit-line.remove")).toHaveCount(1);
+    }
+  });
+
+  test("running spinner and error alert preserve status labels, auto-open, manual collapse and Enter", async ({ page }) => {
+    await summarySnapshot(page, [
+      { name: "bash", args: { command: "sleep 10" }, result: "", state: "running" },
+      { name: "read", args: { path: "missing.txt" }, result: "Missing file: summary regression", state: "error" },
+    ]);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto("/");
+      const running = page.locator(".tool-card.tool-running");
+      const error = page.locator(".tool-card.tool-error");
+      await expect(running).toHaveJSProperty("open", false);
+      await expect(error).toHaveJSProperty("open", true);
+      const runningSummary = running.locator(":scope > summary");
+      const errorSummary = error.locator(":scope > summary");
+      await expect(runningSummary.locator(".tool-status > svg.spin")).toHaveCount(1);
+      await expect(runningSummary.locator(".tool-status .lucide-terminal")).toHaveCount(0);
+      await expect(errorSummary.locator(".tool-status > svg.lucide-circle-alert")).toHaveCount(1);
+      await expect(errorSummary.locator(".tool-status .lucide-file-text, .tool-status .spin")).toHaveCount(0);
+      await expectSummaryGeometry(runningSummary);
+      await expectSummaryGeometry(errorSummary);
+      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeVisible();
+      await errorSummary.locator(":scope > .tool-chevron:last-child").click();
+      await expect(error).toHaveJSProperty("open", false);
+      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeHidden();
+      // A live elapsed tick in the sibling must not undo the reader's collapse.
+      const timer = runningSummary.locator(".tool-elapsed");
+      const initial = await timer.innerText();
+      await expect.poll(() => timer.innerText()).not.toBe(initial);
+      await expect(error).toHaveJSProperty("open", false);
+      await errorSummary.focus();
+      await page.keyboard.press("Enter");
+      await expect(error).toHaveJSProperty("open", true);
+      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeVisible();
+      await runningSummary.locator(".tool-chevron").click();
+      await expect(running).toHaveJSProperty("open", true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  });
+});
