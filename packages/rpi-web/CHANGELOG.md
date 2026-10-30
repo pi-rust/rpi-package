@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Distinguish summary-only todo results from empty task lists: retain progress such as 4/4, explain that task details were not returned, and omit misleading “0/N listed” text and empty checklists. Actual empty lists keep their own message; old lists are not inferred or backfilled as current task state.
 - Render `delegate_task` history and live results as read-only task/report cards, with Markdown reports, roles, child status, turns used and explicit turn-limit warnings. Fold execution metadata and original JSON away, retain readable progress/errors and actual call timings, and preserve live expansion without changing native child lifecycle, task execution or history.
 - Collapse consecutive todo updates into the latest card, with previous calls available in a closed earlier-updates disclosure instead of repeated progress cards. Keep errors, active calls and native run footers visible; preserve expansion and reading anchors through live updates and older-page prepends without modifying task state/history or issuing new reads.
 - Render ask tool history as read-only structured question/answer cards rather than raw JSON, including option descriptions, selections, comments, free text and multi-question ID matching. Keep confirmations, cancellation and errors distinct, preserve native summaries and call timings, and hide raw payloads behind an opt-in disclosure without changing the live answering flow or native history.
