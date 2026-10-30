@@ -1737,6 +1737,19 @@ details[open] > summary:before {
   font-variant-numeric: tabular-nums;
   transform: translateY(-1px);
 }
+.todo-history {
+  margin-top: 12px;
+  min-width: 0;
+}
+.todo-history > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.todo-history > .tool-card {
+  margin: 6px 0 0;
+}
 .todo-list {
   margin: 0;
   padding: 0;
