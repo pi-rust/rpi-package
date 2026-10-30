@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -83,6 +84,7 @@ import { ZoomableImage } from "./ZoomableImage";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
 import { useTranscriptViewport } from "./useTranscriptViewport";
 import { useRunTimings, timingByRow } from "./useRunTimings";
+import { groupTodoUpdates, isTodoTool } from "./todoGroups";
 import { RunElapsed } from "./RunElapsed";
 import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
 import {
@@ -727,6 +729,31 @@ export default function App() {
     !loadingSession && Boolean(capabilities), settleTick,
   );
   const runFooters = useMemo(() => timingByRow(rows, runTimings), [rows, runTimings]);
+  const todoOwners = useRef<{
+    sessionId: string;
+    ids: ReadonlySet<string>;
+  } | null>(null);
+  const todoGroups = useMemo(
+    () =>
+      groupTodoUpdates(
+        rows,
+        runFooters,
+        todoOwners.current?.sessionId === sessionId
+          ? todoOwners.current.ids
+          : undefined,
+      ),
+    [rows, runFooters, sessionId],
+  );
+  // Commit display ownership, not task state. A prepend keeps an existing
+  // card's React instance/reading anchor; removed groups retain no cache.
+  useLayoutEffect(() => {
+    todoOwners.current = {
+      sessionId,
+      ids: new Set(
+        [...todoGroups].filter(([, group]) => group !== null).map(([id]) => id),
+      ),
+    };
+  }, [todoGroups, sessionId]);
   const rememberTranscriptPosition = useTranscriptViewport(
     transcriptRef,
     followingRef,
@@ -3631,18 +3658,27 @@ export default function App() {
 
                 <ProjectImageContext.Provider value={project}>
                   <ToolNameModeContext.Provider value={toolNameMode}>
-                    {rows.map((row) => (
-                      <div
-                        className="transcript-row"
-                        data-transcript-row={row.id}
-                        key={row.id}
-                      >
-                        <RowView row={row} language={language} />
-                        {runFooters.get(row.id)?.map((timing) => (
-                          <RunElapsed key={timing.runId} timing={timing} language={language} />
-                        ))}
-                      </div>
-                    ))}
+                    {rows.map((row) => {
+                      const group = todoGroups.get(row.id);
+                      return (
+                        <div
+                          className="transcript-row"
+                          data-transcript-row={row.id}
+                          key={row.id}
+                        >
+                          {group !== null && (
+                            <RowView
+                              row={group?.latest ?? row}
+                              todoHistory={group?.previous}
+                              language={language}
+                            />
+                          )}
+                          {runFooters.get(row.id)?.map((timing) => (
+                            <RunElapsed key={timing.runId} timing={timing} language={language} />
+                          ))}
+                        </div>
+                      );
+                    })}
                   </ToolNameModeContext.Provider>
                 </ProjectImageContext.Provider>
 
@@ -5070,9 +5106,11 @@ function ImagePreview({
 const RowView = memo(function RowView({
   row,
   language,
+  todoHistory,
 }: {
   row: Row;
   language: Language;
+  todoHistory?: ToolRow[];
 }) {
   const t = (key: MessageKey) => translate(language, key);
   if (row.kind === "boundary") return null;
@@ -5119,14 +5157,40 @@ const RowView = memo(function RowView({
     );
   }
 
-  if (row.kind === "tool") return <ToolRowView row={row} language={language} />;
+  if (row.kind === "tool")
+    return (
+      <ToolRowView row={row} language={language} todoHistory={todoHistory} />
+    );
 
   return <MessageRow row={row} language={language} />;
 });
 
-function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
+function ToolRowView({
+  row,
+  language,
+  todoHistory,
+}: {
+  row: ToolRow;
+  language: Language;
+  todoHistory?: ToolRow[];
+}) {
   const expansion = useToolExpansion(row.status);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const t = (key: MessageKey) => translate(language, key);
+  const history = todoHistory?.length ? (
+    <details
+      className="todo-history"
+      open={historyOpen}
+      onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
+    >
+      <summary>
+        {translate(language, "todoEarlierUpdates", { count: todoHistory.length })}
+      </summary>
+      {todoHistory.map((previous) => (
+        <ToolRowView key={previous.id} row={previous} language={language} />
+      ))}
+    </details>
+  ) : null;
   const ask = isAskTool(row.name) ? askInfo(row.args, row.result) : null;
   if (ask)
     return (
@@ -5150,7 +5214,7 @@ function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
         language={language}
       />
     );
-  const todos = row.name === "todo" ? todoInfo(row.result) : null;
+  const todos = isTodoTool(row.name) ? todoInfo(row.result) : null;
   if (todos)
     return (
       <TodoCard
@@ -5158,6 +5222,7 @@ function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
         row={row}
         todo={todos}
         language={language}
+        history={history}
       />
     );
   if (isShellTool(row.name))
@@ -5227,6 +5292,7 @@ function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
         ) : (
           <pre className="muted">{t("noOutput")}</pre>
         )}
+        {history}
       </div>
     </ToolDisclosure>
   );
@@ -5330,11 +5396,13 @@ function TodoCard({
   row,
   todo,
   language,
+  history,
 }: {
   expansion: ToolExpansion;
   row: ToolRow;
   todo: TodoInfo;
   language: Language;
+  history?: ReactNode;
 }) {
   const t = (key: MessageKey, values?: Record<string, string | number>) =>
     translate(language, key, values);
@@ -5391,6 +5459,7 @@ function TodoCard({
             </li>
           ))}
         </ul>
+        {history}
       </div>
     </ToolDisclosure>
   );
