@@ -9,6 +9,7 @@
 
 import type { MessageKey } from "./i18n";
 import type { SeqEvent } from "./api";
+import { isAskTool } from "./ask";
 
 function snapshotMessageKey(message: unknown): string | null {
   if (!message || typeof message !== "object") return null;
@@ -356,10 +357,17 @@ export function planInfo(args: unknown, result: unknown): PlanInfo | null {
 export interface TodoItem {
   text: string;
   done: boolean;
+  inProgress: boolean;
 }
 
-/** Parse the `todo` tool's `[x] #id: text` list into a checklist. */
-export function todoItems(result: unknown): TodoItem[] | null {
+export interface TodoInfo {
+  items: TodoItem[];
+  done: number;
+  total: number;
+}
+
+/** Native list results may hide completed items; their header counts the whole list. */
+export function todoInfo(result: unknown): TodoInfo | null {
   let text = "";
   if (typeof result === "string") text = result;
   else if (result && typeof result === "object") {
@@ -367,9 +375,10 @@ export function todoItems(result: unknown): TodoItem[] | null {
     if (Array.isArray(record.content)) text = blocksToText(record.content);
     else if (typeof record.text === "string") text = record.text;
   }
-  if (!text.trim()) return null;
+  text = text.trim();
+  if (!text) return null;
+  if (text === "No todos") return { items: [], done: 0, total: 0 };
   const items: TodoItem[] = [];
-  let matched = 0;
   for (const line of text.split("\n")) {
     const match = line.match(
       /^\s*\[([\u2713\u2714xX\u2022 ])\]\s*(?:#\d+:\s*)?(.+)$/,
@@ -378,12 +387,29 @@ export function todoItems(result: unknown): TodoItem[] | null {
       const mark = match[1];
       items.push({
         done: /[\u2713\u2714xX]/.test(mark),
+        inProgress: mark === "\u2022",
         text: match[2].trim(),
       });
-      matched++;
     }
   }
-  return matched > 0 ? items : null;
+  const visibleDone = items.filter((item) => item.done).length;
+  const firstLine = text.split("\n", 1)[0].trim();
+  const summary = firstLine.match(/^(\d+)\/(\d+) completed$/);
+  if (summary) {
+    const done = Number(summary[1]);
+    const total = Number(summary[2]);
+    if (
+      Number.isSafeInteger(done) &&
+      Number.isSafeInteger(total) &&
+      done <= total &&
+      done >= visibleDone &&
+      total - done >= items.length - visibleDone &&
+      (items.length > 0 || text === firstLine)
+    )
+      return { items, done, total };
+  }
+  // Older tool results may contain only checklist lines, without a global header.
+  return items.length ? { items, done: visibleDone, total: items.length } : null;
 }
 
 export interface EditInfo {
@@ -544,8 +570,14 @@ export function rowsFromAssistant(
   return rows;
 }
 
-/** Result payload of a `toolResult` message, reduced to the useful text. */
+/** Most tools need only text; ask history also needs its native answer metadata. */
 export function resultOf(message: Record<string, unknown>): unknown {
+  if (
+    isAskTool(String(message.toolName ?? "")) &&
+    message.details &&
+    typeof message.details === "object"
+  )
+    return { content: message.content, details: message.details };
   const texts = textBlocks(message);
   if (texts.length > 0) return texts.join("\n");
   return (message.content as unknown) ?? "";

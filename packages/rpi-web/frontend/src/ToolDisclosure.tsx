@@ -12,6 +12,7 @@ import {
   Globe,
   ListChecks,
   Loader2,
+  MessageCircleQuestion,
   Pencil,
   Search,
   Terminal,
@@ -36,6 +37,7 @@ function iconForTool(name: string) {
   )
     return Pencil;
   if (["plan", "todo"].includes(tool)) return ListChecks;
+  if (["ask_user", "ask"].includes(tool)) return MessageCircleQuestion;
   if (["fetch", "webfetch", "web_fetch", "http_get", "open_url"].includes(tool))
     return Globe;
   if (
@@ -78,6 +80,7 @@ export function ToolDisclosure({
   action,
   target,
   status,
+  doneLabel,
   language,
   className = "",
   targetClassName = "",
@@ -90,6 +93,7 @@ export function ToolDisclosure({
   action: string;
   target?: string;
   status: ToolStatus;
+  doneLabel?: string;
   language: Language;
   className?: string;
   targetClassName?: string;
@@ -101,16 +105,19 @@ export function ToolDisclosure({
   const nameMode = useContext(ToolNameModeContext);
   const displayName = nameMode === "native" ? toolName : action;
   const Icon = iconForTool(toolName);
-  const label = translate(
-    language,
-    status === "running"
-      ? "toolRunning"
-      : status === "pending"
-        ? "toolPending"
-        : status === "error"
-          ? "toolError"
-          : "toolDone",
-  );
+  const label =
+    status === "done" && doneLabel
+      ? doneLabel
+      : translate(
+          language,
+          status === "running"
+            ? "toolRunning"
+            : status === "pending"
+              ? "toolPending"
+              : status === "error"
+                ? "toolError"
+                : "toolDone",
+        );
   return (
     <details
       className={`tool-card tool-${status} ${status === "error" ? "failed" : ""} ${className}`}

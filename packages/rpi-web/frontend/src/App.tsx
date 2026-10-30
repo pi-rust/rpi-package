@@ -49,6 +49,8 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
 import { SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
+import { AskCard } from "./AskCard";
+import { askInfo, isAskTool } from "./ask";
 import {
   api,
   ApiError,
@@ -116,13 +118,13 @@ import {
   shellCommand,
   shellOutput,
   planInfo,
-  todoItems,
+  todoInfo,
   editInfo,
   isMarkdownText,
   imageBlocksOf,
   type ImageBlock,
   type PlanInfo,
-  type TodoItem,
+  type TodoInfo,
   type EditInfo,
   elapsedMs,
   stopToolTimers,
@@ -5125,6 +5127,19 @@ const RowView = memo(function RowView({
 function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
   const expansion = useToolExpansion(row.status);
   const t = (key: MessageKey) => translate(language, key);
+  const ask = isAskTool(row.name) ? askInfo(row.args, row.result) : null;
+  if (ask)
+    return (
+      <AskCard
+        expansion={expansion}
+        row={row}
+        info={ask}
+        language={language}
+        timing={
+          row.timing && <ToolElapsed timing={row.timing} language={language} />
+        }
+      />
+    );
   const plan = row.name === "plan" ? planInfo(row.args, row.result) : null;
   if (plan)
     return (
@@ -5135,13 +5150,13 @@ function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
         language={language}
       />
     );
-  const todos = row.name === "todo" ? todoItems(row.result) : null;
+  const todos = row.name === "todo" ? todoInfo(row.result) : null;
   if (todos)
     return (
       <TodoCard
         expansion={expansion}
         row={row}
-        items={todos}
+        todo={todos}
         language={language}
       />
     );
@@ -5313,17 +5328,17 @@ function PlanCard({
 function TodoCard({
   expansion,
   row,
-  items,
+  todo,
   language,
 }: {
   expansion: ToolExpansion;
   row: ToolRow;
-  items: TodoItem[];
+  todo: TodoInfo;
   language: Language;
 }) {
   const t = (key: MessageKey, values?: Record<string, string | number>) =>
     translate(language, key, values);
-  const done = items.filter((item) => item.done).length;
+  const { items, done, total } = todo;
   return (
     <ToolDisclosure
       expansion={expansion}
@@ -5331,23 +5346,48 @@ function TodoCard({
       className="todo-card"
       action={t("todos")}
       status={row.status}
+      doneLabel={t("todoCallDone")}
       language={language}
-      meta={t("todoDone", { done, total: items.length })}
+      meta={t("todoDone", { done, total })}
       timing={
         row.timing && <ToolElapsed timing={row.timing} language={language} />
       }
     >
       <div className="tool-detail todo-detail">
+        {items.length < total && (
+          <p className="muted todo-scope">
+            {t("todoListed", { shown: items.length, total })}
+          </p>
+        )}
+        {total === 0 && <p className="muted">{t("todoEmpty")}</p>}
         <ul className="todo-list">
           {items.map((item, index) => (
             <li
               key={`${index}-${item.text.slice(0, 16)}`}
-              className={item.done ? "done" : ""}
+              className={
+                item.done ? "done" : item.inProgress ? "in-progress" : ""
+              }
             >
               <span className="todo-check" aria-hidden="true">
-                {item.done ? <Check size={12} /> : null}
+                {item.done ? (
+                  <Check size={12} />
+                ) : item.inProgress ? (
+                  <Loader2 size={12} className="spin" />
+                ) : null}
               </span>
-              <span>{item.text}</span>
+              <span>
+                <span className="sr-only">
+                  {t(
+                    item.done
+                      ? "todoCompleted"
+                      : item.inProgress
+                        ? "todoInProgress"
+                        : "todoPending",
+                  )}
+                  {": "}
+                </span>
+                {item.text}
+              </span>
             </li>
           ))}
         </ul>

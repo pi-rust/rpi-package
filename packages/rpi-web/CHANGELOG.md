@@ -67,6 +67,8 @@
 
 ### Fixed
 
+- Render ask tool history as read-only structured question/answer cards rather than raw JSON, including option descriptions, selections, comments, free text and multi-question ID matching. Keep confirmations, cancellation and errors distinct, preserve native summaries and call timings, and hide raw payloads behind an opt-in disclosure without changing the live answering flow or native history.
+- Preserve todo progress from the native result header when completed items are filtered, instead of recounting only listed tasks (for example, keep 6/7 rather than 0/1). Explain partial lists, retain in-progress markers, support header-only/empty and legacy checklist results, and distinguish a completed todo operation from completed tasks without changing native state or call timings.
 - Omit generic successful-completion chat notes (Run completed / 运行状态：已完成) while keeping meaningful summaries, error/stopped states, elapsed footers and native settlement/history behavior.
 - Omit the redundant visible Queue label above pending composer messages while preserving the count, preview, item actions and localized accessible expand/collapse names.
 - Use equal user-message corner radii and show the localized sender label only once instead of repeating it in both avatar and name.

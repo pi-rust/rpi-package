@@ -9513,3 +9513,565 @@ test.describe("conversation timeline", () => {
     } finally { await context.close(); }
   });
 });
+
+test.describe("todo progress regression", () => {
+  const partial = "6/7 completed\n[ ] #5: Verify remaining task";
+  const inProgress = "6/7 completed\n[•] #5: Verify remaining task";
+  const full = `6/7 completed\n${Array.from({ length: 7 }, (_, index) =>
+    `[${index === 5 ? " " : "✓"}] #${index}: ${index === 5 ? "Verify remaining task" : `Completed task ${index}`}`,
+  ).join("\n")}`;
+  const summaryText = (language: "en" | "zh", done: number, total: number) =>
+    language === "zh" ? `${done}/${total} 项任务已完成` : `${done}/${total} tasks completed`;
+  const operationDone = (language: "en" | "zh") =>
+    language === "zh" ? "待办操作已完成" : "Todo operation completed";
+  const scopeText = (language: "en" | "zh", shown: number, total: number) =>
+    language === "zh"
+      ? `本次结果仅列出 ${shown}/${total} 项任务，进度包含全部任务。`
+      : `This result lists ${shown} of ${total} tasks. Progress includes the entire list.`;
+  const call = (id: string, includeDone = false) => ({
+    type: "toolCall", id, name: "todo", arguments: { action: "list", includeDone },
+    webTiming: { elapsedMs: 0, running: false },
+  });
+  const result = (id: string, content: unknown, isError = false) => ({
+    role: "toolResult", toolCallId: id, toolName: "todo", content, isError,
+    webTiming: { elapsedMs: 0, running: false },
+  });
+  const snapshot = async (page: Page, messages: unknown[], status = "ready", lastSeq = 4) => {
+    await page.route(snapshotRoute, route => route.fulfill({
+      json: { sessionId, messages, events: [], status, lastSeq },
+    }));
+  };
+
+  for (const language of ["en", "zh"] as const) {
+    test(`adjacent full, filtered and full snapshots retain global 6/7 progress in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      await snapshot(page, [
+        { role: "assistant", content: [call("todo-full-before", true)] },
+        result("todo-full-before", full),
+        { role: "assistant", content: [call("todo-filtered")] },
+        result("todo-filtered", partial),
+        { role: "assistant", content: [call("todo-full-after", true)] },
+        result("todo-full-after", full),
+      ]);
+      await page.goto("/");
+      const cards = page.locator(".todo-card");
+      await expect(cards).toHaveCount(3);
+      for (let index = 0; index < 3; index++) {
+        const card = cards.nth(index);
+        await expect(card).toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", false);
+        await expect(card.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(card.locator("summary")).not.toContainText("0/1");
+        await expect(card.locator("summary .tool-status")).toHaveAttribute("title", operationDone(language));
+        await expect(card.locator("summary .tool-status .sr-only")).toHaveText(operationDone(language));
+        await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
+        await expect(card.locator(".tool-elapsed")).not.toContainText("~");
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".todo-list li")).toHaveCount(index === 1 ? 1 : 7);
+        await expect(card.locator(".todo-list li.done")).toHaveCount(index === 1 ? 0 : 6);
+        await expect(card.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
+        if (index === 1) {
+          await expect(card.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
+          await expect(card.locator(".todo-scope")).toBeVisible();
+        } else {
+          await expect(card.locator(".todo-scope")).toHaveCount(0);
+        }
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+
+    test(`native todo representations and invalid headers use safe structured or generic fallbacks in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const cases = [
+        { content: "7/7 completed", done: 7, total: 7, shown: 0 },
+        { content: "No todos", done: 0, total: 0, shown: 0 },
+        { content: "[x] Legacy complete\n[•] Legacy active\n[ ] Legacy pending", done: 1, total: 3, shown: 3 },
+        { content: [{ type: "text", text: "6/7 completed" }, { type: "text", text: "[ ] #5: Verify remaining task" }], done: 6, total: 7, shown: 1 },
+        { content: "8/7 completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
+        { content: "9007199254740992/9007199254740993 completed\n[ ] Pending", done: 0, total: 1, shown: 1 },
+        { content: "6/7 completed\n[ ] Pending one\n[ ] Pending two", done: 0, total: 2, shown: 2 },
+        { content: "0/2 completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
+        { content: "six/seven completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
+        { content: "six/seven completed", generic: true },
+        { content: "Unrecognized todo output", generic: true },
+        { content: "Error: todo storage unavailable", generic: true, isError: true },
+      ];
+      await snapshot(page, cases.flatMap((entry, index) => [
+        { role: "assistant", content: [call(`todo-case-${index}`)] },
+        result(`todo-case-${index}`, entry.content, entry.isError),
+      ]));
+      await page.goto("/");
+      const cards = page.locator(".tool-card");
+      await expect(cards).toHaveCount(cases.length);
+      for (const [index, entry] of cases.entries()) {
+        const card = cards.nth(index);
+        if (entry.generic) {
+          await expect(card).not.toHaveClass(/todo-card/);
+          await expect(card.locator("summary .tool-summary-meta")).toHaveCount(0);
+          await expect(card.locator(".todo-list, .todo-scope")).toHaveCount(0);
+          if (!entry.isError) await card.locator(":scope > summary").click();
+          await expect(card.locator(".tool-detail")).toContainText(entry.content as string);
+          if (entry.isError) {
+            await expect(card).toHaveClass(/tool-error/);
+            await expect(card.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
+          }
+          continue;
+        }
+        await expect(card).toHaveClass(/todo-card/);
+        await expect(card.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, entry.done!, entry.total!));
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".todo-list li")).toHaveCount(entry.shown!);
+        await expect(card.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
+        if (entry.shown! < entry.total!) {
+          await expect(card.locator(".todo-scope")).toHaveText(scopeText(language, entry.shown!, entry.total!));
+        } else {
+          await expect(card.locator(".todo-scope")).toHaveCount(0);
+        }
+        if (entry.total === 0) await expect(card.locator(".todo-detail")).toContainText(language === "zh" ? "暂无待办任务。" : "No tasks.");
+        if (index === 2) {
+          await expect(card.locator("li.done")).toHaveCount(1);
+          await expect(card.locator("li.in-progress .todo-check svg.spin")).toHaveCount(1);
+          await expect(card.locator("li.in-progress .sr-only")).toHaveText(language === "zh" ? "任务进行中: " : "Task in progress: ");
+        }
+      }
+    });
+
+    test(`live partial todo progress survives completion, error status and snapshot reload in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const messages = [{ role: "assistant", content: [call("todo-live"), call("todo-live-error")] }];
+
+      let reloaded = false;
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 7 : 4, events: [],
+        messages: reloaded ? [...messages, result("todo-live", [{ type: "text", text: inProgress }]), result("todo-live-error", inProgress, true)] : messages,
+      } }));
+      let releasePartial!: () => void;
+      let releaseDone!: () => void;
+      const partialGate = new Promise<void>(resolve => { releasePartial = resolve; });
+      const doneGate = new Promise<void>(resolve => { releaseDone = resolve; });
+      let attempts = 0;
+      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+        const attempt = attempts++;
+        if (attempt > 1) return route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\nevent: ready\ndata: {\"type\":\"ready\"}\n\n" });
+        await (attempt === 0 ? partialGate : doneGate);
+        const events = attempt === 0 ? [{
+          seq: 5, type: "tool_execution_update", toolCallId: "todo-live", toolName: "todo",
+          partialResult: { text: inProgress }, webTiming: { elapsedMs: 0, running: true },
+        }] : [{
+          seq: 6, type: "tool_execution_end", toolCallId: "todo-live", toolName: "todo", isError: false,
+          result: { content: [{ type: "text", text: inProgress }] }, webTiming: { elapsedMs: 0, running: false },
+        }, {
+          seq: 7, type: "tool_execution_end", toolCallId: "todo-live-error", toolName: "todo", isError: true,
+          result: { content: [{ type: "text", text: inProgress }] }, webTiming: { elapsedMs: 0, running: false },
+        }];
+        await route.fulfill({ contentType: "text/event-stream", body: `retry: 100\n${events.map(event => `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")}` });
+      });
+      try {
+        await page.goto("/");
+        const live = page.locator(".tool-card").first();
+        const status = live.locator("summary .tool-status");
+        await expect(live).toHaveClass(/tool-pending/);
+        await expect(status).toHaveAttribute("title", language === "zh" ? "排队中" : "queued");
+        await live.locator(":scope > summary").click();
+        await expect(live).toHaveJSProperty("open", true);
+        releasePartial();
+        await expect(live).toHaveClass(/tool-running/);
+        await expect(live).toHaveClass(/todo-card/);
+        await expect(live).toHaveJSProperty("open", true);
+        await expect(status).toHaveAttribute("title", language === "zh" ? "执行中" : "running");
+        await expect(status.locator("svg.spin")).toHaveCount(1);
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(live.locator("li.in-progress")).toHaveCount(1);
+        await expect(live.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
+        releaseDone();
+        await expect(live).toHaveClass(/tool-done/);
+        await expect(live).toHaveJSProperty("open", true);
+        await expect(status).toHaveAttribute("title", operationDone(language));
+        await expect(status.locator(".sr-only")).toHaveText(operationDone(language));
+        await expect(status.locator("svg.spin")).toHaveCount(0);
+        await expect(live.locator("li.in-progress .todo-check svg.spin")).toHaveCount(1);
+        await expect(live.locator("li.in-progress .sr-only")).toHaveText(language === "zh" ? "任务进行中: " : "Task in progress: ");
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(live.locator(".tool-elapsed")).toHaveText("0.0s");
+        const error = page.locator(".todo-card.tool-error");
+        await expect(error).toHaveJSProperty("open", true);
+        await expect(error.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
+        await expect(error.locator("summary .tool-status .sr-only")).toHaveText(language === "zh" ? "失败" : "failed");
+        await expect(error.locator("summary .tool-status svg.lucide-circle-alert")).toHaveCount(1);
+        await expect(error.locator("summary")).not.toContainText(operationDone(language));
+        await live.locator(":scope > summary").click();
+        await expect(live).toHaveJSProperty("open", false);
+        reloaded = true;
+        await page.reload();
+        await expect(page.locator(".todo-card")).toHaveCount(2);
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(live).toHaveJSProperty("open", false);
+        await live.locator(":scope > summary").click();
+        await expect(live.locator(".todo-list li")).toHaveCount(1);
+        await expect(live.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
+        await expect(live.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
+        await expect(error.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
+      } finally {
+        releasePartial();
+        releaseDone();
+      }
+    });
+  }
+});
+
+
+test.describe("ask tool card", () => {
+  const call = (id: string, args: unknown, name = "ask_user") => ({
+    type: "toolCall", id, name, arguments: args, webTiming: { elapsedMs: 0, running: false },
+  });
+  const result = (id: string, content: unknown, details?: unknown, isError = false, name = "ask_user") => ({
+    role: "toolResult", toolCallId: id, toolName: name, content, isError,
+    ...(details === undefined ? {} : { details }), webTiming: { elapsedMs: 0, running: false },
+  });
+  const snapshot = async (page: Page, messages: unknown[]) => {
+    await page.route(snapshotRoute, route => route.fulfill({
+      json: { sessionId, status: "ready", lastSeq: 4, events: [], messages },
+    }));
+  };
+  const readonly = async (page: Page) => {
+    await expect(page.locator(".ask-detail form, .ask-detail button, .ask-detail input, .ask-detail textarea, .ask-detail select, .ask-detail [contenteditable=true]")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  };
+
+  for (const language of ["en", "zh"] as const) {
+    const zh = language === "zh";
+    const noAnswer = zh ? "未记录结构化回答，可查看结果或原始数据。" : "No structured answer recorded. See the result or raw data for details.";
+    test(`structured snapshot choices, comments, freeform and reversed stable IDs in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const submitted: unknown[] = [];
+      await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+        const body = route.request().postDataJSON();
+        if (body.type !== "ui_dialog_response") return route.fallback();
+        submitted.push(body);
+        return route.fulfill({ json: response({ accepted: true }, body.type) });
+      });
+      await snapshot(page, [
+        { role: "assistant", content: [call("ask-single", {
+          question: "Choose a deployment target", context: "Keep production unchanged", header: "Deployment",
+          options: [{ title: "Linux", value: "linux-server", description: "Server build" },
+            { title: "Windows", value: "windows-desktop", description: "Desktop build" },
+            { title: "Linux preview", value: "linux-server-preview" }],
+        })] },
+        result("ask-single", [{ type: "text", text: "Selected Linux for the server build." }], { answers: [{ values: ["Linux"] }] }),
+        { role: "assistant", content: [call("ask-multiple", {
+          question: "Which checks should run?", allowMultiple: true, allowComment: true, options: ["Unit", "Integration", "Browser"],
+        })] },
+        result("ask-multiple", JSON.stringify({ answers: [{ values: ["Unit", "Browser"], text: "Only against staging" }] })),
+        { role: "assistant", content: [call("ask-freeform", { question: "Describe the rollout", allowFreeform: true })] },
+        result("ask-freeform", { content: [{ type: "text", text: JSON.stringify({ answers: [{ text: "Deploy after lunch" }] }) }] }),
+        { role: "assistant", content: [call("ask-questions", { questions: [
+          { id: "region", question: "Where should it run?", options: ["East", "West"] },
+          { id: "tier", question: "Which service tier?", options: ["Basic", "Premium"] },
+        ] })] },
+        result("ask-questions", JSON.stringify({ answers: [
+          { id: "tier", values: ["Premium"], text: "Tier comment" }, { id: "region", values: ["West"], text: "Region comment" },
+        ] })),
+      ]);
+      await page.goto("/");
+      const cards = page.locator(".ask-card");
+      await expect(cards).toHaveCount(4);
+      for (let index = 0; index < 4; index++) {
+        const card = cards.nth(index);
+        await expect(card).toHaveJSProperty("open", false);
+        await expect(card.locator(":scope > summary .tool-action")).toHaveText("ask_user");
+        await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
+        await expect(card.locator(".ask-raw pre")).toBeHidden();
+        await expect(card.locator(".ask-detail pre:not(.ask-raw pre)")).toHaveCount(0);
+        await expect(card.locator(".ask-confirmation, .ask-cancelled, .ask-empty")).toHaveCount(0);
+      }
+      const single = cards.nth(0);
+      await expect(single.locator(".ask-prompt")).toHaveText("Choose a deployment target");
+      await expect(single.locator(".ask-header")).toHaveText("Deployment");
+      await expect(single.locator(".ask-context")).toHaveText("Keep production unchanged");
+      await expect(single.locator(".ask-options li small")).toHaveText(["Server build", "Desktop build"]);
+      await expect(single.locator(".ask-options li.selected")).toHaveCount(1);
+      await expect(single.locator(".ask-options li").nth(0)).toHaveClass("selected");
+      for (const index of [1, 2]) await expect(single.locator(".ask-options li").nth(index)).not.toHaveClass(/selected/);
+      await expect(single.locator(".ask-answer .ask-values li")).toHaveText(["Linux"]);
+      await expect(single.locator(".ask-result p")).toHaveText("Selected Linux for the server build.");
+      await expect(cards.nth(1).locator(".ask-options li.selected")).toHaveCount(2);
+      await expect(cards.nth(1).locator(".ask-options li").nth(1)).not.toHaveClass(/selected/);
+      await expect(cards.nth(1).locator(".ask-values li")).toHaveText(["Unit", "Browser"]);
+      await expect(cards.nth(1).locator(".ask-answer-text")).toHaveText("Only against staging");
+      await expect(cards.nth(2).locator(".ask-options")).toHaveCount(0);
+      await expect(cards.nth(2).locator(".ask-answer-text")).toHaveText("Deploy after lunch");
+      const questions = cards.nth(3).locator(".ask-question");
+      await expect(questions).toHaveCount(2);
+      for (const [index, prompt, value, comment] of [
+        [0, "Where should it run?", "West", "Region comment"], [1, "Which service tier?", "Premium", "Tier comment"],
+      ] as const) {
+        await expect(questions.nth(index).locator(".ask-prompt")).toHaveText(prompt);
+        await expect(questions.nth(index).locator(".ask-options li.selected")).toHaveCount(1);
+        await expect(questions.nth(index).locator(".ask-options li.selected")).toContainText(value);
+        await expect(questions.nth(index).locator(".ask-values li")).toHaveText([value]);
+        await expect(questions.nth(index).locator(".ask-answer-text")).toHaveText(comment);
+      }
+      await single.screenshot({ path: test.info().outputPath(`ask-card-${language}.png`) });
+      await single.locator(".ask-raw > summary").click();
+      await expect(single.locator(".ask-raw pre")).toBeVisible();
+      expect(JSON.parse((await single.locator(".ask-raw pre").textContent())!).output).toEqual({
+        content: [{ type: "text", text: "Selected Linux for the server build." }], details: { answers: [{ values: ["Linux"] }] },
+      });
+      await readonly(page);
+      expect(submitted).toEqual([]);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+
+
+    test(`confirmation declines, cancellations, errors and raw fallbacks stay distinct in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const cases = [
+        { args: { type: "confirm", summary: "Proceed with deployment?" }, output: JSON.stringify({ answers: [{ confirmed: false }] }) },
+        { args: { type: "confirm", summary: "Enable the feature?" }, output: JSON.stringify({ answers: [{ confirmed: true }] }) },
+        { args: { question: "Any additional notes?", allowFreeform: true }, output: JSON.stringify({ answers: [{ confirmed: false, text: "No changes needed" }] }) },
+        { args: { question: "Choose a target", options: ["Linux"] }, output: JSON.stringify({ cancelled: true }) },
+        { args: { question: "Choose a region", options: ["West"] }, output: JSON.stringify({ status: "cancelled" }) },
+        { args: { question: "Error question" }, output: "Error: answer transport unavailable", isError: true },
+        { args: { question: "Timeout question" }, output: "Timed out waiting for the user's answer", isError: true },
+        { args: { question: "Malformed question" }, output: '{"answers": [broken payload' },
+        { args: { question: "Unknown payload question" }, output: JSON.stringify({ unexpected: { token: "keep-unknown-payload" } }) },
+        { args: { question: "Unanswered question" }, output: "" },
+      ];
+      await snapshot(page, cases.flatMap((entry, index) => [
+        { role: "assistant", content: [call(`ask-evidence-${index}`, entry.args)] },
+        result(`ask-evidence-${index}`, entry.output, undefined, entry.isError),
+      ]));
+      await page.goto("/");
+      const cards = page.locator(".ask-card");
+      await expect(cards).toHaveCount(cases.length);
+      for (const [index, entry] of cases.entries()) {
+        const card = cards.nth(index);
+        if (entry.isError) {
+          await expect(card).toHaveClass(/tool-error/);
+          await expect(card).toHaveJSProperty("open", true);
+          await expect(card.locator("summary .tool-status")).toHaveAttribute("title", zh ? "失败" : "failed");
+          await expect(card.locator(".ask-result.ask-error p")).toHaveText(entry.output);
+          await expect(card.locator(".ask-result")).toBeVisible();
+        } else await card.locator(":scope > summary").click();
+        await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
+        await expect(card.locator(".ask-raw pre")).toBeHidden();
+        if (index >= 7) {
+          await expect(card.locator(".ask-result, .ask-answer")).toHaveCount(0);
+          await expect(card.locator(".ask-empty")).toHaveText(noAnswer);
+          await card.locator(".ask-raw > summary").click();
+          await expect(card.locator(".ask-raw pre")).toBeVisible();
+          expect(JSON.parse((await card.locator(".ask-raw pre").textContent())!).output).toBe(entry.output);
+        }
+      }
+      await expect(cards.nth(0).locator(".ask-confirmation")).toHaveText(zh ? "已拒绝" : "Declined");
+      await expect(cards.nth(1).locator(".ask-confirmation")).toHaveText(zh ? "已确认" : "Confirmed");
+      for (let index = 0; index < 3; index++) await expect(cards.nth(index).locator(".ask-cancelled")).toHaveCount(0);
+      await expect(cards.nth(2).locator(".ask-confirmation")).toHaveCount(0);
+      await expect(cards.nth(2).locator(".ask-answer-text")).toHaveText("No changes needed");
+      await expect(cards.nth(2).locator(".ask-detail")).not.toContainText(zh ? "已拒绝" : "Declined");
+      for (const index of [3, 4]) {
+        await expect(cards.nth(index).locator(".ask-cancelled")).toHaveText(zh ? "提问已取消" : "Question cancelled");
+        await expect(cards.nth(index).locator(".ask-cancelled")).toBeVisible();
+        await expect(cards.nth(index).locator(".ask-confirmation, .ask-answer, .ask-empty")).toHaveCount(0);
+        await expect(cards.nth(index).locator(".ask-options li.selected")).toHaveCount(0);
+      }
+      await readonly(page);
+    });
+
+    test(`ask aliases respect summary settings and invalid arguments stay generic in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const names = ["ask_user", "functions.ask_user", "ask"];
+      await snapshot(page, [
+        ...names.flatMap((name, index) => [
+          { role: "assistant", content: [call(`ask-alias-${index}`, { question: `Alias question ${index}` }, name)] },
+          result(`ask-alias-${index}`, "Native readable answer", undefined, false, name),
+        ]),
+        { role: "assistant", content: [call("ask-invalid", { options: ["Missing question"] })] },
+        result("ask-invalid", "Invalid ask arguments preserved"),
+        { role: "assistant", content: [call("ask-unknown", { question: "Not an ask tool" }, "custom_question")] },
+        result("ask-unknown", "Unknown tool output preserved", undefined, false, "custom_question"),
+      ]);
+      await page.goto("/");
+      const cards = page.locator(".tool-card");
+      await expect(cards).toHaveCount(5);
+      await expect(page.locator(".ask-card")).toHaveCount(3);
+      await expect(cards.locator(":scope > summary .tool-action")).toHaveText([...names, "ask_user", "custom_question"]);
+      for (const index of [3, 4]) {
+        await expect(cards.nth(index)).not.toHaveClass(/ask-card/);
+        await cards.nth(index).locator(":scope > summary").click();
+        await expect(cards.nth(index).locator(".tool-detail")).toContainText(index === 3 ? "Invalid ask arguments preserved" : "Unknown tool output preserved");
+      }
+      await page.keyboard.press("Control+,");
+      const group = page.getByRole("group", { name: zh ? "工具名称" : "Tool names", exact: true });
+      await expect(group).toBeVisible();
+      await group.getByRole("button", { name: zh ? "映射名称" : "Mapped names", exact: true }).click();
+      await page.keyboard.press("Escape");
+      await expect(page.locator(".ask-card > summary .tool-action")).toHaveText(names.map(() => zh ? "询问用户" : "Ask user"));
+      for (let index = 0; index < 3; index++) {
+        const card = page.locator(".ask-card").nth(index);
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".ask-result p")).toHaveText("Native readable answer");
+      }
+      await readonly(page);
+    });
+
+
+    test(`hostile text and long tokens remain inert and bounded in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const hostile = '<img src=x onerror="window.__askInjected=true">';
+      const token = "unbroken-token-".repeat(70);
+      const prompt = `${hostile} ${token}`;
+      await snapshot(page, [
+        { role: "assistant", content: [call("ask-safe", {
+          question: prompt, context: hostile, options: [{ title: hostile, value: "literal", description: token }],
+        })] },
+        result("ask-safe", [{ type: "text", text: `${hostile}\n${token}` }], {
+          answers: [{ values: [hostile], text: `${hostile}\n${token}` }],
+        }),
+      ]);
+      await page.goto("/");
+      const card = page.locator(".ask-card");
+      await card.locator(":scope > summary").click();
+      await expect(card.locator(".ask-prompt")).toHaveText(prompt);
+      await expect(card.locator(".ask-options li.selected")).toContainText(hostile);
+      await expect(card.locator(".ask-answer-text")).toHaveText(`${hostile}\n${token}`);
+      await expect(card.locator(".ask-result p")).toHaveText(`${hostile}\n${token}`);
+      await expect(card.locator("img, script, iframe, [onerror]")).toHaveCount(0);
+      await expect(card.locator(".ask-raw pre")).toBeHidden();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+      expect(await card.locator(".ask-detail").evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+      await card.locator(".ask-raw > summary").click();
+      await expect(card.locator(".ask-raw pre")).toContainText("onerror");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(await page.evaluate(() => (window as Window & { __askInjected?: boolean }).__askInjected)).toBeUndefined();
+      await readonly(page);
+    });
+
+    test(`native option titles, conflicting identities and diagnostic output stay truthful in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const cases = [
+        { args: { question: "Target?", options: [{ title: "Linux", value: "Windows" }, { title: "Windows", value: "win" }] }, output: { answers: [{ values: ["Windows"] }] } },
+        { args: { question: "Target?", options: ["  Linux  ", "Windows"] }, output: { answers: [{ values: ["Linux"] }] } },
+        { args: { questions: [{ id: "region", question: "Region?" }, { id: "tier", question: "Tier?" }] }, output: { answers: [{ id: "tier", question: "Region?", values: ["West"] }] } },
+        { args: { question: "Question?" }, output: { text: "transport diagnostic" } },
+        { args: { questions: [{ id: "region", question: "Region?" }, { id: "tier", question: "Tier?" }] }, output: { answers: [{ id: "unknown", values: ["West"] }] } },
+        { args: { question: "Question?" }, output: { error: "ask timed out" }, isError: true },
+        { args: { question: "Question?" }, output: { content: "Plain output preserved", details: { ui: { kind: "ask_user_result" } } } },
+      ];
+      await snapshot(page, cases.flatMap((entry, index) => [
+        { role: "assistant", content: [call(`ask-truth-${index}`, entry.args)] },
+        result(`ask-truth-${index}`, JSON.stringify(entry.output), undefined, entry.isError),
+      ]));
+      await page.goto("/");
+      const cards = page.locator(".ask-card");
+      await expect(cards).toHaveCount(cases.length);
+      for (let i = 0; i < cases.length; i++) {
+        if (!cases[i].isError) await cards.nth(i).locator(":scope > summary").click();
+      }
+      await expect(cards.nth(0).locator(".ask-options li.selected")).toHaveCount(1);
+      await expect(cards.nth(0).locator(".ask-options li.selected")).toContainText("Windows");
+      await expect(cards.nth(1).locator(".ask-options li.selected")).toHaveCount(1);
+      await expect(cards.nth(1).locator(".ask-options li.selected")).toContainText("Linux");
+      await expect(cards.nth(2).locator(".ask-question").first().locator(".ask-answer")).toHaveCount(0);
+      await expect(cards.nth(2).locator(".ask-question").nth(1).locator(".ask-values li")).toHaveText(["West"]);
+      await expect(cards.nth(3).locator(".ask-answer")).toHaveCount(0);
+      await expect(cards.nth(3).locator(".ask-result p")).toHaveText("transport diagnostic");
+      await expect(cards.nth(4).locator(".ask-answer")).toHaveCount(0);
+      await expect(cards.nth(4).locator(".ask-empty")).toHaveText(noAnswer);
+      await expect(cards.nth(5).locator(".ask-result.ask-error p")).toHaveText("ask timed out");
+      await expect(cards.nth(6).locator(".ask-result p")).toHaveText("Plain output preserved");
+      await expect(cards.nth(6).locator(".ask-answer")).toHaveCount(0);
+      await readonly(page);
+    });
+
+    test(`live waiting to completion preserves expansion, zero timing and snapshot answers in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      const args = { question: "Choose live targets", options: ["Linux", "Windows"], allowMultiple: true, allowComment: true };
+      const messages = [{ role: "assistant", content: [call("ask-live", args)] }];
+      const content = [{ type: "text", text: "Selected Linux; staging only." }];
+      const details = { answers: [{ values: ["Linux"], text: "Staging only" }] };
+      let reloaded = false;
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 6 : 4, events: [],
+        messages: reloaded ? [...messages, result("ask-live", content, details)] : messages,
+      } }));
+      const releases: Array<() => void> = [];
+      const gates = Array.from({ length: 2 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      let attempts = 0;
+      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+        const index = attempts++;
+        if (index >= gates.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+        await gates[index];
+        const event = index === 0 ? {
+          seq: 5, type: "tool_execution_start", toolCallId: "ask-live", toolName: "ask_user", args,
+          webTiming: { elapsedMs: 0, running: true },
+        } : {
+          seq: 6, type: "tool_execution_end", toolCallId: "ask-live", toolName: "ask_user", isError: false,
+          result: { content, details }, webTiming: { elapsedMs: 0, running: false },
+        };
+        await route.fulfill({ contentType: "text/event-stream", body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
+      });
+      try {
+        await page.goto("/");
+        const card = page.locator(".ask-card");
+        await expect(card).toHaveClass(/tool-pending/);
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".ask-empty")).toHaveText(zh ? "等待你的回答…" : "Waiting for your answer…");
+        releases[0]();
+        await expect(card).toHaveClass(/tool-running/);
+        await expect(card).toHaveJSProperty("open", true);
+        await expect(card.locator("summary .tool-status")).toHaveAttribute("title", zh ? "执行中" : "running");
+        await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(1);
+        await expect(card.locator(".ask-empty")).toBeVisible();
+        await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
+        releases[1]();
+        await expect(card).toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", true);
+        await expect(card.locator("summary .tool-status")).toHaveAttribute("title", zh ? "已完成" : "done");
+        await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(0);
+        await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
+        await expect(card.locator(".ask-empty")).toHaveCount(0);
+        await expect(card.locator(".ask-options li.selected")).toHaveCount(1);
+        await expect(card.locator(".ask-options li.selected")).toContainText("Linux");
+        await expect(card.locator(".ask-options li").nth(1)).not.toHaveClass(/selected/);
+        await expect(card.locator(".ask-answer-text")).toHaveText("Staging only");
+        await expect(card.locator(".ask-result p")).toHaveText("Selected Linux; staging only.");
+        await expect(card.locator(".ask-raw pre")).toBeHidden();
+        await card.locator(":scope > summary").click();
+        reloaded = true;
+        await page.reload();
+        await expect(card).toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", false);
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".ask-options li.selected")).toHaveCount(1);
+        await expect(card.locator(".ask-values li")).toHaveText(["Linux"]);
+        await expect(card.locator(".ask-answer-text")).toHaveText("Staging only");
+        await expect(card.locator(".ask-result p")).toHaveText("Selected Linux; staging only.");
+        await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
+        await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
+        await readonly(page);
+      } finally { releases.forEach(release => release()); }
+    });
+  }
+});
