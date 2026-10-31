@@ -364,7 +364,7 @@ def run(args):
         state["passed"].append(text)
         h.dump(root / "results.json", state)
 
-    def start(name, environment=None):
+    def start(name, environment=None, listing=False):
         # Recheck exact source and binary binding before EVERY bridge execution.
         require(inventory(REPO, PYTHON_INPUTS) == bridge_sources and
                 inventory(native_repo) == native_sources and
@@ -376,6 +376,9 @@ def run(args):
             require(caps["agentCapabilities"]["sessionCapabilities"]["list"] == {},
                     "session/list capability missing")
             jobs.cold(p, args.bridge)
+            if listing:
+                store = Path((environment or env)["RPI_ACP_SESSION_DIR"])
+                p.listing_fence = (store, len(model.calls), fixture.count(), files_state(store))
             return p
         except BaseException:
             p.close()
@@ -385,8 +388,24 @@ def run(args):
         nonlocal peer
         if peer is not None:
             p, peer = peer, None
-            p.close()
-            jobs.dead()
+            try:
+                if hasattr(p, "listing_fence"):
+                    # Check AFTER graceful process exit but BEFORE disposing the
+                    # Job. This fences even the immediate-EOF/transient-child
+                    # interval, and does not rely on sampling a surviving PID.
+                    p.process.stdin.close()
+                    require(p.process.wait(timeout=20) == 0, "listing bridge nonzero exit")
+                    store, calls, requests, disk = p.listing_fence
+                    require(jobs.total(p) == p.cold_process_count,
+                            "cold listing lifecycle spawned an extra process")
+                    require((calls, requests) == (len(model.calls), fixture.count()) and
+                            disk == files_state(store),
+                            "cold listing lifecycle contacted fixtures or wrote sessions")
+            finally:
+                try:
+                    p.close()
+                finally:
+                    jobs.dead()
 
     def listing_only(p, cwd=None):
         before = len(model.calls), fixture.count(), jobs.total(p)
@@ -426,7 +445,7 @@ def run(args):
             require(any(o.get("type") == "toolCall" for o in h.objects(entries)), "native tool history missing")
         close()
         landed("REAL-NATIVE: three model+MCP conversations in two cwd values, native v4 JSONL, graceful close/restart")
-        peer = start("native-list")
+        peer = start("native-list", listing=True)
         listed, _ = listing_only(peer)
         require({s["sessionId"] for s in listed} == set(ids), "persisted native IDs not discovered")
         filtered, _ = listing_only(peer, workspaces[1])
@@ -473,7 +492,7 @@ def run(args):
         peer = start("native-delete")
         peer.call("session/delete", sessionId=selected)
         close()
-        peer = start("native-post-delete")
+        peer = start("native-post-delete", listing=True)
         listed, _ = listing_only(peer)
         require({s["sessionId"] for s in listed} == set(ids[1:]), "deleted ID remains in fresh list")
         close()
@@ -501,7 +520,7 @@ def run(args):
             (directory / (prefix + "_" + sid + ".jsonl")).write_text(json.dumps(header) + "\n", encoding="utf-8")
             expected.append((created, sid, i % 2))
         expected.sort(key=lambda item: (-item[0], item[1]))
-        peer = start("synthetic101", synthetic_env)
+        peer = start("synthetic101", synthetic_env, listing=True)
         before = len(model.calls), fixture.count(), jobs.total(peer), files_state(synthetic)
         rows, pages = list_all(peer)
         require([s["sessionId"] for s in rows] == [x[1] for x in expected], "synthetic sort/order/IDs mismatch")
@@ -531,11 +550,11 @@ def run(args):
         require(before[2] == peer.cold_process_count and before == (len(model.calls), fixture.count(), jobs.total(peer), files_state(synthetic)),
                 "synthetic list performed I/O beyond catalog reads")
         close()
-        peer = start("cursor-other-connection", synthetic_env)
+        peer = start("cursor-other-connection", synthetic_env, listing=True)
         invalid(peer, dict(cursor=token))
         close()
         landed("SYNTHETIC ONLY: 101 valid header-only files, empty incomplete scan continuation, createdAt desc/UUID asc, fixed50 pages, cursor retry/opacity/connection+filter binding, invalid/absent/null params, no children/contact/writes")
-        peer = start("cancel-list-race", synthetic_env)
+        peer = start("cancel-list-race", synthetic_env, listing=True)
         request_id = peer.send("session/list", {})
         peer.send("$/cancel_request", dict(requestId=request_id), notification=True)
         envelope = peer.any_response(request_id)
@@ -550,7 +569,7 @@ def run(args):
         list_all(peer)
         require(jobs.total(peer) == peer.cold_process_count, "cancellation spawned native")
         close()
-        peer = start("eof-active-list", synthetic_env)
+        peer = start("eof-active-list", synthetic_env, listing=True)
         peer.send("session/list", {})
         close()  # stdin EOF while work may still be active; joined Job/PID audit
         landed("SYNTHETIC ONLY: cancel race has exactly one result or -32800 then healthy list; immediate EOF drains bridge/Job within cleanup bounds")
@@ -561,7 +580,7 @@ def run(args):
         directory = malformed / sid / template_path.parent.name
         directory.mkdir(parents=True)
         (directory / (template_path.name.rsplit("_", 1)[0] + "_" + sid + ".jsonl")).write_text("{bad\n", encoding="utf-8")
-        peer = start("malformed", dict(env, RPI_ACP_SESSION_DIR=str(malformed)))
+        peer = start("malformed", dict(env, RPI_ACP_SESSION_DIR=str(malformed)), listing=True)
         error, _ = peer.response(peer.send("session/list", {}), expect_error=True)
         require(error.get("code") == -32001 and error.get("message") == "session/list unavailable" and
                 str(malformed) not in json.dumps(error) and "{bad" not in json.dumps(error),
@@ -570,7 +589,7 @@ def run(args):
         close()
         landed("SYNTHETIC ONLY: matching malformed header fails with sanitized error and no child")
         missing = root / "missing-session-root"
-        peer = start("missing-root", dict(env, RPI_ACP_SESSION_DIR=str(missing)))
+        peer = start("missing-root", dict(env, RPI_ACP_SESSION_DIR=str(missing)), listing=True)
         before = len(model.calls), fixture.count()
         rows, _ = list_all(peer)
         require(not rows and not missing.exists() and jobs.total(peer) == peer.cold_process_count and
