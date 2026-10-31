@@ -555,6 +555,7 @@ async fn handle_ui_dialog(
 /// Baseline ACP requires Text and ResourceLink support; we also accept embedded
 /// `resource` blocks (advertised via `promptCapabilities.embeddedContext`) and
 /// inline them as `<file>` blocks, mirroring rpi's `@file` expansion.
+/// Resource references retain their exact URI alongside any display name.
 pub fn prompt_text(blocks: &[ContentBlock]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for block in blocks {
@@ -583,10 +584,10 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
 fn resource_display_name(name: Option<&str>, uri: &str) -> String {
     if let Some(name) = name {
         if !name.is_empty() {
-            return name.to_string();
+            return format!("{name} ({uri})");
         }
     }
-    uri.strip_prefix("file://").unwrap_or(uri).to_string()
+    uri.to_string()
 }
 
 /// Translate one `rpi --mode rpc` event line into an ACP `session/update`
@@ -2014,10 +2015,116 @@ mod tests {
                 },
             },
         ];
-        let text = prompt_text(&blocks);
-        assert!(text.starts_with("explain"));
-        assert!(text.contains("@main.rs"));
-        assert!(text.contains("<file uri=\"file:///a/lib.rs\">\nfn main() {}\n</file>"));
+        assert_eq!(
+            prompt_text(&blocks),
+            "explain\n@main.rs (file:///a/main.rs)\n<file uri=\"file:///a/lib.rs\">\nfn main() {}\n</file>"
+        );
+    }
+
+    #[test]
+    fn prompt_text_distinguishes_same_name_resource_links() {
+        let blocks = vec![
+            ContentBlock::ResourceLink {
+                name: Some("src".into()),
+                uri: "file:///project-a/src/".into(),
+            },
+            ContentBlock::ResourceLink {
+                name: Some("src".into()),
+                uri: "file:///project-b/src/".into(),
+            },
+        ];
+        assert_eq!(
+            prompt_text(&blocks),
+            "@src (file:///project-a/src/)\n@src (file:///project-b/src/)"
+        );
+    }
+
+    #[test]
+    fn prompt_text_preserves_exact_resource_link_uris() {
+        for uri in [
+            "file:///project/my folder/a%20b.rs?revision=one%2Ftwo&view=raw#L10",
+            "file:///C:/Users/Big%20Fish/project/?filter=a%26b#directory",
+            "file://server/share/my folder/file.rs?version=2#L3",
+            "https://example.test/a%2Fb?q=hello%20world#section%201",
+            "custom://workspace/resource%23name?key=value#part",
+        ] {
+            for name in [None, Some(""), Some("my label")] {
+                let block = ContentBlock::ResourceLink {
+                    name: name.map(str::to_string),
+                    uri: uri.into(),
+                };
+                let expected = match name {
+                    Some("my label") => format!("@my label ({uri})"),
+                    _ => format!("@{uri}"),
+                };
+                assert_eq!(prompt_text(&[block]), expected, "name={name:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_text_preserves_uris_for_resources_without_text() {
+        for uri in [
+            "file:///C:/my%20project/src/?revision=one%2Ftwo#L5",
+            "custom://workspace/my folder?key=a%26b#part",
+        ] {
+            let block = ContentBlock::Resource {
+                resource: crate::protocol::EmbeddedResource {
+                    uri: uri.into(),
+                    text: None,
+                },
+            };
+            assert_eq!(prompt_text(&[block]), format!("@{uri}"));
+        }
+    }
+
+    #[test]
+    fn prompt_text_preserves_mixed_block_order_and_embedded_payloads() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "before".into(),
+            },
+            ContentBlock::ResourceLink {
+                name: Some("source".into()),
+                uri: "file:///a%20b.rs?revision=2#L4".into(),
+            },
+            ContentBlock::Resource {
+                resource: crate::protocol::EmbeddedResource {
+                    uri: "custom://context?key=a%2Fb#part".into(),
+                    text: Some("first line\nsecond line".into()),
+                },
+            },
+            ContentBlock::Text {
+                text: String::new(),
+            },
+            ContentBlock::Other,
+            ContentBlock::Resource {
+                resource: crate::protocol::EmbeddedResource {
+                    uri: "file:///C:/my%20project/?revision=2#directory".into(),
+                    text: None,
+                },
+            },
+            ContentBlock::Resource {
+                resource: crate::protocol::EmbeddedResource {
+                    uri: "custom://empty".into(),
+                    text: Some(String::new()),
+                },
+            },
+            ContentBlock::Text {
+                text: "after".into(),
+            },
+        ];
+        assert_eq!(
+            prompt_text(&blocks),
+            concat!(
+                "before\n",
+                "@source (file:///a%20b.rs?revision=2#L4)\n",
+                "<file uri=\"custom://context?key=a%2Fb#part\">\nfirst line\nsecond line\n</file>\n",
+                "@file:///C:/my%20project/?revision=2#directory\n",
+                "<file uri=\"custom://empty\">\n\n</file>\n",
+                "after"
+            )
+        );
     }
 
     #[test]

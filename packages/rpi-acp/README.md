@@ -41,6 +41,13 @@ The host process itself runs no model call: every prompt is served by the child,
 so tools, models, auth, skills and extensions behave exactly as in an
 interactive `rpi` session.
 
+Resource references preserve the exact URI, including its scheme, encoding,
+query and fragment. A named link is sent as `@name (uri)`; an unnamed link or
+embedded resource without text is sent as `@uri`. This conversion does not fetch
+the resource or enumerate a referenced directory. Embedded text remains inline.
+The real-native loopback regression is
+`python -B packages/rpi-acp/tests/resource_uri.py --bridge <bridge> --rpi <rpi>`.
+
 ### Session persistence
 
 New ACP sessions use stable UUIDs and persist native rpi JSONL history under
