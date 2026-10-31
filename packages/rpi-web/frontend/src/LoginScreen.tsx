@@ -1,7 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 import {
   ArrowRight,
-  Code2,
   Eye,
   EyeOff,
   Languages,
@@ -11,6 +10,7 @@ import {
   Sun,
 } from "lucide-react";
 import { MenuSelect } from "./MenuSelect";
+import { BrandLogo } from "./BrandLogo";
 import { translate, type Language } from "./i18n";
 
 type Props = {
@@ -45,7 +45,7 @@ export function LoginScreen(props: Props) {
     <main className="login-screen">
       <header className="login-header">
         <div className="login-brand">
-          <Code2 size={19} aria-hidden="true" />
+          <BrandLogo size={24} />
           <span>rpi</span>
           <span className="login-brand-divider" />
           <span className="login-workspace-label">{t("workspace")}</span>
@@ -80,7 +80,7 @@ export function LoginScreen(props: Props) {
       <section className="login-center" aria-labelledby="login-title">
         <div className="login-panel">
           <div className="login-mark" aria-hidden="true">
-            <Code2 size={28} strokeWidth={1.7} />
+            <BrandLogo size={52} />
           </div>
           <h1 id="login-title">
             {t(props.checking ? "connectingTitle" : "signIn")}

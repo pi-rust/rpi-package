@@ -218,7 +218,35 @@ export interface RunTimingsPage {
   totalBytes: number;
 }
 
+export interface MessageSummary {
+  entryId: string;
+  role: "user";
+  preview: string;
+  timestamp: number;
+  hasImages: boolean;
+}
+export interface MessageSummaryPage {
+  filtered: true;
+  role: "user";
+  messages: MessageSummary[];
+  firstId: string | null;
+  lastId: string | null;
+  nextBeforeId: string | null;
+  hasMore: boolean;
+  leafId: string | null;
+}
+export interface MessageWindowPage {
+  messages: unknown[];
+  firstId: string | null;
+  lastId: string | null;
+  nextBeforeId: string | null;
+  nextAfterId: string | null;
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+  leafId: string | null;
+}
 export interface SnapshotFrame {
+  supportedCommands?: string[] | null;
   sessionId: string;
   status?: string;
   messages: unknown[];
@@ -363,9 +391,10 @@ export const api = {
     request<{ path: string; entries: FileEntry[] }>(
       `/projects/${projectId}/files?${new URLSearchParams({ path })}`,
     ),
-  file: (projectId: string, path: string) =>
+  file: (projectId: string, path: string, signal?: AbortSignal) =>
     request<{ path: string; content: string }>(
       `/projects/${projectId}/file?${new URLSearchParams({ path })}`,
+      { signal },
     ),
   upload: (projectId: string, file: File) => {
     const body = new FormData();
@@ -436,6 +465,18 @@ export const api = {
       body: JSON.stringify({ entryIds, ...(cursor ? { cursor } : {}) }),
       signal,
     }),
+  messageSummaries: (id: string, params: { beforeId?: string; leafId?: string; limit?: number } = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ role: "user", limit: String(params.limit ?? 10) });
+    if (params.beforeId) query.set("beforeId", params.beforeId);
+    if (params.leafId) query.set("leafId", params.leafId);
+    return request<MessageSummaryPage>(`/sessions/${id}/message-summaries?${query}`, { signal });
+  },
+  messageWindow: (id: string, params: { anchorId?: string; beforeId?: string; afterId?: string; leafId?: string; limit?: number }, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: String(params.limit ?? 48) });
+    for (const key of ["anchorId", "beforeId", "afterId", "leafId"] as const)
+      if (params[key]) query.set(key, params[key]);
+    return request<MessageWindowPage>(`/sessions/${id}/message-window?${query}`, { signal });
+  },
   messages: (id: string, params: { beforeId?: string; limit?: number }) =>
     commandData<{
       messages: unknown[];

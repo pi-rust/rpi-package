@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { BrandLogo } from "./BrandLogo";
 import {
   memo,
   useCallback,
@@ -85,9 +86,13 @@ import { ProjectContext } from "./ProjectContext";
 import { ZoomableImage } from "./ZoomableImage";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
 import { useTranscriptViewport } from "./useTranscriptViewport";
+import { restoreRowsWithNotes } from "./localNotes";
 import { useRunTimings, timingByRow } from "./useRunTimings";
 import { groupTodoUpdates, isTodoTool } from "./todoGroups";
 import { RunElapsed } from "./RunElapsed";
+import { ExecutionTrace } from "./ExecutionTracePanel";
+import { useExecutionTrace } from "./useExecutionTrace";
+import { traceView } from "./executionTrace";
 import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
 import {
   ToolDisclosure,
@@ -309,7 +314,7 @@ async function snapshotOf(
 function Mark({ large = false }: { large?: boolean }) {
   return (
     <div className={`brand-mark ${large ? "large" : ""}`} aria-hidden="true">
-      <Code2 size={large ? 30 : 19} />
+      <BrandLogo size={large ? 58 : 28} />
     </div>
   );
 }
@@ -576,6 +581,7 @@ function normalizeLevel(value: unknown) {
 
 export default function App() {
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
+  const [nativeMessageQueries, setNativeMessageQueries] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
@@ -719,6 +725,8 @@ export default function App() {
   const [sidebar, setSidebar] = useState(() => window.innerWidth >= 768);
   const [panel, setPanel] = useState(false);
   const [inspector, setInspector] = useState(false);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const traceButtonRef = useRef<HTMLButtonElement>(null);
   const [seen, setSeen] = useState(0);
   const [settleTick, setSettleTick] = useState(0);
   const [connectionRevision, setConnectionRevision] = useState(0);
@@ -740,6 +748,10 @@ export default function App() {
     !loadingSession && Boolean(capabilities), settleTick,
   );
   const runFooters = useMemo(() => timingByRow(rows, runTimings), [rows, runTimings]);
+  const traceBinding = `${sessionId}:${connectionRevision}:${navigationRevision.current}`;
+  const { state: traceState, snapshot: traceSnapshot, event: traceEvent, clear: clearTrace } =
+    useExecutionTrace(traceBinding);
+  const executionTrace = useMemo(() => traceView(traceState, runTimings), [traceState, runTimings]);
   const todoOwners = useRef<{
     sessionId: string;
     ids: ReadonlySet<string>;
@@ -962,6 +974,8 @@ export default function App() {
 
   const applyEvent = useCallback(
     (event: SeqEvent, seq: number) => {
+      // Presentation only: observe the same deduplicated data, never the protocol cursor.
+      traceEvent(event, seq);
       switch (event.type) {
         case "agent_start":
         case "operation_accepted":
@@ -1207,7 +1221,7 @@ export default function App() {
           break;
       }
     },
-    [showNextDialog],
+    [showNextDialog, traceEvent],
   );
 
   const handleEvent = useCallback(
@@ -1238,6 +1252,8 @@ export default function App() {
     sessionReadsAbort.current?.abort();
     diagnosticsAbort.current?.abort();
     rowsBySession.current.clear();
+    clearTrace();
+    setTraceOpen(false);
     source.current?.close();
     setAuthenticated(false);
     setAuthRequired(true);
@@ -1263,7 +1279,7 @@ export default function App() {
     setSettingsOpen(false);
     setDraft("");
     clearDrafts();
-  }, [clearDrafts]);
+  }, [clearDrafts, clearTrace]);
 
   const refreshSessions = useCallback(
     (force = true) => {
@@ -1516,6 +1532,7 @@ export default function App() {
     setConnectionFailed(false);
     setStatus("connecting");
     setLoadingSession(Boolean(sessionId));
+    setNativeMessageQueries(false);
     setInterrupted(false);
     setFailedRun(false);
     setRecoveryNoticeDismissed(false);
@@ -1560,6 +1577,7 @@ export default function App() {
     const restoreSnapshotStatus = (
       snapshot: Awaited<ReturnType<typeof snapshotOf>>,
     ) => {
+      setNativeMessageQueries(["get_message_summaries", "get_message_window"].every((command) => snapshot.supportedCommands?.includes(command)));
       setMessageStats({
         sessionId,
         stats: latestMessageStats(snapshot.messages),
@@ -1597,6 +1615,7 @@ export default function App() {
           signal: requests.signal,
         });
         if (!isCurrent()) return;
+        traceSnapshot(snapshot, "refresh");
         restoreSnapshotStatus(snapshot);
         currentAssistant.current = null;
         currentUser.current = null;
@@ -1604,16 +1623,10 @@ export default function App() {
           earlierPage.current?.rows ?? [],
           rowsFromMessages(snapshot.messages),
         );
-        const restoredIds = new Set(restored.map((row) => row.id));
-        setRows((previous) => [
-          ...restored,
-          ...previous.filter(
-            (row) =>
-              row.kind === "note" &&
-              row.id !== "retry-note" &&
-              !restoredIds.has(row.id),
-          ),
-        ]);
+        setRows((previous) => restoreRowsWithNotes(
+          restored,
+          previous.filter((row) => row.id !== "retry-note"),
+        ));
         setPersistedHistory(snapshot.history ?? null);
         setLeafId(snapshot.leafId ?? "");
         setInterrupted(Boolean(snapshot.pendingResume));
@@ -1731,15 +1744,10 @@ export default function App() {
         if (!isCurrent()) return;
 
         if (snapshot) {
+          traceSnapshot(snapshot, "initial");
           setRows((previous) => {
             const restored = rowsFromMessages(snapshot.messages);
-            const ids = new Set(restored.map((row) => row.id));
-            return [
-              ...restored,
-              ...previous.filter(
-                (row) => row.kind === "note" && !ids.has(row.id),
-              ),
-            ];
+            return restoreRowsWithNotes(restored, previous);
           });
           setPersistedHistory(snapshot.history ?? null);
           setLeafId(snapshot.leafId ?? "");
@@ -1837,6 +1845,7 @@ export default function App() {
     sessionId,
     connectionRevision,
     showNextDialog,
+    traceSnapshot,
   ]);
 
   useEffect(() => {
@@ -2124,6 +2133,7 @@ export default function App() {
         return;
       }
       if (name === "/tools") {
+        setTraceOpen(false);
         setPanel(true);
         note(
           `${runtime?.activeTools?.length ?? 0} active tools — toggle them in Runtime.`,
@@ -2142,6 +2152,7 @@ export default function App() {
         setModels(available);
         const target = matchModel(available, arg);
         if (!target) {
+          setTraceOpen(false);
           setPanel(true);
           note(
             arg
@@ -2171,6 +2182,7 @@ export default function App() {
           (entry) => entry.toLowerCase() === arg.toLowerCase(),
         );
         if (!level) {
+          setTraceOpen(false);
           setPanel(true);
           note(
             arg
@@ -2433,6 +2445,7 @@ export default function App() {
           earlierRequest.current !== request
         )
           return;
+        traceSnapshot(page, "older");
         const older = rowsFromMessages(page.messages);
         const nextId = page.firstId ?? "";
         const more = Boolean(
@@ -2476,6 +2489,7 @@ export default function App() {
       mutationPending,
       supported,
       rememberTranscriptPosition,
+      traceSnapshot,
     ],
   );
 
@@ -3326,6 +3340,7 @@ export default function App() {
                   disabled={!sessionId}
                   className={panel ? "active" : ""}
                   onClick={() => {
+                    setTraceOpen(false);
                     setPanel(true);
                     setInspector(false);
                   }}
@@ -3480,10 +3495,27 @@ export default function App() {
               </button>
             )}
             <button
+              ref={traceButtonRef}
+              className={`icon-button ${traceOpen ? "selected" : ""}`}
+              disabled={!sessionId}
+              aria-label={t("executionTrace")}
+              title={t("executionTrace")}
+              aria-pressed={traceOpen}
+              onClick={() => {
+                setTraceOpen(!traceOpen);
+                setPanel(false);
+                setInspector(false);
+                setWorkbenchOpen(false);
+              }}
+            >
+              <Activity size={17} aria-hidden="true" />
+            </button>
+            <button
               className="icon-button"
               aria-label={t("toggleInspector")}
               title={t("toggleInspector")}
               onClick={() => {
+                setTraceOpen(false);
                 setInspector(!inspector);
                 setPanel(false);
               }}
@@ -3496,6 +3528,7 @@ export default function App() {
                 aria-label={t("toggleFiles")}
                 aria-pressed={workbenchOpen && !panel && !inspector}
                 onClick={() => {
+                  setTraceOpen(false);
                   setWorkbenchOpen(!workbenchOpen || panel || inspector);
                   setPanel(false);
                   setInspector(false);
@@ -3810,12 +3843,22 @@ export default function App() {
             {(!loadingSession || rows.length > 0) && (
               <ConversationTimeline
                 key={`${sessionId}:${connectionRevision}:${navigationRevision.current}`}
+                sessionId={sessionId}
+                nativeQueries={nativeMessageQueries}
+                snapshotLeafId={leafId}
+                renderHistoricalRow={(row) => (
+                  <ProjectImageContext.Provider value={project}>
+                    <ToolNameModeContext.Provider value={toolNameMode}>
+                      <RowView row={row} language={language} />
+                    </ToolNameModeContext.Provider>
+                  </ProjectImageContext.Provider>
+                )}
                 rows={rows}
                 transcript={transcriptRef}
                 language={language}
                 hasMore={hasMore}
                 historyCursor={firstId}
-                loadingEarlier={loadingEarlier || loadingSession}
+                loadingEarlier={loadingEarlier || loadingSession || mutationPending}
                 onLoadEarlier={() => loadEarlier(false, "timeline")}
                 onNavigate={(target) => {
                   const node = transcriptRef.current;
@@ -4223,6 +4266,7 @@ export default function App() {
 
           {(panel ||
             inspector ||
+            (traceOpen && sessionId) ||
             (workbenchOpen && project && actions.has("files"))) && (
             <Splitter
               label={t("resizeWorkbench")}
@@ -4255,6 +4299,18 @@ export default function App() {
               onChange={setRuntime}
               onError={setError}
               onClose={() => setPanel(false)}
+            />
+          )}
+
+          {traceOpen && sessionId && (
+            <ExecutionTrace
+              key={traceBinding}
+              view={executionTrace}
+              language={language}
+              onClose={() => {
+                setTraceOpen(false);
+                traceButtonRef.current?.focus();
+              }}
             />
           )}
 

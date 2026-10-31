@@ -42,7 +42,13 @@ function gate() {
 }
 type Gate = ReturnType<typeof gate>;
 type Reply = { data?: MessagePage; status?: number; wait?: Gate };
+type QueryReply = { data?: unknown; status?: number; wait?: Gate };
 type Host = {
+  nativeQueries: boolean;
+  nativeLeaf: string;
+  summaryPages: QueryReply[];
+  windows: QueryReply[];
+  queryReads: Array<{ session: string; type: string; params: Record<string, string> }>;
   initial: MessagePage;
   legacy: boolean;
   stateGate?: Gate;
@@ -84,6 +90,7 @@ const summary = (id: string) => ({
 async function installHost(page: Page): Promise<Host> {
   const held = new Set<Gate>();
   const host: Host = {
+    nativeQueries: false, nativeLeaf: "native-pinned-leaf", summaryPages: [], windows: [], queryReads: [],
     initial: {
       messages: users("current", 11),
       firstId: currentCursor,
@@ -171,10 +178,11 @@ async function installHost(page: Page): Promise<Host> {
         json: {
           sessionId: id,
           ...data,
+          ...(host.nativeQueries ? { supportedCommands: ["get_message_summaries", "get_message_window"] } : {}),
           ...(host.legacy ? {} : { status: "ready" }),
           events: [],
           lastSeq: 4,
-          leafId: "leaf",
+          leafId: host.nativeQueries ? (id === sessionId ? host.nativeLeaf : "other-leaf") : "leaf",
           pendingResume: false,
         },
       });
@@ -194,6 +202,13 @@ async function installHost(page: Page): Promise<Host> {
           totalBytes: 0,
         },
       });
+    if (method === "GET" && ["message-summaries", "message-window"].includes(action)) {
+      host.queryReads.push({ session: id, type: action, params: Object.fromEntries(new URL(request.url()).searchParams) });
+      const reply = (action === "message-summaries" ? host.summaryPages : host.windows).shift();
+      if (!reply) return reject("unplanned bounded query");
+      if (reply.wait) { held.add(reply.wait); await reply.wait.promise; }
+      return route.fulfill({ status: reply.status ?? 200, json: reply.status ? { error: "Mock bounded query unavailable" } : reply.data });
+    }
     if (method !== "POST" || action !== "commands") return reject();
     const body = request.postDataJSON();
     switch (body.type) {
@@ -351,7 +366,7 @@ for (const count of [1, 10, 11]) {
     host.initial = {
       messages: users("geometry", count),
       firstId: currentCursor,
-      hasMore: true,
+      hasMore: count > 1,
     };
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 900 });
@@ -367,6 +382,7 @@ for (const count of [1, 10, 11]) {
         );
         return {
           height: box.height,
+          nodeHeights: buttons.map(button => button.getBoundingClientRect().height),
           scrollHeight: element.scrollHeight,
           clientHeight: element.clientHeight,
           visible: buttons.filter((button) => {
@@ -387,14 +403,16 @@ for (const count of [1, 10, 11]) {
         };
       });
       expect(Math.min(...geometry.opacity)).toBeGreaterThanOrEqual(0.75);
-      expect(geometry.height).toBeLessThanOrEqual(247);
+      const step = 15;
+      expect(geometry.nodeHeights.every(height => Math.abs(height - step) < 1)).toBe(true);
+      expect(geometry.height).toBeLessThanOrEqual(10 * step + 7);
       if (count <= 10) {
         expect(geometry.visible).toBe(count);
         expect(geometry.scrollHeight).toBeLessThanOrEqual(
           geometry.clientHeight + 1,
         );
       } else {
-        expect(geometry.height).toBeGreaterThanOrEqual(245);
+        expect(geometry.height).toBeGreaterThanOrEqual(10 * step + 5);
         expect(geometry.overflow).toBe("auto");
         expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
       }
@@ -402,16 +420,18 @@ for (const count of [1, 10, 11]) {
       const rail = (await page
         .locator(".conversation-timeline")
         .boundingBox())!;
-      const arrow = (await earlier(page).boundingBox())!;
       const ol = (await list(page).boundingBox())!;
       expect(rail.width).toBeLessThanOrEqual(28);
       expect(rail.x).toBeGreaterThanOrEqual(frame.x);
       expect(rail.x + rail.width).toBeLessThan(frame.x + frame.width / 2);
-      expect(arrow.height).toBeCloseTo(24, 0);
-      expect(arrow.y + arrow.height).toBeLessThanOrEqual(ol.y + 1);
-      expect(
-        await earlier(page).evaluate((button) => !button.closest("ol")),
-      ).toBe(true);
+      if (count > 1) {
+        const arrow = (await earlier(page).boundingBox())!;
+        expect(arrow.height).toBeCloseTo(24, 0);
+        expect(arrow.y + arrow.height).toBeLessThanOrEqual(ol.y + 1);
+        expect(
+          await earlier(page).evaluate((button) => !button.closest("ol")),
+        ).toBe(true);
+      } else await expect(earlier(page)).toHaveCount(0);
       expect(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
@@ -599,7 +619,7 @@ test("failed cursor blocks more wheel bursts until move-away/reentry, with manua
   ]);
 });
 
-test("tool-only pages wheel through the arrow area once per gesture without auto-chaining", async ({
+test("initial tool-only pages fill through to real questions without gestures", async ({
   page,
   host,
 }) => {
@@ -614,27 +634,14 @@ test("tool-only pages wheel through the arrow area once per gesture without auto
     },
     { data: older("visible", 1, false) },
   );
-  await open(page, 0);
-  await expect(earlier(page)).toBeVisible();
-  await settle(page);
-  expect(host.reads).toHaveLength(0);
-  const anchor = await transcriptAnchor(page);
-  await earlier(page).hover();
-  await wheelUp(page);
-  await expect.poll(() => host.reads.length).toBe(1);
-  await expect(earlier(page)).toBeEnabled();
-  await expect(nodes(page)).toHaveCount(0);
+  await open(page, 1);
   await settle(page, 600);
-  expect(host.reads).toHaveLength(1);
-  await expectTranscriptAnchor(page, anchor);
-  await wheelUp(page);
-  await expect(nodes(page)).toHaveCount(1);
+  expect(host.maxInFlight).toBe(1);
   expect(host.reads.map((read) => read.beforeId)).toEqual([
     currentCursor,
     "native-tools-cursor",
   ]);
   await expect(earlier(page)).toHaveCount(0);
-  await expectTranscriptAnchor(page, anchor);
 });
 
 test("hasMore=false and a no-progress native cursor both stop further automatic paging", async ({
@@ -1057,4 +1064,361 @@ test("live appended tick cannot consume a pending earlier-page rail anchor", asy
     live.release();
     pending.release();
   }
+});
+
+for (const width of [1280, 390]) {
+  test(`initial dense timeline fills ten real questions without gestures at ${width}px`, async ({
+    page,
+    host,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    host.initial.messages = [
+      ...users("latest", 1),
+      ...tools("latest-tools").slice(0, 47),
+    ];
+    for (let index = 1; index <= 9; index++) {
+      host.pages.push({
+        data: {
+          messages: [
+            ...users(`fill-${index}`, 1),
+            ...tools(`fill-tools-${index}`).slice(0, 47),
+          ],
+          firstId: `fill-cursor-${index}`,
+          hasMore: true,
+        },
+      });
+    }
+    await open(page, 10);
+    await expect
+      .poll(() =>
+        nodes(page).evaluateAll((buttons) => {
+          const box = buttons[0].closest("ol")!.getBoundingClientRect();
+          return buttons.filter((button) => {
+            const rect = button.getBoundingClientRect();
+            return rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1;
+          }).length;
+        }),
+      )
+      .toBe(10);
+    expect(host.reads.map((read) => read.beforeId)).toEqual([
+      currentCursor,
+      ...Array.from({ length: 8 }, (_, index) => `fill-cursor-${index + 1}`),
+    ]);
+    expect(host.reads.every((read) => read.limit === 48)).toBe(true);
+    expect(host.maxInFlight).toBe(1);
+    await settle(page, 600);
+    expect(host.reads).toHaveLength(9);
+    await page.screenshot({
+      path: test.info().outputPath(`timeline-default-ten-${width}.png`),
+    });
+  });
+}
+
+test("initial fill has a ten-page budget even for tool-only history and remains manually resumable", async ({
+  page,
+  host,
+}) => {
+  host.initial.messages = tools("budget-initial");
+  for (let index = 1; index <= 10; index++)
+    host.pages.push({
+      data: {
+        messages: tools(`budget-${index}`),
+        firstId: `budget-cursor-${index}`,
+        hasMore: true,
+      },
+    });
+  host.pages.push({ data: older("manual-after-budget", 1, false) });
+  await open(page, 0);
+  await expect.poll(() => host.reads.length).toBe(10);
+  await expect(earlier(page)).toBeEnabled();
+  await settle(page, 700);
+  expect(host.reads).toHaveLength(10);
+  expect(host.maxInFlight).toBe(1);
+  await earlier(page).click();
+  await expect(nodes(page)).toHaveCount(1);
+  expect(host.reads).toHaveLength(11);
+  expect(host.reads[10].beforeId).toBe("budget-cursor-10");
+  await expect(earlier(page)).toHaveCount(0);
+});
+
+test("initial fill failure stops without retries and the arrow can retry the same cursor", async ({
+  page,
+  host,
+}) => {
+  host.initial.messages = users("fill-failure", 1);
+  host.pages.push({ status: 503 }, { data: older("fill-retry", 9, false) });
+  await open(page, 1);
+  await expect.poll(() => host.reads.length).toBe(1);
+  await expect(earlier(page)).toBeEnabled();
+  await settle(page, 700);
+  expect(host.reads).toHaveLength(1);
+  await earlier(page).click();
+  await expect(nodes(page)).toHaveCount(10);
+  expect(host.reads.map((read) => read.beforeId)).toEqual([
+    currentCursor,
+    currentCursor,
+  ]);
+});
+
+for (const nextCursor of [currentCursor, ""]) {
+  test(`initial fill stops at a nonadvancing or missing cursor ${nextCursor || "missing"}`, async ({
+    page,
+    host,
+  }) => {
+    host.initial.messages = users("no-progress", 1);
+    host.pages.push({
+      data: { messages: [], firstId: nextCursor, hasMore: true },
+    });
+    await open(page, 1);
+    await expect.poll(() => host.reads.length).toBe(1);
+    await expect(earlier(page)).toHaveCount(0);
+    await settle(page, 700);
+    expect(host.reads).toHaveLength(1);
+  });
+}
+
+test("slow initial fill preserves the transcript reading anchor", async ({
+  page,
+  host,
+}) => {
+  const pending = gate();
+  host.initial.messages = [
+    ...users("anchor-latest", 1),
+    ...tools("anchor-latest-tools").slice(0, 47),
+  ];
+  host.pages.push({ wait: pending, data: older("anchor-fill", 9, false) });
+  await open(page, 1);
+  await expect.poll(() => host.reads.length).toBe(1);
+  await page.locator(".transcript").evaluate((element) => {
+    element.scrollTop /= 2;
+  });
+  await settle(page);
+  const anchor = await transcriptAnchor(page);
+  pending.release();
+  await expect(nodes(page)).toHaveCount(10);
+  await settle(page);
+  await expectTranscriptAnchor(page, anchor);
+  expect(host.reads).toHaveLength(1);
+});
+
+test("navigation stops the old initial-fill chain and ignores its held response", async ({
+  page,
+  host,
+}) => {
+  const pending = gate();
+  host.initial.messages = users("old-initial", 1);
+  host.pages.push({ wait: pending, data: older("obsolete-fill", 1, true) });
+  await open(page, 1);
+  await expect.poll(() => host.reads.length).toBe(1);
+  await page
+    .locator(".project-session-link")
+    .filter({ hasText: "Other timeline session" })
+    .click();
+  await expect(page.locator(".toolbar h1")).toHaveText(
+    "Other timeline session",
+  );
+  await expect(nodes(page)).toHaveCount(2);
+  pending.release();
+  await settle(page, 700);
+  await expect(nodes(page)).toHaveCount(2);
+  await expect(page.locator(".transcript")).not.toContainText(
+    "Question obsolete-fill",
+  );
+  expect(host.reads).toHaveLength(1);
+});
+
+function nativeSummaryPage(start = 10, count = 10, hasMore = true) {
+  const messages = Array.from({ length: count }, (_, i) => ({ entryId: `native-${start + i}`, role: "user", preview: `Native question ${start + i}`, timestamp: start + i, hasImages: false }));
+  return { filtered: true, role: "user", messages, firstId: messages[0]?.entryId ?? null, lastId: messages.at(-1)?.entryId ?? null, nextBeforeId: hasMore ? messages[0]?.entryId ?? null : null, hasMore, leafId: "native-pinned-leaf" };
+}
+function nativeWindowPage(start = 9, count = 3, hasMoreAfter = true) {
+  const messages = Array.from({ length: count }, (_, i) => ({ role: "user", entryId: `native-${start + i}`, content: `Historical native body ${start + i}` }));
+  return { messages, firstId: messages[0]?.entryId ?? null, lastId: messages.at(-1)?.entryId ?? null, nextBeforeId: start > 0 ? messages[0]?.entryId ?? null : null, nextAfterId: hasMoreAfter ? messages.at(-1)?.entryId ?? null : null, hasMoreBefore: start > 0, hasMoreAfter, leafId: "native-pinned-leaf" };
+}
+function enableNative(host: Host) {
+  host.nativeQueries = true;
+  host.initial = { messages: [...tools("dense-native"), ...users("native", 20).slice(-1)], firstId: currentCursor, hasMore: true };
+  host.summaryPages.push({ data: nativeSummaryPage() });
+}
+for (const width of [1280, 390]) {
+  test(`native summaries fetch ten questions in one light paginated query at ${width}px`, async ({ page, host }) => {
+    await page.setViewportSize({ width, height: 860 });
+    enableNative(host);
+    await open(page, 10);
+    await settle(page);
+    expect(host.queryReads).toHaveLength(1);
+    expect(host.queryReads[0]).toEqual({ session: sessionId, type: "message-summaries", params: { limit: "10", role: "user", leafId: "native-pinned-leaf" } });
+    expect(host.reads).toHaveLength(0);
+    await expect(page.locator(".transcript [data-transcript-row]")).toHaveCount(49);
+    await expect(nodes(page).last()).toHaveAttribute("aria-label", /Native question 19/);
+    await page.screenshot({ path: test.info().outputPath(`native-summary-${width}.png`) });
+  });
+}
+for (const closeWith of ["Escape", "Close"] as const) {
+  test(`native historical reader restores timeline keyboard focus after ${closeWith}`, async ({ page, host }) => {
+    enableNative(host);
+    host.windows.push({ data: nativeWindowPage() });
+    await open(page, 10);
+    const question = nodes(page).first();
+    await question.focus();
+    await page.keyboard.press("Enter");
+    const reader = page.getByRole("dialog", { name: "Historical message context" });
+    await expect(reader).toBeVisible();
+    await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
+    if (closeWith === "Escape") await page.keyboard.press("Escape");
+    else await reader.getByRole("button", { name: "Close dialog", exact: true }).click();
+    await expect(reader).not.toBeVisible();
+    await expect(question).toBeFocused();
+  });
+}
+
+test("native summary pagination is single-flight, exclusive and pins its branch leaf", async ({ page, host }) => {
+  enableNative(host);
+  const held = gate(); host.summaryPages.push({ data: nativeSummaryPage(0, 10, false), wait: held });
+  await open(page, 10);
+  const anchor = await transcriptAnchor(page);
+  await earlier(page).click();
+  await expect(earlier(page)).toBeDisabled();
+  await atTop(page); await wheelUp(page); await settle(page);
+  expect(host.queryReads).toHaveLength(2);
+  expect(host.queryReads[1].params).toEqual({ limit: "10", role: "user", beforeId: "native-10", leafId: "native-pinned-leaf" });
+  held.release();
+  await expect(nodes(page)).toHaveCount(20);
+  expect(host.reads).toHaveLength(0);
+  await expectTranscriptAnchor(page, anchor);
+  await expect(earlier(page)).toHaveCount(0);
+});
+for (const width of [1280, 390]) {
+test(`native historical click reads one bounded window and pages in both directions without changing live chat at ${width}px`, async ({ page, host }) => {
+  await page.setViewportSize({ width, height: 860 });
+  enableNative(host);
+  host.windows.push({ data: nativeWindowPage() }, { data: nativeWindowPage(12, 3, false) }, { data: nativeWindowPage() });
+  await open(page, 10);
+  const anchor = await transcriptAnchor(page);
+  await nodes(page).first().click();
+  const reader = page.getByRole("dialog", { name: "Historical message context" });
+  await expect(reader).toBeVisible();
+  await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
+  expect(host.queryReads[1].params).toEqual({ limit: "48", anchorId: "native-10", leafId: "native-pinned-leaf" });
+  await page.screenshot({ path: test.info().outputPath(`native-reader-${width}.png`) });
+  await reader.getByRole("button", { name: "Later page", exact: true }).click();
+  await expect(reader.getByText("Historical native body 14", { exact: true })).toBeVisible();
+  expect(host.queryReads[2].params.afterId).toBe("native-11");
+  await reader.getByRole("button", { name: "Earlier page", exact: true }).click();
+  await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
+  expect(host.queryReads[3].params.beforeId).toBe("native-12");
+  await expect(page.locator(".transcript [data-transcript-row]")).toHaveCount(49);
+  expect(host.reads).toHaveLength(0);
+  await page.keyboard.press("Escape"); await expect(reader).not.toBeVisible();
+  await expectTranscriptAnchor(page, anchor);
+});
+}
+test("native loaded question navigates locally without fetching a context window", async ({ page, host }) => {
+  enableNative(host); await open(page, 10);
+  await nodes(page).last().click(); await settle(page);
+  expect(host.queryReads).toHaveLength(1);
+  expect(host.reads).toHaveLength(0);
+  await expect(page.getByRole("dialog", { name: "Historical message context" })).toHaveCount(0);
+});
+test("native transient failure is visible and retryable without heavy fallback reads", async ({ page, host }) => {
+  enableNative(host); host.summaryPages.unshift({ status: 503 });
+  await open(page, 1);
+  await expect(page.locator(".timeline-query-error")).toContainText("Mock bounded query unavailable");
+  await settle(page, 700);
+  expect(host.reads).toHaveLength(0); expect(host.queryReads).toHaveLength(1);
+  await page.locator(".timeline-query-error").getByRole("button", { name: "Retry" }).click();
+  await expect(nodes(page)).toHaveCount(10);
+  expect(host.queryReads).toHaveLength(2);
+});
+test("native unsupported endpoint falls back only to the existing bounded legacy paginator", async ({ page, host }) => {
+  enableNative(host); host.summaryPages = [{ status: 501 }];
+  host.pages.push({ data: older("fallback", 9, false) });
+  await open(page, 10);
+  expect(host.queryReads).toHaveLength(1); expect(host.reads).toHaveLength(1);
+  expect(host.reads[0].limit).toBe(48);
+});
+
+function otherNativePage() {
+  const messages = users("other", 2).map((message, index) => ({ entryId: message.entryId, role: "user", preview: `Other question ${index}`, timestamp: index, hasImages: false }));
+  return { filtered: true, role: "user", messages, firstId: "other-0", lastId: "other-1", nextBeforeId: null, hasMore: false, leafId: "other-leaf" };
+}
+test("native summary pagination aborts stale pages when switching sessions", async ({ page, host }) => {
+  enableNative(host);
+  const held = gate(); host.summaryPages.push({ data: nativeSummaryPage(0), wait: held }, { data: otherNativePage() });
+  await open(page, 10); await earlier(page).click();
+  await expect.poll(() => host.queryReads.length).toBe(2);
+  await page.locator(".project-session-link").filter({ hasText: "Other timeline session" }).click();
+  await expect(nodes(page)).toHaveCount(2);
+  held.release(); await settle(page);
+  await expect(nodes(page)).toHaveCount(2);
+  await expect(nodes(page).first()).toHaveAttribute("aria-label", /Other question 0/);
+  expect(host.reads).toHaveLength(0);
+});
+test("native historical context aborts and closes when switching sessions", async ({ page, host }) => {
+  enableNative(host);
+  const held = gate(); host.windows.push({ data: nativeWindowPage(), wait: held }); host.summaryPages.push({ data: otherNativePage() });
+  await open(page, 10); await nodes(page).first().click();
+  await expect.poll(() => host.queryReads.length).toBe(2);
+  await page.getByRole("dialog", { name: "Historical message context" }).getByRole("button", { name: "Close dialog" }).click();
+  await page.locator(".project-session-link").filter({ hasText: "Other timeline session" }).click();
+  await expect(nodes(page)).toHaveCount(2);
+  held.release(); await settle(page);
+  await expect(page.getByRole("dialog", { name: "Historical message context" })).toHaveCount(0);
+  await expect(page.locator(".transcript")).not.toContainText("Historical native body");
+});
+test("native context branch conflicts remain visible without a mixed-history fallback", async ({ page, host }) => {
+  enableNative(host); host.windows.push({ status: 409 });
+  await open(page, 10); await nodes(page).first().click();
+  const reader = page.getByRole("dialog", { name: "Historical message context" });
+  await expect(reader.getByRole("alert")).toContainText("Mock bounded query unavailable");
+  await settle(page);
+  expect(host.queryReads).toHaveLength(2); expect(host.reads).toHaveLength(0);
+  await page.keyboard.press("Escape"); await expect(reader).not.toBeVisible();
+});
+
+async function settleEvent(page: Page, live: Gate) {
+  let emitted = false;
+  await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+    if (emitted) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+    emitted = true; await live.promise;
+    return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nid: 5\nevent: agent_settled\ndata: {"type":"agent_settled","outcome":"completed","runId":"read-only-fixture"}\n\n' });
+  });
+}
+test("native authoritative leaf refresh discards old summary pages rather than mixing branches", async ({ page, host }) => {
+  enableNative(host);
+  const live = gate(); await settleEvent(page, live);
+  try {
+    await open(page, 10);
+    const messages = users("fork", 2);
+    host.initial = { messages, firstId: "fork-0", hasMore: false };
+    host.nativeLeaf = "fork-leaf";
+    host.summaryPages.push({ data: { ...otherNativePage(), messages: messages.map((message, timestamp) => ({ entryId: message.entryId, role: "user", preview: `Fork question ${timestamp}`, timestamp, hasImages: false })), firstId: "fork-0", lastId: "fork-1", leafId: "fork-leaf" } });
+    live.release();
+    await expect(nodes(page)).toHaveCount(2);
+    await expect(nodes(page).first()).toHaveAttribute("aria-label", /Fork question 0/);
+    expect(host.queryReads).toHaveLength(2);
+    expect(host.queryReads[1].params.leafId).toBe("fork-leaf");
+    await expect(page.locator(".transcript")).not.toContainText("Question native 19");
+    expect(host.reads).toHaveLength(0);
+  } finally { live.release(); }
+});
+test("native live snapshot refresh leaves an already-open historical window pinned and independent", async ({ page, host }) => {
+  enableNative(host);
+  host.windows.push({ data: nativeWindowPage() });
+  const live = gate(); await settleEvent(page, live);
+  try {
+    await open(page, 10); await nodes(page).first().click();
+    const reader = page.getByRole("dialog", { name: "Historical message context" });
+    await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
+    host.initial = { messages: users("native", 21).slice(-1), firstId: "native-20", hasMore: true };
+    host.nativeLeaf = "append-leaf";
+    host.summaryPages.push({ data: { ...nativeSummaryPage(11), leafId: "append-leaf" } });
+    live.release();
+    await expect.poll(() => host.queryReads.filter(read => read.type === "message-summaries").length).toBe(2);
+    await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
+    expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(1);
+    await page.keyboard.press("Escape");
+    await expect(nodes(page)).toHaveCount(10);
+    await expect(nodes(page).last()).toHaveAttribute("aria-label", /Native question 20/);
+  } finally { live.release(); }
 });
