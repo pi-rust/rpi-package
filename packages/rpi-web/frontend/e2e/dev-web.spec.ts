@@ -2242,22 +2242,22 @@ test("delayed diagnostics from another chat cannot replace the active chat queue
   });
   await page.goto("/");
   await expect.poll(() => pending).toBe(true);
+  const oldReadCancelled = page.waitForEvent("requestfailed", {
+    predicate: (request) =>
+      request.url().includes(`/${sessionId}/commands`) &&
+      request.postDataJSON()?.type === "get_queue",
+  });
   await page
     .getByRole("button", { name: "New session", exact: false })
     .first()
     .click();
+  await oldReadCancelled;
   await expect(
     page.getByRole("heading", { name: "New session" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Toggle inspector" }).click();
   await expect(page.locator(".queue-item")).toContainText("Current chat queue");
-  const oldResponse = page.waitForResponse(
-    (res) =>
-      res.url().includes(`/${sessionId}/commands`) &&
-      res.request().postDataJSON().type === "get_queue",
-  );
   release();
-  await (await oldResponse).finished();
   await chooseMenuOption(page, "Language", "zh");
   await expect(page.locator(".inspector h2")).toHaveText("会话诊断");
   await expect(page.locator(".queue-item")).toContainText("Current chat queue");

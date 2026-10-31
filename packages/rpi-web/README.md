@@ -429,6 +429,10 @@ overrides the native session store.
 
 ### Snapshot, replay, and reload
 
+The browser prioritizes the latest **40 messages** with history diagnostics excluded. When the snapshot supplies lifecycle status, it renders the transcript, restores pending questions and connects SSE **before** fetching runtime metadata. A slow `get_state` therefore does not hold the conversation behind the loading skeleton. Older snapshots without status still use runtime state as a fallback before replay and live subscription; their message rows can already be read, but sending waits for initialization. Local `/help` and `/tools` remain available while loading.
+
+Runtime metadata and slash-command catalogs load afterward, followed by delayed, serial diagnostics rather than a burst competing with the first snapshot. Switching sessions aborts obsolete browser reads and prevents the remaining diagnostic jobs from being dispatched; it does not cancel native work that has already been sent. Late metadata cannot override snapshot/live lifecycle status or newer runtime fields. Re-selecting the active session preserves its content, expansion, draft and reading position without restarting loading. An auxiliary metadata failure keeps the restored transcript and live stream available with an error message; current authentication failures still return to sign-in.
+
 History comes from the native host, not from browser state. `GET /snapshot`
 issues a read-only `get_messages` command, then returns the transcript together
 with any events published while the snapshot was being taken:
