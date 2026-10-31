@@ -2364,7 +2364,7 @@ export default function App() {
    * current first row. The bridge forwards `get_messages` unchanged, so this is
    * the same native projection the first snapshot used. */
   const loadEarlier = useCallback(
-    async (automatic = false) => {
+    async (automatic = false, source: "transcript" | "timeline" = "transcript") => {
       const navigation = navigationRevision.current;
       if (
         !sessionId ||
@@ -2407,6 +2407,11 @@ export default function App() {
         setRows((previous) => prependRows(older, previous));
         setFirstId(nextId);
         setHasMore(more);
+        if (source === "timeline") {
+          // An anchor restoration after a rail page must not start the
+          // transcript's automatic continuation on the newly advanced cursor.
+          autoEarlierCursor.current = `${navigation}:${sessionId}:${nextId}`;
+        }
         if (automatic && more) continueEarlier.current = navigation;
       } catch (cause) {
         if (
@@ -3770,20 +3775,25 @@ export default function App() {
                 )}
               </div>
             </div>
-            {!loadingSession && (
+            {(!loadingSession || rows.length > 0) && (
               <ConversationTimeline
                 key={`${sessionId}:${connectionRevision}:${navigationRevision.current}`}
                 rows={rows}
                 transcript={transcriptRef}
                 language={language}
                 hasMore={hasMore}
-                loadingEarlier={loadingEarlier}
-                onLoadEarlier={() => void loadEarlier()}
+                historyCursor={firstId}
+                loadingEarlier={loadingEarlier || loadingSession}
+                onLoadEarlier={() => loadEarlier(false, "timeline")}
                 onNavigate={(target) => {
                   const node = transcriptRef.current;
                   if (!node || !node.contains(target)) return;
                   followingRef.current = false;
                   setFollowing(false);
+                  // Scrubbing to the first tick is navigation, not a transcript
+                  // paging gesture. The timeline owns its bounded edge load.
+                  autoEarlierCursor.current = `${navigationRevision.current}:${sessionId}:${firstId}`;
+                  continueEarlier.current = null;
                   node.scrollTop += target.getBoundingClientRect().top - node.getBoundingClientRect().top - 12;
                   rememberTranscriptPosition();
                 }}
