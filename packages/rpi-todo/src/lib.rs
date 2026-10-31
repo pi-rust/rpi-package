@@ -367,6 +367,29 @@ fn candidate(params: &Value, guard: &mut TodoState) -> Result<String, String> {
     }
 }
 
+fn tool_schema() -> StableToolSchema {
+    StableToolSchema {
+        name: StbString::from_string(TOOL.into()),
+        description: StbString::from_string("Track actionable tasks on the current session branch, not a project backlog or execution DAG. List first (includeDone=true to see completed tasks), then use returned IDs, not array positions. Add concrete tasks with acceptance checks; mark completed only after those checks pass. Prefer update for explicit status; toggle flips completion and clears in_progress. clear removes every task and resets IDs to 0. Use plan_mode_start/complete for read-only design and review, not todo bookkeeping. Omitting action lists unfinished tasks.".into()),
+        parameters: StbString::from_string(json!({
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "add", "update", "toggle", "clear"], "default": "list", "description": "Operation. clear deletes all tasks, including completed ones, and resets the next ID."},
+                "text": {"type": "string", "pattern": "\\S", "description": "Required for add: concrete task and acceptance check. Trimmed before storage; whitespace-only text is rejected. Ignored by other actions."},
+                "id": {"type": "integer", "minimum": 0, "maximum": u64::MAX, "description": "Required for update/toggle: exact ID returned by list/add. IDs start at 0; clear resets them. Not an array index."},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Required for update. completed means the task's acceptance checks have passed. Ignored by other actions."},
+                "includeDone": {"type": "boolean", "default": false, "description": "For list only: include completed tasks in displayed text. Result details always contain the full state."}
+            },
+            "allOf": [
+                {"if": {"properties": {"action": {"const": "add"}}, "required": ["action"]}, "then": {"required": ["text"]}},
+                {"if": {"properties": {"action": {"enum": ["update", "toggle"]}}, "required": ["action"]}, "then": {"required": ["id"]}},
+                {"if": {"properties": {"action": {"const": "update"}}, "required": ["action"]}, "then": {"required": ["status"]}}
+            ]
+        }).to_string()),
+    }
+}
+
 static HANDLES: ToolHandles<Drive> = ToolHandles::new();
 
 struct Drive {
@@ -453,11 +476,7 @@ rpi_plugin_sdk::export_plugin!(|api| {
     let Some(register) = api.register_tool else {
         return 1;
     };
-    let schema = Box::new(StableToolSchema {
-    name: StbString::from_string(TOOL.into()),
-    description: StbString::from_string("Manage one session task list. Task IDs are zero-based: the first added task is #0. Always call list first and use the exact returned id for update/toggle; an id is not an array position after tasks are removed or cleared. Actions: list, add (text), update (id, status: pending/in_progress/completed), toggle (id), clear.".into()),
-    parameters: StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["list","add","update","toggle","clear"]},"text":{"type":"string"},"id":{"type":"integer","minimum":0,"description":"Zero-based task ID returned by list/add; the first task is 0."},"status":{"type":"string","enum":["pending","in_progress","completed"]},"includeDone":{"type":"boolean"}},"required":["action"]}"#.into()),
-});
+    let schema = Box::new(tool_schema());
     let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
     drop(schema);
     rc
@@ -466,6 +485,104 @@ rpi_plugin_sdk::export_plugin!(|api| {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_schema_has_defaults_and_conditional_requirements() {
+        // Parse the same schema constructor used by register_tool, not a fixture.
+        let tool = tool_schema();
+        assert_eq!(tool.name.to_string_lossy(), TOOL);
+        let schema: Value = serde_json::from_str(&tool.parameters.to_string_lossy()).unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], true);
+        assert!(schema["properties"].get("__rpi").is_none());
+        assert!(schema.get("required").is_none());
+        let props = &schema["properties"];
+        assert_eq!(props["action"]["default"], "list");
+        assert_eq!(props["includeDone"]["default"], false);
+        assert_eq!(props["text"]["pattern"], "\\S");
+        assert_eq!(props["id"]["minimum"], 0);
+        assert_eq!(props["id"]["maximum"], json!(u64::MAX));
+        assert_eq!(
+            props["status"]["enum"],
+            json!(["pending", "in_progress", "completed"])
+        );
+        let rules = schema["allOf"].as_array().unwrap();
+        assert_eq!(rules.len(), 3);
+        for rule in rules {
+            assert_eq!(rule["if"]["required"], json!(["action"]));
+            assert!(rule["if"]["properties"]["action"].is_object());
+            assert!(rule["then"]["required"].is_array());
+        }
+        assert_eq!(rules[0]["if"]["properties"]["action"]["const"], "add");
+        assert_eq!(rules[0]["then"]["required"], json!(["text"]));
+        assert_eq!(
+            rules[1]["if"]["properties"]["action"]["enum"],
+            json!(["update", "toggle"])
+        );
+        assert_eq!(rules[1]["then"]["required"], json!(["id"]));
+        assert_eq!(rules[2]["if"]["properties"]["action"]["const"], "update");
+        assert_eq!(rules[2]["then"]["required"], json!(["status"]));
+    }
+
+    #[test]
+    fn parameter_rules_match_candidate_defaults_and_metadata_tolerance() {
+        let mut state = TodoState::default();
+        let listed: Value = serde_json::from_str(
+            &candidate(
+                &json!({"__rpi": {"nested": [1, {"trace": true}]}}),
+                &mut state,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed["details"]["action"], "list");
+        candidate(
+            &json!({"action": "add", "text": "  Verify tests pass  ", "__rpi": {"trace": [1, 2]}}),
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(state.todos[0].text, "Verify tests pass");
+        let before = state.clone();
+        for input in [
+            json!({"action":"add"}),
+            json!({"action":"add","text":" \n\t"}),
+        ] {
+            let result: Value =
+                serde_json::from_str(&candidate(&input, &mut state).unwrap()).unwrap();
+            assert_eq!(result["details"]["error"], "text required");
+        }
+        for input in [
+            json!({"action":"toggle"}),
+            json!({"action":"toggle","id":-1}),
+            json!({"action":"toggle","id":0.5}),
+            json!({"action":"update","id":0}),
+            json!({"action":"update","id":0,"status":"done"}),
+        ] {
+            assert!(candidate(&input, &mut state).is_err());
+        }
+        assert_eq!(state, before);
+        candidate(
+            &json!({"action":"update","id":0,"status":"completed"}),
+            &mut state,
+        )
+        .unwrap();
+        let hidden = candidate(&json!({}), &mut state).unwrap();
+        let shown = candidate(&json!({"includeDone":true}), &mut state).unwrap();
+        let hidden: Value = serde_json::from_str(&hidden).unwrap();
+        let shown: Value = serde_json::from_str(&shown).unwrap();
+        assert!(!hidden["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("#0"));
+        assert!(shown["content"][0]["text"].as_str().unwrap().contains("#0"));
+        assert_eq!(hidden["details"]["todos"], shown["details"]["todos"]);
+        candidate(&json!({"action":"toggle","id":0}), &mut state).unwrap();
+        assert!(!state.todos[0].done);
+        assert!(!state.todos[0].in_progress);
+        candidate(&json!({"action":"clear"}), &mut state).unwrap();
+        assert_eq!(state, TodoState::default());
+    }
+
     #[test]
     fn new_state_starts_at_zero() {
         let state = parse_todos(&json!({"todos":[]})).unwrap();

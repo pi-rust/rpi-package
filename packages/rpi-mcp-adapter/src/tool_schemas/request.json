@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "url": {"type": "string", "description": "Required HTTP(S) JSON-RPC endpoint with a host; no embedded username/password. Loopback/private addresses are allowed, redirects disabled. Only contact a trusted endpoint. Raw mode cannot use configured headers; use managed tools for authentication/session handling."},
+    "method": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S", "description": "Required JSON-RPC method, nonblank and at most 200 UTF-8 bytes (runtime check). Sent verbatim; may mutate remote state. No implicit MCP initialization or method allowlist."},
+    "params": {"default": {}, "description": "JSON value sent verbatim as JSON-RPC params; defaults to {} when omitted. Not restricted to an object by this adapter; match the remote method's contract and avoid sending secrets unnecessarily."},
+    "id": {"type": ["string", "integer"], "minimum": -9223372036854775808, "maximum": 18446744073709551615, "default": 1, "description": "Request correlation ID; defaults to integer 1. Runtime accepts strings or integers representable as signed/unsigned 64-bit values, not null/fractional numbers. Always sends a request, not a notification."},
+    "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300, "default": 60, "description": "HTTP request deadline in seconds, 1-300; default 60. Timeout/cancellation may occur after remote side effects; not a rollback."}
+  },
+  "required": ["url", "method"]
+}

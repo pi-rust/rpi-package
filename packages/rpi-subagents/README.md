@@ -4,7 +4,36 @@ Registers `delegate_task`, a bounded subagent runner. It uses the host's
 `ChildAgent` runtime action (24), streams text via the normal tool-progress
 callback, and returns a final JSON report with `kind: "rpi-delegation"`.
 
-## Effective configuration and permissions
+## Choosing and specifying a delegation
+
+`delegate_task` creates a **host-managed, in-memory child session**. It does not
+launch the `subagent` subprocess tool, create a separate process, provision a
+worktree, or provide a filesystem sandbox. The child uses the parent's cwd,
+workspace and extension state. Coordinate file ownership before delegating writes;
+parallel children must not make conflicting edits. Use a subprocess-oriented tool
+only when its separate launch/configuration semantics are actually wanted; this
+package exposes no subprocess fallback or launch options.
+
+Give the child a self-contained `task`: objective, necessary context and paths,
+allowed files/scope, constraints, acceptance checks, and the expected final report.
+Do not assume that the parent's conversation is available. `role` is only a label;
+it does not select a predefined agent, prompt profile, tools or permissions.
+Children cannot delegate further. The caller remains responsible for reviewing
+reported changes, checking acceptance and dealing with partial/turn-limited work;
+`status: "completed"` alone is not proof that the requested work is complete.
+
+Example (only model-supplied fields):
+
+```json
+{
+  "task": "Review packages/rpi-subagents/README.md against src/lib.rs. Read only; do not modify files or delegate. Check parameter defaults and host-managed versus subprocess wording. Report mismatches with paths and suggested corrections; acceptance: every exposed parameter checked.",
+  "role": "reviewer",
+  "maxTurns": 8,
+  "timeoutSeconds": 300
+}
+```
+
+## Developer invocation context
 
 Children run in independent **in-memory sessions inside the host**, not a new
 `rpi` process. They inherit the parent's current model/provider binding (including
@@ -27,10 +56,26 @@ Expired handles and context mismatches fail closed.
 
 ## Bounds and cleanup
 
-- `task`: required, 1–20,000 bytes; `role`: defaults to `worker`, 1–200 bytes.
+- `task` is the only required model field; there are no action-dependent required
+  fields. It must be a string with non-whitespace text, at most 20,000 **UTF-8
+  bytes**. The original text (including surrounding whitespace) is forwarded.
+- `role`: omitted or non-string values default to `worker`. Strings are trimmed;
+  the trimmed value must contain 1–200 UTF-8 bytes. Empty/whitespace-only strings
+  are rejected rather than defaulted.
 - `maxTurns`: defaults to 8, clamped to 1–32; enforced per child, without changing
   process-wide environment variables.
 - `timeoutSeconds`: defaults to 300, clamped to 10–1800.
+- Budgets use JSON unsigned 64-bit integer parsing: zero clamps to the lower
+  bound; larger representable integers clamp to the upper bound. Missing,
+  negative, floating-point (including `1.0`), wrong-type or unrepresentable values
+  use the default.
+  Schema defaults and budget descriptions guide model input; the parser applies
+  its own defaults and clamping. The schema deliberately omits character-count
+  `maxLength` constraints:
+  byte limits and role trimming cannot be expressed accurately that way.
+- The top-level schema permits additional properties for host injection but
+  exposes only task/role/budget fields. Reserved invocation metadata is described
+  in the developer section above; unknown model fields are not runtime options.
 - Streamed and final text share a 4 MiB total budget; at most 8192 text deltas.
 - The host retains at most 16 child handles, including completed tasks awaiting
   disposal, and at most 16 active/cleaning-up children. The plugin always disposes
@@ -54,7 +99,11 @@ The host's child API can restrict `tools` to a parent-active subset, but the
 `delegate_task` model schema remains task/role/budget only. It cannot expand the
 parent's tools, override credentials or discover extra extensions.
 
-## Compatibility
+## Developer compatibility notes
+
+Top-level `additionalProperties: true` accepts reserved `__rpi` invocation
+capabilities without exposing them as model schema properties. Execution requires
+valid host-injected capabilities and matching session/project context.
 
 Requires a host implementing `RuntimeActionId::ChildAgent` (24), with per-call
 `__rpi.runtimeHandle` and `runtimeKey` capabilities. Unsupported
@@ -68,6 +117,11 @@ is a small compatibility shim, following `rpi-ask-user`, until that SDK enum is
 published. Host-side SDK validation remains authoritative; the vtable is unchanged.
 
 ## Verification
+
+Package tests read the same local schema builder used by registration (not a
+copied JSON fixture), validate JSON/nested property structure, and check defaults,
+UTF-8/trim behavior, budget normalization and host-metadata tolerance against the
+actual parser. They complement the host integration checks below.
 
 ```sh
 cargo test -p rpi-subagents

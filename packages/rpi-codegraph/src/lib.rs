@@ -30,7 +30,7 @@ struct Drive {
 
 struct ToolSpec {
     name: &'static str,
-    description: &'static str,
+    description: String,
     parameters: String,
     execute: extern "C" fn(StbStringRef, StbString, Option<FreeStringFn>) -> StepHandle,
 }
@@ -467,86 +467,102 @@ fn parameters(mut properties: serde_json::Map<String, Value>, required: &[&str])
         "projectPath".into(),
         json!({
             "type": "string",
-            "description": "Absolute path to an initialized CodeGraph project. Defaults to the current directory."
+            "description": "Optional absolute project path; omitted or blank defaults to the current working directory."
         }),
     );
-    let mut schema = json!({"type":"object", "properties": properties});
+    // Extra host metadata (including __rpi) must remain accepted.
+    let mut schema =
+        json!({"type":"object", "properties": properties, "additionalProperties": true});
     if !required.is_empty() {
         schema["required"] = json!(required);
     }
     schema.to_string()
 }
 
+fn description(purpose: &str) -> String {
+    format!("{purpose} Requires codegraph CLI. Every call (including status) auto-initializes if needed and syncs, writing the project index. Text truncates at 25,000 characters plus a marker. If unavailable or incomplete, use read/grep/find to verify.")
+}
+
 fn tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "codegraph_search",
-            description: "Search indexed code symbols by name. Returns compact locations only.",
+            description: description("Search indexed symbols by name; returns compact locations, not source. Use node for one definition or explore for an area."),
             parameters: parameters(json!({
-                "query":{"type":"string"},
-                "kind":{"type":"string","enum":["function","method","class","interface","type","variable","route","component"]},
-                "limit":{"type":"integer","default":10}
+                "query":{"type":"string","description":"Required symbol name or partial name to search (for example signIn or AuthService)."},
+                "kind":{"type":"string","description":"Optional symbol-kind filter; omitted searches all indexed kinds.","enum":["function","method","class","interface","type","variable","route","component"]},
+                "limit":{"type":"integer","description":"Optional maximum results requested; default hint 10. Upstream applies its own limits; the plugin does not clamp or inject defaults.","default":10}
             }).as_object().unwrap().clone(), &["query"]),
             execute: execute_search,
         },
         ToolSpec {
             name: "codegraph_callers",
-            description: "Find functions or methods that call an indexed symbol.",
+            description: description("Find indexed functions/methods that call a symbol. Use file to disambiguate names; dynamic dispatch or unresolved calls may be missing."),
             parameters: parameters(json!({
-                "symbol":{"type":"string"}, "file":{"type":"string"},
-                "limit":{"type":"integer","default":20}
+                "symbol":{"type":"string","description":"Required definition name to find callers for."},
+                "file":{"type":"string","description":"Optional definition path or suffix to disambiguate same-named symbols; omitted lets upstream resolve matches."},
+                "limit":{"type":"integer","description":"Optional requested caller count; default hint 20. Upstream applies its own caps.","default":20}
             }).as_object().unwrap().clone(), &["symbol"]),
             execute: execute_callers,
         },
         ToolSpec {
             name: "codegraph_callees",
-            description: "Find functions or methods called by an indexed symbol.",
+            description: description("Find indexed functions/methods called by a symbol. Use file to disambiguate names; this is a static relationship view, not a runtime trace."),
             parameters: parameters(json!({
-                "symbol":{"type":"string"}, "file":{"type":"string"},
-                "limit":{"type":"integer","default":20}
+                "symbol":{"type":"string","description":"Required definition name to find outgoing calls for."},
+                "file":{"type":"string","description":"Optional definition path or suffix to disambiguate same-named symbols; omitted lets upstream resolve matches."},
+                "limit":{"type":"integer","description":"Optional requested callee count; default hint 20. Upstream applies its own caps.","default":20}
             }).as_object().unwrap().clone(), &["symbol"]),
             execute: execute_callees,
         },
         ToolSpec {
             name: "codegraph_impact",
-            description: "Analyze the dependency impact radius of changing an indexed symbol.",
+            description: description("Estimate the dependency impact radius of changing a symbol before refactoring. Depth bounds traversal; results do not prove all affected code is covered."),
             parameters: parameters(json!({
-                "symbol":{"type":"string"}, "file":{"type":"string"},
-                "depth":{"type":"integer","default":2}
+                "symbol":{"type":"string","description":"Required definition name whose dependents should be analyzed."},
+                "file":{"type":"string","description":"Optional definition path or suffix to disambiguate same-named symbols; omitted lets upstream resolve matches."},
+                "depth":{"type":"integer","description":"Optional requested dependency traversal levels; default hint 2. Upstream applies its own caps; deeper is not proof of completeness.","default":2}
             }).as_object().unwrap().clone(), &["symbol"]),
             execute: execute_impact,
         },
         ToolSpec {
             name: "codegraph_explore",
-            description: "Explore a code area by question, symbol, file, or flow; returns bounded relevant source grouped by file.",
+            description: description("Explore a question, symbol, file or flow; returns relevant source grouped by file and relationships. Prefer specific code terms, and narrow the query if source is trimmed."),
             parameters: parameters(json!({
-                "query":{"type":"string"}, "maxFiles":{"type":"integer","default":8}
+                "query":{"type":"string","description":"Required question, symbol/file names or short code terms identifying the area or flow; specific terms help relevance."},
+                "maxFiles":{"type":"integer","description":"Optional requested source-file budget; registered default hint 8. Omission is forwarded unchanged, so the installed upstream version chooses its actual default and caps.","default":8}
             }).as_object().unwrap().clone(), &["query"]),
             execute: execute_explore,
         },
         ToolSpec {
             name: "codegraph_node",
-            description: "Get one symbol with source and relationships, or read one indexed file with optional line bounds.",
+            description: description("Two modes: supply symbol for definition details/relationships (includeCode for source), or file without symbol for line-numbered file source (symbolsOnly for outline). Supply at least symbol or file. File/line disambiguate symbol definitions; file mode supports offset/limit. Availability depends on the installed upstream version."),
             parameters: parameters(json!({
-                "symbol":{"type":"string"}, "includeCode":{"type":"boolean","default":false},
-                "file":{"type":"string"}, "offset":{"type":"integer"}, "limit":{"type":"integer"},
-                "symbolsOnly":{"type":"boolean","default":false}, "line":{"type":"integer"}
+                "symbol":{"type":"string","description":"Symbol mode: definition name. Required in use unless file is supplied for file mode; omit for whole-file source."},
+                "includeCode":{"type":"boolean","description":"Symbol mode: request source (default hint false); containers may return an outline. Ignored in file mode.","default":false},
+                "file":{"type":"string","description":"File mode: path or basename to read when symbol is omitted. Symbol mode: optional definition path/suffix to disambiguate."},
+                "offset":{"type":"integer","description":"File mode only: optional 1-based starting line; omission starts at the beginning. Upstream controls normalization."},
+                "limit":{"type":"integer","description":"File mode only: optional requested maximum lines; installed upstream defaults apply (locally inspected version defaults to 2000 lines with a separate character budget), then plugin text truncation applies."},
+                "symbolsOnly":{"type":"boolean","description":"File mode only: return symbol map/dependents instead of source; default hint false.","default":false},
+                "line":{"type":"integer","description":"Symbol mode only: optional 1-based definition line to disambiguate with file; not a file read offset."}
             }).as_object().unwrap().clone(), &[]),
             execute: execute_node,
         },
         ToolSpec {
             name: "codegraph_status",
-            description: "Report CodeGraph index health, counts, and pending synchronization.",
+            description: description("Report index health, file/node/edge counts and any pending sync information AFTER automatic init and sync. This is not a read-only pre-sync inspection and may fail during preparation."),
             parameters: parameters(serde_json::Map::new(), &[]),
             execute: execute_status,
         },
         ToolSpec {
             name: "codegraph_files",
-            description: "Get the indexed project file tree with optional path, glob, format, metadata, and depth filters.",
+            description: description("Show the indexed file tree, optionally filtered by directory/glob with format, metadata and depth controls. Not a complete filesystem listing: unindexed or unsupported files can be absent."),
             parameters: parameters(json!({
-                "path":{"type":"string"}, "pattern":{"type":"string"},
-                "format":{"type":"string","enum":["tree","flat","grouped"],"default":"tree"},
-                "includeMetadata":{"type":"boolean","default":true}, "maxDepth":{"type":"integer"}
+                "path":{"type":"string","description":"Optional directory filter within the project, for example src/components; omitted includes all indexed paths."},
+                "pattern":{"type":"string","description":"Optional glob filter such as **/*.test.ts; interpreted by upstream, not the shell."},
+                "format":{"type":"string","description":"Optional output layout: tree (hierarchical default hint), flat (list), grouped (by language).","enum":["tree","flat","grouped"],"default":"tree"},
+                "includeMetadata":{"type":"boolean","description":"Optional language/symbol-count metadata; default hint true.","default":true},
+                "maxDepth":{"type":"integer","description":"Optional maximum directory depth; omission leaves depth unlimited upstream, but response text remains bounded."}
             }).as_object().unwrap().clone(), &[]),
             execute: execute_files,
         },
@@ -559,7 +575,7 @@ rpi_plugin_sdk::export_plugin!(|api| {
     for spec in tool_specs() {
         let schema = Box::new(rpi_plugin_sdk::StableToolSchema {
             name: StbString::from_string(spec.name.into()),
-            description: StbString::from_string(spec.description.into()),
+            description: StbString::from_string(spec.description),
             parameters: StbString::from_string(spec.parameters),
         });
         let rc = register(&*schema, spec.execute, poll, cancel, destroy, free_string);
@@ -576,11 +592,104 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schemas_are_valid_json() {
-        for spec in tool_specs() {
-            serde_json::from_str::<Value>(&spec.parameters)
+    fn registered_schemas_preserve_shape_optional_fields_and_guidance() {
+        let specs = tool_specs();
+        assert_eq!(specs.len(), 8);
+        let mut names = std::collections::HashSet::new();
+        for spec in specs {
+            assert!(names.insert(spec.name));
+            let schema: Value = serde_json::from_str(&spec.parameters)
                 .unwrap_or_else(|error| panic!("invalid schema for {}: {error}", spec.name));
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["additionalProperties"], true, "accept host __rpi");
+            let properties = schema["properties"].as_object().unwrap();
+            for (name, property) in properties {
+                assert!(
+                    property["description"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty()),
+                    "{}.{name}",
+                    spec.name
+                );
+                assert!(property["type"].is_string());
+            }
+            let required = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let expected = match spec.name {
+                "codegraph_search" | "codegraph_explore" => vec![json!("query")],
+                "codegraph_callers" | "codegraph_callees" | "codegraph_impact" => {
+                    vec![json!("symbol")]
+                }
+                _ => vec![],
+            };
+            assert_eq!(required, expected, "optional fields stay optional");
+            for field in &required {
+                assert!(properties.contains_key(field.as_str().unwrap()));
+            }
+            let project_guidance = properties["projectPath"]["description"].as_str().unwrap();
+            assert!(project_guidance.contains("absolute"));
+            assert!(project_guidance.contains("current working directory"));
+            assert!(project_guidance.len() <= 120);
+            for text in [
+                "codegraph CLI",
+                "Every call",
+                "including status",
+                "auto-initializes",
+                "syncs",
+                "writing",
+                "25,000",
+                "unavailable",
+                "read/grep/find",
+            ] {
+                assert!(
+                    spec.description.contains(text),
+                    "{} missing {text}",
+                    spec.name
+                );
+            }
+            match spec.name {
+                "codegraph_search" => {
+                    assert_eq!(properties["limit"]["default"], 10);
+                    assert_eq!(properties["kind"]["enum"].as_array().unwrap().len(), 8);
+                }
+                "codegraph_callers" | "codegraph_callees" => {
+                    assert_eq!(properties["limit"]["default"], 20)
+                }
+                "codegraph_impact" => assert_eq!(properties["depth"]["default"], 2),
+                "codegraph_explore" => assert_eq!(properties["maxFiles"]["default"], 8),
+                "codegraph_node" => {
+                    assert!(spec.description.contains("at least symbol or file"));
+                    assert_eq!(properties["includeCode"]["default"], false);
+                    assert_eq!(properties["symbolsOnly"]["default"], false);
+                    assert!(properties["offset"]["description"]
+                        .as_str()
+                        .unwrap()
+                        .contains("1-based"));
+                }
+                "codegraph_status" => {
+                    assert_eq!(properties.len(), 1);
+                    assert!(spec.description.contains("not a read-only pre-sync"));
+                }
+                "codegraph_files" => {
+                    assert_eq!(
+                        properties["format"]["enum"],
+                        json!(["tree", "flat", "grouped"])
+                    );
+                    assert_eq!(properties["format"]["default"], "tree");
+                    assert_eq!(properties["includeMetadata"]["default"], true);
+                }
+                _ => unreachable!(),
+            }
         }
+    }
+
+    #[test]
+    fn shared_guidance_stays_concise() {
+        let guidance = description("");
+        assert!((200..=300).contains(&guidance.trim().len()));
     }
 
     #[test]

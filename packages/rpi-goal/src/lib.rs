@@ -1207,23 +1207,115 @@ rpi_plugin_sdk::export_plugin!(|api| {
     let Some(register) = api.register_tool else {
         return 1;
     };
-    let schema = Box::new(StableToolSchema {
-        name: StbString::from_string("goal".into()),
-        description: StbString::from_string(
-            "Codex-style goal mode: record one persistent, context-injected objective per project and let the agent advance it across turns. Actions: start, update, pause, resume, complete, limit, show, list.".into(),
-        ),
-        parameters: StbString::from_string(
-            r#"{"type":"object","properties":{"action":{"type":"string","enum":["start","update","pause","resume","complete","limit","show","list"]},"title":{"type":"string","description":"Goal title (required for start)"},"notes":{"type":"string","description":"Goal notes or progress update (start/update)"},"status":{"type":"string","enum":["active","paused"],"description":"Explicit status change (update)"},"maxTurns":{"type":"integer","minimum":1,"description":"Optional turn budget (start/limit)"},"maxMinutes":{"type":"integer","minimum":1,"description":"Optional wall-clock budget in minutes (start/limit)"}},"required":["action"]}"#.into(),
-        ),
-    });
+    let schema = Box::new(tool_schema());
     let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
     drop(schema);
     rc
 });
 
+// Registration and tests consume the same schema, without changing parsing.
+fn tool_schema() -> StableToolSchema {
+    // Advertise canonical model input, not every form tolerated by the parser.
+    let parameters = json!({
+        "type": "object", "additionalProperties": true,
+        "description": "Arguments apply to the indicated actions.",
+        "properties": {
+            "action": {"type": "string", "enum": ["start", "update", "pause", "resume", "complete", "limit", "show", "list"], "default": "show", "description": "Operation; omitted action shows the current goal."},
+            "title": {"type": "string", "pattern": "\\S", "description": "Required for start. Nonblank after trimming, at most 500 Unicode scalar values. The previous goal is archived and replaced."},
+            "notes": {"type": "string", "description": "start/update: trimmed notes, at most 20000 Unicode scalar values. Start defaults to empty; update replaces notes, and an empty string clears them."},
+            "status": {"type": "string", "enum": ["active", "paused"], "description": "update only: explicit status change. At least notes or status is required."},
+            "maxTurns": {"type": "integer", "minimum": 1, "maximum": 4294967295u64, "description": "start/limit: total turn budget, not additional turns. Omitted on start means unlimited; omitted on limit preserves it. Clear an existing budget with /goal turns 0 or /goal clear."},
+            "maxMinutes": {"type": "integer", "minimum": 1, "maximum": 4294967295u64, "description": "start/limit: wall-clock minutes from now. Omitted on start means unlimited; omitted on limit preserves it. Clear an existing budget with /goal time 0 or /goal clear."}
+        },
+        "allOf": [
+            {"if": {"properties": {"action": {"const": "start"}}, "required": ["action"]}, "then": {"required": ["title"]}},
+            {"if": {"properties": {"action": {"const": "update"}}, "required": ["action"]}, "then": {"anyOf": [{"required": ["notes"]}, {"required": ["status"]}]}},
+            {"if": {"properties": {"action": {"const": "limit"}}, "required": ["action"]}, "then": {"anyOf": [{"required": ["maxTurns"]}, {"required": ["maxMinutes"]}]}}
+        ]
+    });
+    StableToolSchema {
+        name: StbString::from_string("goal".into()),
+        description: StbString::from_string("Record one persistent, context-injected objective in the current native session branch (not per project or shared workspace). Use goal for an objective and progress notes across turns; use durable for explicit workflow steps, recovery journals, or manual work queues. start archives/replaces the current goal; update replaces notes and/or status; pause/resume/limit require an existing goal; complete archives it. show/list read state. Budgets auto-pause at turn boundaries; resume does not reset used turns or deadlines. This tool does not spawn workers or start a nested agent run. Subagents must not use this tool to manage the parent's goal.".into()),
+        parameters: StbString::from_string(parameters.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_schema_is_valid_json_with_conditional_requirements() {
+        let schema = tool_schema();
+        assert_eq!(schema.name.to_string_lossy(), "goal");
+        let parameters: Value = serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(parameters["additionalProperties"], true); // includes nested __rpi metadata
+        assert!(parameters.get("required").is_none());
+        let props = &parameters["properties"];
+        assert_eq!(props["action"]["default"], "show");
+        assert_eq!(
+            props["action"]["enum"],
+            json!(["start", "update", "pause", "resume", "complete", "limit", "show", "list"])
+        );
+        assert!(props["action"].get("pattern").is_none());
+        assert!(props.get("__rpi").is_none());
+        assert_eq!(props["title"]["pattern"], "\\S");
+        assert_eq!(props["status"]["enum"], json!(["active", "paused"]));
+        for field in ["maxTurns", "maxMinutes"] {
+            assert_eq!(props[field]["type"], "integer");
+            assert_eq!(props[field]["minimum"], 1);
+            assert_eq!(props[field]["maximum"], json!(4294967295u64));
+        }
+        let rules = parameters["allOf"].as_array().unwrap();
+        assert_eq!(rules.len(), 3);
+        for (rule, action) in rules.iter().zip(["start", "update", "limit"]) {
+            assert_eq!(rule["if"]["required"], json!(["action"]));
+            assert_eq!(rule["if"]["properties"]["action"], json!({"const": action}));
+        }
+        assert_eq!(rules[0]["then"]["required"], json!(["title"]));
+        assert_eq!(
+            rules[1]["then"]["anyOf"],
+            json!([{"required": ["notes"]}, {"required": ["status"]}])
+        );
+        assert_eq!(
+            rules[2]["then"]["anyOf"],
+            json!([{"required": ["maxTurns"]}, {"required": ["maxMinutes"]}])
+        );
+    }
+
+    #[test]
+    fn advertised_parameter_rules_match_early_runtime_validation() {
+        // These errors occur before storage access, so this test never mutates a goal.
+        assert_eq!(
+            goal(&json!({"action": "START", "__rpi": {"trace": [1, {"id": "x"}]}})).unwrap_err(),
+            "goal title is required"
+        );
+        assert!(goal(&json!({"action": "start", "title": "  "})).is_err());
+        assert_eq!(
+            goal(&json!({"action": "UPDATE"})).unwrap_err(),
+            "update requires `notes` and/or `status`"
+        );
+        assert_eq!(
+            goal(&json!({"action": "limit"})).unwrap_err(),
+            "limit requires `maxTurns` and/or `maxMinutes`"
+        );
+        assert_eq!(
+            goal(&json!({"action": "limit", "maxTurns": -1, "maxMinutes": "5"})).unwrap_err(),
+            "limit requires `maxTurns` and/or `maxMinutes`"
+        );
+        assert_eq!(param_u32(&json!({"maxTurns": 0}), "maxTurns"), Some(0));
+        assert_eq!(param_u32(&json!({"maxTurns": 1}), "maxTurns"), Some(1));
+        assert_eq!(
+            param_u32(&json!({"maxTurns": 4294967296u64}), "maxTurns"),
+            Some(0)
+        );
+        assert_eq!(param_u32(&json!({"maxTurns": 1.5}), "maxTurns"), None);
+        assert_eq!(validate_notes("").unwrap(), "");
+        assert_eq!(validate_title(" title ").unwrap(), "title");
+        assert!(validate_title(&"x".repeat(MAX_TITLE_CHARS + 1)).is_err());
+        assert!(validate_notes(&"x".repeat(MAX_NOTES_CHARS + 1)).is_err());
+    }
 
     fn goal_with(status: &str) -> Goal {
         Goal {

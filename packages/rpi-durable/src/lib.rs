@@ -1883,23 +1883,162 @@ rpi_plugin_sdk::export_plugin!(|api| {
     let Some(register) = api.register_tool else {
         return 1;
     };
-    let schema = Box::new(StableToolSchema {
-        name: StbString::from_string(TOOL.into()),
-        description: StbString::from_string(
-            "Maintain a durable workflow, recovery journal, and explicit work queue in the current session branch. Use start/checkpoint for workflow state, inspect interrupted runs before retrying side effects, and use enqueue/claim/finish for manually coordinated work items.".into(),
-        ),
-        parameters: StbString::from_string(
-            r#"{"type":"object","properties":{"action":{"type":"string","enum":["status","start","checkpoint","pause","resume","complete","fail","reset","recover","forget_run","enqueue","queue","claim","finish","cancel"]},"name":{"type":"string","description":"Workflow name for start"},"steps":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"title":{"type":"string"}},"required":["id","title"]},"minItems":1,"maxItems":128},"step":{"type":"string","description":"Step id for checkpoint"},"status":{"type":"string","enum":["pending","in_progress","completed","failed"]},"note":{"type":"string"},"reason":{"type":"string"},"text":{"type":"string","description":"Work item text for enqueue"},"item":{"type":"string","description":"Queue item id returned by enqueue or queue"}},"required":["action"]}"#.into(),
-        ),
-    });
+    let schema = Box::new(tool_schema());
     let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
     drop(schema);
     rc
 });
 
+// Shared by registration and contract tests; no changes to argument execution.
+fn tool_schema() -> StableToolSchema {
+    let nonempty = |description: &str| {
+        json!({
+            "type": "string", "pattern": "\\S", "description": description
+        })
+    };
+    let parameters = json!({
+        "type": "object",
+        "description": "Arguments apply to the indicated actions.",
+        "additionalProperties": true,
+        "properties": {
+            "action": {"type": "string", "default": "status", "enum": ["status", "start", "checkpoint", "pause", "resume", "complete", "fail", "reset", "recover", "forget_run", "enqueue", "queue", "claim", "finish", "cancel"]},
+            "name": nonempty("Required for start; trimmed workflow name, at most 500 Unicode scalar values. Replaces the existing workflow."),
+            "steps": {
+                "type": "array", "minItems": 1, "maxItems": MAX_STEPS,
+                "description": "Required for start. Stable IDs must be unique after trimming; each step starts pending.",
+                "items": {
+                    "type": "object", "additionalProperties": true,
+                    "properties": {
+                        "id": nonempty("Trimmed stable step ID, at most 128 Unicode scalar values; unique within this workflow."),
+                        "title": nonempty("Trimmed step title, at most 1000 Unicode scalar values.")
+                    },
+                    "required": ["id", "title"]
+                }
+            },
+            "step": nonempty("Required for checkpoint; existing step ID, at most 128 Unicode scalar values after trimming."),
+            "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "failed"], "description": "checkpoint: pending/in_progress/completed (default in_progress); finish: completed/failed (required)."},
+            "note": {"type": ["string", "null"], "pattern": "\\S", "description": "Optional for checkpoint/finish/cancel; null or omitted means absent, otherwise nonblank after trimming, at most 4000 Unicode scalar values. Cancel defaults to 'cancelled'."},
+            "reason": {"type": ["string", "null"], "pattern": "\\S", "description": "Optional for pause/fail; null or omitted means absent, otherwise nonblank after trimming, at most 4000 Unicode scalar values. Fail defaults to 'workflow marked as failed'."},
+            "text": nonempty("Required for enqueue; trimmed work text, at most 4000 Unicode scalar values. Queue holds at most 32 items including terminal history."),
+            "item": nonempty("Required for claim/finish/cancel; exact returned queue ID (not an index), at most 128 Unicode scalar values after trimming.")
+        },
+        "allOf": [
+            {"if": {"properties": {"action": {"const": "start"}}, "required": ["action"]}, "then": {"required": ["name", "steps"]}},
+            {"if": {"properties": {"action": {"const": "checkpoint"}}, "required": ["action"]}, "then": {"required": ["step"], "properties": {"status": {"enum": ["pending", "in_progress", "completed"], "default": "in_progress"}}}},
+            {"if": {"properties": {"action": {"const": "enqueue"}}, "required": ["action"]}, "then": {"required": ["text"]}},
+            {"if": {"properties": {"action": {"enum": ["claim", "finish", "cancel"]}}, "required": ["action"]}, "then": {"required": ["item"]}},
+            {"if": {"properties": {"action": {"const": "finish"}}, "required": ["action"]}, "then": {"required": ["status"], "properties": {"status": {"enum": ["completed", "failed"]}}}}
+        ]
+    });
+    StableToolSchema {
+        name: StbString::from_string(TOOL.into()),
+        description: StbString::from_string("Persist workflow checkpoints, a recovery journal, and a manual work queue in the current native session branch, not a shared workspace/project queue. Use goal for one context-injected objective; use durable for explicit steps or recovery. Start replaces the workflow; checkpoint requires a running workflow; complete requires all steps completed. Inspect status before recover or retrying interrupted side effects: recover only creates a queued recovery point and never replays tools. Claim queued items before manual execution, then finish claimed items. No workers, delegation, scheduling, or exactly-once guarantee; separate sessions do not share claims. reset clears only the workflow; forget_run clears only the journal.".into()),
+        parameters: StbString::from_string(parameters.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_schema_is_valid_json_with_nested_action_contracts() {
+        let schema = tool_schema();
+        assert_eq!(schema.name.to_string_lossy(), "durable");
+        let parameters: Value = serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(parameters["additionalProperties"], true); // includes __rpi
+        assert!(parameters.get("required").is_none()); // action defaults to status
+        let props = &parameters["properties"];
+        assert_eq!(props["action"]["default"], "status");
+        assert_eq!(props["action"]["enum"].as_array().unwrap().len(), 15);
+        assert_eq!(props["steps"]["minItems"], 1);
+        assert_eq!(props["steps"]["maxItems"], MAX_STEPS);
+        assert_eq!(props["steps"]["items"]["type"], "object");
+        assert_eq!(props["steps"]["items"]["required"], json!(["id", "title"]));
+        assert_eq!(
+            props["steps"]["items"]["properties"]["id"]["pattern"],
+            "\\S"
+        );
+        assert_eq!(props["note"]["type"], json!(["string", "null"]));
+        let rules = parameters["allOf"].as_array().unwrap();
+        assert_eq!(rules.len(), 5);
+        for rule in rules {
+            assert_eq!(rule["if"]["required"], json!(["action"]));
+        }
+        assert_eq!(rules[0]["then"]["required"], json!(["name", "steps"]));
+        assert_eq!(rules[1]["then"]["required"], json!(["step"]));
+        assert_eq!(
+            rules[1]["then"]["properties"]["status"]["default"],
+            "in_progress"
+        );
+        assert_eq!(
+            rules[1]["then"]["properties"]["status"]["enum"],
+            json!(["pending", "in_progress", "completed"])
+        );
+        assert_eq!(rules[2]["then"]["required"], json!(["text"]));
+        assert_eq!(
+            rules[3]["if"]["properties"]["action"]["enum"],
+            json!(["claim", "finish", "cancel"])
+        );
+        assert_eq!(rules[3]["then"]["required"], json!(["item"]));
+        assert_eq!(rules[4]["then"]["required"], json!(["status"]));
+        assert_eq!(
+            rules[4]["then"]["properties"]["status"]["enum"],
+            json!(["completed", "failed"])
+        );
+    }
+
+    #[test]
+    fn advertised_defaults_metadata_and_key_rules_match_parser() {
+        let state = started();
+        assert_eq!(
+            apply_action(&state, &json!({"__rpi": {"trace": [1, {"id": "x"}]}})).unwrap(),
+            state
+        );
+        let next = apply_action(
+            &state,
+            &json!({"action": "checkpoint", "step": "build", "note": null}),
+        )
+        .unwrap();
+        assert_eq!(
+            next.workflow.unwrap().steps[0].status,
+            StepStatus::InProgress
+        );
+        assert!(apply_action(
+            &state,
+            &json!({"action": "checkpoint", "step": "build", "status": "failed"})
+        )
+        .is_err());
+        assert!(apply_action(&state, &json!({"action": "start", "name": "x"})).is_err());
+        assert!(parse_steps(Some(&json!([{"id": "x"}]))).is_err());
+        assert!(parse_steps(Some(
+            &json!([{"id": "x", "title": "X"}, {"id": " x ", "title": "Y"}])
+        ))
+        .is_err());
+        assert!(apply_action(&state, &json!({"action": "enqueue"})).is_err());
+        let queued = apply_action(&state, &json!({"action": "enqueue", "text": "work"})).unwrap();
+        let claimed = apply_action(&queued, &json!({"action": "claim", "item": "item-1"})).unwrap();
+        for status in [None, Some("pending"), Some("in_progress")] {
+            let mut params = json!({"action": "finish", "item": "item-1"});
+            if let Some(status) = status {
+                params["status"] = json!(status);
+            }
+            assert!(apply_action(&claimed, &params).is_err());
+        }
+        for status in ["completed", "failed"] {
+            assert!(apply_action(
+                &claimed,
+                &json!({"action": "finish", "item": "item-1", "status": status, "__rpi": {}})
+            )
+            .is_ok());
+        }
+        assert!(optional_text(Some(&json!("  ")), "note", MAX_NOTE_CHARS).is_err());
+        assert_eq!(
+            optional_text(Some(&Value::Null), "note", MAX_NOTE_CHARS).unwrap(),
+            None
+        );
+    }
 
     fn started() -> DurableState {
         apply_action(

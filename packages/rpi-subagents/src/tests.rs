@@ -28,6 +28,136 @@ fn scripted(replies: Vec<Result<Value, String>>) -> (Box<Action>, Arc<Mutex<Vec<
 }
 
 #[test]
+fn registered_schema_is_valid_json_with_only_model_fields_and_task_required() {
+    // This is the builder passed to register_tool, not a duplicate schema fixture.
+    let registered = delegate_schema();
+    assert_eq!(registered.name.to_string_lossy(), "delegate_task");
+    let description = registered.description.to_string_lossy();
+    for guidance in [
+        "host-managed in-memory",
+        "not a subagent subprocess",
+        "shares the workspace",
+        "acceptance",
+        "cannot delegate further",
+    ] {
+        assert!(
+            description.contains(guidance),
+            "missing guidance: {guidance}"
+        );
+    }
+    let parameters: Value = serde_json::from_str(&registered.parameters.to_string_lossy()).unwrap();
+    assert_eq!(parameters["type"], "object");
+    assert_eq!(parameters["required"], json!(["task"]));
+    assert_eq!(parameters["additionalProperties"], true);
+    let properties = parameters["properties"].as_object().unwrap();
+    assert_eq!(properties.len(), 4);
+    assert!(!properties.contains_key("__rpi"));
+    for (name, kind) in [
+        ("task", "string"),
+        ("role", "string"),
+        ("maxTurns", "integer"),
+        ("timeoutSeconds", "integer"),
+    ] {
+        let property = properties[name].as_object().unwrap();
+        assert_eq!(property["type"], kind);
+        assert!(!property["description"].as_str().unwrap().is_empty());
+    }
+    assert_eq!(properties["task"]["minLength"], 1);
+    // Runtime bounds bytes after role trimming, not JSON Schema character counts.
+    assert!(properties["task"].get("maxLength").is_none());
+    assert!(properties["role"].get("maxLength").is_none());
+    let context = json!({"task":"inspect", "__rpi":{
+        "cwd":"D:/project", "sessionId":"parent", "runtimeHandle":42,
+        "runtimeKey":"host-only", "future":{"nested":[{"value":true}]}
+    }, "ignoredOption":{"nested":[1,2,3]}});
+    assert_eq!(parse_request(&context).unwrap(), request());
+}
+
+#[test]
+fn registered_schema_defaults_match_runtime_and_budgets_are_normalized_not_rejected() {
+    let registered = delegate_schema();
+    let parameters: Value = serde_json::from_str(&registered.parameters.to_string_lossy()).unwrap();
+    let defaults = request();
+    let properties = &parameters["properties"];
+    assert_eq!(properties["role"]["default"], defaults.role);
+    assert_eq!(properties["maxTurns"]["default"], defaults.max_turns);
+    assert_eq!(
+        properties["timeoutSeconds"]["default"],
+        defaults.timeout_seconds
+    );
+    for (name, minimum, maximum) in [("maxTurns", 1, 32), ("timeoutSeconds", 10, 1800)] {
+        assert_eq!(properties[name]["minimum"], minimum);
+        assert_eq!(properties[name]["maximum"], maximum);
+    }
+    for (value, turns, timeout) in [
+        (json!(0), 1, 10),
+        (json!(1), 1, 10),
+        (json!(32), 32, 32),
+        (json!(1800), 32, 1800),
+        (json!(u64::MAX), 32, 1800),
+        (json!(-1), 8, 300),
+        (json!(1.0), 8, 300),
+        (json!(1.5), 8, 300),
+        (json!(1e30), 8, 300),
+        (Value::Null, 8, 300),
+        (json!(true), 8, 300),
+        (json!("12"), 8, 300),
+        (json!([]), 8, 300),
+        (json!({}), 8, 300),
+    ] {
+        let parsed = parse_request(&json!({
+            "task":"inspect", "maxTurns":value, "timeoutSeconds":value
+        }))
+        .unwrap();
+        assert_eq!(parsed.max_turns, turns, "maxTurns for {value}");
+        assert_eq!(
+            parsed.timeout_seconds, timeout,
+            "timeoutSeconds for {value}"
+        );
+    }
+}
+
+#[test]
+fn task_and_role_rules_use_utf8_bytes_and_role_only_is_trimmed() {
+    let task = format!(" {} ", "界".repeat(6666)); // exactly 20,000 bytes
+    let role = format!("  {}  ", "界".repeat(66));
+    let parsed = parse_request(&json!({"task":task,"role":role})).unwrap();
+    assert_eq!(parsed.task, task);
+    assert_eq!(parsed.role, "界".repeat(66));
+    assert!(parse_request(&json!({"task":"界".repeat(6667)})).is_err());
+    assert!(parse_request(&json!({"task":"inspect","role":"界".repeat(67)})).is_err());
+    // Raw role length may exceed 200 bytes when its trimmed value fits.
+    let padded = format!("{}{} ", " ".repeat(201), "x".repeat(200));
+    assert_eq!(
+        parse_request(&json!({"task":"inspect","role":padded}))
+            .unwrap()
+            .role,
+        "x".repeat(200)
+    );
+    for role in [Value::Null, json!(false), json!(42), json!([]), json!({})] {
+        assert_eq!(
+            parse_request(&json!({"task":"inspect","role":role}))
+                .unwrap()
+                .role,
+            "worker"
+        );
+    }
+    for task in [
+        Value::Null,
+        json!(42),
+        json!([]),
+        json!({}),
+        json!(""),
+        json!(" \t\n\u{2003}"),
+    ] {
+        assert!(parse_request(&json!({"task":task})).is_err());
+    }
+    for role in ["", " \t\n\u{2003}"] {
+        assert!(parse_request(&json!({"task":"inspect","role":role})).is_err());
+    }
+}
+
+#[test]
 fn validates_and_clamps_limits_while_accepting_host_context() {
     let r = parse_request(
         &json!({"task":"inspect","maxTurns":999,"timeoutSeconds":1,"__rpi":{"cwd":"D:/project"}}),

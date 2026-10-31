@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "url": {"type": "string", "description": "Direct Streamable HTTP MCP endpoint (HTTP(S) with host, not legacy /sse); mutually exclusive with configPath/server. No embedded credentials or configured auth headers. Private/loopback hosts allowed, redirects disabled. Use a trusted endpoint; configPath+server supports configured headers."},
+    "configPath": {"type": "string", "description": "Existing MCP JSON configuration path, absolute or relative to host project cwd. Alone with action=list (default), returns names/transport/enabled flags without starting servers. Add server for discovery or close. Trusted configurations can launch commands or supply HTTP credentials."},
+    "server": {"type": "string", "description": "Exact enabled mcpServers key; requires configPath and must be absent with url. Optional only for configuration-only listing; required with configPath for action=close."},
+    "action": {"type": "string", "enum": ["list", "close"], "default": "list", "description": "Defaults to list: configPath alone lists configured servers; a full target discovers tools and may start/initialize a connection. close requires configPath+server or url, releases that session-scoped connection and clears its subscriptions/queued updates; later use reconnects. Does not undo remote effects."},
+    "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300, "description": "Per-request deadline in seconds, 1-300. Omission uses configured timeout clamped to 1-300 (configuration default 60), or 60 for direct url. Each handshake/discovery request has its own deadline. Ignored for configPath-only listing; close parses it but sends no discovery request."}
+  },
+  "oneOf": [
+    {"required": ["configPath"], "not": {"required": ["url"]}},
+    {"required": ["url"], "not": {"anyOf": [{"required": ["configPath"]}, {"required": ["server"]}]}}
+  ],
+  "allOf": [
+    {"if": {"properties": {"action": {"const": "close"}}, "required": ["action"]}, "then": {"anyOf": [{"required": ["configPath", "server"]}, {"required": ["url"]}]}}
+  ]
+}
