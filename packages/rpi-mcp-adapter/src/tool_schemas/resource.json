@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "url": {"type": "string", "description": "Direct Streamable HTTP MCP endpoint (HTTP(S) with host, not legacy /sse); exclusive with configPath/server. No embedded credentials or configured auth headers. Private/loopback hosts allowed, redirects disabled; trust the endpoint. HTTP subscribe is unsupported; configured HTTP targets have the same limitation."},
+    "configPath": {"type": "string", "description": "Existing MCP JSON configuration path, absolute or relative to host project cwd; requires server for every resource action, including list. Use trusted configuration: connecting can launch its command or send its configured HTTP headers."},
+    "server": {"type": "string", "description": "Exact enabled mcpServers key; required with configPath, forbidden with url. subscribe requires a configured stdio server (not a configured HTTP server)."},
+    "action": {"type": "string", "enum": ["list", "read", "subscribe", "unsubscribe"], "default": "list", "description": "Defaults to list (aggregates resources, not resource templates). read/subscribe/unsubscribe require uri. subscribe registers stdio notifications; no initial read, updates arrive at TurnEnd. Repeat subscribe starts a new local lifetime and drops old queued updates. unsubscribe stops local delivery/purges queued content even if remote cleanup fails; returned unsubscribed=true is not a remote acknowledgement."},
+    "uri": {"type": "string", "description": "Exact server resource URI, required for read/subscribe/unsubscribe; ignored by list. Opaque string forwarded verbatim, not a local filesystem path and not locally URI-validated. Prefer a URI returned by list; the server determines access and existence."},
+    "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300, "description": "Per-request deadline in seconds, 1-300; omission uses configured timeout clamped to 1-300 (configuration default 60), or 60 for direct url. Not the subscription lifetime or a guarantee of update delivery. Each handshake/list/read/registration request has its own deadline."}
+  },
+  "oneOf": [
+    {"required": ["configPath", "server"], "not": {"required": ["url"]}},
+    {"required": ["url"], "not": {"anyOf": [{"required": ["configPath"]}, {"required": ["server"]}]}}
+  ],
+  "allOf": [
+    {"if": {"properties": {"action": {"enum": ["read", "subscribe", "unsubscribe"]}}, "required": ["action"]}, "then": {"required": ["uri"]}},
+    {"if": {"properties": {"action": {"const": "subscribe"}}, "required": ["action"]}, "then": {"required": ["configPath", "server"], "not": {"required": ["url"]}}}
+  ]
+}

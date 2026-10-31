@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "url": {"type": "string", "description": "Direct Streamable HTTP MCP endpoint (HTTP(S) with host, usually /mcp, not legacy /sse). No embedded credentials or configured auth headers; use configPath+server for headers. Mutually exclusive with configPath/server. Private/loopback hosts allowed, redirects disabled; trust the target before connecting."},
+    "configPath": {"type": "string", "description": "Path to an existing MCP JSON configuration, absolute or relative to host project cwd; required with server when url is absent. Configuration may launch local commands with configured environment/cwd or send configured HTTP headers; use only trusted configuration."},
+    "server": {"type": "string", "description": "Exact enabled server key from the configuration's mcpServers map; required with configPath, forbidden with url. Discover names with mcp_list using configPath only."},
+    "tool": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S", "description": "Required exact discovered tool name; nonblank, at most 200 UTF-8 bytes (runtime check). Adapter refreshes discovery before calling and rejects names not exposed by the server."},
+    "arguments": {"type": "object", "default": {}, "description": "Arguments object forwarded verbatim to the selected tool; defaults to {}. Inspect its discovered schema first and supply its required fields. Adapter checks object type, not conformance to the remote tool schema. Remote execution may have irreversible side effects."},
+    "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300, "description": "Per-request deadline in seconds, 1-300; omission uses configured timeout clamped to 1-300 (configuration default 60), or 60 for direct url. Each initialize/discovery/call request has its own deadline, not one total call budget. Does not override a remote tool's own timeout."}
+  },
+  "required": ["tool"],
+  "oneOf": [
+    {"required": ["configPath", "server"], "not": {"required": ["url"]}},
+    {"required": ["url"], "not": {"anyOf": [{"required": ["configPath"]}, {"required": ["server"]}]}}
+  ]
+}
