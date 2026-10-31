@@ -82,6 +82,7 @@ fn forwarded_model_provider_from(args: &[String]) -> (Option<String>, Option<Str
 /// A live ACP session backed by one `rpi --mode rpc` child process.
 pub struct Session {
     rpc: Arc<HostSession>,
+    context_presentation: tokio::sync::Mutex<crate::protocol::context_usage::Presentation>,
     durable: Option<Arc<DurableRuntime>>,
     configuration:
         tokio::sync::OnceCell<Option<Arc<rpi_extcore::configuration::ConfigurationRuntime>>>,
@@ -126,6 +127,7 @@ impl Session {
         };
         Ok(Arc::new(Self {
             rpc,
+            context_presentation: tokio::sync::Mutex::default(),
             durable,
             configuration: tokio::sync::OnceCell::new(),
             #[cfg(test)]
@@ -257,6 +259,7 @@ impl Session {
             None => self.rpc.begin_prompt(prompt_text(blocks)).await?,
         };
         let mut cancelled = false;
+        let mut settled = false;
         let mut dialogs = DialogTasks::default();
 
         let stop_reason = 'prompt: loop {
@@ -285,6 +288,9 @@ impl Session {
                             .await;
                     }
                     if let Some(outcome) = progress.outcome {
+                        // Tracker outcomes can also be rejection/invalid acceptance.
+                        // Only an authoritative settlement has new context to read.
+                        settled = value["type"] == "agent_settled";
                         break 'prompt outcome.map(|outcome| match outcome {
                             rpi_extcore::run::RunOutcome::Completed => "end_turn",
                             rpi_extcore::run::RunOutcome::Cancelled => "cancelled",
@@ -361,7 +367,58 @@ impl Session {
             }
         };
         dialogs.cancel_all(writer, acp_session_id).await;
+        if settled {
+            self.refresh_context_usage(writer, acp_session_id).await;
+        }
         stop_reason
+    }
+
+    /// A presentation gate spans the native read and completed frame write.
+    /// Contention skips this best-effort refresh instead of queuing readers.
+    async fn refresh_context_usage(&self, writer: &Writer, expected: &str) {
+        let Ok(mut presentation) = self.context_presentation.try_lock() else {
+            return;
+        };
+        tokio::select! {
+            biased;
+            _ = writer.terminal() => {},
+            usage = self.context_usage() => {
+                if let Ok(Some(usage)) = usage {
+                    presentation.deliver(writer, expected, &usage, false).await;
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn context_usage(
+        &self,
+    ) -> Result<Option<rpi_extcore::context_usage::ContextUsage>, String> {
+        self.rpc.context_usage().await
+    }
+
+    /// Startup already obtained state; never issue another native request here.
+    pub(crate) async fn initial_context_usage(
+        &self,
+        writer: &Writer,
+        expected: &str,
+        state: &Value,
+    ) {
+        let Ok(Some(usage)) = rpi_extcore::context_usage::parse_context_usage(state) else {
+            return;
+        };
+        // Lifecycle operations are serialized by the dispatcher. At most one
+        // initial waits behind a best-effort read (5s) and its frame (2s).
+        // A repeated successful load/resume must force delivery, even if equal.
+        let gate = tokio::time::timeout(
+            std::time::Duration::from_secs(7),
+            self.context_presentation.lock(),
+        );
+        let mut presentation = tokio::select! {
+            biased;
+            _ = writer.terminal() => return,
+            result = gate => match result { Ok(guard) => guard, Err(_) => return },
+        };
+        presentation.deliver(writer, expected, &usage, true).await;
     }
 
     pub(crate) fn configuration_lifecycle(&self) -> broadcast::Receiver<Value> {
@@ -1040,6 +1097,7 @@ mod tests {
         let (rpc, events) = HostSession::test_connection(stdin, 64);
         let session = Arc::new(Session {
             rpc: rpc.clone(),
+            context_presentation: tokio::sync::Mutex::default(),
             durable: Some(DurableRuntime::empty(rpc)),
             configuration: tokio::sync::OnceCell::new(),
             events: Some(events),
@@ -1162,6 +1220,7 @@ mod tests {
         let (session, _commands) = test_session();
         let unavailable = Session {
             rpc: session.rpc.clone(),
+            context_presentation: tokio::sync::Mutex::default(),
             durable: None,
             configuration: tokio::sync::OnceCell::new(),
             events: None,

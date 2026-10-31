@@ -112,6 +112,31 @@ Fixture coverage lives in `src/configuration_tests.rs`; run
 `cargo test --locked -p rpi-extcore --lib configuration::tests`.
 This is fixture coverage, not real-native execution or installed-host validation.
 
+## On-demand context usage
+
+`HostSession::context_usage()` returns an optional neutral `ContextUsage` from
+native `get_state.context`; `context_usage::parse_context_usage` also accepts an
+already-read native state. Required used/window integers are validated strictly;
+missing context or a zero/unknown window means no data, not zero usage. A known
+context requires a nonempty native session ID (maximum 4096 UTF-8 bytes).
+Native estimated/trailing provenance is retained when present. Valid usage above
+the window is not clamped. No model-catalog dependency, monetary units, cumulative
+stats, transcript read, persistent store or adapter types are introduced.
+
+Each host admits one usage read with an immediate try-lock, no waiting queue.
+The existing correlated native command path has a 5-second total caller budget,
+including native writer backpressure, and host-closure cancellation. Caller drop
+releases admission and correlation; late responses cannot settle a new read.
+No run lease or background worker is acquired. A host not advertising `get_state`
+is unsupported without a request; malformed advertised replies are errors.
+
+This is native's compaction-aware current-context **estimate**, not a tokenizer
+or a sum of historic token counters. `estimated: false` can still include
+estimated trailing messages. Native `get_state` internally reads the full branch
+and supplemental records; the bounded caller wait is not a bounded native
+algorithm or a hard interruption of its work. Adapters choose emission timing,
+identity matching, presentation coalescing and wire error handling.
+
 ## Modules
 
 | Module | Responsibility |
@@ -123,6 +148,7 @@ This is fixture coverage, not real-native execution or installed-host validation
 | `history` | Native transcript validation and active-branch recovery without client formatting |
 | `session_catalog` | Caller-owned bounded native-header discovery, continuation and frozen summary pages |
 | `configuration` | Shared bounded model/thinking observation, revision watch and serialized setters/readback |
+| `context_usage` | Typed native context estimate parsing and single-flight, lease-free on-demand reads |
 | `dialogs` | Question deadlines and validated answers, including multiple choices and comments |
 | `registry`, `projects`, `timing` | Durable supplemental metadata, project catalog and tool timings |
 | `workspace`, `process` | Scoped file/Git access and background native processes |
