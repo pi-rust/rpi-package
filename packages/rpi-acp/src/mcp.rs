@@ -1,5 +1,5 @@
-//! ACP-only stdio configuration conversion. Never format client values in errors.
-use rpi_extcore::external_tools::StdioToolServer;
+//! ACP-only configuration conversion. Never format client values in errors.
+use rpi_extcore::external_tools::{HttpToolServer, StdioToolServer, ToolServer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -16,7 +16,7 @@ const MAX_CONFIG_BYTES: usize = 256 * 1024;
 pub(crate) fn parse(
     params: &Map<String, Value>,
     cwd: &Path,
-) -> Result<Option<Vec<StdioToolServer>>, String> {
+) -> Result<Option<Vec<ToolServer>>, String> {
     let Some(value) = params.get("mcpServers") else {
         return Ok(None);
     };
@@ -37,17 +37,26 @@ pub(crate) fn parse(
         let server = server
             .as_object()
             .ok_or("mcpServers entries must be objects")?;
-        for field in ["type", "transport"] {
-            if let Some(value) = server.get(field) {
-                if value.as_str() != Some("stdio") {
-                    return Err("mcpServers supports only stdio transport (not HTTP/SSE or unknown transports)".into());
-                }
+        // HTTP must have an explicit type; only stdio may be implicit.
+        let transport = match server.get("type") {
+            None => "stdio",
+            Some(Value::String(kind)) if kind == "stdio" || kind == "http" => kind.as_str(),
+            _ => return Err("invalid MCP transport".into()),
+        };
+        if let Some(kind) = server.get("transport") {
+            if kind.as_str() != Some(transport) {
+                return Err("conflicting or invalid MCP transport".into());
             }
         }
-        if server.contains_key("url") || server.contains_key("headers") {
-            return Err(
-                "mcpServers supports only stdio transport; URL/headers are unsupported".into(),
-            );
+        if transport == "stdio" && (server.contains_key("url") || server.contains_key("headers")) {
+            return Err("stdio MCP server cannot contain URL or headers".into());
+        }
+        if transport == "http"
+            && ["command", "args", "env"]
+                .iter()
+                .any(|key| server.contains_key(*key))
+        {
+            return Err("HTTP MCP server cannot contain stdio fields".into());
         }
         let name = string(
             server.get("name"),
@@ -57,6 +66,50 @@ pub(crate) fn parse(
         )?;
         if !names.insert(name.to_owned()) {
             return Err("duplicate MCP server name".into());
+        }
+        if transport == "http" {
+            let url = string(server.get("url"), MAX_STRING, false, "invalid MCP HTTP URL")?;
+            let entries = server
+                .get("headers")
+                .and_then(Value::as_array)
+                .ok_or("MCP headers must be an array")?;
+            if entries.len() > 128 {
+                return Err("MCP headers exceeds 128 entries".into());
+            }
+            let mut headers = BTreeMap::new();
+            for entry in entries {
+                let entry = entry
+                    .as_object()
+                    .ok_or("MCP header entries must be objects")?;
+                let key = string(
+                    entry.get("name"),
+                    MAX_STRING,
+                    false,
+                    "invalid MCP header name",
+                )?
+                .to_ascii_lowercase();
+                let value = string(
+                    entry.get("value"),
+                    MAX_STRING,
+                    true,
+                    "invalid MCP header value",
+                )?;
+                // Check before inserting; core owns token/control/forbidden checks.
+                if headers.contains_key(&key) {
+                    return Err("duplicate MCP header name".into());
+                }
+                headers.insert(key, value.to_owned());
+            }
+            let target = ToolServer::Http(HttpToolServer {
+                name: name.to_owned(),
+                url: url.to_owned(),
+                headers,
+            });
+            target
+                .validate()
+                .map_err(|_| "invalid MCP HTTP configuration".to_owned())?;
+            result.push(target);
+            continue;
         }
         let command = string(
             server.get("command"),
@@ -114,12 +167,12 @@ pub(crate) fn parse(
                 return Err("duplicate MCP env name".into());
             }
         }
-        result.push(StdioToolServer {
+        result.push(ToolServer::Stdio(StdioToolServer {
             name: name.to_owned(),
             command,
             args,
             env,
-        });
+        }));
     }
     Ok(Some(result))
 }
@@ -157,11 +210,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn stdio(server: &ToolServer) -> &StdioToolServer {
+        match server {
+            ToolServer::Stdio(server) => server,
+            _ => panic!("expected stdio"),
+        }
+    }
     fn server() -> Value {
         json!({"name":"fixture", "command":"fixture-bin", "args":["", "--flag"],
             "env":[{"name":"TOKEN", "value":"secret-canary"}], "_meta":{"ignored":true}})
     }
-    fn parse_value(value: Value) -> Result<Option<Vec<StdioToolServer>>, String> {
+    fn parse_value(value: Value) -> Result<Option<Vec<ToolServer>>, String> {
         parse(
             &json!({"mcpServers":value}).as_object().unwrap().clone(),
             &std::env::current_dir().unwrap(),
@@ -180,9 +239,9 @@ mod tests {
         assert!(parse(&Map::new(), Path::new("not-used")).unwrap().is_none());
         assert!(parse_value(json!([])).unwrap().unwrap().is_empty());
         let servers = parse_value(json!([server()])).unwrap().unwrap();
-        assert_eq!(servers[0].command, "fixture-bin");
-        assert_eq!(servers[0].args, ["", "--flag"]);
-        assert_eq!(servers[0].env["TOKEN"], "secret-canary");
+        assert_eq!(stdio(&servers[0]).command, "fixture-bin");
+        assert_eq!(stdio(&servers[0]).args, ["", "--flag"]);
+        assert_eq!(stdio(&servers[0]).env["TOKEN"], "secret-canary");
     }
 
     #[test]
@@ -192,12 +251,18 @@ mod tests {
             let mut value = server();
             value["command"] = json!(relative);
             let servers = parse_value(json!([value])).unwrap().unwrap();
-            assert_eq!(Path::new(&servers[0].command), cwd.join("./bin/mcp"));
+            assert_eq!(
+                Path::new(&stdio(&servers[0]).command),
+                cwd.join("./bin/mcp")
+            );
         }
         let mut value = server();
         value["command"] = json!(cwd.join("absolute-mcp"));
         let servers = parse_value(json!([value])).unwrap().unwrap();
-        assert_eq!(Path::new(&servers[0].command), cwd.join("absolute-mcp"));
+        assert_eq!(
+            Path::new(&stdio(&servers[0]).command),
+            cwd.join("absolute-mcp")
+        );
         assert!(parse(
             json!({"mcpServers":[]}).as_object().unwrap(),
             Path::new("relative")
@@ -271,6 +336,169 @@ mod tests {
         }
         let mut value = server();
         value["args"] = json!(["secret-canary\0"]);
+        rejects(json!([value]));
+    }
+
+    fn http() -> Value {
+        json!({"type":"http", "name":"network", "url":"http://127.0.0.1:9876/mcp?token=secret-canary",
+            "headers":[{"name":"Authorization", "value":"secret-canary"}], "_meta":{"ok":true}})
+    }
+
+    #[test]
+    fn http_shape_and_header_canonicalization() {
+        let first = parse_value(json!([http()])).unwrap().unwrap();
+        let mut value = http();
+        value["transport"] = json!("http");
+        value["headers"][0]["name"] = json!("aUtHoRiZaTiOn");
+        let second = parse_value(json!([value])).unwrap().unwrap();
+        assert!(first == second);
+        let ToolServer::Http(http_server) = &first[0] else {
+            panic!("expected HTTP")
+        };
+        assert_eq!(http_server.headers["authorization"], "secret-canary");
+        for field in ["command", "args", "env"] {
+            let mut value = http();
+            value[field] = Value::Null;
+            rejects(json!([value]));
+        }
+        for field in ["name", "url", "headers"] {
+            for invalid in [Value::Null, json!(42)] {
+                let mut value = http();
+                value[field] = invalid;
+                rejects(json!([value]));
+            }
+            let mut value = http();
+            value.as_object_mut().unwrap().remove(field);
+            rejects(json!([value]));
+        }
+        for (kind, transport) in [
+            ("http", "stdio"),
+            ("stdio", "http"),
+            ("sse", "sse"),
+            ("other", "http"),
+        ] {
+            let mut value = http();
+            value["type"] = json!(kind);
+            value["transport"] = json!(transport);
+            rejects(json!([value]));
+        }
+        let mut value = http();
+        value.as_object_mut().unwrap().remove("type");
+        value["transport"] = json!("http");
+        rejects(json!([value]));
+        let mut value = http();
+        value["headers"] = json!([]);
+        assert!(parse_value(json!([value])).is_ok());
+        let mut value = server();
+        value["env"] = json!([{"name":"EMPTY", "value":""}]);
+        assert!(parse_value(json!([value])).is_ok());
+    }
+
+    #[test]
+    fn http_url_security_is_validated_before_contact_with_fixed_errors() {
+        for url in [
+            "",
+            "relative",
+            "//127.0.0.1/mcp",
+            "file:///secret-canary",
+            "ftp://localhost/mcp",
+            "http:///mcp",
+            "http://",
+            "http://user:secret-canary@localhost/mcp",
+            "http://@localhost/mcp",
+            "http://localhost/mcp#secret-canary",
+            "http://localhost/#",
+            " http://localhost/mcp",
+            "http://localhost/mcp ",
+            "http://local
+host/mcp",
+            "http://localhost/	secret-canary",
+            "http://localhost:bad/mcp",
+            "http://[broken/mcp",
+        ] {
+            let mut value = http();
+            value["url"] = json!(url);
+            rejects(json!([value]));
+        }
+        for url in [
+            "http://localhost/mcp",
+            "https://localhost:443/mcp?key=secret-canary",
+            "http://[::1]:123/mcp",
+        ] {
+            let mut value = http();
+            value["url"] = json!(url);
+            assert!(parse_value(json!([value])).is_ok());
+        }
+    }
+
+    #[test]
+    fn http_header_security_and_bounds() {
+        for name in [
+            "Host",
+            "Accept",
+            "Content-Type",
+            "Content-Length",
+            "Content-Encoding",
+            "Accept-Encoding",
+            "Mcp-Session-Id",
+            "MCP-Protocol-Version",
+            "Last-Event-ID",
+            "Connection",
+            "Keep-Alive",
+            "Proxy-Connection",
+            "Transfer-Encoding",
+            "TE",
+            "Trailer",
+            "Upgrade",
+            "Expect",
+            "Proxy-Authorization",
+            "Proxy-Authenticate",
+            "",
+            "bad name",
+            "bad:name",
+            "bad	name",
+            "näme",
+        ] {
+            for name in [name.to_owned(), name.to_ascii_uppercase()] {
+                let mut value = http();
+                value["headers"] = json!([{"name":name,"value":"secret-canary"}]);
+                rejects(json!([value]));
+            }
+        }
+        for headers in [
+            json!({}),
+            json!([null]),
+            json!([{"name":"X-Key"}]),
+            json!([{"value":"secret-canary"}]),
+            json!([{"name":7,"value":"secret-canary"}]),
+            json!([{"name":"X-Key","value":7}]),
+            json!([{"name":"X-Key","value":"a"},{"name":"x-KEY","value":"b"}]),
+            json!([{"name":"x".repeat(MAX_STRING + 1),"value":""}]),
+            json!([{"name":"X-Key","value":"x".repeat(MAX_STRING + 1)}]),
+        ] {
+            let mut value = http();
+            value["headers"] = headers;
+            rejects(json!([value]));
+        }
+        for control in (0u8..32).chain([127]) {
+            let mut value = http();
+            value["headers"][0]["value"] = json!(format!("secret-canary{}", char::from(control)));
+            rejects(json!([value]));
+        }
+        let mut value = http();
+        value["headers"] = json!((0..128)
+            .map(|i| json!({"name":format!("x-{i}"),"value":""}))
+            .collect::<Vec<_>>());
+        assert!(parse_value(json!([value.clone()])).is_ok());
+        value["headers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"extra","value":""}));
+        rejects(json!([value]));
+        let mut value = http();
+        value["headers"] = json!((0..17)
+            .map(|i| json!({"name":format!("x-{i}"),"value":"x".repeat(MAX_STRING)}))
+            .collect::<Vec<_>>());
         rejects(json!([value]));
     }
 

@@ -35,7 +35,7 @@ async fn install_empty_bridge(
 ) {
     let (candidate, catalog) = empty_candidate().await;
     let install =
-        session.install_stdio_catalog(candidate, catalog, session.cancellation.subscribe());
+        session.install_tool_catalog(candidate, catalog, session.cancellation.subscribe());
     let peer = async {
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
@@ -85,7 +85,7 @@ async fn external_unknown_native_rejected_before_spawn_and_configuration_holds_r
         session
             .configure_stdio_tools(
                 vec![server.clone()],
-                PathBuf::from("C:/fixture"),
+                std::env::current_dir().unwrap(),
                 "fixture".into()
             )
             .await
@@ -94,7 +94,11 @@ async fn external_unknown_native_rejected_before_spawn_and_configuration_holds_r
     );
     let _lease = session.try_run_lease().unwrap();
     assert!(session
-        .configure_stdio_tools(vec![server], PathBuf::from("C:/fixture"), "fixture".into())
+        .configure_stdio_tools(
+            vec![server],
+            std::env::current_dir().unwrap(),
+            "fixture".into(),
+        )
         .await
         .unwrap_err()
         .contains("already running"));
@@ -106,7 +110,7 @@ async fn external_rejected_atomic_batch_never_installs_candidate_or_echoes_error
     let mut peer = BufReader::new(peer);
     let (candidate, catalog) = empty_candidate().await;
     let install =
-        session.install_stdio_catalog(candidate, catalog, session.cancellation.subscribe());
+        session.install_tool_catalog(candidate, catalog, session.cancellation.subscribe());
     let reject = async {
         let mut line = String::new();
         peer.read_line(&mut line).await.unwrap();
@@ -141,7 +145,7 @@ async fn external_registration_acknowledgement_preserves_order_and_fails_closed_
         ];
         catalog.definitions = names.iter().map(|name| json!({"name":name,"description":"ack fixture","inputSchema":{"type":"object"}})).collect();
         let install =
-            session.install_stdio_catalog(candidate, catalog, session.cancellation.subscribe());
+            session.install_tool_catalog(candidate, catalog, session.cancellation.subscribe());
         let acknowledge = async {
             let mut line = String::new();
             tokio::time::timeout(Duration::from_secs(2), peer.read_line(&mut line))
@@ -190,7 +194,7 @@ async fn external_cancelled_native_registration_fails_closed_and_releases_lease(
     let caller = tokio::spawn(async move {
         let _lease = caller_session.try_run_lease().unwrap();
         caller_session
-            .install_stdio_catalog(candidate, catalog, caller_session.cancellation.subscribe())
+            .install_tool_catalog(candidate, catalog, caller_session.cancellation.subscribe())
             .await
     });
     let mut line = String::new();

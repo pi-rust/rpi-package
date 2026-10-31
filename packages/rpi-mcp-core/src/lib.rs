@@ -13,12 +13,13 @@ mod process;
 mod runtime;
 pub mod transport;
 pub use config::{Exposure, HttpServer, McpConfig, McpServerConfig, StdioServer};
-pub use configured::{ConfiguredStdio, DiscoveryLimits};
+pub use configured::{ConfiguredHttp, ConfiguredStdio, DiscoveryLimits};
 pub use connection::{
     initialize_request, initialized_notification, parse_initialize, parse_tools_call,
     parse_tools_list, tools_call_request, tools_list_request, ServerInfo, PROTOCOL_VERSION,
 };
 pub use control::Control;
+pub use http::validate_configured_http;
 pub use jsonrpc::{
     call_result_text, tool_list, ErrorObject, Notification, Request, Response, Tool,
 };
@@ -27,3 +28,6 @@ pub use runtime::{
     ResourceUpdateBatch,
 };
 pub use transport::{http_request, StdioTransport};
+
+#[cfg(test)]
+mod configured_http_tests;

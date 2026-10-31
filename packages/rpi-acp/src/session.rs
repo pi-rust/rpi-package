@@ -144,6 +144,16 @@ impl Session {
         self.rpc.state().await
     }
 
+    /// Thin neutral-core mapping; extcore owns validation, discovery and cleanup.
+    pub async fn configure_tools(
+        &self,
+        servers: Vec<rpi_extcore::external_tools::ToolServer>,
+        cwd: PathBuf,
+        scope: String,
+    ) -> Result<(), String> {
+        self.rpc.configure_tools(servers, cwd, scope).await
+    }
+
     /// Thin neutral-core mapping; extcore owns discovery, registration and cleanup.
     pub async fn configure_stdio_tools(
         &self,

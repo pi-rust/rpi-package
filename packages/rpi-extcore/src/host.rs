@@ -348,22 +348,45 @@ struct HostState {
 }
 
 impl HostSession {
-    /// Configure an explicit, session-owned stdio tool catalog while idle.
-    /// A live session cannot switch configurations: close/reopen it instead.
+    /// Compatibility wrapper for explicit stdio configuration.
     pub async fn configure_stdio_tools(
         &self,
         servers: Vec<crate::external_tools::StdioToolServer>,
         cwd: PathBuf,
         scope: String,
     ) -> Result<(), String> {
+        self.configure_tools(
+            servers
+                .into_iter()
+                .map(crate::external_tools::ToolServer::Stdio)
+                .collect(),
+            cwd,
+            scope,
+        )
+        .await
+    }
+
+    /// Configure one explicit, session-owned tool catalog while idle.
+    /// A live session cannot switch configurations: close/reopen it instead.
+    pub async fn configure_tools(
+        &self,
+        servers: Vec<crate::external_tools::ToolServer>,
+        cwd: PathBuf,
+        scope: String,
+    ) -> Result<(), String> {
         let _lease = self.try_run_lease()?;
         let mut configured = self.external_config.lock().await;
         self.ensure_running().await?;
-        let configuration = crate::external_tools::Configuration {
+        let mut configuration = crate::external_tools::Configuration {
             servers,
             cwd,
             scope,
         };
+        // Keep initial empty configuration compatible with legacy callers/hosts.
+        // Validation is pure and runs before canonical live comparison.
+        if !configuration.servers.is_empty() {
+            configuration.canonicalize()?;
+        }
         if let Some(previous) = configured.as_ref() {
             return if previous == &configuration {
                 Ok(())
@@ -391,13 +414,13 @@ impl HostSession {
             _ = cancellation.changed() => return Err("external tool configuration cancelled".into()),
             result = candidate.discover() => result?,
         };
-        self.install_stdio_catalog(candidate, catalog, cancellation)
+        self.install_tool_catalog(candidate, catalog, cancellation)
             .await?;
         *configured = Some(configuration);
         Ok(())
     }
 
-    async fn install_stdio_catalog(
+    async fn install_tool_catalog(
         &self,
         candidate: crate::external_tools::Candidate,
         catalog: crate::external_tools::Catalog,

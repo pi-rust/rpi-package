@@ -1,4 +1,4 @@
-name: MCP stdio checks
+name: MCP stdio and HTTP checks
 
 on:
   pull_request:
@@ -44,11 +44,15 @@ jobs:
       - name: Check package and included-test formatting
         run: |
           cargo fmt --check -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp
-          rustfmt --edition 2021 --check packages/rpi-mcp-adapter/src/http_tests.rs packages/rpi-extcore/src/external_tools.rs packages/rpi-extcore/src/external_tools_tests.rs packages/rpi-extcore/src/external_tools_host_tests.rs packages/rpi-acp/src/protocol_mcp_tests.rs
+          rustfmt --edition 2021 --check packages/rpi-mcp-core/src/configured_http_tests.rs packages/rpi-mcp-adapter/src/http_tests.rs packages/rpi-extcore/src/external_tools.rs packages/rpi-extcore/src/external_tools_tests.rs packages/rpi-extcore/src/external_tools_host_tests.rs packages/rpi-acp/src/protocol_mcp_tests.rs
       - name: Test default package compatibility and runtime ownership
         run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
+      - name: Test configured core HTTP transport with loopback fixtures
+        run: cargo test --locked -p rpi-mcp-core configured_http_tests
       - name: Test stdio bridge with real MCP children and a fixture native peer
         run: cargo test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge
+      - name: Test HTTP bridge with loopback MCP and a fixture native peer
+        run: cargo test --locked -p rpi-extcore --features test-support --test mcp_http_bridge
       - name: Check all targets
         run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web --all-targets
       # Only MCP core is a strict Clippy gate. Existing extcore warnings and

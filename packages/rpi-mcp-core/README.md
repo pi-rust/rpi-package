@@ -55,8 +55,9 @@ Embedders can supply validated configuration without reading or writing an MCP
 config file. `ConfiguredStdio::new(&context, server_name, config)` freezes a
 `StdioServer`, requires an explicit absolute context cwd, and uses it when the
 server has no cwd. An explicitly configured cwd must also be absolute. Scope,
-server name, command, arguments and environment fields must be nonblank and
-NUL-free; environment keys cannot contain `=`. Disabled targets and timeouts
+server name, command and environment keys must be nonblank; arguments and
+environment values may be empty or whitespace. All must be NUL-free;
+environment keys cannot contain `=`. Disabled targets and timeouts
 outside 1–300 seconds are rejected. Errors never echo configuration values.
 Targets are `Clone`, deliberately not `Debug`, and do not retain a runtime.
 
@@ -106,6 +107,47 @@ Legacy config-file/HTTP APIs retain their existing discovery and reconnect
 behavior. Typed transport/remote-RPC errors omit server stderr and error payloads,
 which can contain credentials. Methods remain blocking and cancellable via
 `Control`; the embedding caller owns the total multi-page deadline.
+
+## In-memory Streamable HTTP targets (tools only)
+
+`ConfiguredHttp::new(&context, server_name, HttpServer)` freezes explicit HTTP
+configuration without a config file. Like `ConfiguredStdio`, it is `Clone`, not
+`Debug`, requires an absolute UTF-8 context cwd and nonblank NUL-free scope/name,
+and rejects disabled targets and timeouts outside 1–300 seconds. Its nonsecret
+key is `[scope,["configured-http"],serverName]`, separate from stdio and legacy
+keys. URL queries and headers may contain credentials; they are not identities.
+
+Use `McpRuntime::discover_http(&target, limits, &control)` to admit a bounded
+catalog, then `call_http(&target, tool, arguments, &control)` for raw MCP results.
+Clones share frozen configuration and live-generation admission; independently
+constructed targets do not. Calls never initialize, requery `tools/list`,
+reconnect or replay. Transport/RPC failure, cancellation or HTTP 404 retires the
+connection; explicit successful fresh discovery is required before later calls.
+An MCP result with `isError` remains a result, not transport recovery.
+
+URLs must be absolute HTTP(S) with a host, no userinfo (including empty userinfo),
+fragment, surrounding whitespace or control characters. Query strings are
+opaque and potentially secret. Static `Authorization` and custom headers are
+supported; names are ASCII HTTP tokens, normalized to lowercase, and duplicates
+are rejected case-insensitively before normalization. Empty values are valid;
+control characters are not. Reserved transport/framing and hop-by-hop headers
+are forbidden: `Host`, `Accept`, `Content-Type`, `Content-Length`,
+`Content-Encoding`, `Accept-Encoding`, `Mcp-Session-Id`, `MCP-Protocol-Version`,
+`Last-Event-ID`, `Connection`, `Keep-Alive`, `Proxy-Connection`,
+`Transfer-Encoding`, `TE`, `Trailer`, `Upgrade`, `Expect`, `Proxy-Authorization`
+and `Proxy-Authenticate`.
+
+The typed path disables ambient proxies and redirects. Its strict validation
+and no-proxy policy do not change legacy config-file/HTTP APIs. This is trusted
+caller outbound authority, **not an SSRF sandbox**: local/private-network HTTP
+is allowed. Prefer HTTPS, especially for credentials. The tools-only path uses
+POST JSON or POST response-body SSE, not legacy SSE, background GET streams,
+resources, prompts, sampling or OAuth/credential refresh.
+
+Cancellation notifications are best effort with a 200 ms request timeout;
+closing a connection with a session ID attempts DELETE with a 1-second request
+timeout. These are per-connection attempts, not a global hard shutdown bound,
+a guarantee of server cleanup, or undo of a remote tool's side effects.
 
 ## Resource updates
 
@@ -157,12 +199,13 @@ Cleanup depends on OS termination and pipe semantics. Escaped/inherited handles,
 failed OS termination and permanently blocked OS I/O do not acquire a hard
 shutdown deadline. HTTP resource push remains unsupported. OAuth, sampling,
 elicitation and prompts are not implemented. The embedding crate does not activate plugins or extend native RPC by itself.
-`rpi-extcore` now uses the in-memory stdio API for per-session native tool
+`rpi-extcore` now uses the in-memory stdio and HTTP APIs for per-session native tool
 registration; `rpi-acp` only parses ACP `mcpServers` and maps it into that neutral
 API. Native rpi still owns schema validation, provenance, result projection and
 history; ACP independently formats native events for its client. This integration
-does not expose the legacy resource/HTTP APIs through ACP and adds no MCP
-resources, prompts, OAuth, plugin activation or remote attachment.
+does not expose the legacy resource APIs through ACP and adds no MCP
+resources, prompts, sampling, OAuth, legacy SSE/GET streams, plugin activation
+or remote attachment. It does not change native or Web implementations.
 
 The extcore policy bounds ACP configuration to 16 servers / 256 KiB and the
 native catalog to 128 tools / 256 KiB, with 30-second total discovery, 45-second
@@ -179,7 +222,7 @@ errors rather than silent filtering.
 
 Source fixtures and the three-OS workflow do not prove real-native compatibility.
 The separately provenance-gated Windows smoke and retained diagnostic outputs are
-described in the [ACP README](../rpi-acp/README.md#stdio-validation-and-native-smoke).
+described in the [ACP README](../rpi-acp/README.md#mcp-validation-and-native-smoke).
 The same README documents restored-workspace preflight, which uses bounded
 native metadata through extcore rather than adding protocol policy to MCP core.
 

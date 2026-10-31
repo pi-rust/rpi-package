@@ -1,6 +1,7 @@
-//! Session-owned, protocol-neutral MCP stdio tools for the native RPC host.
+//! Session-owned, protocol-neutral MCP tools for the native RPC host.
 use rpi_mcp_core::{
-    ConfiguredStdio, Control, CoreRequestContext, DiscoveryLimits, McpRuntime, StdioServer,
+    ConfiguredHttp, ConfiguredStdio, Control, CoreRequestContext, DiscoveryLimits, HttpServer,
+    McpRuntime, StdioServer,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -21,6 +22,70 @@ pub struct StdioToolServer {
     pub env: BTreeMap<String, String>,
 }
 
+/// Explicit HTTP configuration. Deliberately not Debug: URL/headers may contain secrets.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HttpToolServer {
+    pub name: String,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+}
+
+/// Transport-specific configuration, never serialized or persisted by the bridge.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ToolServer {
+    Stdio(StdioToolServer),
+    Http(HttpToolServer),
+}
+impl ToolServer {
+    /// Validate explicit transport authority without starting a process or making
+    /// a network request. Adapters use this before spawning the native host.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Stdio(server) => {
+                if server.name.trim().is_empty()
+                    || server.name.len() > 200
+                    || server.name.contains('\0')
+                    || server.command.trim().is_empty()
+                    || server.command.contains('\0')
+                    || server.args.len() > 256
+                    || server.args.iter().any(|value| value.contains('\0'))
+                    || server.env.len() > 256
+                    || server.env.iter().any(|(name, value)| {
+                        name.trim().is_empty() || name.contains(['\0', '=']) || value.contains('\0')
+                    })
+                {
+                    return Err("invalid external tool configuration".into());
+                }
+            }
+            Self::Http(server) => {
+                if server.name.trim().is_empty()
+                    || server.name.len() > 200
+                    || server.name.contains('\0')
+                    || server.headers.len() > 128
+                {
+                    return Err("invalid external tool configuration".into());
+                }
+                rpi_mcp_core::validate_configured_http(&server.url, &server.headers)
+                    .map_err(|_| "invalid external tool configuration")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Stdio(server) => &server.name,
+            Self::Http(server) => &server.name,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Target {
+    Stdio(ConfiguredStdio),
+    Http(ConfiguredHttp),
+}
+
 const MAX_CALLS: usize = 64;
 const MAX_TOOLS: usize = 128;
 const MAX_CATALOG: usize = 256 * 1024;
@@ -32,13 +97,29 @@ mod tests;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Configuration {
-    pub servers: Vec<StdioToolServer>,
+    pub servers: Vec<ToolServer>,
     pub cwd: PathBuf,
     pub scope: String,
 }
 
 impl Configuration {
-    fn targets(&self) -> Result<Vec<ConfiguredStdio>, String> {
+    /// Validate original headers before folding case, so duplicate aliases cannot
+    /// disappear in collection. Only validated, canonical config participates in
+    /// live equality. Constructors do not contact either transport.
+    pub(crate) fn canonicalize(&mut self) -> Result<(), String> {
+        self.targets()?;
+        for server in &mut self.servers {
+            if let ToolServer::Http(server) = server {
+                server.headers = std::mem::take(&mut server.headers)
+                    .into_iter()
+                    .map(|(name, value)| (name.to_ascii_lowercase(), value))
+                    .collect();
+            }
+        }
+        Ok(())
+    }
+
+    fn targets(&self) -> Result<Vec<Target>, String> {
         if self.servers.len() > 16
             || !self.cwd.is_absolute()
             || self.scope.trim().is_empty()
@@ -55,36 +136,58 @@ impl Configuration {
         let mut bytes = 0usize;
         self.servers
             .iter()
-            .map(|s| {
-                if !names.insert(&s.name)
-                    || s.name.len() > 200
-                    || s.args.len() > 256
-                    || s.env.len() > 256
-                {
+            .map(|server| {
+                server.validate()?;
+                if !names.insert(server.name()) || server.name().len() > 200 {
                     return Err("invalid external tool configuration".into());
                 }
-                // Bound the encoded configuration, without ever writing a transient config file.
-                bytes = bytes.saturating_add(
-                    json!({"name":s.name,"command":s.command,"args":s.args,"env":s.env})
-                        .to_string()
-                        .len(),
-                );
+                // Bound encoded configuration without writing a transient file.
+                let encoded = match server {
+                    ToolServer::Stdio(s) => {
+                        if s.args.len() > 256 || s.env.len() > 256 {
+                            return Err("invalid external tool configuration".into());
+                        }
+                        json!({"name":s.name,"command":s.command,"args":s.args,"env":s.env})
+                    }
+                    ToolServer::Http(s) => {
+                        if s.headers.len() > 128 {
+                            return Err("invalid external tool configuration".into());
+                        }
+                        json!({"name":s.name,"url":s.url,"headers":s.headers})
+                    }
+                };
+                bytes = bytes.saturating_add(encoded.to_string().len());
                 if bytes > MAX_CATALOG {
                     return Err("external tool configuration is too large".into());
                 }
-                ConfiguredStdio::new(
-                    &context,
-                    &s.name,
-                    StdioServer {
-                        command: s.command.clone(),
-                        args: s.args.clone(),
-                        env: s.env.clone(),
-                        cwd: Some(cwd.into()),
-                        enabled: true,
-                        timeout: 45,
-                        exposure: Default::default(),
-                    },
-                )
+                match server {
+                    ToolServer::Stdio(s) => ConfiguredStdio::new(
+                        &context,
+                        &s.name,
+                        StdioServer {
+                            command: s.command.clone(),
+                            args: s.args.clone(),
+                            env: s.env.clone(),
+                            cwd: Some(cwd.into()),
+                            enabled: true,
+                            timeout: 45,
+                            exposure: Default::default(),
+                        },
+                    )
+                    .map(Target::Stdio),
+                    ToolServer::Http(s) => ConfiguredHttp::new(
+                        &context,
+                        &s.name,
+                        HttpServer {
+                            url: s.url.clone(),
+                            headers: s.headers.clone(),
+                            enabled: true,
+                            timeout: 45,
+                            exposure: Default::default(),
+                        },
+                    )
+                    .map(Target::Http),
+                }
                 .map_err(|_| "invalid external tool configuration".into())
             })
             .collect()
@@ -92,7 +195,7 @@ impl Configuration {
 }
 
 struct Binding {
-    target: ConfiguredStdio,
+    target: Target,
     tool: String,
 }
 pub(crate) struct Catalog {
@@ -113,7 +216,7 @@ fn native_name(server: &str, tool: &str) -> String {
 fn discover(
     runtime: &McpRuntime,
     config: &Configuration,
-    targets: Vec<ConfiguredStdio>,
+    targets: Vec<Target>,
     control: &Control,
 ) -> Result<Catalog, String> {
     let mut catalog = Catalog {
@@ -122,16 +225,15 @@ fn discover(
     };
     for (server, target) in config.servers.iter().zip(targets) {
         control.check()?;
-        let found = runtime
-            .discover_stdio(
-                &target,
-                DiscoveryLimits {
-                    max_tools: MAX_TOOLS - catalog.definitions.len(),
-                    max_catalog_bytes: MAX_CATALOG,
-                },
-                control,
-            )
-            .map_err(|_| "external tool discovery failed".to_string())?;
+        let limits = DiscoveryLimits {
+            max_tools: MAX_TOOLS - catalog.definitions.len(),
+            max_catalog_bytes: MAX_CATALOG,
+        };
+        let found = match &target {
+            Target::Stdio(target) => runtime.discover_stdio(target, limits, control),
+            Target::Http(target) => runtime.discover_http(target, limits, control),
+        }
+        .map_err(|_| "external tool discovery failed".to_string())?;
         for tool in found.tools {
             if catalog.definitions.len() >= MAX_TOOLS
                 || !tool.input_schema.is_object()
@@ -139,10 +241,12 @@ fn discover(
             {
                 return Err("invalid external tool catalog".into());
             }
-            let name = native_name(&server.name, &tool.name);
+            let name = native_name(server.name(), &tool.name);
             let description = format!(
                 "MCP server: {}\nMCP tool: {}\n{}",
-                server.name, tool.name, tool.description
+                server.name(),
+                tool.name,
+                tool.description
             );
             if description.len() > 8 * 1024 {
                 return Err("external tool description is too large".into());
@@ -410,8 +514,13 @@ async fn invoke(
             // be overwritten. The select below explicitly cancels this primary.
             let call_control = Control::default();
             let blocking_control = call_control.clone();
-            let mut call = tokio::task::spawn_blocking(move || {
-                runtime.call_stdio(&target, &tool, arguments, &blocking_control)
+            let mut call = tokio::task::spawn_blocking(move || match target {
+                Target::Stdio(target) => {
+                    runtime.call_stdio(&target, &tool, arguments, &blocking_control)
+                }
+                Target::Http(target) => {
+                    runtime.call_http(&target, &tool, arguments, &blocking_control)
+                }
             });
             let result = tokio::select! {
                 biased;
