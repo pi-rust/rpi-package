@@ -42,8 +42,22 @@ This metadata snapshot is not a concurrent-filesystem sandbox.
 protocol-neutral, caller-owned catalog; construction performs validation only.
 `page(CatalogQuery { cwd, cursor, limit }, CatalogControl)` advances a bounded
 scan or returns a frozen page. Call `shutdown().await` to cancel and drain owned
-workers. Dropping a page cancels its control without releasing admission early;
-catalog drop cancels workers, which retain their cleanup owner until exit.
+workers. An admitted page returns its worker-produced result only after that
+specific blocking task has exited, including worker-produced errors; sequential
+awaited pages therefore do not overlap their own retained worker tails. Other
+concurrent requests still receive `Conflict` at capacity without waiting. The
+originating page alone polls its retained handle; pruning/shutdown only observe
+completion. Dropping a page, including during this exit wait, cancels its control
+without releasing admission early; catalog drop cancels workers, which retain
+their cleanup owner until exit. A cancelled shutdown can be retried. This exit
+barrier is not a hard timeout or preemption of synchronous filesystem I/O, and
+does not move the existing result commit/cancellation-check point.
+
+Deterministic per-catalog post-result/post-unlock tail gates in
+`src/session_catalog_completion_tests.rs` cover single/default worker limits,
+independent worker completion, errors, cancellation, owner drop, shutdown retry
+and Send futures. They are filesystem-worker fixtures, not native RPC execution
+or installed-extension qualification.
 
 The explicit root contains `UUID/encoded-cwd/timestamp_UUID.jsonl`. Discovery
 validates canonical lowercase UUID, native v4 header identity, creation timestamp,
