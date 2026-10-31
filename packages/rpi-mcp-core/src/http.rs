@@ -18,7 +18,70 @@ pub fn validate_mcp_url(input: &str) -> Result<url::Url, String> {
     Ok(url)
 }
 
-#[derive(Debug)]
+/// Validate configured-only URL/header syntax without returning or echoing values.
+/// Does not validate embedding policy (scope, cwd, enabled, timeout or size bounds).
+/// Header names are compared ASCII case-insensitively; empty values are allowed.
+/// This policy is deliberately separate from the legacy HTTP transport APIs.
+pub fn validate_configured_http(
+    input: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    // WHATWG parsing normalizes backslashes into slashes for HTTP(S), so
+    // reject them before parsing rather than silently changing caller authority.
+    if input.trim() != input || input.chars().any(char::is_control) || input.contains(['#', '\\']) {
+        return Err("MCP configured HTTP URL is invalid".into());
+    }
+    let url = url::Url::parse(input).map_err(|_| "MCP configured HTTP URL is invalid")?;
+    let authority = input
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '\\', '?', '#']).next().unwrap_or(""));
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || authority.map_or(true, |a| a.is_empty() || a.contains('@'))
+    {
+        return Err(
+            "MCP configured HTTP URL must have an HTTP(S) host without userinfo or fragment".into(),
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (name, value) in headers {
+        let lower = name.to_ascii_lowercase();
+        if !name.is_ascii()
+            || reqwest::header::HeaderName::try_from(name.as_str()).is_err()
+            || !seen.insert(lower.clone())
+            || matches!(
+                lower.as_str(),
+                "host"
+                    | "accept"
+                    | "content-type"
+                    | "content-length"
+                    | "content-encoding"
+                    | "accept-encoding"
+                    | "mcp-session-id"
+                    | "mcp-protocol-version"
+                    | "last-event-id"
+                    | "connection"
+                    | "keep-alive"
+                    | "proxy-connection"
+                    | "transfer-encoding"
+                    | "te"
+                    | "trailer"
+                    | "upgrade"
+                    | "expect"
+                    | "proxy-authorization"
+                    | "proxy-authenticate"
+            )
+            || value.chars().any(char::is_control)
+            || reqwest::header::HeaderValue::try_from(value.as_str()).is_err()
+        {
+            return Err("MCP configured HTTP headers are invalid, duplicated or reserved".into());
+        }
+    }
+    Ok(())
+}
+
 pub struct HttpTransport {
     client: Client,
     runtime: tokio::runtime::Runtime,
@@ -26,6 +89,13 @@ pub struct HttpTransport {
     session: Option<String>,
     pub(crate) version: Option<String>,
     timeout: u64,
+    configured: bool,
+}
+
+impl std::fmt::Debug for HttpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpTransport").finish_non_exhaustive()
+    }
 }
 
 impl HttpTransport {
@@ -33,6 +103,15 @@ impl HttpTransport {
         Self::with_user_agent(server, concat!("rpi-mcp-core/", env!("CARGO_PKG_VERSION")))
     }
     pub fn with_user_agent(server: &HttpServer, user_agent: &str) -> Result<Self, String> {
+        Self::build(server, user_agent, false)
+    }
+    /// Only typed session access may select the no-ambient-proxy policy.
+    pub(crate) fn configured(server: &HttpServer, user_agent: &str) -> Result<Self, String> {
+        validate_configured_http(&server.url, &server.headers)?;
+        Self::build(server, user_agent, true)
+            .map_err(|_| "MCP configured HTTP client initialization failed".into())
+    }
+    fn build(server: &HttpServer, user_agent: &str, configured: bool) -> Result<Self, String> {
         let url = validate_mcp_url(&server.url)?;
         let mut headers = reqwest::header::HeaderMap::new();
         for (name, value) in &server.headers {
@@ -42,14 +121,18 @@ impl HttpTransport {
                     .map_err(|e| e.to_string())?,
             );
         }
-        let client = Client::builder()
+        let builder = Client::builder()
             .pool_max_idle_per_host(0)
             .tcp_nodelay(true)
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(user_agent)
-            .build()
-            .map_err(|e| e.to_string())?;
+            .user_agent(user_agent);
+        let builder = if configured {
+            builder.no_proxy()
+        } else {
+            builder
+        };
+        let client = builder.build().map_err(|e| e.to_string())?;
         Ok(Self {
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -60,6 +143,7 @@ impl HttpTransport {
             session: None,
             version: None,
             timeout: server.timeout.clamp(1, 300),
+            configured,
         })
     }
     pub fn set_timeout(&mut self, seconds: u64) {
@@ -103,7 +187,14 @@ impl HttpTransport {
         let deadline = Deadline::new(self.timeout, &method, control);
         let id = value.get("id").cloned();
         let is_initialize = method == "initialize";
-        let result = self.run(&deadline, self.exchange(&value));
+        let mut provisional_session = None;
+        let result = self.run(&deadline, self.exchange(&value, &mut provisional_session));
+        // `run` has dropped exchange, including on timeout/cancellation. Retain
+        // known cleanup authority before cancellation notification or Drop, even
+        // when the initialization body never produced a valid response.
+        if let Some(session) = provisional_session {
+            self.session = Some(session);
+        }
         let (response, session) = match result {
             Ok(result) => result,
             Err(error) => {
@@ -127,7 +218,11 @@ impl HttpTransport {
         }
         Ok(response)
     }
-    async fn exchange(&self, value: &Value) -> Result<(Value, Option<String>), String> {
+    async fn exchange(
+        &self,
+        value: &Value,
+        provisional_session: &mut Option<String>,
+    ) -> Result<(Value, Option<String>), String> {
         if serde_json::to_vec(value).map_err(|e| e.to_string())?.len() > MAX_MESSAGE {
             return Err("MCP request exceeded the 16 MiB limit".into());
         }
@@ -155,6 +250,9 @@ impl HttpTransport {
             if session.is_empty() || !session.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
                 return Err("invalid MCP session ID".into());
             }
+        }
+        if self.configured && value.get("method").and_then(Value::as_str) == Some("initialize") {
+            *provisional_session = session.clone();
         }
         let Some(id) = value.get("id") else {
             if response.status() != StatusCode::ACCEPTED {

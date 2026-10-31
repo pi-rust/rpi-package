@@ -7,8 +7,8 @@ use crate::connection::{
 use crate::control::{Control, Deadline};
 use crate::http::HttpTransport;
 use crate::{
-    ConfiguredStdio, DiscoveryLimits, McpConfig, McpServerConfig, Request, Response, ServerInfo,
-    StdioTransport, Tool,
+    ConfiguredHttp, ConfiguredStdio, DiscoveryLimits, McpConfig, McpServerConfig, Request,
+    Response, ServerInfo, StdioTransport, Tool,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -67,6 +67,7 @@ impl Session {
         control: &Control,
         notifications: &SyncSender<Value>,
         identity: &ClientIdentity,
+        access: &SessionAccess<'_>,
     ) -> Result<Self, String> {
         control.check()?;
         let mut transport = match config {
@@ -77,9 +78,10 @@ impl Session {
                 s.cwd.as_deref(),
                 Some(notifications.clone()),
             )?),
-            McpServerConfig::Http(s) => {
-                Transport::Http(HttpTransport::with_user_agent(s, &identity.user_agent())?)
-            }
+            McpServerConfig::Http(s) => Transport::Http(match access {
+                SessionAccess::Legacy => HttpTransport::with_user_agent(s, &identity.user_agent())?,
+                _ => HttpTransport::configured(s, &identity.user_agent())?,
+            }),
         };
         transport.timeout(timeout);
         let info = parse_initialize(transport.request(
@@ -145,6 +147,36 @@ impl Session {
         Err("MCP tools/list exceeded 100 pages".into())
     }
 }
+struct TypedTarget<'a> {
+    key: &'a str,
+    name: &'a str,
+    config: McpServerConfig,
+    timeout: u64,
+    generation: &'a Mutex<Option<Arc<()>>>,
+}
+impl<'a> From<&'a ConfiguredStdio> for TypedTarget<'a> {
+    fn from(target: &'a ConfiguredStdio) -> Self {
+        Self {
+            key: &target.key,
+            name: &target.name,
+            config: McpServerConfig::Stdio(target.config.clone()),
+            timeout: target.config.timeout,
+            generation: &target.generation,
+        }
+    }
+}
+impl<'a> From<&'a ConfiguredHttp> for TypedTarget<'a> {
+    fn from(target: &'a ConfiguredHttp) -> Self {
+        Self {
+            key: &target.key,
+            name: &target.name,
+            config: McpServerConfig::Http(target.config.clone()),
+            timeout: target.config.timeout,
+            generation: &target.generation,
+        }
+    }
+}
+
 enum SessionAccess<'a> {
     Legacy,
     Discover,
@@ -339,15 +371,38 @@ impl McpRuntime {
         limits: DiscoveryLimits,
         control: &Control,
     ) -> Result<DiscoveredServer, String> {
-        let deadline = Deadline::new(target.config.timeout, "stdio target lock", control);
-        let mut admission = lock_until(&target.generation, &deadline)?;
+        self.discover_configured(target.into(), limits, control)
+    }
+
+    /// Discover configured HTTP using the same bounded catalog and generation admission as stdio.
+    pub fn discover_http(
+        &self,
+        target: &ConfiguredHttp,
+        limits: DiscoveryLimits,
+        control: &Control,
+    ) -> Result<DiscoveredServer, String> {
+        self.discover_configured(target.into(), limits, control)
+    }
+
+    fn discover_configured(
+        &self,
+        target: TypedTarget<'_>,
+        limits: DiscoveryLimits,
+        control: &Control,
+    ) -> Result<DiscoveredServer, String> {
+        let deadline = Deadline::new(target.timeout, "configured target lock", control);
+        let mut admission = lock_until(target.generation, &deadline)?;
         // A failed rediscovery must not leave the old catalog callable.
         *admission = None;
         let mut catalog = Catalog::new(limits)?;
+        let list_failure = match &target.config {
+            McpServerConfig::Stdio(_) => "MCP stdio tools/list failed",
+            McpServerConfig::Http(_) => "MCP configured tools/list failed",
+        };
         self.state.with_session_access(
-            target.key.clone(),
-            McpServerConfig::Stdio(target.config.clone()),
-            target.config.timeout,
+            target.key.into(),
+            target.config,
+            target.timeout,
             control,
             None,
             SessionAccess::Discover,
@@ -362,7 +417,7 @@ impl McpRuntime {
                     let result = session
                         .request("tools/list", params, control)
                         .and_then(response_result)
-                        .map_err(|_| "MCP stdio tools/list failed")?;
+                        .map_err(|_| list_failure)?;
                     cursor = catalog.page(&result)?;
                     if cursor.is_none() {
                         break;
@@ -371,7 +426,7 @@ impl McpRuntime {
                 control.check()?;
                 *admission = Some(session.generation.clone());
                 Ok(DiscoveredServer {
-                    name: target.name.clone(),
+                    name: target.name.into(),
                     info: session.info.clone(),
                     tools: catalog.tools,
                 })
@@ -388,20 +443,46 @@ impl McpRuntime {
         arguments: Value,
         control: &Control,
     ) -> Result<Value, String> {
+        self.call_configured(target.into(), tool, arguments, control)
+    }
+
+    /// Call only the live generation admitted by HTTP discovery. Never initializes,
+    /// reconnects, lists tools or replays; returns the raw MCP result.
+    pub fn call_http(
+        &self,
+        target: &ConfiguredHttp,
+        tool: &str,
+        arguments: Value,
+        control: &Control,
+    ) -> Result<Value, String> {
+        self.call_configured(target.into(), tool, arguments, control)
+    }
+
+    fn call_configured(
+        &self,
+        target: TypedTarget<'_>,
+        tool: &str,
+        arguments: Value,
+        control: &Control,
+    ) -> Result<Value, String> {
         control.check()?;
         validate_tool_name(tool)?;
         if !arguments.is_object() {
             return Err("MCP arguments must be an object".into());
         }
-        let deadline = Deadline::new(target.config.timeout, "stdio target lock", control);
-        let admission = lock_until(&target.generation, &deadline)?;
+        let deadline = Deadline::new(target.timeout, "configured target lock", control);
+        let admission = lock_until(target.generation, &deadline)?;
         let generation = admission
             .as_ref()
-            .ok_or("MCP stdio target requires discovery")?;
+            .ok_or("MCP configured target requires discovery")?;
+        let call_failure = match &target.config {
+            McpServerConfig::Stdio(_) => "MCP stdio tools/call failed",
+            McpServerConfig::Http(_) => "MCP configured tools/call failed",
+        };
         self.state.with_session_access(
-            target.key.clone(),
-            McpServerConfig::Stdio(target.config.clone()),
-            target.config.timeout,
+            target.key.into(),
+            target.config,
+            target.timeout,
             control,
             None,
             SessionAccess::Existing(generation),
@@ -414,7 +495,7 @@ impl McpRuntime {
                         control,
                     )
                     .and_then(response_result)
-                    .map_err(|_| "MCP stdio tools/call failed".into())
+                    .map_err(|_| call_failure.into())
             },
         )
     }
@@ -867,7 +948,7 @@ impl State {
             // Existing-only access must fail before creating any entry/worker.
             if matches!(access, SessionAccess::Existing(_)) && !sessions.contains_key(&key) {
                 return Err(
-                    "MCP stdio discovery connection is retired; rediscover required".into(),
+                    "MCP configured discovery connection is retired; rediscover required".into(),
                 );
             }
             if !sessions.contains_key(&key) && sessions.len() >= 64 {
@@ -901,7 +982,9 @@ impl State {
                     !session.failed && Arc::ptr_eq(&session.generation, expected)
                 })
             {
-                return Err("MCP stdio discovery connection is stale; rediscover required".into());
+                return Err(
+                    "MCP configured discovery connection is stale; rediscover required".into(),
+                );
             }
         }
         if state.config.as_ref() != Some(&config) {
@@ -920,10 +1003,11 @@ impl State {
                 &control,
                 &entry.notifications,
                 &self.identity,
+                &access,
             )
             .map_err(|error| match access {
                 SessionAccess::Legacy => error,
-                _ => "MCP stdio initialization failed".into(),
+                _ => "MCP configured initialization failed".into(),
             })?;
             if let Err(error) =
                 self.restore_subscriptions(&key, &mut session, &control, skip_restore_uri)
@@ -939,7 +1023,13 @@ impl State {
         let session = state.session.as_mut().ok_or("MCP session unavailable")?;
         session.transport.timeout(timeout);
         let result = run(session, &control, new_connection);
-        if session.failed {
+        if session.failed
+            || (result.is_err()
+                && !matches!(access, SessionAccess::Legacy)
+                && matches!(config, McpServerConfig::Http(_)))
+        {
+            // Typed HTTP also retires on decoded JSON-RPC/protocol errors from
+            // the callback. Legacy and stdio keep their existing error behavior.
             state.session.take();
         } // Do not retry tool calls: they may have side effects.
         result

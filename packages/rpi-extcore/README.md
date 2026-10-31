@@ -50,23 +50,39 @@ This metadata snapshot is not a concurrent-filesystem sandbox.
 | `workspace`, `process` | Scoped file/Git access and background native processes |
 | `reply`, `protocol` | Neutral operation outcomes and the existing native command contract |
 
-## Session-owned stdio tools
+## Session-owned MCP tools (stdio and Streamable HTTP)
 
-`external_tools::StdioToolServer` and
-`HostSession::configure_stdio_tools(servers, cwd, scope)` accept explicit stdio
-configuration without ACP types, temporary configuration files, or persistence
-of command arguments/environment. Configuration is intentionally not `Debug`.
+`external_tools::ToolServer::{Stdio, Http}` contains `StdioToolServer` or
+`HttpToolServer { name, url, headers }` (`headers` is a `BTreeMap<String, String>`).
+`HostSession::configure_tools(servers, cwd, scope)` accepts this neutral API;
+`configure_stdio_tools` remains a compatibility wrapper. No ACP types,
+temporary configuration files or configuration persistence are introduced.
+Configuration is intentionally not `Debug`.
 The caller must provide an absolute working directory and a scope. Empty initial
 configuration works with older native hosts; nonempty configuration requires
 both native commands `configure_external_tools` / `external_tool_response` and
 events `external_tool_request` / `external_tool_request_closed` before any MCP
-child starts. Identical explicit live configuration is accepted; changed live
-configuration requires closing and reopening the session. ACP handles only its
+child starts or HTTP endpoint is contacted. Identical explicit live configuration
+(including cwd/scope, with HTTP header names lowercased after duplicate checks)
+is accepted; changed live configuration requires closing and reopening the session.
+ACP handles only its
 wire validation/mapping: omitted live configuration retains the existing one,
 while a fresh load/resume requires reproviding configuration and credentials.
-Configuration/environment secrets are not persisted in transcripts, registry
-metadata or another database. The neutral API bounds configuration to 16 servers
+Configuration secrets (arguments/environment, URLs/opaque queries and headers)
+are not persisted in transcripts, registry metadata or another database.
+The neutral API bounds configuration to 16 servers
 and 256 KiB encoded configuration.
+
+HTTP targets use `ConfiguredHttp`, `discover_http` and `call_http`; stdio uses
+the corresponding typed APIs. Both freeze live-generation admission: calls do
+not requery, reconnect or replay after transport/RPC failure, cancellation or
+HTTP 404. A result with `isError` is still an MCP result. HTTP requires an
+absolute HTTP(S) URL without userinfo, fragment or controls, supports static
+Authorization/custom headers, rejects case-insensitive duplicates and reserved
+transport/hop-by-hop headers, and disables ambient proxies and redirects.
+See the [core HTTP contract](../rpi-mcp-core/README.md#in-memory-streamable-http-targets-tools-only)
+for the full header policy. This is trusted-client outbound authority, including
+local/private HTTP, not an SSRF sandbox; prefer HTTPS. Legacy MCP APIs are unchanged.
 
 Configuration holds the run lease. Discovery has one 30-second total deadline,
 then all definitions are installed by one atomic native configure command before
@@ -90,8 +106,10 @@ than disappearing. Native rpi owns tool/schema validation, call provenance,
 result projection and persisted history. ACP separately formats native events
 and replay; it is not the native result projector. Runtime scope is explicit and
 per-session, independent of the deterministic 64-character exported tool name.
-This path does not add resources, prompts, OAuth, HTTP/SSE transports, plugin
-activation, remote attachment or shared service deployment.
+This tools-only path does not add resources, prompts, sampling, OAuth, legacy
+SSE/GET streams, plugin activation, remote attachment or shared service deployment.
+POST response-body SSE is supported; no native or Web implementation change is
+implied.
 
 `HostSession` owns the bridge; reader/runtime routing is weak. Native closures
 synchronously cancel calls and guarded queued output. Abort cancels current calls
@@ -102,19 +120,25 @@ drop cancel the bridge. A separately retained supervisor joins all bounded call
 workers and shuts down the MCP runtime on a blocking cleanup worker; it never
 retains the session or bridge, avoiding owner cycles. Output already committed
 to an OS pipe cannot be recalled, and cleanup inherits the core/platform limits
-of terminating child processes and joining blocking I/O.
+of terminating child processes and joining blocking I/O. HTTP cancellation
+notification (200 ms) and session DELETE (1 second) are best-effort per-connection
+request timeouts, not a global shutdown deadline, guaranteed remote cleanup or
+undo of an already executed tool.
 
-## Stdio validation
+## MCP validation
 
 Default package tests cover host registration/routing and lifecycle semantics.
 Run `cargo test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge`
 for real MCP shell-child cancellation, timeout, result and owner-drop fixtures.
-Their native peer is in memory: these are not real-native smoke tests. The
-three-OS CI runs those fixtures without a real-native binary. The separate
-Windows Python harness and required provenance flags are described in the
-[ACP README](../rpi-acp/README.md#stdio-validation-and-native-smoke). Inspect that
-harness's retained diagnostic results for actual execution evidence. A source
-test or configured CI step is not evidence that this native smoke passed.
+Their native peer is in memory: these are not real-native smoke tests.
+`cargo test --locked -p rpi-extcore --features test-support --test mcp_http_bridge`
+adds loopback Streamable HTTP fixtures; default MCP core tests include
+`configured_http_tests`. The three-OS CI runs these without a real-native binary.
+The separate provenance-gated Windows Python harnesses are described in the
+[ACP README](../rpi-acp/README.md#mcp-validation-and-native-smoke). Inspect their
+retained diagnostic results for actual execution evidence. A source test or
+configured CI step is not evidence that this native smoke passed; a successful
+run qualifies only its recorded Windows source and binary hashes.
 
 ## Project image reads
 

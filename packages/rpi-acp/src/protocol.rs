@@ -374,8 +374,8 @@ pub fn initialize_result() -> Value {
                 }
             },
             "loadSession": true,
-            // ACP stdio is implicit; never advertise unsupported network transports.
-            "mcpCapabilities": {"http": false, "sse": false},
+            // ACP supports implicit stdio and explicit Streamable HTTP, not SSE.
+            "mcpCapabilities": {"http": true, "sse": false},
             "auth": {"logout": {}},
             "sessionCapabilities": {"resume": {}, "delete": {}, "close": {}},
             "promptCapabilities": {
@@ -1554,8 +1554,13 @@ async fn open_session_with_tools(
     id: &str,
     cwd: PathBuf,
     saved: Option<&std::path::Path>,
-    servers: Vec<rpi_extcore::external_tools::StdioToolServer>,
+    servers: Vec<rpi_extcore::external_tools::ToolServer>,
 ) -> Result<(Arc<Session>, Value), String> {
+    for server in &servers {
+        server
+            .validate()
+            .map_err(|_| "invalid MCP configuration".to_owned())?;
+    }
     validate_session_workspace(id, &cwd, saved, !servers.is_empty())?;
     let session = Session::spawn(id.to_owned(), cwd.clone(), saved).await?;
     match prepare_session_tools(&session, id, cwd, Some(servers)).await {
@@ -1592,7 +1597,7 @@ async fn prepare_session_tools(
     session: &Session,
     id: &str,
     cwd: PathBuf,
-    servers: Option<Vec<rpi_extcore::external_tools::StdioToolServer>>,
+    servers: Option<Vec<rpi_extcore::external_tools::ToolServer>>,
 ) -> Result<Value, String> {
     let state = session.state().await?;
     if state["sessionId"] != id {
@@ -1600,7 +1605,7 @@ async fn prepare_session_tools(
     }
     if let Some(servers) = servers {
         session
-            .configure_stdio_tools(servers, cwd, format!("acp:{id}"))
+            .configure_tools(servers, cwd, format!("acp:{id}"))
             .await?;
     }
     Ok(state)

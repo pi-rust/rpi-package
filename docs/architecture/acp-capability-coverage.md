@@ -37,7 +37,7 @@
 | authentication / terminal auth / logout | **部分完成** | terminal auth 是受 capability gating 的启动外流程；`logout` 子进程隔离 stdin/stdout 且 async dispatch，有 bridge fixture 回归；真实 credential revoke 依赖 native `rpi auth logout`。 |
 | client `fs/*` | **未完成且明确不支持** | agent 使用 native read/write/edit；没有声明 client fs capability。 |
 | client `terminal/*` | **未完成且明确不支持** | agent 使用 native bash；没有声明 client terminal capability。 |
-| client MCP | **未完成** | `session/new.mcpServers` 仅校验结构，不转发/承诺客户端 MCP transport；需要 native neutral MCP interface。 |
+| client MCP | **已完成（tools-only，native 依赖）** | `session/new/load/resume.mcpServers` 经 ACP 校验映射到 extcore 中立 `ToolServer` / `configure_tools`，支持 stdio 与 Streamable HTTP（POST JSON / response-body SSE），`http: true`、`sse: false`。HTTP 要求显式 `type: "http"`、绝对 HTTP(S) URL 和 `headers` 数组，支持静态 Authorization/custom headers；无 OAuth/resources/prompts/sampling/legacy SSE/GET。URL/header 安全策略、可信客户端出站权限（非 SSRF sandbox）、失败后不自动重连/重查/重放、restore/live equality/cwd、无 secret 持久化与逐连接 best-effort cleanup 详见 [ACP README](../../packages/rpi-acp/README.md#client-provided-mcp-tools-stdio-and-streamable-http)。native transcript 仍为权威；Windows native proof 必须绑定实际 binary/source hashes，不能由 fixture CI 推导，也不代表已安装扩展或 Unix native 资格。 |
 
 ## 保持 v1 兼容的 v2 / 实验 RFD
 
@@ -50,7 +50,7 @@
 | client-provided `systemPrompt` | [RFD client-system-prompt](https://agentclientprotocol.com/rfds/client-system-prompt)（Active） | **未完成** | native prompt API 没有中立 system prompt 参数。 |
 | subagent sessions | [RFD subagents](https://agentclientprotocol.com/rfds/subagents)（Active） | **未完成** | 没有 ACP session tree / permission boundary 的 native contract。 |
 | auth state query | [RFD get-auth-state](https://agentclientprotocol.com/rfds/get-auth-state)（Draft） | **未完成** | `auth check` 不是已映射的 ACP auth-state method。 |
-| MCP-over-ACP | [RFD mcp-over-acp](https://agentclientprotocol.com/rfds/mcp-over-acp)（Active） | **未完成** | 当前 `mcpServers` 不会伪造转发。 |
+| MCP-over-ACP | [RFD mcp-over-acp](https://agentclientprotocol.com/rfds/mcp-over-acp)（Active） | **未完成** | 已交付的 `mcpServers` stdio/Streamable HTTP tools 不是 MCP-over-ACP 隧道；未实现该 RFD。 |
 | HTTP/WebSocket transport | [RFD streamable HTTP & WebSocket](https://agentclientprotocol.com/rfds/streamable-http-websocket-transport)（Active） | **未完成** | 本包只实现 stdio；HTTP listener/session ownership 属于未来 ACP transport，不放入 extcore 的 ACP 类型。 |
 | fork/title/archive/systemPrompt/subagent/auth/MCP/remote 的 schema.unstable | 官方 `schema.unstable.json` / RFD 页面 | **未完成** | 实验项必须显式协商并按 RFD 生命周期升级；当前不在 `initialize` 稳定 capability 中。 |
 

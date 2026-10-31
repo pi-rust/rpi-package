@@ -36,18 +36,113 @@ fn invalid_configuration_does_not_echo_secrets() {
     let config = Configuration {
         cwd: PathBuf::from("C:/fixture"),
         scope: "fixture".into(),
-        servers: vec![StdioToolServer {
+        servers: vec![ToolServer::Stdio(StdioToolServer {
             name: "name".into(),
             command: "SECRET\0".into(),
             args: vec![],
             env: BTreeMap::from([("secret".into(), "SECRET".into())]),
-        }],
+        })],
     };
     let error = match config.targets() {
         Ok(_) => panic!("expected rejection"),
         Err(error) => error,
     };
     assert_eq!(error, "invalid external tool configuration");
+}
+
+fn http_config() -> Configuration {
+    Configuration {
+        servers: vec![ToolServer::Http(HttpToolServer {
+            name: "fixture".into(),
+            url: "http://127.0.0.1:1/mcp?opaque=secret".into(),
+            headers: BTreeMap::from([("Authorization".into(), "secret".into())]),
+        })],
+        cwd: std::env::current_dir().unwrap(),
+        scope: "scope".into(),
+    }
+}
+
+#[test]
+fn http_header_canonicalization_validates_before_folding_and_preserves_values() {
+    let mut original = http_config();
+    let mut lower = original.clone();
+    if let ToolServer::Http(server) = &mut lower.servers[0] {
+        server.headers = BTreeMap::from([("authorization".into(), "secret".into())]);
+    }
+    original.canonicalize().unwrap();
+    lower.canonicalize().unwrap();
+    assert!(original == lower);
+    if let ToolServer::Http(server) = &mut lower.servers[0] {
+        server
+            .headers
+            .insert("Authorization".into(), "other-secret".into());
+    }
+    assert_eq!(
+        lower.canonicalize().unwrap_err(),
+        "invalid external tool configuration"
+    );
+}
+
+#[test]
+fn http_policy_and_shared_configuration_bounds_are_value_free() {
+    let mut invalid = vec![];
+    for url in [
+        "http://user:secret@127.0.0.1/mcp",
+        "http://127.0.0.1/mcp#secret",
+        "file:///secret",
+    ] {
+        let mut config = http_config();
+        if let ToolServer::Http(server) = &mut config.servers[0] {
+            server.url = url.into();
+        }
+        invalid.push(config);
+    }
+    for (name, value) in [
+        ("Mcp-Session-Id", "secret"),
+        ("Host", "secret"),
+        ("X-Auth", "secret\r\nheader"),
+    ] {
+        let mut config = http_config();
+        if let ToolServer::Http(server) = &mut config.servers[0] {
+            server.headers = BTreeMap::from([(name.into(), value.into())]);
+        }
+        invalid.push(config);
+    }
+    let mut mixed = http_config();
+    mixed.servers.push(ToolServer::Stdio(StdioToolServer {
+        name: "fixture".into(),
+        command: "not-spawned".into(),
+        args: vec![],
+        env: BTreeMap::new(),
+    }));
+    invalid.push(mixed);
+    let mut too_many = http_config();
+    too_many.servers = (0..17)
+        .map(|i| {
+            let mut server = http_config().servers.remove(0);
+            if let ToolServer::Http(s) = &mut server {
+                s.name = format!("server-{i}");
+            }
+            server
+        })
+        .collect();
+    invalid.push(too_many);
+    for mut config in invalid {
+        assert_eq!(
+            config.canonicalize().unwrap_err(),
+            "invalid external tool configuration"
+        );
+    }
+    let mut oversized = http_config();
+    if let ToolServer::Http(server) = &mut oversized.servers[0] {
+        server
+            .headers
+            .insert("X-Secret".into(), "s".repeat(MAX_CATALOG));
+    }
+    assert_eq!(
+        oversized.canonicalize().unwrap_err(),
+        "external tool configuration is too large"
+    );
 }
 
 #[tokio::test]

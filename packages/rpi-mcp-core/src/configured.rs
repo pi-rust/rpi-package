@@ -1,5 +1,5 @@
-//! Immutable, in-memory stdio authority and bounded catalog decoding.
-use crate::{CoreRequestContext, StdioServer, Tool};
+//! Immutable, in-memory transport authority and bounded catalog decoding.
+use crate::{CoreRequestContext, HttpServer, StdioServer, Tool};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -59,6 +59,52 @@ impl ConfiguredStdio {
         let key =
             serde_json::to_string(&(context.scope.as_str(), ["configured-stdio"], server_name))
                 .map_err(|_| "MCP stdio target identity could not be encoded")?;
+        Ok(Self {
+            key,
+            name: server_name.into(),
+            config,
+            generation: Arc::new(Mutex::new(None)),
+        })
+    }
+}
+
+/// An immutable configured HTTP target. Clones share discovery admission, not a runtime.
+/// Intentionally not `Debug`: URLs, opaque queries and headers may contain secrets.
+#[derive(Clone)]
+pub struct ConfiguredHttp {
+    pub(crate) key: String,
+    pub(crate) name: String,
+    pub(crate) config: HttpServer,
+    pub(crate) generation: Arc<Mutex<Option<Arc<()>>>>,
+}
+
+impl ConfiguredHttp {
+    pub fn new(
+        context: &CoreRequestContext,
+        server_name: &str,
+        mut config: HttpServer,
+    ) -> Result<Self, String> {
+        let field = |s: &str| !s.trim().is_empty() && !s.contains('\0');
+        if !field(&context.scope) || !field(server_name) {
+            return Err("MCP HTTP scope and server name must be nonblank and NUL-free".into());
+        }
+        if !context.cwd.is_absolute() || !context.cwd.to_str().is_some_and(field) {
+            return Err("MCP HTTP context cwd must be an absolute UTF-8 path without NUL".into());
+        }
+        if !config.enabled || !(1..=300).contains(&config.timeout) {
+            return Err(
+                "MCP HTTP target must be enabled with timeout from 1 to 300 seconds".into(),
+            );
+        }
+        crate::http::validate_configured_http(&config.url, &config.headers)?;
+        config.headers = config
+            .headers
+            .into_iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), v))
+            .collect();
+        let key =
+            serde_json::to_string(&(context.scope.as_str(), ["configured-http"], server_name))
+                .map_err(|_| "MCP HTTP target identity could not be encoded")?;
         Ok(Self {
             key,
             name: server_name.into(),

@@ -88,7 +88,7 @@ For a real native v4 transcript with 513 active and 19 off-branch messages,
 use `python -B packages/rpi-acp/tests/bounded_history_native.py --bridge <bridge> --rpi <rpi>`;
 it verifies five native pages and exact replay across fresh process restarts.
 
-### Client-provided MCP tools (stdio only)
+### Client-provided MCP tools (stdio and Streamable HTTP)
 
 `session/new`, `session/load` and `session/resume` accept the ACP v1 shape:
 
@@ -104,18 +104,53 @@ it verifies five native pages and exact replay across fresh process restarts.
 }
 ```
 
-`load` and `resume` also require `sessionId` as usual. No `type` is required:
-stdio is implicit in ACP. Explicit `type: "stdio"` / `transport: "stdio"` are
-accepted, but HTTP, SSE, unknown transports, URL and header fields are rejected.
-Initialization advertises `mcpCapabilities.http: false` and `sse: false`.
+`load` and `resume` also require `sessionId` as usual. No `type` is required
+for stdio: explicit `type: "stdio"` / `transport: "stdio"` are also accepted.
+HTTP requires explicit `type: "http"` (a matching `transport: "http"` is optional):
+
+```json
+{
+  "cwd": "/absolute/workspace",
+  "mcpServers": [{
+    "type": "http",
+    "name": "remote-tools",
+    "url": "https://tools.example/mcp?tenant=workspace",
+    "headers": [{"name": "Authorization", "value": "Bearer client-supplied"}]
+  }]
+}
+```
+
+HTTP entries require `name`, `url` and `headers`; `headers` must be an array
+(use `[]` for none), never an object. Static Authorization/custom headers are
+supported, not OAuth or credential refresh. Header names are lowercased and
+case-insensitive duplicates rejected before insertion. Names must be ASCII HTTP
+tokens and values control-free; empty values are valid. Transport/framing and
+hop-by-hop headers are forbidden, including Host, Accept, Content-Type/Length,
+MCP session/protocol headers and proxy headers; see the
+[full core header policy](../rpi-mcp-core/README.md#in-memory-streamable-http-targets-tools-only).
+URLs must be absolute HTTP(S) with a host, without userinfo (even empty),
+fragment, surrounding whitespace or controls. Queries are opaque and may contain
+secrets. HTTP entries reject `command`/`args`/`env`; stdio rejects URL/headers.
+Conflicting transport fields, unknown transports and legacy `sse` are rejected.
+Initialization advertises `mcpCapabilities.http: true` and `sse: false`:
+Streamable HTTP POST JSON and POST response-body SSE are supported, not legacy
+SSE or background GET streams. This integration is tools-only: no MCP resources,
+prompts or sampling.
+
+Typed HTTP disables ambient proxies and redirects; legacy MCP APIs are unchanged.
+Client configuration grants outbound authority including local/private HTTP;
+this is **not an SSRF sandbox**. Only accept configuration from trusted clients
+and prefer HTTPS, especially for secrets.
+
 Extra ACP metadata is ignored. Server names and environment names must be
 unique; `env` is an array, not an object. `name`, `command`, `args`, and `env`
-are required on each entry. NULs, blank names/commands, malformed fields and
+are required on each stdio entry. NULs, blank names/commands, malformed fields and
 oversized configurations fail with value-free validation errors. Limits are
 16 servers, 200-byte names, 128 arguments and 128 environment entries per
 server, 16 KiB per command/argument/environment value, and 256 KiB encoded
 configuration (including extra metadata). Empty arguments and env values are
-allowed; env names cannot contain `=`.
+allowed; env names cannot contain `=`. HTTP allows up to 128 headers, with
+16 KiB per URL/header name/value and the same total encoded configuration bound.
 
 Commands containing `/` or `\` are resolved against the explicit session
 `cwd` if relative; bare executable names retain PATH lookup. Both separators
@@ -132,8 +167,10 @@ On a live session, omission retains its configuration. Explicit identical
 configuration is allowed; an explicit different configuration (including
 clearing an existing nonempty config with `[]`) fails before history replay.
 Close and reopen to change it. Clients **must reprovide** the configuration
-when loading/resuming in a fresh ACP process: MCP configuration and environment
-secrets are not persisted in ACP transcripts, registry metadata or another DB.
+when loading/resuming in a fresh ACP process: MCP configuration, argument/env
+secrets, URLs/opaque queries and headers are not persisted in ACP transcripts,
+registry metadata or another DB. Live equality includes cwd/scope and normalized
+header names; identical configuration does not rediscover or revive a failed target.
 
 For fresh load/resume with nonempty MCP configuration, the recorded native
 workspace must match requested `cwd` after canonical resolution. An existing
@@ -151,7 +188,8 @@ validation/projection and persisted history. Extcore forwards raw MCP
 `externalToolResult` (including `isError`, structured content and text/image
 metadata); unsupported content produces explicit errors, not silently dropped
 blocks. ACP only formats the resulting native tool events and replay for its
-client. Before spawning an MCP child, extcore requires native commands
+client. Before spawning an MCP child or contacting an HTTP endpoint, extcore
+requires native commands
 `configure_external_tools` / `external_tool_response` and events
 `external_tool_request` / `external_tool_request_closed`. An empty configuration
 remains compatible with older hosts.
@@ -160,19 +198,27 @@ Catalogs are limited to 128 tools / 256 KiB, discovery to 30 seconds total,
 calls to 45 seconds, active requests and the reliable reader queue to 64, and
 native outcome frames to 1 MiB. Export names are deterministic 64-character
 `mcp_` + 60 SHA-256 hex digits of a length-delimited server/tool tuple, within an
-explicit per-session runtime scope. A cancelled target is not automatically
-reconnected or replayed; it requires explicit fresh discovery. Session shutdown
-and owner drop cancel calls and clean up children. This integration adds no MCP
-resources, prompts, OAuth, HTTP/SSE transport, plugin activation or remote
-attachment.
+explicit per-session runtime scope. Calls use frozen live-generation admission:
+no automatic reconnect, tool requery or replay after transport/RPC failure,
+cancellation or HTTP 404; explicit successful fresh discovery is required.
+An MCP result with `isError` is still a result, not a reconnect trigger. Session
+shutdown and owner drop cancel calls and clean up their owned runtime. HTTP
+cancellation notification (200 ms) and session DELETE (1 second) are best-effort
+per-connection request timeouts, not a global hard shutdown bound, guaranteed
+remote cleanup or undo of remote side effects. This adds no MCP OAuth, resources,
+prompts, sampling, legacy SSE/GET, plugin activation or remote attachment, and
+makes no native/Web implementation change.
 
-### Stdio validation and native smoke
+### MCP validation and native smoke
 
 Source parser/protocol and extcore host tests cover strict configuration,
 identity/capability gates, live configuration handling, cancellation and cleanup.
 `cargo test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge`
-uses real MCP shell children but an in-memory native peer. The three-OS CI runs
-these fixtures and Rust package checks; it has no real-native binary and does
+uses real MCP shell children but an in-memory native peer.
+`cargo test --locked -p rpi-extcore --features test-support --test mcp_http_bridge`
+uses loopback HTTP MCP with the same fixture-native boundary. Core HTTP fixtures
+run with `cargo test --locked -p rpi-mcp-core configured_http_tests`. The three-OS
+CI runs these and existing Rust checks; it has no real-native binary and does
 **not** run the real-native smoke.
 
 The Windows-only standard-library Python harness uses explicit verified binaries
@@ -190,6 +236,19 @@ The diagnostics directory must be new and beneath the build marker's parent or
 `TEMP`; failure evidence is retained. Inspect its `results.json`, provenance,
 wire logs, native JSONL and PID audit for actual execution results, rather than
 inferring success from the existence of the harness.
+
+The new Windows proof harness `packages/rpi-acp/tests/mcp_http_native.py --help`
+uses loopback HTTP fixtures and requires the same explicit `--bridge`, `--rpi`,
+`--diagnostics-dir`, `--build-marker`, `--native-build-record`,
+`--native-verification` and `--native-sha` inputs. It verifies bridge/native
+hashes and source/build provenance before execution, does not search PATH or
+build binaries, and requires a new evidence directory under
+`C:/Users/bigfish/.cargo/target/acp-stage6-01`. It is not part of fixture-only CI.
+It also requires a complete source-hash manifest, audits provider requests/tool
+definitions and local persistence/output for fake credential canaries, and retains
+failure evidence. Successful runs qualify only the recorded Windows binary/source
+hashes; they do not certify an installed extension, Unix native execution, TLS,
+remote resource reclamation or a hard global shutdown deadline.
 
 ### Durable control plane
 
