@@ -95,6 +95,7 @@ async fn compact_shares_prompt_stream_and_holds_lease_through_cancel() {
     );
     let session = Arc::new(Session {
         rpc,
+        context_presentation: tokio::sync::Mutex::default(),
         durable: None,
         configuration: tokio::sync::OnceCell::new(),
         events: Some(events),

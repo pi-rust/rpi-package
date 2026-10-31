@@ -15,6 +15,44 @@ The source implementation delegates native RPC children, isolated command reques
 A compatible native external-tool build is required for nonempty MCP
 configuration; updating only the bridge does not upgrade the host.
 
+## Context usage updates
+
+ACP v1 `usage_update` reports the native context estimate as `used` and the
+native model's full window as `size`. After a successful new/load/resume response
+and available-commands notification, the adapter projects the state already read
+during startup/preflight. A repeated live load/resume forces a fresh initial
+notification from that preflight snapshot. After an authoritative prompt or
+`/compact` settlement (including failed/cancelled settlements), one best-effort
+core read may send a changed used/window pair before the prompt response.
+Rejection or malformed acceptance does not trigger this read. Equal successfully
+delivered pairs are coalesced; this is not per-turn token accounting.
+
+No extra usage poller or transcript walk is introduced by the adapter/core API.
+Independent native changes, including model/window changes, are not continuously
+observed by this slice; they become visible at the next lifecycle/settlement
+refresh. Initial state is a preflight snapshot, not an atomic transaction with
+notification delivery. Missing context, unknown/zero window, bad fields,
+identity mismatch or an unavailable/timed-out read suppress usage without changing
+the session/run outcome. Only new usage frames have a 2-second write deadline;
+a partial-frame failure makes the **whole connection terminal**, not merely one
+session. Existing non-usage/configuration writes retain their prior behavior.
+
+The number is native's compaction-aware active-branch estimate: last valid
+assistant usage plus estimated trailing messages, or a character-based estimate
+when no valid usage exists. Even native `estimated: false` can include estimated
+trailing tokens. It is not exact provider tokenization, cumulative session tokens,
+or the compaction threshold. Native `get_state` may still scan the full branch;
+the 5-second caller budget does not hard-preempt that native computation.
+`cost` is omitted: native's scalar `costTotal` has no verified billing-unit or
+currency provenance, and no USD or cost accumulator is invented.
+
+Core fixtures and production-dispatch/transport fixtures are separate from the
+Windows real-native proof in `tests/context_usage_native.py --help`. The latter
+requires frozen prebuild source inventories and explicit recorded binaries;
+inspect retained results, independent raw `get_state`, provider replies, native
+JSONL and cleanup/audit evidence before claiming a pass. Neither fixture CI nor
+that Windows proof qualifies an installed extension, Unix native or deployment.
+
 ## How it works
 
 Open WebUI Computer can use the same standard ACP entrypoint. Deploy and

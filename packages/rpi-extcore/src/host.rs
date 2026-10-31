@@ -226,6 +226,7 @@ pub struct HostSession {
     commands: mpsc::Sender<Outbound>,
     external_config: Mutex<Option<crate::external_tools::Configuration>>,
     external_owner: StdMutex<Option<Arc<crate::external_tools::Bridge>>>,
+    pub(crate) usage_gate: Mutex<()>,
     pub(crate) configuration_owner:
         Mutex<std::sync::Weak<crate::configuration::ConfigurationRuntime>>,
 }
@@ -625,6 +626,7 @@ impl HostSession {
             commands,
             external_config: Mutex::new(None),
             external_owner: StdMutex::new(None),
+            usage_gate: Mutex::new(()),
             configuration_owner: Mutex::new(std::sync::Weak::new()),
         });
 
@@ -872,6 +874,7 @@ impl HostSession {
             commands,
             external_config: Mutex::new(None),
             external_owner: StdMutex::new(None),
+            usage_gate: Mutex::new(()),
             configuration_owner: Mutex::new(std::sync::Weak::new()),
             runtime: Arc::new(HostRuntime {
                 raw_events,

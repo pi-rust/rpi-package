@@ -34,12 +34,17 @@ use crate::session::Session;
 
 #[path = "configuration.rs"]
 mod configuration;
+#[path = "context_usage.rs"]
+pub(crate) mod context_usage;
 #[cfg(test)]
 #[path = "protocol_configuration_dispatch_tests.rs"]
 mod protocol_configuration_dispatch_tests;
 #[cfg(test)]
 #[path = "protocol_configuration_tests.rs"]
 mod protocol_configuration_tests;
+#[cfg(test)]
+#[path = "protocol_context_usage_tests.rs"]
+mod protocol_context_usage_tests;
 
 /// The pollable stdin reader, re-exported so the frontends can build one.
 pub use rpi_plugin_sdk::stdio::StdinLines;
@@ -183,7 +188,7 @@ impl Writer {
         }
     }
 
-    async fn terminal(&self) {
+    pub(crate) async fn terminal(&self) {
         let mut rx = self.terminal.subscribe();
         if !*rx.borrow_and_update() {
             let _ = rx.changed().await;
@@ -229,6 +234,22 @@ impl Writer {
         tokio::select! {
             biased;
             result = self.write(value) => result,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                self.close();
+                Err(std::io::ErrorKind::TimedOut.into())
+            }
+        }
+    }
+
+    /// Usage frames alone share the configuration transport's fail-closed deadline.
+    async fn write_context_usage(&self, value: &Value) -> std::io::Result<()> {
+        // Keep ownership outside select: timeout closes the connection before
+        // dropping a write that may already have emitted part of its frame.
+        let write = self.write(value);
+        tokio::pin!(write);
+        tokio::select! {
+            biased;
+            result = &mut write => result,
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
                 self.close();
                 Err(std::io::ErrorKind::TimedOut.into())
@@ -1104,7 +1125,10 @@ where
                             session_id.clone(),
                         );
                         let compact_available = session.compact_available();
-                        sessions.lock().await.insert(session_id.clone(), session);
+                        sessions
+                            .lock()
+                            .await
+                            .insert(session_id.clone(), session.clone());
                         if let Some(watcher) = watcher {
                             durable_watchers.insert(session_id.clone(), watcher);
                         }
@@ -1113,6 +1137,9 @@ where
                         }
                         writer
                             .respond_session(&id, result, &session_id, compact_available)
+                            .await;
+                        session
+                            .initial_context_usage(&writer, &session_id, &state)
                             .await;
                         if let Some((rx, gate, _)) = prepared {
                             configuration_watchers.insert(
@@ -1366,7 +1393,10 @@ where
                                     session_id.to_owned(),
                                 );
                                 let compact_available = session.compact_available();
-                                sessions.lock().await.insert(session_id.to_owned(), session);
+                                sessions
+                                    .lock()
+                                    .await
+                                    .insert(session_id.to_owned(), session.clone());
                                 if let Some(watcher) = watcher {
                                     durable_watchers.insert(session_id.to_owned(), watcher);
                                 }
@@ -1375,6 +1405,9 @@ where
                                 }
                                 writer
                                     .respond_session(&id, result, session_id, compact_available)
+                                    .await;
+                                session
+                                    .initial_context_usage(&writer, session_id, &state)
                                     .await;
                                 if let Some((rx, gate, _)) = prepared {
                                     configuration_watchers.insert(
