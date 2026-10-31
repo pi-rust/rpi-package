@@ -8922,7 +8922,10 @@ test.describe("conversation timeline", () => {
     const box = await rail.boundingBox();
     expect(box!.width).toBeLessThanOrEqual(28);
     expect(box!.height).toBeLessThanOrEqual(280);
-    expect(box!.x).toBeGreaterThan(frame!.x + frame!.width / 2);
+    expect(box!.x).toBeGreaterThanOrEqual(frame!.x);
+    expect(box!.x + box!.width).toBeLessThan(frame!.x + frame!.width / 2);
+    const firstMessage = await page.locator('.message').first().boundingBox();
+    expect(firstMessage!.x).toBeGreaterThanOrEqual(box!.x + box!.width);
     for (let index = 0; index < 3; index++) {
       await expect(nodes(page).nth(index)).toHaveAttribute("aria-label", new RegExp(`^Go to message ${index + 1}: Question ${index}:`));
       await expect(nodes(page).nth(index)).not.toHaveAttribute("title");
@@ -8938,6 +8941,9 @@ test.describe("conversation timeline", () => {
     await expect(preview).toHaveCount(1);
     await expect(preview.locator(".timeline-preview-index")).toHaveText("1 / 3");
     await expect(preview.locator(".timeline-label")).toContainText("Question 0:");
+    const previewBox = await preview.boundingBox();
+    expect(previewBox!.x).toBeGreaterThanOrEqual(box!.x + box!.width);
+    expect(previewBox!.x + previewBox!.width).toBeLessThanOrEqual(frame!.x + frame!.width);
     await page.screenshot({ path: test.info().outputPath("timeline-desktop.png") });
     // The hover preview stays readable across its small bridge and does not need focus.
     await preview.hover();
@@ -8999,6 +9005,12 @@ test.describe("conversation timeline", () => {
     await expect(page.getByRole("tooltip").locator(".timeline-label")).toContainText("Question 0:");
     const panelBox = await page.locator(".conversation-timeline").boundingBox();
     const previewBox = await page.getByRole("tooltip").boundingBox();
+    const frameBox = await page.locator('.transcript-frame').boundingBox();
+    const firstMessage = await page.locator('.message').first().boundingBox();
+    expect(panelBox!.x).toBeGreaterThanOrEqual(frameBox!.x);
+    expect(panelBox!.x + panelBox!.width).toBeLessThan(frameBox!.x + frameBox!.width / 2);
+    expect(firstMessage!.x).toBeGreaterThanOrEqual(panelBox!.x + panelBox!.width);
+    expect(previewBox!.x).toBeGreaterThanOrEqual(panelBox!.x + panelBox!.width);
     expect(panelBox!.width).toBeLessThanOrEqual(28);
     expect(panelBox!.height).toBeLessThanOrEqual(280);
     expect(panelBox!.x).toBeGreaterThanOrEqual(0);
