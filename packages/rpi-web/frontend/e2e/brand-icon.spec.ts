@@ -123,7 +123,7 @@ for (const width of [1280, 390]) {
       const response = await page.request.get(src!);
       expect(
         createHash("sha256")
-          .update(await response.body())
+          .update((await response.text()).replace(/\r\n/g, "\n"))
           .digest("hex"),
       ).toBe(lightVariantHash);
       expect(await page.locator('link[rel="icon"]').getAttribute("href")).toBe(

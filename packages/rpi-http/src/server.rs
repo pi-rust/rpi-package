@@ -261,7 +261,10 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/sessions/{id}/metadata", post(session_metadata))
         .route("/api/v1/sessions/{id}/commands", post(command))
         .route("/api/v1/sessions/{id}/snapshot", get(snapshot))
-        .route("/api/v1/sessions/{id}/message-summaries", get(message_summaries))
+        .route(
+            "/api/v1/sessions/{id}/message-summaries",
+            get(message_summaries),
+        )
         .route("/api/v1/sessions/{id}/message-window", get(message_window))
         .route("/api/v1/sessions/{id}/run-timings/query", post(run_timings))
         .route(
