@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Start the right-side project files/changes panel collapsed at every viewport width and after reload; retain manual toolbar toggling and the panel's close button.
 - Keep timeline ticks clearly visible without activation and show up to ten at once, scrolling excess nodes. Load one bounded 48-message page when the reader scrolls to the earlier edge, releases an upper-edge scrub, or presses Up/Home again on the first node. Preserve both reading anchors, manual ↑ retry and legacy/loading visibility; guard wheel bursts, failures, stale sessions and tool-only pages against repeated reads or full-history scans.
 - Move the conversation timeline to the left on desktop and phones, reserving left-side message space and opening previews inward to the right. Preserve narrow sizing, keyboard/mouse/touch navigation, hover-preview access and bounded history paging.
 - Prioritize the bounded conversation snapshot on session switch: restore history, native lifecycle state and SSE before loading runtime metadata and catalogs. Defer and serialize diagnostic reads, abort superseded browser requests, ignore stale session/event callbacks, avoid a duplicate state read from old settlement ticks and leave active-session re-selection unchanged. Preserve legacy status fallback, read-only local slash commands, authentication and snapshot/replay boundaries; slow or failed auxiliary metadata no longer blocks an authoritative snapshot.

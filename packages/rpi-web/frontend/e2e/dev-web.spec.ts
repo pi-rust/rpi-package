@@ -486,6 +486,34 @@ test("failed queue cancellation restores the removed message", async ({
   expect(errors).toEqual([]);
 });
 
+for (const width of [1440, 1100, 1024, 390]) {
+  test(`right sidebar starts closed and remains manually toggleable at ${width}px`, async ({ page }) => {
+    await mockHost(page);
+    const workbench = page.getByRole("complementary", { name: "Project files and changes" });
+    const toggle = page.getByRole("button", { name: "Toggle project files", exact: true });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(workbench).toHaveCount(0);
+    await expect(page.locator(".inspector")).toHaveCount(0);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(workbench).toBeVisible();
+    await workbench.getByRole("button", { name: "Close project panel", exact: true }).click();
+    await expect(workbench).toHaveCount(0);
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await toggle.click();
+    await expect(workbench).toBeVisible();
+    await toggle.click();
+    await expect(workbench).toHaveCount(0);
+    await toggle.click();
+    await expect(workbench).toBeVisible();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(workbench).toHaveCount(0);
+  });
+}
+
 test("history records expand and queue history toggles", async ({ page }) => {
   await mockHost(page);
   await page.goto("/");
@@ -505,6 +533,7 @@ test("file previews, staged diffs and project switching use the selected root", 
 }) => {
   await mockHost(page);
   await page.goto("/");
+  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
   const workbench = page.getByRole("complementary", {
     name: "Project files and changes",
   });
@@ -843,12 +872,14 @@ test("split widths persist and separators support the keyboard", async ({
 }) => {
   await mockHost(page);
   await page.goto("/");
+  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
   const split = page.getByRole("separator", { name: "Resize project panel" });
   await expect(split).toHaveAttribute("aria-valuenow", "440");
   await split.focus();
   await split.press("ArrowLeft");
   await expect(split).toHaveAttribute("aria-valuenow", "460");
   await page.reload();
+  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
   await expect(
     page.getByRole("separator", { name: "Resize project panel" }),
   ).toHaveAttribute("aria-valuenow", "460");
@@ -2809,6 +2840,7 @@ test("late file contents cannot replace the newly selected project preview", asy
     });
   });
   await page.goto("/");
+  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
   const workbench = page.getByRole("complementary", {
     name: "Project files and changes",
   });
@@ -7869,7 +7901,7 @@ test.describe("shell command previews", () => {
     await page.setViewportSize({ width: 1280, height: 844 });
     await commandSnapshot(page, [command]);
     await page.goto("/");
-    await page.getByRole("button", { name: "关闭项目面板", exact: true }).click();
+    await expect(page.getByRole("button", { name: "关闭项目面板", exact: true })).toHaveCount(0);
     const card = page.locator(".shell-card");
     await expect(card).toHaveJSProperty("open", false);
     await card.locator(":scope > summary").click();
