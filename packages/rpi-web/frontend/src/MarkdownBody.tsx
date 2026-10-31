@@ -2,6 +2,7 @@ import {
   isValidElement,
   memo,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ComponentProps,
@@ -16,6 +17,31 @@ import { translate, type Language } from "./i18n";
 import { ZoomableImage } from "./ZoomableImage";
 import { MermaidBlock } from "./MermaidBlock";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
+import { FilePreview } from "./FilePreview";
+import {
+  browserLink,
+  inlineFileLink,
+  projectFileLink,
+  type ProjectFileLink,
+} from "./messageLinks";
+import type { Root, Element } from "hast";
+
+// Preserve fenced/indented code, including fences without a language, and avoid
+// interactive controls inside authored links.
+function markCodeContext() {
+  return (tree: Root) => {
+    function visit(node: Root | Element, blocked = false) {
+      const inside =
+        blocked ||
+        (node.type === "element" && ["pre", "a"].includes(node.tagName));
+      if (node.type === "element" && node.tagName === "code" && blocked)
+        node.properties["data-block-code"] = true;
+      for (const child of node.children)
+        if (child.type === "element") visit(child, inside);
+    }
+    visit(tree);
+  };
+}
 
 const remarkPlugins = [remarkGfm, remarkBreaks];
 // Data URLs are needed for inline images, never for navigable Markdown links.
@@ -31,6 +57,7 @@ const imageUrlTransform: ComponentProps<typeof Markdown>["urlTransform"] = (
     : defaultUrlTransform(url);
 const rehypePlugins: ComponentProps<typeof Markdown>["rehypePlugins"] = [
   [rehypeHighlight, { ignoreMissing: true }],
+  markCodeContext,
 ];
 
 function codeText(value: ReactNode): string {
@@ -98,8 +125,66 @@ export const MarkdownBody = memo(function MarkdownBody({
   language: Language;
 }) {
   const project = useContext(ProjectImageContext);
+  const [preview, setPreview] = useState<{
+    owner: string;
+    file: ProjectFileLink;
+  } | null>(null);
+  const owner = project ? JSON.stringify([project.id, project.path]) : "";
+  useEffect(() => setPreview(null), [owner]);
   const components = useMemo<Components>(
     () => ({
+      a: ({ href, children, title }) => {
+        const file = href ? projectFileLink(href, project) : null;
+        if (file)
+          return (
+            <button
+              type="button"
+              className="message-file-link"
+              title={
+                title ??
+                (language === "zh" ? "打开文件预览" : "Open file preview")
+              }
+              onClick={() => setPreview({ owner, file })}
+            >
+              {children}
+            </button>
+          );
+        const kind = href ? browserLink(href) : null;
+        if (kind)
+          return (
+            <a
+              href={href}
+              title={title}
+              target={kind === "web" ? "_blank" : undefined}
+              rel={kind === "web" ? "noopener noreferrer" : undefined}
+            >
+              {children}
+            </a>
+          );
+        // Fragment links remain local; unsafe/unknown schemes have no navigation.
+        return href?.startsWith("#") ? (
+          <a href={href}>{children}</a>
+        ) : (
+          <span>{children}</span>
+        );
+      },
+      code: ({ node, children, className }) => {
+        const file = !node?.properties["data-block-code"]
+          ? inlineFileLink(codeText(children), project)
+          : null;
+        return file ? (
+          <button
+            type="button"
+            className="message-file-link"
+            title={language === "zh" ? "打开文件预览" : "Open file preview"}
+            onClick={() => setPreview({ owner, file })}
+          >
+            <code className={className}>{children}</code>
+          </button>
+        ) : (
+          <code className={className}>{children}</code>
+        );
+      },
       img: ({ src, alt, title }) => (
         <ZoomableImage src={src} alt={alt} title={title} language={language} />
       ),
@@ -130,7 +215,7 @@ export const MarkdownBody = memo(function MarkdownBody({
         );
       },
     }),
-    [language],
+    [language, project, owner],
   );
 
   return (
@@ -139,19 +224,37 @@ export const MarkdownBody = memo(function MarkdownBody({
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={components}
-        urlTransform={(url, key, node) =>
-          imageUrlTransform(
+        urlTransform={(url, key, node) => {
+          if (node.tagName === "a" && key === "href") {
+            // Native drive paths must be classified before defaultUrlTransform,
+            // which treats a drive letter as an unknown protocol.
+            return projectFileLink(url, project) ||
+              browserLink(url) ||
+              url.startsWith("#")
+              ? url
+              : "";
+          }
+          return imageUrlTransform(
             node.tagName === "img" && key === "src"
               ? projectImageSource(url, project)
               : url,
             key,
             node,
-          )
-        }
+          );
+        }}
         skipHtml
       >
         {text}
       </Markdown>
+      {project && preview?.owner === owner && (
+        <FilePreview
+          key={owner}
+          project={project}
+          file={preview.file}
+          language={language}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </div>
   );
 });

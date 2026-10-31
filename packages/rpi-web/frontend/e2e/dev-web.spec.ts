@@ -1493,10 +1493,10 @@ test("Markdown data images decode without allowing unsafe links or HTML", async 
     .poll(() => image.evaluate((e: HTMLImageElement) => e.naturalWidth))
     .toBeGreaterThan(0);
   for (const label of ["unsafe link", "script link", "image link"]) {
-    await expect(
-      page.locator(".prose a").filter({ hasText: label }),
-    ).not.toHaveAttribute("href", /^(data|javascript):/i);
+    await expect(page.locator(".prose").getByText(label, { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: label, exact: true })).toHaveCount(0);
   }
+  await expect(page.locator('.prose a[href^="data:"], .prose a[href^="javascript:"]')).toHaveCount(0);
   await expect(page.getByAltText("unsafe image")).not.toHaveAttribute(
     "src",
     /^data:/i,
@@ -2508,7 +2508,7 @@ test("pagination from a previous chat does not prepend into the current chat", a
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Load earlier messages" }).click();
+  // The default timeline fill already owns the held earlier-page request.
   await expect.poll(() => pending).toBe(true);
   await page
     .getByRole("button", { name: "New session", exact: false })
@@ -2913,7 +2913,6 @@ test("compaction notes survive pagination and update when language changes", asy
     return route.fallback();
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Load earlier messages" }).click();
   await expect(
     page
       .locator(".transcript-note")
@@ -2952,9 +2951,9 @@ test("markdown keeps executable URLs and raw HTML inert", async ({ page }) => {
   await expect(page.locator(".markdown-body pre code")).toContainText(
     "<script>literal code</script>",
   );
-  expect(
-    await page.getByRole("link", { name: "Unsafe link" }).getAttribute("href"),
-  ).not.toMatch(/^javascript:/i);
+  await expect(page.locator(".markdown-body").getByText("Unsafe link", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Unsafe link", exact: true })).toHaveCount(0);
+  await expect(page.locator('.markdown-body a[href^="javascript:"]')).toHaveCount(0);
   await expect(
     page.locator(".markdown-body script, .markdown-body img"),
   ).toHaveCount(0);
@@ -3950,7 +3949,6 @@ test("run boundary refresh preserves loaded earlier messages and their paginatio
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Load earlier messages" }).click();
   await expect(page.locator(".message.user")).toContainText([
     "Earlier prompt",
     "Current prompt",
@@ -4446,7 +4444,6 @@ test("late message pagination from before rewind cannot enter the restored branc
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Load earlier messages" }).click();
   await expect.poll(() => pending).toBe(true);
   await page.getByRole("button", { name: "Toggle inspector" }).click();
   await page.locator(".history-timeline-item summary").click();
@@ -7251,8 +7248,7 @@ test.describe("run timing regressions", () => {
       });
     });
     await page.goto("/");
-    await expect(page.locator(".run-elapsed")).toHaveCount(1);
-    await page.getByRole("button", { name: "Load earlier messages" }).click();
+    // Initial timeline fill pages the assistant-only snapshot automatically.
     await expect(page.locator(".run-elapsed")).toHaveCount(3);
     for (const [id, text] of [
       ["run-older-a", "Older answer A"],
@@ -7460,7 +7456,6 @@ test.describe("run timing regressions", () => {
     });
     await page.goto("/");
     await expect.poll(() => requests).toBe(1);
-    await page.getByRole("button", { name: "Load earlier messages" }).click();
     await expect(page.locator(".message.assistant").first()).toContainText(
       "Older native answer",
     );
@@ -7606,8 +7601,7 @@ test.describe("run timing regressions", () => {
         if (load) await page.reload();
         else await page.goto("/");
         await expect(footer).toBeVisible();
-        if (olderPage)
-          await page.getByRole("button", { name: "Load earlier messages" }).click();
+        // A result-only snapshot is filled through to its missing earlier call.
         await expect(page.locator(".message.assistant")).toContainText(
           "Trailing visible assistant text",
         );
@@ -8201,7 +8195,7 @@ test.describe("Codex tool summary layout", () => {
     name: string;
     args: Record<string, unknown>;
     result: string;
-    state?: "done" | "running" | "error";
+    state?: "done" | "pending" | "running" | "error";
   };
 
   async function summarySnapshot(page: Page, tools: SummaryTool[]) {
@@ -8228,7 +8222,7 @@ test.describe("Codex tool summary layout", () => {
               })),
             },
             ...tools.flatMap((tool, index) =>
-              tool.state === "running" ? [] : [{
+              tool.state === "running" || tool.state === "pending" ? [] : [{
                 role: "toolResult",
                 toolCallId: `codex-summary-${index}`,
                 toolName: tool.name,
@@ -8258,7 +8252,7 @@ test.describe("Codex tool summary layout", () => {
         parts: [
           // Measure the stable icon slot, not a spinner's rotating SVG bounds.
           ".tool-status", ".tool-action", ".tool-target",
-          ".tool-summary-meta", ".tool-elapsed", ".tool-chevron",
+          ".tool-summary-meta", ".tool-elapsed", ".tool-success-mark", ".tool-chevron",
         ].flatMap((selector) => {
           const element = node.querySelector(selector);
           return element ? [{ selector, ...box(element) }] : [];
@@ -8310,6 +8304,10 @@ test.describe("Codex tool summary layout", () => {
         await expect(card).toHaveClass(/tool-done/);
         await expect(card).toHaveJSProperty("open", false);
         await expect(summary.locator(`.tool-status > svg.lucide-${tool.icon}`)).toHaveCount(1);
+        await expect(summary.locator(".tool-success-mark")).toHaveCount(1);
+        await expect(summary.locator(":scope > .tool-success-mark + .tool-chevron:last-child")).toHaveCount(1);
+        await expect(summary.locator(".tool-success-mark")).toBeVisible();
+        await expect(summary.locator(".tool-success-mark")).toHaveAttribute("aria-hidden", "true");
         await expect(summary.locator(".tool-status .spin, .tool-status .lucide-circle-alert")).toHaveCount(0);
         await expect(summary.locator(".tool-elapsed")).toHaveText("1.2s");
         await expectSummaryGeometry(summary);
@@ -8332,6 +8330,66 @@ test.describe("Codex tool summary layout", () => {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     }
   });
+
+  for (const language of ["en", "zh"] as const) {
+    for (const mode of ["native", "mapped"] as const) {
+      test(`skill names stay original with status icons in ${language}/${mode}`, async ({ page }) => {
+        const mobile = (language === "zh") === (mode === "native");
+        await page.setViewportSize({ width: mobile ? 390 : 1280, height: 844 });
+        await page.addInitScript(({ language, mode }) => {
+          localStorage.setItem("rpi-web-language", language);
+          localStorage.setItem("rpi-web-tool-name-mode", mode);
+        }, { language, mode });
+        const names = ["router", "rpi-architecture-boundaries", "工具-规范", "Ui-Review"];
+        const states = ["done", "pending", "running", "error"] as const;
+        const aliases = ["read", "functions.read_file", "cat", "ReadFile"];
+        const paths = names.map(name => language === "en"
+          ? `C:\\skills\\${name}\\SKILL.md`
+          : `/workspace/skills/${name}/SKILL.md`);
+        const labels = language === "en"
+          ? { done: "done", pending: "queued", running: "running", error: "failed" }
+          : { done: "已完成", pending: "排队中", running: "执行中", error: "失败" };
+        await summarySnapshot(page, [
+          ...states.map((state, index) => ({
+            name: aliases[index], args: { path: paths[index] },
+            result: "Original skill fixture contents", state,
+          })),
+          { name: "read", args: { path: "src/readme.md" }, result: "Ordinary read fixture" },
+        ]);
+        await page.goto("/");
+        const cards = page.locator(".tool-card");
+        await expect(cards).toHaveCount(5);
+        for (const [index, state] of states.entries()) {
+          const card = cards.nth(index);
+          const summary = card.locator(":scope > summary");
+          await expect(card).toHaveClass(new RegExp(`tool-${state}`));
+          await expect(card).toHaveJSProperty("open", state === "error");
+          await expect(summary.locator(".tool-action")).toHaveText(names[index]);
+          await expect(summary.locator(".tool-action")).toHaveAttribute("title", aliases[index]);
+          await expect(summary.locator(".tool-target")).toHaveText(paths[index]);
+          await expect(summary.locator(".tool-target")).toHaveAttribute("title", paths[index]);
+          await expect(summary.locator(".tool-status")).toHaveAttribute("title", labels[state]);
+          await expect(summary.locator(".tool-status .lucide-book-open")).toHaveCount(state === "done" ? 1 : 0);
+          await expect(summary.locator(".tool-status .spin")).toHaveCount(state === "running" || state === "pending" ? 1 : 0);
+          await expect(summary.locator(".tool-status .lucide-circle-alert")).toHaveCount(state === "error" ? 1 : 0);
+          await expect(summary.locator(":scope > .tool-success-mark + .tool-chevron:last-child")).toHaveCount(state === "done" ? 1 : 0);
+          await expectSummaryGeometry(summary);
+        }
+        const normal = cards.last().locator(":scope > summary");
+        await expect(normal.locator(".tool-action")).toHaveText(mode === "native" ? "read" : language === "en" ? "Read" : "已读取");
+        await expect(normal.locator(".tool-status .lucide-file-text")).toHaveCount(1);
+        const done = cards.first();
+        await done.locator(":scope > summary").click();
+        await expect(done).toHaveJSProperty("open", true);
+        await expect(done.locator(".tool-arguments")).toContainText(paths[0].replace(/\\/g, "\\\\"));
+        await expect(done.locator(".tool-detail")).toContainText("Original skill fixture contents");
+        await done.locator(":scope > summary").focus();
+        await page.keyboard.press("Enter");
+        await expect(done).toHaveJSProperty("open", false);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      });
+    }
+  }
 
   test("long targets ellipsize without losing edit metadata or elapsed time on desktop and mobile", async ({ page }) => {
     const path = `src/${"very-long-directory-segment/".repeat(30)}summary.ts`;
@@ -8368,6 +8426,7 @@ test.describe("Codex tool summary layout", () => {
     await summarySnapshot(page, [
       { name: "bash", args: { command: "sleep 10" }, result: "", state: "running" },
       { name: "read", args: { path: "missing.txt" }, result: "Missing file: summary regression", state: "error" },
+      { name: "read", args: { path: "queued.txt" }, result: "", state: "pending" },
     ]);
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 844 });
@@ -8378,6 +8437,11 @@ test.describe("Codex tool summary layout", () => {
       await expect(error).toHaveJSProperty("open", true);
       const runningSummary = running.locator(":scope > summary");
       const errorSummary = error.locator(":scope > summary");
+      const pending = page.locator(".tool-card.tool-pending");
+      await expect(pending).toHaveJSProperty("open", false);
+      await expect(pending.locator("summary .tool-status > svg.spin")).toHaveCount(1);
+      await expect(page.locator(".tool-success-mark")).toHaveCount(0);
+      await expectSummaryGeometry(pending.locator(":scope > summary"));
       await expect(runningSummary.locator(".tool-status > svg.spin")).toHaveCount(1);
       await expect(runningSummary.locator(".tool-status .lucide-terminal")).toHaveCount(0);
       await expect(errorSummary.locator(".tool-status > svg.lucide-circle-alert")).toHaveCount(1);
@@ -8901,9 +8965,8 @@ test.describe("conversation timeline", () => {
         await expect(nodes(page)).toHaveCount(0);
         const box = await rail.boundingBox();
         expect(box!.width).toBeLessThanOrEqual(28);
-        expect(requests).toHaveLength(0);
+        await expect.poll(() => requests.length).toBe(1);
         const anchor = await visiblePagingAnchor(page);
-        await load.click();
         await expect(load).toBeDisabled();
         await expect(load).toHaveAttribute("aria-busy", "true");
         expect(requests).toMatchObject([{ beforeId: "tool-only-0", limit: 48 }]);
@@ -8911,7 +8974,7 @@ test.describe("conversation timeline", () => {
         await expect(nodes(page)).toHaveCount(1);
         await expect(page.locator(".timeline-load-earlier")).toHaveCount(0);
         await expectPagingAnchor(page, anchor);
-        // The clicked history button is replaced beneath the pointer; enter the new tick afresh.
+        // Completion replaces the busy history button; enter the new tick afresh.
         await page.locator(".composer textarea").hover();
         await nodes(page).first().hover();
         await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("1 / 1");
@@ -8963,7 +9026,7 @@ test.describe("conversation timeline", () => {
       await expect(nodes(page).nth(index)).not.toHaveAttribute("title");
       const target = await nodes(page).nth(index).boundingBox();
       expect(target!.width).toBeGreaterThanOrEqual(24);
-      expect(target!.height).toBeGreaterThanOrEqual(24);
+      expect(target!.height).toBeCloseTo(15, 0);
     }
     await expect(panel.locator('.timeline-node[tabindex="0"]')).toHaveCount(1);
     await expect(page.getByRole("tooltip")).toHaveCount(0);
@@ -9741,11 +9804,13 @@ test.describe("todo progress regression", () => {
         const live = page.locator(".tool-card").first();
         const status = live.locator("summary .tool-status");
         await expect(live).toHaveClass(/tool-pending/);
+        await expect(live.locator("summary .tool-success-mark")).toHaveCount(0);
         await expect(status).toHaveAttribute("title", language === "zh" ? "排队中" : "queued");
         await live.locator(":scope > summary").click();
         await expect(live).toHaveJSProperty("open", true);
         releasePartial();
         await expect(live).toHaveClass(/tool-running/);
+        await expect(live.locator("summary .tool-success-mark")).toHaveCount(0);
         await expect(live).toHaveClass(/todo-card/);
         await expect(live).toHaveJSProperty("open", true);
         await expect(status).toHaveAttribute("title", language === "zh" ? "执行中" : "running");
@@ -9755,6 +9820,7 @@ test.describe("todo progress regression", () => {
         await expect(live.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
         releaseDone();
         await expect(live).toHaveClass(/tool-done/);
+        await expect(live.locator("summary .tool-success-mark")).toBeVisible();
         await expect(live).toHaveJSProperty("open", true);
         await expect(status).toHaveAttribute("title", operationDone(language));
         await expect(status.locator(".sr-only")).toHaveText(operationDone(language));
@@ -9768,6 +9834,7 @@ test.describe("todo progress regression", () => {
         await expect(error.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
         await expect(error.locator("summary .tool-status .sr-only")).toHaveText(language === "zh" ? "失败" : "failed");
         await expect(error.locator("summary .tool-status svg.lucide-circle-alert")).toHaveCount(1);
+        await expect(error.locator("summary .tool-success-mark")).toHaveCount(0);
         await expect(error.locator("summary")).not.toContainText(operationDone(language));
         await live.locator(":scope > summary").click();
         await expect(live).toHaveJSProperty("open", false);

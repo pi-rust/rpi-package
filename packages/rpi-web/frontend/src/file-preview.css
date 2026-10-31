@@ -1,0 +1,116 @@
+.markdown-body .message-file-link {
+  border: 0;
+  padding: 0;
+  color: var(--blue-text);
+  background: transparent;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.message-file-link:focus-visible,
+.file-preview button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
+}
+.file-preview {
+  width: min(1000px, calc(100vw - 32px));
+  height: min(780px, calc(100dvh - 32px));
+  max-width: none;
+  max-height: none;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.file-preview[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.file-preview::backdrop {
+  background: #0008;
+}
+.file-preview-header,
+.file-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.file-preview-header {
+  justify-content: space-between;
+}
+.file-preview h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.file-preview button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--text);
+  cursor: pointer;
+}
+.file-preview button:hover {
+  background: var(--hover);
+}
+.file-preview button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.file-preview-path {
+  overflow-wrap: anywhere;
+  font: 13px var(--mono);
+}
+.file-preview-actions [role="status"] {
+  font-size: 12px;
+}
+.file-preview-status {
+  overflow: auto;
+}
+.file-preview-code {
+  margin: 0;
+  padding: 12px 0;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--soft);
+  color: var(--text);
+  font: 13px/1.6 var(--mono);
+  tab-size: 4;
+}
+.file-preview-code code {
+  display: grid;
+  min-width: max-content;
+}
+.file-preview-line {
+  display: flex;
+  padding-right: 16px;
+  min-height: 1.6em;
+}
+.file-preview-line[data-highlighted] {
+  background: var(--blue-soft);
+  box-shadow: inset 3px 0 var(--blue);
+}
+.file-preview-number {
+  flex: 0 0 5ch;
+  padding-right: 1.5ch;
+  text-align: right;
+  user-select: none;
+  color: var(--muted);
+}
+@media (max-width: 480px) {
+  .file-preview {
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+    padding: 12px;
+  }
+}

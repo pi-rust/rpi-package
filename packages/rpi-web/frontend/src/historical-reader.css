@@ -1,0 +1,76 @@
+.historical-reader {
+  width: min(900px, calc(100vw - 24px));
+  max-width: none;
+  height: min(850px, calc(100dvh - 32px));
+  max-height: none;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface, var(--bg));
+  color: var(--text);
+  overflow: hidden;
+}
+.historical-reader[open] {
+  display: flex;
+  flex-direction: column;
+}
+.historical-reader::backdrop {
+  background: #0008;
+}
+.historical-reader header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px 20px 8px;
+}
+.historical-reader h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.historical-reader p {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.historical-reader header > button {
+  min-width: 32px;
+  font-size: 24px;
+}
+.historical-reader nav {
+  display: flex;
+  gap: 8px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.historical-reader nav button,
+.historical-reader [role="alert"] button {
+  padding: 6px 12px;
+}
+.historical-reader > [role="status"],
+.historical-reader > [role="alert"] {
+  padding: 8px 20px;
+}
+.historical-reader-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 20px 32px;
+  scroll-padding-top: 12px;
+}
+.historical-reader-body > [data-history-entry] {
+  margin-bottom: 16px;
+}
+.historical-reader-body .message,
+.historical-reader-body .tool-card {
+  max-width: 100%;
+}
+@media (max-width: 600px) {
+  .historical-reader {
+    width: calc(100vw - 12px);
+    height: calc(100dvh - 16px);
+  }
+  .historical-reader-body {
+    padding-inline: 12px;
+  }
+}
