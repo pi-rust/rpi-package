@@ -724,6 +724,8 @@ export default function App() {
   const [connectionRevision, setConnectionRevision] = useState(0);
   const [leafId, setLeafId] = useState("");
   const [interrupted, setInterrupted] = useState(false);
+  const [failedRun, setFailedRun] = useState(false);
+  const [recoveryNoticeDismissed, setRecoveryNoticeDismissed] = useState(false);
   const [firstId, setFirstId] = useState("");
   const [hasMore, setHasMore] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -838,6 +840,8 @@ export default function App() {
     status === "starting" ||
     status === "awaiting_input";
   const composerAbort = busy && supported.has("abort") && !loadingSession && !connectionFailed;
+  const composerContinue = !busy && status !== "closed" && !queueEditId && !draft.trim() && attachments.length === 0 &&
+    ((interrupted && supported.has("resume_pending")) || (failedRun && supported.has("prompt")));
   const localSlash = attachments.length === 0 && LOCAL_SLASH_COMMANDS.has(draft.trim().split(/\s+/, 1)[0]);
   const t = useCallback(
     (key: MessageKey, values?: Record<string, string | number>) =>
@@ -963,6 +967,8 @@ export default function App() {
         case "operation_accepted":
           setRunActive(true);
           setStatus("running");
+          setInterrupted(false);
+          setFailedRun(false);
           break;
         case "agent_settled": {
           setRows(stopToolTimers);
@@ -974,7 +980,9 @@ export default function App() {
           setDialogBusy(false);
           setStatus("ready");
           setInterrupted(Boolean(event.pendingResume));
+          setRecoveryNoticeDismissed(false);
           const outcome = String(event.outcome ?? "settled");
+          setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(outcome) || event.aborted === true);
           const aborted =
             event.aborted && outcome !== "aborted" ? " · aborted" : "";
           const reason =
@@ -1509,6 +1517,8 @@ export default function App() {
     setStatus("connecting");
     setLoadingSession(Boolean(sessionId));
     setInterrupted(false);
+    setFailedRun(false);
+    setRecoveryNoticeDismissed(false);
     setDialog(null);
     setDialogAnswer("");
     setFirstId("");
@@ -1607,6 +1617,8 @@ export default function App() {
         setPersistedHistory(snapshot.history ?? null);
         setLeafId(snapshot.leafId ?? "");
         setInterrupted(Boolean(snapshot.pendingResume));
+        setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(String(snapshot.latestSettlement?.outcome ?? "")) || snapshot.latestSettlement?.aborted === true);
+        setRecoveryNoticeDismissed(false);
         setFirstId(earlierPage.current?.firstId ?? snapshot.firstId ?? "");
         setHasMore(earlierPage.current?.hasMore ?? Boolean(snapshot.hasMore));
         for (const entry of eventsAfterSnapshot(
@@ -1732,6 +1744,8 @@ export default function App() {
           setPersistedHistory(snapshot.history ?? null);
           setLeafId(snapshot.leafId ?? "");
           setInterrupted(Boolean(snapshot.pendingResume));
+          setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(String(snapshot.latestSettlement?.outcome ?? "")) || snapshot.latestSettlement?.aborted === true);
+          setRecoveryNoticeDismissed(false);
           setFirstId(snapshot.firstId ?? "");
           setHasMore(Boolean(snapshot.hasMore));
         }
@@ -2225,7 +2239,15 @@ export default function App() {
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
-    const message = draft.trim();
+    if (composerContinue) {
+      if (loadingSession || connectionFailed || status === "closed" || !sessionId || sendingRef.current) return;
+      if (interrupted && supported.has("resume_pending")) {
+        await resumePending();
+        return;
+      }
+    }
+    const continuing = composerContinue;
+    const message = continuing ? t("continueTaskPrompt") : draft.trim();
     if (
       (!message && attachments.length === 0) ||
       !sessionId ||
@@ -2243,6 +2265,9 @@ export default function App() {
     const submissionMessage = `${message}${attachedText}`.trim();
     const targetSession = sessionId;
     const navigation = navigationRevision.current;
+    const cursor = lastSeq.current;
+    const priorFailed = failedRun;
+    const priorInterrupted = interrupted;
     const submission = ++sendingRevision.current;
     const wasBusy = busy;
     const editingQueueId = queueEditId;
@@ -2258,6 +2283,7 @@ export default function App() {
     updateDraft("");
     setError("");
     setInterrupted(false);
+    setFailedRun(false);
     const key = `local-${++localMessageSeq.current}`;
     if (!shouldQueue)
       setRows((previous) => [
@@ -2299,10 +2325,14 @@ export default function App() {
         clearAttachments();
       }
     } catch (cause) {
-      if (!draftBySession.current.get(targetSession))
+      if (!continuing && !draftBySession.current.get(targetSession))
         updateDraft(message, targetSession);
       if (navigation === navigationRevision.current) {
-        if (!wasBusy && !editingQueueId) {
+        if (cursor === lastSeq.current && !wasBusy && !editingQueueId) {
+          setInterrupted(priorInterrupted);
+          setFailedRun(priorFailed);
+        }
+        if (!wasBusy && !editingQueueId && (!continuing || cursor === lastSeq.current)) {
           setStatus((current) =>
             current === "reconnecting" ? current : "ready",
           );
@@ -2320,13 +2350,19 @@ export default function App() {
   }
 
   async function resumePending() {
-    if (!sessionId || !supported.has("resume_pending")) return;
+    if (!sessionId || !supported.has("resume_pending") || busy || sendingRef.current ||
+      loadingSession || connectionFailed || status === "closed") return;
+    const submission = ++sendingRevision.current;
+    sendingRef.current = true;
+    setSending(true);
     const navigation = navigationRevision.current;
     const cursor = lastSeq.current;
     const priorStatus = status;
     const priorActive = runActive;
     const priorInterrupted = interrupted;
+    const priorFailed = failedRun;
     setInterrupted(false);
+    setFailedRun(false);
     setError("");
     setStatus("running");
     setRunActive(true);
@@ -2342,6 +2378,7 @@ export default function App() {
             current === "reconnecting" ? current : priorStatus,
           );
           setRunActive(priorActive);
+          setFailedRun(priorFailed);
         }
         note("Nothing left to resume on this branch.");
       }
@@ -2353,8 +2390,14 @@ export default function App() {
         );
         setRunActive(priorActive);
         setInterrupted(priorInterrupted);
+        setFailedRun(priorFailed);
       }
       setError(errorText(cause));
+    } finally {
+      if (submission === sendingRevision.current) {
+        sendingRef.current = false;
+        setSending(false);
+      }
     }
   }
 
@@ -3542,23 +3585,14 @@ export default function App() {
           </div>
         )}
 
-        {interrupted && (
+        {interrupted && !recoveryNoticeDismissed && (
           <div className="notice-banner">
             <AlertTriangle size={14} />
             <span>{t("interruptedRun")}</span>
-            {supported.has("resume_pending") && (
-              <button
-                className="banner-action"
-                onClick={() => void resumePending()}
-                disabled={busy}
-              >
-                <Play size={13} /> {t("continue")}
-              </button>
-            )}
             <button
               className="icon-button"
               aria-label={t("dismiss")}
-              onClick={() => setInterrupted(false)}
+              onClick={() => setRecoveryNoticeDismissed(true)}
             >
               <X size={14} />
             </button>
@@ -4034,13 +4068,13 @@ export default function App() {
                   <div className="composer-controls">
                     <button
                       type={composerAbort ? "button" : "submit"}
-                      className={`send-button${composerAbort ? " composer-action-stop" : ""}`}
-                      aria-label={composerAbort ? t("abort") : t("send")}
-                      title={composerAbort ? t("abort") : t("send")}
+                      className={`send-button${composerAbort ? " composer-action-stop" : composerContinue ? " composer-action-continue" : ""}`}
+                      aria-label={composerAbort ? t("abort") : composerContinue ? t("continue") : t("send")}
+                      title={composerAbort ? t("abort") : composerContinue ? t("continue") : t("send")}
                       disabled={
                         (!localSlash && (loadingSession || connectionFailed)) ||
                         (!composerAbort && (
-                          (!draft.trim() && attachments.length === 0) ||
+                          (!composerContinue && !draft.trim() && attachments.length === 0) ||
                           !sessionId || sending
                         ))
                       }
@@ -4048,6 +4082,8 @@ export default function App() {
                     >
                       {composerAbort ? (
                         <span className="stop-indicator" aria-hidden="true" />
+                      ) : composerContinue ? (
+                        <Play size={17} aria-hidden="true" />
                       ) : (
                         <ArrowUp size={17} />
                       )}

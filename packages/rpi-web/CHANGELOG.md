@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Show an icon-only composer Continue action with a localized tooltip and accessible name for native pending recovery or explicit failed/interrupted/manually stopped run settlements. Acknowledging Stop alone does not expose Continue before native settlement. Use native resume when available, otherwise send an explicit continuation instruction only on user action; preserve draft/attachment Send and running Stop, reject duplicate/stale submissions, and keep recovery available after notice dismissal or a rejected request without inventing work from ordinary network errors.
 - Start the right-side project files/changes panel collapsed at every viewport width and after reload; retain manual toolbar toggling and the panel's close button.
 - Keep timeline ticks clearly visible without activation and show up to ten at once, scrolling excess nodes. Load one bounded 48-message page when the reader scrolls to the earlier edge, releases an upper-edge scrub, or presses Up/Home again on the first node. Preserve both reading anchors, manual ↑ retry and legacy/loading visibility; guard wheel bursts, failures, stale sessions and tool-only pages against repeated reads or full-history scans.
 - Move the conversation timeline to the left on desktop and phones, reserving left-side message space and opening previews inward to the right. Preserve narrow sizing, keyboard/mouse/touch navigation, hover-preview access and bounded history paging.
