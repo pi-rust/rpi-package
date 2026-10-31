@@ -209,11 +209,12 @@ fn managed_flow(sse: bool) {
         .unwrap();
     assert_eq!(
         initialize["params"]["clientInfo"],
-        json!({"name":"rpi-mcp-adapter","version":"0.2.4"})
+        json!({"name":"rpi-mcp-adapter","version":env!("CARGO_PKG_VERSION")})
     );
+    let user_agent = format!("user-agent: rpi-mcp-adapter/{}", env!("CARGO_PKG_VERSION"));
     assert!(seen
         .iter()
-        .all(|(_, headers, _)| headers.contains("user-agent: rpi-mcp-adapter/0.2.4")));
+        .all(|(_, headers, _)| headers.contains(&user_agent)));
     assert_eq!(
         seen.iter()
             .filter(|(_, _, v)| v["method"] == "initialize")
