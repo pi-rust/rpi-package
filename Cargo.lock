@@ -2521,8 +2521,10 @@ dependencies = [
 name = "rpi-extcore"
 version = "0.2.5"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "rpi-durable-core",
+ "rpi-mcp-core",
  "serde",
  "serde_json",
  "sha2",

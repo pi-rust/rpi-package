@@ -1,11 +1,15 @@
 //! Persistent connections scoped to the host session and configuration identity.
+use crate::configured::{validate_tool_name, Catalog};
 use crate::connection::{
     initialize_request, initialized_notification, parse_initialize, response_result,
     tools_call_request,
 };
 use crate::control::{Control, Deadline};
 use crate::http::HttpTransport;
-use crate::{McpConfig, McpServerConfig, Request, Response, ServerInfo, StdioTransport, Tool};
+use crate::{
+    ConfiguredStdio, DiscoveryLimits, McpConfig, McpServerConfig, Request, Response, ServerInfo,
+    StdioTransport, Tool,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -53,6 +57,8 @@ struct Session {
     info: ServerInfo,
     next_id: u64,
     failed: bool,
+    // Opaque identity only: targets never own a Session, Entry, or runtime.
+    generation: Arc<()>,
 }
 impl Session {
     fn start(
@@ -89,6 +95,7 @@ impl Session {
             info,
             next_id: 2,
             failed: false,
+            generation: Arc::new(()),
         })
     }
     fn request(
@@ -138,6 +145,12 @@ impl Session {
         Err("MCP tools/list exceeded 100 pages".into())
     }
 }
+enum SessionAccess<'a> {
+    Legacy,
+    Discover,
+    Existing(&'a Arc<()>),
+}
+
 // Keep the last configuration even after a failed transport is dropped, so
 // a config edit cannot replay the old server's subscriptions onto a new server.
 #[derive(Default)]
@@ -319,6 +332,93 @@ impl McpRuntime {
     ) -> Result<Value, String> {
         self.state.resources(context, params, control)
     }
+    /// Discover an in-memory target, admitting calls only after every page validates.
+    pub fn discover_stdio(
+        &self,
+        target: &ConfiguredStdio,
+        limits: DiscoveryLimits,
+        control: &Control,
+    ) -> Result<DiscoveredServer, String> {
+        let deadline = Deadline::new(target.config.timeout, "stdio target lock", control);
+        let mut admission = lock_until(&target.generation, &deadline)?;
+        // A failed rediscovery must not leave the old catalog callable.
+        *admission = None;
+        let mut catalog = Catalog::new(limits)?;
+        self.state.with_session_access(
+            target.key.clone(),
+            McpServerConfig::Stdio(target.config.clone()),
+            target.config.timeout,
+            control,
+            None,
+            SessionAccess::Discover,
+            |session, control, _| {
+                let mut cursor = None;
+                loop {
+                    control.check()?;
+                    let params = cursor
+                        .as_ref()
+                        .map(|c| json!({"cursor":c}))
+                        .unwrap_or_else(|| json!({}));
+                    let result = session
+                        .request("tools/list", params, control)
+                        .and_then(response_result)
+                        .map_err(|_| "MCP stdio tools/list failed")?;
+                    cursor = catalog.page(&result)?;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                control.check()?;
+                *admission = Some(session.generation.clone());
+                Ok(DiscoveredServer {
+                    name: target.name.clone(),
+                    info: session.info.clone(),
+                    tools: catalog.tools,
+                })
+            },
+        )
+    }
+
+    /// Call only the connection admitted by discovery. Never reconnect, requery,
+    /// replay, or project the raw MCP result (including `isError`).
+    pub fn call_stdio(
+        &self,
+        target: &ConfiguredStdio,
+        tool: &str,
+        arguments: Value,
+        control: &Control,
+    ) -> Result<Value, String> {
+        control.check()?;
+        validate_tool_name(tool)?;
+        if !arguments.is_object() {
+            return Err("MCP arguments must be an object".into());
+        }
+        let deadline = Deadline::new(target.config.timeout, "stdio target lock", control);
+        let admission = lock_until(&target.generation, &deadline)?;
+        let generation = admission
+            .as_ref()
+            .ok_or("MCP stdio target requires discovery")?;
+        self.state.with_session_access(
+            target.key.clone(),
+            McpServerConfig::Stdio(target.config.clone()),
+            target.config.timeout,
+            control,
+            None,
+            SessionAccess::Existing(generation),
+            |session, control, _| {
+                let request = tools_call_request(0, tool, arguments);
+                session
+                    .request(
+                        "tools/call",
+                        request.params.unwrap_or_else(|| json!({})),
+                        control,
+                    )
+                    .and_then(response_result)
+                    .map_err(|_| "MCP stdio tools/call failed".into())
+            },
+        )
+    }
+
     pub fn shutdown_connections(&self) {
         self.state.shutdown_connections();
     }
@@ -736,11 +836,40 @@ impl State {
         skip_restore_uri: Option<&str>,
         run: impl FnOnce(&mut Session, &Control, bool) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.with_session_access(
+            key,
+            config,
+            timeout,
+            control,
+            skip_restore_uri,
+            SessionAccess::Legacy,
+            run,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_session_access<T>(
+        self: &Arc<Self>,
+        key: String,
+        config: McpServerConfig,
+        timeout: u64,
+        control: &Control,
+        skip_restore_uri: Option<&str>,
+        access: SessionAccess<'_>,
+        run: impl FnOnce(&mut Session, &Control, bool) -> Result<T, String>,
+    ) -> Result<T, String> {
+        control.check()?;
         let entry = {
             let mut sessions = self
                 .sessions()
                 .lock()
                 .map_err(|_| "MCP session registry poisoned")?;
+            // Existing-only access must fail before creating any entry/worker.
+            if matches!(access, SessionAccess::Existing(_)) && !sessions.contains_key(&key) {
+                return Err(
+                    "MCP stdio discovery connection is retired; rediscover required".into(),
+                );
+            }
             if !sessions.contains_key(&key) && sessions.len() >= 64 {
                 return Err("MCP connection limit (64) reached; close unused connections with mcp_list action=close".into());
             }
@@ -764,6 +893,17 @@ impl State {
         let control = control.linked(&entry.stop);
         let deadline = Deadline::new(timeout, "connection lock", &control);
         let mut state = lock_until(&entry.session, &deadline)?;
+        if let SessionAccess::Existing(expected) = &access {
+            // Check under the same lock used for config replacement/retirement.
+            // A stale target cannot mutate config, restart, or reach the callback.
+            if state.config.as_ref() != Some(&config)
+                || !state.session.as_ref().is_some_and(|session| {
+                    !session.failed && Arc::ptr_eq(&session.generation, expected)
+                })
+            {
+                return Err("MCP stdio discovery connection is stale; rediscover required".into());
+            }
+        }
         if state.config.as_ref() != Some(&config) {
             self.clear_subscriptions(&key);
             state.session.take();
@@ -780,7 +920,11 @@ impl State {
                 &control,
                 &entry.notifications,
                 &self.identity,
-            )?;
+            )
+            .map_err(|error| match access {
+                SessionAccess::Legacy => error,
+                _ => "MCP stdio initialization failed".into(),
+            })?;
             if let Err(error) =
                 self.restore_subscriptions(&key, &mut session, &control, skip_restore_uri)
             {
@@ -1290,6 +1434,109 @@ fn lock_until<'a, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn typed_target() -> ConfiguredStdio {
+        let config = serde_json::from_value(json!({
+            "command":"must-not-be-spawned-core-unit-test", "timeout":1
+        }))
+        .unwrap();
+        ConfiguredStdio::new(&CoreRequestContext::default(), "typed", config)
+            .ok()
+            .unwrap()
+    }
+
+    #[test]
+    fn typed_calls_require_discovery_and_never_create_registry_entries() {
+        let runtime = McpRuntime::new();
+        let target = typed_target();
+        let control = Control::default();
+        assert!(runtime
+            .call_stdio(&target, "any tool/中文", json!({}), &control)
+            .unwrap_err()
+            .contains("requires discovery"));
+        // A token from another runtime (or a retired registry key) is not authority
+        // to open a transport. The invalid executable must never be attempted.
+        *target.generation.lock().unwrap() = Some(Arc::new(()));
+        assert!(runtime
+            .call_stdio(&target, "any", json!({}), &control)
+            .unwrap_err()
+            .contains("retired"));
+        assert!(runtime.state.sessions.lock().unwrap().is_empty());
+        assert!(runtime
+            .call_stdio(&target, "any", json!([]), &control)
+            .unwrap_err()
+            .contains("object"));
+        control.cancel();
+        assert!(runtime
+            .call_stdio(&target, "any", json!({}), &control)
+            .unwrap_err()
+            .contains("cancelled"));
+    }
+
+    #[test]
+    fn typed_failed_or_changed_session_cannot_reconnect_or_mutate_config() {
+        let runtime = McpRuntime::new();
+        let target = typed_target();
+        *target.generation.lock().unwrap() = Some(Arc::new(()));
+        let (notifications, _receiver) = mpsc::sync_channel(1);
+        let mut previous_config = target.config.clone();
+        previous_config.command = "different-command".into();
+        let entry = Arc::new(Entry {
+            session: Mutex::new(ConnectionState {
+                config: Some(McpServerConfig::Stdio(previous_config.clone())),
+                session: None,
+            }),
+            stop: Control::default(),
+            notifications,
+            dispatcher: Mutex::new(None),
+        });
+        runtime
+            .state
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(target.key.clone(), entry.clone());
+        for config in [previous_config.clone(), target.config.clone()] {
+            entry.session.lock().unwrap().config = Some(McpServerConfig::Stdio(config.clone()));
+            assert!(runtime
+                .call_stdio(&target, "any", json!({}), &Control::default())
+                .unwrap_err()
+                .contains("stale"));
+            let state = entry.session.lock().unwrap();
+            assert_eq!(state.config.as_ref(), Some(&McpServerConfig::Stdio(config)));
+            assert!(state.session.is_none());
+        }
+        runtime.shutdown_connections();
+        assert!(runtime
+            .call_stdio(&target, "any", json!({}), &Control::default())
+            .unwrap_err()
+            .contains("retired"));
+    }
+
+    #[test]
+    fn typed_target_does_not_retain_its_runtime_and_clone_invalidation_is_shared() {
+        let runtime = McpRuntime::new();
+        let state = Arc::downgrade(&runtime.state);
+        let target = typed_target();
+        let clone = target.clone();
+        *target.generation.lock().unwrap() = Some(Arc::new(()));
+        // Reject invalid discovery limits before touching the transport, and
+        // invalidate all cloned admissions rather than leaving an old catalog live.
+        assert!(runtime
+            .discover_stdio(
+                &target,
+                DiscoveryLimits {
+                    max_tools: 1,
+                    max_catalog_bytes: 0,
+                },
+                &Control::default()
+            )
+            .is_err());
+        assert!(clone.generation.lock().unwrap().is_none());
+        drop(runtime);
+        assert!(state.upgrade().is_none());
+        drop((target, clone));
+    }
 
     #[test]
     fn resource_text_flattens_text_and_notes_blobs() {

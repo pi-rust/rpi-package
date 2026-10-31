@@ -294,6 +294,11 @@ pub(crate) fn validate_message(value: &Value) -> Result<(), String> {
     if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Err("MCP message must use JSON-RPC 2.0".into());
     }
+    if value.get("method").is_some()
+        && (value.get("result").is_some() || value.get("error").is_some())
+    {
+        return Err("MCP message cannot combine method with result or error".into());
+    }
     Ok(())
 }
 pub(crate) fn decode_response(value: Value, id: u64) -> Result<Response, String> {

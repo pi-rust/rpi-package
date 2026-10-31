@@ -18,10 +18,15 @@ test-support = []
 serde = { workspace = true }
 serde_json.workspace = true
 rpi-durable-core = { path = "../rpi-durable-core", version = "0.2.0" }
+rpi-mcp-core = { path = "../rpi-mcp-core", version = "0.1.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "net", "fs", "signal"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 futures-util = "0.3"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 
 [package.metadata.docs.rs]
 all-features = true

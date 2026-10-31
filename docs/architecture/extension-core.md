@@ -22,7 +22,8 @@ flowchart TD
 
 ## Reusable MCP foundation
 
-`rpi-mcp-adapter -> rpi-mcp-core` is a separate reusable-library boundary:
+`rpi-mcp-adapter -> rpi-mcp-core` remains the reusable-library boundary;
+`rpi-extcore -> rpi-mcp-core` now also supports session-owned stdio tools:
 
 - **rpi-mcp-core** owns caller-instanced MCP connections, request context,
   subscriptions, delivery-batch lifetimes, transport bounds, cancellation and
@@ -40,10 +41,78 @@ flowchart TD
   which owns Windows suspended/headless Job Object setup and Unix process groups.
   ABI-free does not mean all platform FFI is unsafe-free.
 
-This extraction does not yet add an `rpi-extcore -> rpi-mcp-core` dependency or
-connect ACP `mcpServers` to native external-tool registration. That integration
-remains separate; native process/RPC/run ownership stays in extcore and ACP-only
-configuration/capability mappings stay in ACP.
+### Session-owned MCP stdio integration
+
+`rpi-extcore::external_tools::StdioToolServer` and
+`HostSession::configure_stdio_tools(servers, cwd, scope)` are protocol-neutral.
+Extcore owns one caller-instanced MCP runtime per configured native session,
+discovery, atomic native catalog registration, request routing, deadlines,
+cancellation and child cleanup. ACP strictly parses `mcpServers` on
+`session/new`, `session/load` and `session/resume`, resolves relative command
+paths against the explicit session cwd, checks native session identity and maps
+the configuration into that API. It does not own a parallel tool engine.
+`mcpCapabilities.http` and `sse` remain false; only stdio is accepted.
+
+Nonempty configuration requires native commands `configure_external_tools` and
+`external_tool_response`, and events `external_tool_request` and
+`external_tool_request_closed`. Extcore checks these capabilities before spawning
+MCP children. Empty configuration remains compatible with older hosts. Native
+rpi owns model-visible tool registration, schema validation, tool-call provenance,
+result validation/projection and persisted history. Extcore forwards raw MCP
+results as `externalToolResult` (including text/image metadata, `isError` and
+`structuredContent`) for native validation; unsupported content produces an
+explicit error, never silent removal. ACP separately projects ordinary native
+tool events/history into ACP updates; its presentation is not native result
+projection and does not create another transcript.
+
+Omission on a live session retains configuration; explicit identical configuration
+is allowed, but changed configuration is rejected before history replay. A fresh
+load/resume requires the client to reprovide configuration and credentials.
+Commands, arguments and environment secrets are not persisted in transcripts,
+registry metadata or a parallel database. Session scope isolates runtime keys;
+export names are deterministic 64-character `mcp_` plus 60 SHA-256 hex digits of
+the length-delimited server/tool tuple, not secrets or ambient global identities.
+
+ACP configuration is bounded to 16 servers / 256 KiB encoded configuration.
+The session catalog is bounded to 128 tools / 256 KiB, discovery to 30 seconds,
+calls to 45 seconds, active requests and the reliable reader queue to 64, and
+native outcome frames to 1 MiB. Native request closure and cancellation suppress
+queued late responses; overflow fails closed. Cancelled calls are never replayed
+or automatically reconnected: the target requires explicit fresh discovery.
+Shutdown/owner drop cancels the runtime, and a retained cleanup supervisor joins
+workers and terminates child trees within the documented OS/I/O limitations.
+
+This path requires a supporting native build, not merely a newer adapter. It
+adds no MCP resources, prompts, OAuth, HTTP/SSE transports, plugin activation,
+remote attachment or shared multi-protocol service. Existing MCP adapter APIs
+retain their separate transport/resource behavior.
+
+### Stage5 verification boundary
+
+The three-OS MCP workflow runs default tests/checks for MCP core, adapter,
+extcore, ACP, HTTP and Web Rust packages plus the feature-gated
+`rpi-extcore/tests/mcp_stdio_bridge.rs`. That bridge fixture uses real MCP shell
+children with an in-memory native peer: it is not a real-native smoke test.
+ACP parser/protocol and extcore host tests cover strict configuration, old-host
+compatibility, identity/capability gates, atomic registration, cancellation,
+result bounds and ownership. CI retains core/adapter packaging (with the local
+core path patch); only strict MCP core Clippy is a passing gate, not a claim
+that existing extcore/adapter strict baselines pass.
+
+Real-native ACP-to-MCP validation is a separate Windows Python harness,
+`packages/rpi-acp/tests/mcp_stdio_native.py --help`, with required binary/build
+provenance inputs and isolated local fixtures, not real credentials. Its retained
+`results.json`, provenance, wire logs, native JSONL and PID audit are execution
+evidence; neither source coverage nor CI configuration alone establishes a
+successful native smoke run.
+
+Nonempty-MCP fresh restore preflight uses extcore's neutral, bounded native v4
+header metadata (64 KiB, exact ID, no messages). ACP rejects differing existing
+recorded/requested canonical workspaces before either child spawns; empty or
+missing recorded directories retain native launch-cwd fallback. Configuration
+is never silently rebased or persisted. No-MCP restores retain compatibility.
+As with other filesystem reads, metadata/canonicalization/open are separate
+operations, not a hostile concurrent-filesystem guarantee.
 
 ## Preserved behavior
 

@@ -36,6 +36,42 @@ fn find_saved_session(directory: &Path, id: &str) -> Result<PathBuf, String> {
     rpi_extcore::history::find_saved_session(directory, id)
         .map_err(|error| error.replace("no saved native session", "no saved ACP session"))
 }
+/// For fresh restores with MCP, the native header decides whether launch cwd
+/// will be adopted. Reject conflicts rather than silently rebase client config.
+/// Empty/missing/non-directory recorded cwd retains native launch-cwd fallback.
+pub(crate) fn validate_restored_workspace(
+    saved: &Path,
+    id: &str,
+    requested: &Path,
+) -> Result<(), String> {
+    let metadata = rpi_extcore::history::saved_session_metadata(saved, id)
+        .map_err(|_| "cannot validate saved session workspace for MCP configuration")?;
+    if metadata.cwd.as_os_str().is_empty() {
+        return Ok(());
+    }
+    // Native evaluates relative recorded paths in the launched child's cwd.
+    let recorded = if metadata.cwd.is_absolute() {
+        metadata.cwd
+    } else {
+        requested.join(metadata.cwd)
+    };
+    if !recorded.is_dir() {
+        return Ok(());
+    }
+    let recorded = recorded
+        .canonicalize()
+        .map_err(|_| "cannot resolve saved session workspace for MCP configuration")?;
+    let requested = requested
+        .canonicalize()
+        .map_err(|_| "cannot resolve requested workspace for MCP configuration")?;
+    // Canonical paths resolve directory spelling, symlinks/junctions and `..`.
+    // Do not lowercase paths: Windows can also host case-sensitive directories.
+    if recorded != requested {
+        return Err("saved session workspace differs from requested cwd; reopen with its recorded cwd to configure MCP servers".into());
+    }
+    Ok(())
+}
+
 pub(crate) struct Replay {
     // Keep the native run lease until replay and the load response complete.
     _read: rpi_extcore::history::page::HistoryRead,

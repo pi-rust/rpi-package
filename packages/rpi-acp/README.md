@@ -12,6 +12,9 @@ Computer / Zed  ──ACP over stdio──▶  rpi --acp  ──spawn──▶  
 
 The source implementation delegates native RPC children, isolated command requests, run acceptance/settlement, text reconciliation, history traversal and question answer validation to [rpi-extcore](../rpi-extcore/README.md). This package retains ACP serialization, capabilities, client requests and Zed/terminal-auth integration. Its existing extension and bridge entrypoints and session storage paths remain unchanged. See the [architecture contract](../../docs/architecture/extension-core.md).
 
+A compatible native external-tool build is required for nonempty MCP
+configuration; updating only the bridge does not upgrade the host.
+
 ## How it works
 
 Open WebUI Computer can use the same standard ACP entrypoint. Deploy and
@@ -84,6 +87,109 @@ Run the model-free paged/old-host fixture with
 For a real native v4 transcript with 513 active and 19 off-branch messages,
 use `python -B packages/rpi-acp/tests/bounded_history_native.py --bridge <bridge> --rpi <rpi>`;
 it verifies five native pages and exact replay across fresh process restarts.
+
+### Client-provided MCP tools (stdio only)
+
+`session/new`, `session/load` and `session/resume` accept the ACP v1 shape:
+
+```json
+{
+  "cwd": "/absolute/workspace",
+  "mcpServers": [{
+    "name": "workspace-tools",
+    "command": "./bin/mcp-server",
+    "args": ["--stdio"],
+    "env": [{"name": "EXAMPLE_TOKEN", "value": "client-supplied"}]
+  }]
+}
+```
+
+`load` and `resume` also require `sessionId` as usual. No `type` is required:
+stdio is implicit in ACP. Explicit `type: "stdio"` / `transport: "stdio"` are
+accepted, but HTTP, SSE, unknown transports, URL and header fields are rejected.
+Initialization advertises `mcpCapabilities.http: false` and `sse: false`.
+Extra ACP metadata is ignored. Server names and environment names must be
+unique; `env` is an array, not an object. `name`, `command`, `args`, and `env`
+are required on each entry. NULs, blank names/commands, malformed fields and
+oversized configurations fail with value-free validation errors. Limits are
+16 servers, 200-byte names, 128 arguments and 128 environment entries per
+server, 16 KiB per command/argument/environment value, and 256 KiB encoded
+configuration (including extra metadata). Empty arguments and env values are
+allowed; env names cannot contain `=`.
+
+Commands containing `/` or `\` are resolved against the explicit session
+`cwd` if relative; bare executable names retain PATH lookup. Both separators
+are accepted for relative paths. The MCP process uses that session cwd, not
+the ACP launch directory. Native session identity is checked before MCP
+configuration. Extcore owns discovery, native tool registration, calls,
+cancellation, deadlines and child cleanup; ACP only validates/maps the config.
+Tool execution continues through the existing native ACP tool-event formatting.
+Hosts without native external-tool support still work with no MCP config;
+nonempty config fails rather than silently omitting tools.
+
+Omitting `mcpServers` on a new or freshly restored session means no MCP servers.
+On a live session, omission retains its configuration. Explicit identical
+configuration is allowed; an explicit different configuration (including
+clearing an existing nonempty config with `[]`) fails before history replay.
+Close and reopen to change it. Clients **must reprovide** the configuration
+when loading/resuming in a fresh ACP process: MCP configuration and environment
+secrets are not persisted in ACP transcripts, registry metadata or another DB.
+
+For fresh load/resume with nonempty MCP configuration, the recorded native
+workspace must match requested `cwd` after canonical resolution. An existing
+recorded directory that differs is rejected **before native or MCP spawn**;
+request that recorded cwd rather than expecting client configuration to be
+silently rebased. An empty, missing, or no-longer-directory recorded cwd retains
+native launch-cwd fallback. The preflight validates the native v4 header and
+exact session ID with a 64 KiB first-line limit; malformed/missing cwd metadata
+is rejected for this opt-in path. It reads no messages and persists no new
+metadata. No-MCP restore behavior stays compatible. This is a filesystem
+snapshot, not protection against concurrent local directory/transcript rewrites.
+
+Native rpi owns tool registration, schema validation, call provenance, result
+validation/projection and persisted history. Extcore forwards raw MCP
+`externalToolResult` (including `isError`, structured content and text/image
+metadata); unsupported content produces explicit errors, not silently dropped
+blocks. ACP only formats the resulting native tool events and replay for its
+client. Before spawning an MCP child, extcore requires native commands
+`configure_external_tools` / `external_tool_response` and events
+`external_tool_request` / `external_tool_request_closed`. An empty configuration
+remains compatible with older hosts.
+
+Catalogs are limited to 128 tools / 256 KiB, discovery to 30 seconds total,
+calls to 45 seconds, active requests and the reliable reader queue to 64, and
+native outcome frames to 1 MiB. Export names are deterministic 64-character
+`mcp_` + 60 SHA-256 hex digits of a length-delimited server/tool tuple, within an
+explicit per-session runtime scope. A cancelled target is not automatically
+reconnected or replayed; it requires explicit fresh discovery. Session shutdown
+and owner drop cancel calls and clean up children. This integration adds no MCP
+resources, prompts, OAuth, HTTP/SSE transport, plugin activation or remote
+attachment.
+
+### Stdio validation and native smoke
+
+Source parser/protocol and extcore host tests cover strict configuration,
+identity/capability gates, live configuration handling, cancellation and cleanup.
+`cargo test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge`
+uses real MCP shell children but an in-memory native peer. The three-OS CI runs
+these fixtures and Rust package checks; it has no real-native binary and does
+**not** run the real-native smoke.
+
+The Windows-only standard-library Python harness uses explicit verified binaries
+and a local model/MCP fixture, with no installed configuration or real credentials.
+Inspect its required provenance arguments before running:
+
+```text
+python -B packages/rpi-acp/tests/mcp_stdio_native.py --help
+python -B packages/rpi-acp/tests/mcp_stdio_native.py --bridge <absolute-bridge.exe> --rpi <absolute-rpi.exe> --diagnostics-dir <new-evidence-dir> --build-marker <bridge-build-marker.json> --native-build-record <native-build-record.json> --native-verification <native-verification.json> --native-sha <native-sha256>
+```
+
+Use an existing successful bridge build marker and native build/verification
+records matching the binaries; the harness verifies hashes before execution.
+The diagnostics directory must be new and beneath the build marker's parent or
+`TEMP`; failure evidence is retained. Inspect its `results.json`, provenance,
+wire logs, native JSONL and PID audit for actual execution results, rather than
+inferring success from the existence of the harness.
 
 ### Durable control plane
 

@@ -1,10 +1,15 @@
-name: MCP foundation checks
+name: MCP stdio checks
 
 on:
   pull_request:
     paths:
       - 'packages/rpi-mcp-core/**'
       - 'packages/rpi-mcp-adapter/**'
+      - 'packages/rpi-extcore/**'
+      - 'packages/rpi-acp/**'
+      - 'packages/rpi-http/**'
+      - 'packages/rpi-web/**'
+      - 'docs/architecture/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/mcp-checks.yml'
@@ -17,7 +22,7 @@ jobs:
   mcp:
     name: MCP (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -38,15 +43,18 @@ jobs:
           echo "RPI_CODING_AGENT_DIR=$RUNNER_TEMP/mcp-agent" >> "$GITHUB_ENV"
       - name: Check package and included-test formatting
         run: |
-          cargo fmt --check -p rpi-mcp-core -p rpi-mcp-adapter
-          rustfmt --edition 2021 --check packages/rpi-mcp-adapter/src/http_tests.rs
-      - name: Test protocol compatibility and runtime ownership
-        run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter
+          cargo fmt --check -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp
+          rustfmt --edition 2021 --check packages/rpi-mcp-adapter/src/http_tests.rs packages/rpi-extcore/src/external_tools.rs packages/rpi-extcore/src/external_tools_tests.rs packages/rpi-extcore/src/external_tools_host_tests.rs packages/rpi-acp/src/protocol_mcp_tests.rs
+      - name: Test default package compatibility and runtime ownership
+        run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
+      - name: Test stdio bridge with real MCP children and a fixture native peer
+        run: cargo test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge
       - name: Check all targets
-        run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter --all-targets
-      # The pinned SDK's export_plugin! macro has an existing adapter Clippy
-      # not_unsafe_ptr_arg_deref failure. Do not suppress it or label it passing.
-      - name: Strict core Clippy
+        run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web --all-targets
+      # Only MCP core is a strict Clippy gate. Existing extcore warnings and
+      # the pinned SDK export_plugin! adapter not_unsafe_ptr_arg_deref baseline
+      # are not suppressed, run with relaxed lints, or labelled strict passes.
+      - name: Strict MCP core Clippy
         run: cargo clippy --locked -p rpi-mcp-core --all-targets -- -D warnings
       - name: Build the adapter library
         run: cargo build --locked -p rpi-mcp-adapter --lib
@@ -54,3 +62,5 @@ jobs:
         run: cargo package --locked -p rpi-mcp-core
       - name: Verify the adapter against the unpublished workspace core
         run: cargo package --locked -p rpi-mcp-adapter --config 'patch.crates-io.rpi-mcp-core.path="packages/rpi-mcp-core"'
+      # Real-native ACP/MCP smoke requires separately verified native/bridge
+      # binaries and provenance records. This fixture-only job does not run it.
