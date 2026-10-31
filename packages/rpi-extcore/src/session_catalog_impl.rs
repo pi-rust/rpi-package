@@ -9,8 +9,10 @@ use super::*;
 use std::{
     collections::HashSet,
     fs::{self, File, ReadDir},
+    future::{poll_fn, Future},
     io::Read,
     path::{Component, Path},
+    pin::Pin,
     sync::Mutex,
 };
 use tokio::{
@@ -24,12 +26,44 @@ pub(super) struct Inner {
     state: Mutex<State>,
     notify: Notify,
     stop: CatalogControl,
+    #[cfg(test)]
+    tail_hook: Mutex<Option<TailHook>>,
 }
 struct State {
     generations: Vec<Slot>,
-    workers: Vec<JoinHandle<()>>,
+    workers: Vec<Arc<Worker>>,
     active: usize,
     serial: u64,
+}
+struct Worker {
+    handle: Mutex<JoinHandle<()>>,
+}
+impl Worker {
+    fn is_finished(&self) -> bool {
+        lock(&self.handle).is_finished()
+    }
+
+    // Only the originating page polls this handle. Admission/shutdown only
+    // observe is_finished, in state -> handle lock order; this never locks state.
+    async fn exited(&self) -> Result<(), CatalogError> {
+        poll_fn(|cx| Pin::new(&mut *lock(&self.handle)).poll(cx))
+            .await
+            .map_err(|_| CatalogError::Unavailable)
+    }
+}
+// Independent of the handle wrapper so the completion barrier can be disabled
+// in a control checkout without changing the deterministic worker-tail fixture.
+#[cfg(test)]
+struct TailHook {
+    reached: oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+#[cfg(test)]
+impl TailHook {
+    fn wait(self) {
+        let _ = self.reached.send(());
+        let _ = self.release.recv();
+    }
 }
 struct Slot {
     key: u64,
@@ -124,6 +158,8 @@ pub(super) fn new(root: PathBuf, limits: CatalogLimits) -> Result<SessionCatalog
             }),
             notify: Notify::new(),
             stop: CatalogControl::default(),
+            #[cfg(test)]
+            tail_hook: Mutex::new(None),
         }),
     })
 }
@@ -238,7 +274,7 @@ pub(super) async fn page(
         return Err(CatalogError::InvalidCursor);
     }
     let (tx, rx) = oneshot::channel();
-    {
+    let worker = {
         let mut state = lock(&inner.state);
         inner.stop.check()?;
         // Handles are retained until is_finished reports actual blocking worker exit.
@@ -295,6 +331,8 @@ pub(super) async fn page(
         state.active += 1;
         let owner = inner.clone();
         let worker_control = control.clone();
+        #[cfg(test)]
+        let tail_hook = lock(&inner.tail_hook).take();
         let handle = tokio::task::spawn_blocking(move || {
             let mut tokens = tokens;
             let mut data = data;
@@ -330,13 +368,26 @@ pub(super) async fn page(
             let _ = tx.send(result);
             state.active -= 1;
             owner.notify.notify_waiters();
+            drop(state);
+            #[cfg(test)]
+            if let Some(hook) = tail_hook {
+                hook.wait();
+            }
         });
-        state.workers.push(handle);
-    }
+        let worker = Arc::new(Worker {
+            handle: Mutex::new(handle),
+        });
+        state.workers.push(Arc::clone(&worker));
+        worker
+    };
     let mut guard = CancelOnDrop(Some(control));
-    let result = rx.await.map_err(|_| CatalogError::Unavailable)?;
+    // Receiving even an error/closed channel is not proof of worker exit. Keep
+    // cancellation armed and retained ownership intact throughout the join wait.
+    let delivered = rx.await;
+    let exited = worker.exited().await;
     guard.0.take();
-    result
+    exited?;
+    delivered.map_err(|_| CatalogError::Unavailable)?
 }
 pub(super) fn cancel(inner: &Inner) {
     inner.stop.cancel();
@@ -349,7 +400,7 @@ pub(super) async fn shutdown(inner: &Arc<Inner>) {
         notified.as_mut().enable();
         let active = {
             let mut s = lock(&inner.state);
-            if s.workers.iter().all(JoinHandle::is_finished) {
+            if s.workers.iter().all(|w| w.is_finished()) {
                 s.generations.clear();
                 s.workers.clear();
                 return;
@@ -745,6 +796,9 @@ fn parse_header(
     ))
 }
 
+#[cfg(test)]
+#[path = "session_catalog_completion_tests.rs"]
+mod completion_tests;
 #[cfg(test)]
 #[path = "session_catalog_tests.rs"]
 mod tests;
