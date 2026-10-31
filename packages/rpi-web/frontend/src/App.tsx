@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -51,6 +52,8 @@ import { SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
 import { AskCard } from "./AskCard";
 import { askInfo, isAskTool } from "./ask";
+import { DelegationCard } from "./DelegationCard";
+import { delegationInfo, isDelegationTool } from "./delegation";
 import {
   api,
   ApiError,
@@ -83,6 +86,7 @@ import { ZoomableImage } from "./ZoomableImage";
 import { ProjectImageContext, projectImageSource } from "./projectImages";
 import { useTranscriptViewport } from "./useTranscriptViewport";
 import { useRunTimings, timingByRow } from "./useRunTimings";
+import { groupTodoUpdates, isTodoTool } from "./todoGroups";
 import { RunElapsed } from "./RunElapsed";
 import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
 import {
@@ -271,6 +275,8 @@ function matchModel(models: ModelDescriptor[], query: string) {
   return undefined;
 }
 
+const LOCAL_SLASH_COMMANDS = new Set(["/help", "/tools"]);
+
 const FAST_SNAPSHOT_OPTIONS = {
   limit: 40,
   includeHistory: false,
@@ -286,12 +292,16 @@ const FAST_SNAPSHOT_OPTIONS = {
  */
 async function snapshotOf(
   sessionId: string,
-  options: { limit?: number; includeHistory?: boolean } = FAST_SNAPSHOT_OPTIONS,
+  options: { limit?: number; includeHistory?: boolean; signal?: AbortSignal } = FAST_SNAPSHOT_OPTIONS,
 ) {
   try {
     return await api.snapshot(sessionId, options);
-  } catch {
-    await api.openSession(sessionId);
+  } catch (cause) {
+    // Aborting a superseded read must not reopen its old session. Authentication
+    // failures also belong to the access boundary, not the host lifecycle.
+    if (options.signal?.aborted || (cause instanceof ApiError && cause.status === 401))
+      throw cause;
+    await api.openSession(sessionId, options.signal);
     return api.snapshot(sessionId, options);
   }
 }
@@ -627,6 +637,8 @@ export default function App() {
   const activeSessionRef = useRef(sessionId);
   activeSessionRef.current = sessionId;
   const diagnosticsRevision = useRef(0);
+  const diagnosticsAbort = useRef<AbortController | null>(null);
+  const sessionReadsAbort = useRef<AbortController | null>(null);
   const navigationRevision = useRef(0);
   const sessionListRevision = useRef(0);
   const sessionListRequest = useRef<Promise<SessionSummary[] | null> | null>(
@@ -702,6 +714,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("connecting");
   const [loadingSession, setLoadingSession] = useState(false);
+  const [sessionHydrated, setSessionHydrated] = useState(false);
   const [runActive, setRunActive] = useState(false);
   const [error, setError] = useState("");
   const [connectionFailed, setConnectionFailed] = useState(false);
@@ -727,6 +740,31 @@ export default function App() {
     !loadingSession && Boolean(capabilities), settleTick,
   );
   const runFooters = useMemo(() => timingByRow(rows, runTimings), [rows, runTimings]);
+  const todoOwners = useRef<{
+    sessionId: string;
+    ids: ReadonlySet<string>;
+  } | null>(null);
+  const todoGroups = useMemo(
+    () =>
+      groupTodoUpdates(
+        rows,
+        runFooters,
+        todoOwners.current?.sessionId === sessionId
+          ? todoOwners.current.ids
+          : undefined,
+      ),
+    [rows, runFooters, sessionId],
+  );
+  // Commit display ownership, not task state. A prepend keeps an existing
+  // card's React instance/reading anchor; removed groups retain no cache.
+  useLayoutEffect(() => {
+    todoOwners.current = {
+      sessionId,
+      ids: new Set(
+        [...todoGroups].filter(([, group]) => group !== null).map(([id]) => id),
+      ),
+    };
+  }, [todoGroups, sessionId]);
   const rememberTranscriptPosition = useTranscriptViewport(
     transcriptRef,
     followingRef,
@@ -801,6 +839,8 @@ export default function App() {
     status === "running" ||
     status === "starting" ||
     status === "awaiting_input";
+  const composerAbort = busy && supported.has("abort") && !loadingSession && !connectionFailed;
+  const localSlash = attachments.length === 0 && LOCAL_SLASH_COMMANDS.has(draft.trim().split(/\s+/, 1)[0]);
   const t = useCallback(
     (key: MessageKey, values?: Record<string, string | number>) =>
       translate(language, key, values),
@@ -1189,6 +1229,8 @@ export default function App() {
     sessionListRequest.current = null;
     sessionListValue.current = null;
     activeSessionRef.current = "";
+    sessionReadsAbort.current?.abort();
+    diagnosticsAbort.current?.abort();
     rowsBySession.current.clear();
     source.current?.close();
     setAuthenticated(false);
@@ -1433,6 +1475,8 @@ export default function App() {
   useEffect(() => {
     if (!capabilities) return;
     diagnosticsRevision.current++;
+    diagnosticsAbort.current?.abort();
+    setSessionHydrated(false);
     dialogRequests.current.clear();
     activeDialogId.current = "";
     earlierPage.current = null;
@@ -1484,13 +1528,19 @@ export default function App() {
     }
 
     let cancelled = false;
+    const requests = new AbortController();
+    sessionReadsAbort.current = requests;
+    const isCurrent = () =>
+      !cancelled && !requests.signal.aborted &&
+      activeSessionRef.current === sessionId && sessionReadsAbort.current === requests;
     let stream: EventSource | null = null;
     let refreshingTranscript = false;
     let bufferedEvents: MessageEvent[] = [];
     const failConnection = (cause: unknown) => {
-      if (cancelled) return;
+      if (!isCurrent()) return;
       if (cause instanceof ApiError && cause.status === 401) {
         cancelled = true;
+        requests.abort();
         clearAccess();
         return;
       }
@@ -1531,11 +1581,14 @@ export default function App() {
     // Direct prompts are persisted by the native harness without user message
     // events. Refresh at run boundaries so every open page sees that input.
     const refreshTranscript = async () => {
-      if (refreshingTranscript || cancelled) return;
+      if (refreshingTranscript || !isCurrent()) return;
       refreshingTranscript = true;
       try {
-        const snapshot = await snapshotOf(sessionId, FAST_SNAPSHOT_OPTIONS);
-        if (cancelled) return;
+        const snapshot = await snapshotOf(sessionId, {
+          ...FAST_SNAPSHOT_OPTIONS,
+          signal: requests.signal,
+        });
+        if (!isCurrent()) return;
         restoreSnapshotStatus(snapshot);
         currentAssistant.current = null;
         currentUser.current = null;
@@ -1565,9 +1618,10 @@ export default function App() {
           applyEvent(entry.event, entry.seq);
         lastSeq.current = snapshot.lastSeq;
       } catch (cause) {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         if (cause instanceof ApiError && cause.status === 401) {
           cancelled = true;
+          requests.abort();
           clearAccess();
           return;
         }
@@ -1576,7 +1630,7 @@ export default function App() {
         refreshingTranscript = false;
         const pending = bufferedEvents;
         bufferedEvents = [];
-        if (!cancelled) {
+        if (isCurrent()) {
           let anotherBoundary = false;
           for (const raw of pending) {
             if (Number(raw.lastEventId) <= lastSeq.current) continue;
@@ -1598,15 +1652,18 @@ export default function App() {
       source.current = next;
       next.addEventListener("resync_required", () => {
         next.close();
-        if (!cancelled) setConnectionRevision((value) => value + 1);
+        if (isCurrent()) setConnectionRevision((value) => value + 1);
       });
       let priorStatus = "ready";
-      next.onopen = () =>
+      next.onopen = () => {
+        if (!isCurrent()) return;
         setStatus((previous) =>
           previous === "reconnecting" ? priorStatus : previous,
         );
+      };
       for (const name of EVENT_TYPES)
         next.addEventListener(name, (raw) => {
+          if (!isCurrent()) return;
           const event = raw as MessageEvent;
           if (refreshingTranscript) {
             bufferedEvents.push(event);
@@ -1621,47 +1678,49 @@ export default function App() {
           if (name === "agent_start" || name === "agent_settled")
             void refreshTranscript();
         });
-      next.onerror = () =>
+      next.onerror = () => {
+        if (!isCurrent()) return;
         setStatus((previous) => {
           if (previous === "closed") return previous;
           if (previous !== "reconnecting") priorStatus = previous;
           return "reconnecting";
         });
+      };
     };
 
     void (async () => {
-      // Reopen first because a bridge restart leaves only the registry entry.
-      // Once the native host is ready, runtime state and the bounded transcript
-      // snapshot are independent reads; keep their network/RPC latency parallel.
+      // Open is idempotent for a live host. Prioritize the bounded transcript:
+      // native reads can share a queue, so even a parallel get_state can delay it.
       try {
-        await api.openSession(sessionId);
-        if (cancelled) return;
+        await api.openSession(sessionId, requests.signal);
+        if (!isCurrent()) return;
         void refreshSessions();
       } catch (cause) {
         failConnection(cause);
         return;
       }
 
+      const readRuntime = async () => {
+        const state = await api.runtimeState(sessionId, requests.signal);
+        if (isCurrent()) {
+          // A settlement or user action may already have refreshed metadata.
+          // This initial read fills missing fields, not newer authoritative data.
+          setRuntime((previous) => previous ? { ...state, ...previous } : state);
+        }
+        return state;
+      };
+      let stateLoaded = false;
       let after = 0;
       try {
-        const snapshotPromise = capabilities.supportedCommands.includes(
-          "get_messages",
-        )
-          ? snapshotOf(sessionId, FAST_SNAPSHOT_OPTIONS)
-          : Promise.resolve(null);
-        const [state, snapshot] = await Promise.all([
-          api.runtimeState(sessionId),
-          snapshotPromise,
-        ]);
-        if (cancelled) return;
-        setRuntime(state);
-        setRunActive(Boolean(state.activeOperation));
-        setStatus(state.activeOperation ? "running" : "ready");
+        const snapshot = capabilities.supportedCommands.includes("get_messages")
+          ? await snapshotOf(sessionId, {
+              ...FAST_SNAPSHOT_OPTIONS,
+              signal: requests.signal,
+            })
+          : null;
+        if (!isCurrent()) return;
 
         if (snapshot) {
-          // Native truth for history; the events captured while the snapshot was
-          // taken are applied in order, so `after` continues exactly where it ends.
-          restoreSnapshotStatus(snapshot);
           setRows((previous) => {
             const restored = rowsFromMessages(snapshot.messages);
             const ids = new Set(restored.map((row) => row.id));
@@ -1677,6 +1736,18 @@ export default function App() {
           setInterrupted(Boolean(snapshot.pendingResume));
           setFirstId(snapshot.firstId ?? "");
           setHasMore(Boolean(snapshot.hasMore));
+        }
+        // Older snapshots lack lifecycle status. Paint their rows now, but seed
+        // status before replay so a later runtime read cannot undo replay events.
+        if (!snapshot?.status) {
+          const state = await readRuntime();
+          if (!isCurrent()) return;
+          stateLoaded = true;
+          setRunActive(Boolean(state.activeOperation));
+          setStatus(state.activeOperation ? "running" : "ready");
+        }
+        if (snapshot) {
+          restoreSnapshotStatus(snapshot);
           for (const entry of eventsAfterSnapshot(
             snapshot.messages,
             snapshot.events,
@@ -1691,32 +1762,58 @@ export default function App() {
         failConnection(cause);
         return;
       }
-      if (cancelled) return;
+      if (!isCurrent()) return;
       connect(after);
       setLoadingSession(false);
-      // Slash commands resolve names locally, so keep the catalogs warm.
+
+      // Snapshot + replay own lifecycle status. Metadata never delays first
+      // paint/SSE or overwrites a newer running, settled, closed or dialog state.
+      if (!stateLoaded) {
+        try {
+          await readRuntime();
+        } catch (cause) {
+          if (!isCurrent()) return;
+          if (cause instanceof ApiError && cause.status === 401) {
+            failConnection(cause);
+            return;
+          }
+          setError(errorText(cause));
+        }
+      }
+      // Warm slash-command catalogs sequentially, only after the primary reads.
+      const warmups: Array<() => Promise<void>> = [];
       if (capabilities.supportedCommands.includes("get_available_models")) {
-        void api
-          .models(sessionId)
-          .then((data) => {
-            if (!cancelled) setModels(data.models ?? []);
-          })
-          .catch(() => {});
+        warmups.push(async () => {
+          const data = await api.models(sessionId, requests.signal);
+          if (isCurrent()) setModels(data.models ?? []);
+        });
       }
-      if (
-        capabilities.supportedCommands.includes("get_available_thinking_levels")
-      ) {
-        void api
-          .thinkingLevels(sessionId)
-          .then((data) => {
-            if (!cancelled) setLevels(data.levels ?? []);
-          })
-          .catch(() => {});
+      if (capabilities.supportedCommands.includes("get_available_thinking_levels")) {
+        warmups.push(async () => {
+          const data = await api.thinkingLevels(sessionId, requests.signal);
+          if (isCurrent()) setLevels(data.levels ?? []);
+        });
       }
+      for (const warm of warmups) {
+        if (!isCurrent()) return;
+        try {
+          await warm();
+        } catch (cause) {
+          if (!isCurrent()) return;
+          if (cause instanceof ApiError && cause.status === 401) {
+            failConnection(cause);
+            return;
+          }
+        }
+      }
+      if (isCurrent()) setSessionHydrated(true);
     })();
 
     return () => {
       cancelled = true;
+      requests.abort();
+      if (sessionReadsAbort.current === requests) sessionReadsAbort.current = null;
+      diagnosticsAbort.current?.abort();
       stream?.close();
       if (source.current === stream) source.current = null;
     };
@@ -1745,78 +1842,79 @@ export default function App() {
 
   const refreshDiagnostics = useCallback(
     async (id: string) => {
+      if (activeSessionRef.current !== id) return;
+      diagnosticsAbort.current?.abort();
+      const controller = new AbortController();
+      diagnosticsAbort.current = controller;
       const revision = ++diagnosticsRevision.current;
       const current = () =>
+        !controller.signal.aborted &&
         activeSessionRef.current === id &&
         diagnosticsRevision.current === revision;
-      const jobs: Promise<void>[] = [];
-      if (supported.has("get_history")) {
-        jobs.push(
-          api
-            .history(id)
-            .then((value) => {
-              if (!current()) return;
-              setHistory(value);
-              setHistoryHasMore(value.hasMore);
-            })
-            .catch(() => {}),
-        );
-      }
+      const jobs: Array<() => Promise<void>> = [];
       if (supported.has("get_queue")) {
-        jobs.push(
-          api
-            .queue(id, showQueueHistory)
-            .then((value) => {
-              if (current()) setQueueItems(value.items ?? []);
-            })
-            .catch(() => {}),
-        );
+        jobs.push(async () => {
+          const value = await api.queue(id, showQueueHistory, controller.signal);
+          if (current()) setQueueItems(value.items ?? []);
+        });
       }
       if (supported.has("get_stats")) {
-        jobs.push(
-          api
-            .stats(id)
-            .then((rawStats) => {
-              if (!current()) return;
-              const stats = normalizeRuntimeStats(rawStats);
-              if (!stats) return;
-              setRuntime((previous) =>
-                previous ? { ...previous, stats } : { stats },
-              );
-            })
-            .catch(() => {}),
-        );
+        jobs.push(async () => {
+          const rawStats = await api.stats(id, controller.signal);
+          if (!current()) return;
+          const stats = normalizeRuntimeStats(rawStats);
+          if (stats) setRuntime((previous) => previous ? { ...previous, stats } : { stats });
+        });
+      }
+      if (supported.has("get_history")) {
+        jobs.push(async () => {
+          const value = await api.history(id, {}, controller.signal);
+          if (!current()) return;
+          setHistory(value);
+          setHistoryHasMore(value.hasMore);
+        });
       }
       if (supported.has("get_auth_status")) {
-        jobs.push(
-          api
-            .authStatus(id)
-            .then((value) => {
-              if (!current()) return;
-              setAuthProviders(value.providers ?? []);
-              setAuthProvider((previous) =>
-                value.providers?.some(
-                  (provider) => provider.provider === previous,
-                )
-                  ? previous
-                  : value.providers?.[0]?.provider || "",
-              );
-            })
-            .catch(() => {}),
-        );
+        jobs.push(async () => {
+          const value = await api.authStatus(id, controller.signal);
+          if (!current()) return;
+          setAuthProviders(value.providers ?? []);
+          setAuthProvider((previous) =>
+            value.providers?.some((provider) => provider.provider === previous)
+              ? previous
+              : value.providers?.[0]?.provider || "",
+          );
+        });
       }
-      await Promise.all(jobs);
+      try {
+        // Do not queue every native read at once: navigation can abort this
+        // browser read and, importantly, prevent the remaining jobs being sent.
+        for (const job of jobs) {
+          if (!current()) break;
+          await job().catch((cause) => {
+            if (current() && cause instanceof ApiError && cause.status === 401) {
+              controller.abort();
+              clearAccess();
+            }
+          });
+        }
+      } finally {
+        if (diagnosticsAbort.current === controller) diagnosticsAbort.current = null;
+      }
     },
-    [supported, showQueueHistory],
+    [supported, showQueueHistory, clearAccess],
   );
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || loadingSession || !sessionHydrated) return;
     const timer = window.setTimeout(() => {
       void refreshDiagnostics(sessionId);
     }, 450);
-    return () => window.clearTimeout(timer);
-  }, [refreshDiagnostics, sessionId, settleTick]);
+    return () => {
+      window.clearTimeout(timer);
+      diagnosticsAbort.current?.abort();
+    };
+  }, [refreshDiagnostics, sessionId, settleTick, loadingSession, sessionHydrated]);
 
   function persistedSettlementRows(value: HistoryResponse | null): Row[] {
     if (!value) return [];
@@ -1886,21 +1984,22 @@ export default function App() {
     setHistoryHasMore(Boolean(value?.hasMore));
   }
 
+  const lastRuntimeSettlement = useRef(0);
   useEffect(() => {
-    if (!settleTick) return;
+    // A remembered settlement tick is not a new settlement on session switch.
+    if (lastRuntimeSettlement.current === settleTick) return;
+    lastRuntimeSettlement.current = settleTick;
     void refreshSessions();
-    // Context usage only moves on a provider call, i.e. on settlement.
     if (!sessionId) return;
-    let cancelled = false;
+    const controller = new AbortController();
     void api
-      .runtimeState(sessionId)
+      .runtimeState(sessionId, controller.signal)
       .then((state) => {
-        if (!cancelled) setRuntime(state);
+        if (!controller.signal.aborted && activeSessionRef.current === sessionId)
+          setRuntime(state);
       })
       .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [refreshSessions, sessionId, settleTick]);
 
   function note(text: string) {
@@ -1965,6 +2064,7 @@ export default function App() {
     const priorActive = runActive;
     const [name = "", ...rest] = raw.trim().split(/\s+/);
     const arg = rest.join(" ").trim();
+    if ((loadingSession || connectionFailed) && !LOCAL_SLASH_COMMANDS.has(name)) return;
     updateDraft("");
     setError("");
     try {
@@ -2138,7 +2238,7 @@ export default function App() {
       void runSlash(message);
       return;
     }
-    if (!supported.has("prompt")) return;
+    if (loadingSession || connectionFailed || !supported.has("prompt")) return;
     const attachedText = attachments.length
       ? `\n\n${t("attachedFiles")}:\n${attachments.map((file) => `- ${file.path}`).join("\n")}`
       : "";
@@ -2775,12 +2875,19 @@ export default function App() {
     const nextProject =
       selectedProjectId ??
       sessions.find((entry) => entry.sessionId === id)?.projectId;
+    if (activeSessionRef.current === id && (!nextProject || projectRef.current === nextProject)) {
+      setPanel(false);
+      if (window.innerWidth < 768) setSidebar(false);
+      return;
+    }
     if (
       activeSessionRef.current !== id ||
       (nextProject && projectRef.current !== nextProject)
     ) {
       navigationRevision.current++;
       diagnosticsRevision.current++;
+      sessionReadsAbort.current?.abort();
+      diagnosticsAbort.current?.abort();
     }
     activeSessionRef.current = id;
     if (nextProject) {
@@ -3631,18 +3738,27 @@ export default function App() {
 
                 <ProjectImageContext.Provider value={project}>
                   <ToolNameModeContext.Provider value={toolNameMode}>
-                    {rows.map((row) => (
-                      <div
-                        className="transcript-row"
-                        data-transcript-row={row.id}
-                        key={row.id}
-                      >
-                        <RowView row={row} language={language} />
-                        {runFooters.get(row.id)?.map((timing) => (
-                          <RunElapsed key={timing.runId} timing={timing} language={language} />
-                        ))}
-                      </div>
-                    ))}
+                    {rows.map((row) => {
+                      const group = todoGroups.get(row.id);
+                      return (
+                        <div
+                          className="transcript-row"
+                          data-transcript-row={row.id}
+                          key={row.id}
+                        >
+                          {group !== null && (
+                            <RowView
+                              row={group?.latest ?? row}
+                              todoHistory={group?.previous}
+                              language={language}
+                            />
+                          )}
+                          {runFooters.get(row.id)?.map((timing) => (
+                            <RunElapsed key={timing.runId} timing={timing} language={language} />
+                          ))}
+                        </div>
+                      );
+                    })}
                   </ToolNameModeContext.Provider>
                 </ProjectImageContext.Provider>
 
@@ -3701,7 +3817,7 @@ export default function App() {
                       type="button"
                       key={command.name}
                       className="slash-item"
-                      disabled={!command.enabled}
+                      disabled={!command.enabled || ((loadingSession || connectionFailed) && !LOCAL_SLASH_COMMANDS.has(command.name))}
                       onClick={() => void runSlash(command.name)}
                     >
                       <code>{command.usage}</code>
@@ -3909,30 +4025,20 @@ export default function App() {
                   </div>
                   <div className="composer-controls">
                     <button
-                      type={
-                        busy && supported.has("abort") ? "button" : "submit"
-                      }
-                      className={`send-button${busy && supported.has("abort") ? " composer-action-stop" : ""}`}
-                      aria-label={
-                        busy && supported.has("abort") ? t("abort") : t("send")
-                      }
-                      title={
-                        busy && supported.has("abort") ? t("abort") : t("send")
-                      }
+                      type={composerAbort ? "button" : "submit"}
+                      className={`send-button${composerAbort ? " composer-action-stop" : ""}`}
+                      aria-label={composerAbort ? t("abort") : t("send")}
+                      title={composerAbort ? t("abort") : t("send")}
                       disabled={
-                        busy && supported.has("abort")
-                          ? false
-                          : (!draft.trim() && attachments.length === 0) ||
-                            !sessionId ||
-                            sending
+                        (!localSlash && (loadingSession || connectionFailed)) ||
+                        (!composerAbort && (
+                          (!draft.trim() && attachments.length === 0) ||
+                          !sessionId || sending
+                        ))
                       }
-                      onClick={
-                        busy && supported.has("abort")
-                          ? () => void abort()
-                          : undefined
-                      }
+                      onClick={composerAbort ? () => void abort() : undefined}
                     >
-                      {busy && supported.has("abort") ? (
+                      {composerAbort ? (
                         <span className="stop-indicator" aria-hidden="true" />
                       ) : (
                         <ArrowUp size={17} />
@@ -5070,9 +5176,11 @@ function ImagePreview({
 const RowView = memo(function RowView({
   row,
   language,
+  todoHistory,
 }: {
   row: Row;
   language: Language;
+  todoHistory?: ToolRow[];
 }) {
   const t = (key: MessageKey) => translate(language, key);
   if (row.kind === "boundary") return null;
@@ -5119,14 +5227,56 @@ const RowView = memo(function RowView({
     );
   }
 
-  if (row.kind === "tool") return <ToolRowView row={row} language={language} />;
+  if (row.kind === "tool")
+    return (
+      <ToolRowView row={row} language={language} todoHistory={todoHistory} />
+    );
 
   return <MessageRow row={row} language={language} />;
 });
 
-function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
+function ToolRowView({
+  row,
+  language,
+  todoHistory,
+}: {
+  row: ToolRow;
+  language: Language;
+  todoHistory?: ToolRow[];
+}) {
   const expansion = useToolExpansion(row.status);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const t = (key: MessageKey) => translate(language, key);
+  const history = todoHistory?.length ? (
+    <details
+      className="todo-history"
+      open={historyOpen}
+      onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
+    >
+      <summary>
+        {translate(language, "todoEarlierUpdates", { count: todoHistory.length })}
+      </summary>
+      {todoHistory.map((previous) => (
+        <ToolRowView key={previous.id} row={previous} language={language} />
+      ))}
+    </details>
+  ) : null;
+  const delegation =
+    isDelegationTool(row.name) && !row.images?.length
+      ? delegationInfo(row.args, row.result)
+      : null;
+  if (delegation)
+    return (
+      <DelegationCard
+        expansion={expansion}
+        row={row}
+        info={delegation}
+        language={language}
+        timing={
+          row.timing && <ToolElapsed timing={row.timing} language={language} />
+        }
+      />
+    );
   const ask = isAskTool(row.name) ? askInfo(row.args, row.result) : null;
   if (ask)
     return (
@@ -5150,7 +5300,7 @@ function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
         language={language}
       />
     );
-  const todos = row.name === "todo" ? todoInfo(row.result) : null;
+  const todos = isTodoTool(row.name) ? todoInfo(row.result) : null;
   if (todos)
     return (
       <TodoCard
@@ -5158,6 +5308,7 @@ function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
         row={row}
         todo={todos}
         language={language}
+        history={history}
       />
     );
   if (isShellTool(row.name))
@@ -5227,6 +5378,7 @@ function ToolRowView({ row, language }: { row: ToolRow; language: Language }) {
         ) : (
           <pre className="muted">{t("noOutput")}</pre>
         )}
+        {history}
       </div>
     </ToolDisclosure>
   );
@@ -5330,11 +5482,13 @@ function TodoCard({
   row,
   todo,
   language,
+  history,
 }: {
   expansion: ToolExpansion;
   row: ToolRow;
   todo: TodoInfo;
   language: Language;
+  history?: ReactNode;
 }) {
   const t = (key: MessageKey, values?: Record<string, string | number>) =>
     translate(language, key, values);
@@ -5354,43 +5508,50 @@ function TodoCard({
       }
     >
       <div className="tool-detail todo-detail">
-        {items.length < total && (
+        {items.length > 0 && items.length < total && (
           <p className="muted todo-scope">
             {t("todoListed", { shown: items.length, total })}
           </p>
         )}
-        {total === 0 && <p className="muted">{t("todoEmpty")}</p>}
-        <ul className="todo-list">
-          {items.map((item, index) => (
-            <li
-              key={`${index}-${item.text.slice(0, 16)}`}
-              className={
-                item.done ? "done" : item.inProgress ? "in-progress" : ""
-              }
-            >
-              <span className="todo-check" aria-hidden="true">
-                {item.done ? (
-                  <Check size={12} />
-                ) : item.inProgress ? (
-                  <Loader2 size={12} className="spin" />
-                ) : null}
-              </span>
-              <span>
-                <span className="sr-only">
-                  {t(
-                    item.done
-                      ? "todoCompleted"
-                      : item.inProgress
-                        ? "todoInProgress"
-                        : "todoPending",
-                  )}
-                  {": "}
+        {items.length === 0 && (
+          <p className={`muted ${total > 0 ? "todo-summary-only" : "todo-empty"}`}>
+            {t(total > 0 ? "todoSummaryOnly" : "todoEmpty")}
+          </p>
+        )}
+        {items.length > 0 && (
+          <ul className="todo-list">
+            {items.map((item, index) => (
+              <li
+                key={`${index}-${item.text.slice(0, 16)}`}
+                className={
+                  item.done ? "done" : item.inProgress ? "in-progress" : ""
+                }
+              >
+                <span className="todo-check" aria-hidden="true">
+                  {item.done ? (
+                    <Check size={12} />
+                  ) : item.inProgress ? (
+                    <Loader2 size={12} className="spin" />
+                  ) : null}
                 </span>
-                {item.text}
-              </span>
-            </li>
-          ))}
-        </ul>
+                <span>
+                  <span className="sr-only">
+                    {t(
+                      item.done
+                        ? "todoCompleted"
+                        : item.inProgress
+                          ? "todoInProgress"
+                          : "todoPending",
+                    )}
+                    {": "}
+                  </span>
+                  {item.text}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {history}
       </div>
     </ToolDisclosure>
   );

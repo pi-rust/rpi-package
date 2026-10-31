@@ -268,7 +268,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (response.status === 204) return undefined as T;
-  const value: unknown = await response.json().catch(() => null);
+  const value: unknown = await response.json().catch((cause) => {
+    if (init?.signal?.aborted) throw cause;
+    return null;
+  });
   if (!response.ok) {
     const error = value as { error?: string } | null;
     throw new ApiError(
@@ -283,10 +286,12 @@ export function sendCommand<T = Record<string, unknown>>(
   sessionId: string,
   type: string,
   payload: Record<string, unknown> = {},
+  signal?: AbortSignal,
 ): Promise<HostResponse<T>> {
   return request<HostResponse<T>>(`/sessions/${sessionId}/commands`, {
     method: "POST",
     body: JSON.stringify({ type, ...payload }),
+    signal,
   });
 }
 
@@ -295,8 +300,9 @@ export async function commandData<T>(
   sessionId: string,
   type: string,
   payload: Record<string, unknown> = {},
+  signal?: AbortSignal,
 ): Promise<T> {
-  const response = await sendCommand<T>(sessionId, type, payload);
+  const response = await sendCommand<T>(sessionId, type, payload, signal);
   if (!response.success) throw new Error(response.error ?? `${type} failed`);
   return (response.data ?? {}) as T;
 }
@@ -413,14 +419,16 @@ export const api = {
   getSession: (id: string) => request<SessionSummary>(`/sessions/${id}`),
   snapshot: (
     id: string,
-    params: { limit?: number; includeHistory?: boolean } = {},
+    params: { limit?: number; includeHistory?: boolean; signal?: AbortSignal } = {},
   ) => {
     const query = new URLSearchParams();
     if (params.limit !== undefined) query.set("limit", String(params.limit));
     if (params.includeHistory !== undefined)
       query.set("includeHistory", String(params.includeHistory));
     const suffix = query.toString() ? `?${query}` : "";
-    return request<SnapshotFrame>(`/sessions/${id}/snapshot${suffix}`);
+    return request<SnapshotFrame>(`/sessions/${id}/snapshot${suffix}`, {
+      signal: params.signal,
+    });
   },
   runTimings: (id: string, entryIds: string[], cursor?: string, signal?: AbortSignal) =>
     request<RunTimingsPage>(`/sessions/${id}/run-timings/query`, {
@@ -438,9 +446,10 @@ export const api = {
   history: (
     id: string,
     params: { afterSeq?: number; beforeSeq?: number; limit?: number } = {},
-  ) => commandData<HistoryResponse>(id, "get_history", params),
-  authStatus: (id: string) =>
-    commandData<{ providers: AuthProviderStatus[] }>(id, "get_auth_status"),
+    signal?: AbortSignal,
+  ) => commandData<HistoryResponse>(id, "get_history", params, signal),
+  authStatus: (id: string, signal?: AbortSignal) =>
+    commandData<{ providers: AuthProviderStatus[] }>(id, "get_auth_status", {}, signal),
   oauth: (id: string, provider: string, action: string, input = {}) =>
     commandData<{
       provider: string;
@@ -454,10 +463,10 @@ export const api = {
       { provider, apiKey },
     ),
 
-  queue: (id: string, includeCompleted = false) =>
+  queue: (id: string, includeCompleted = false, signal?: AbortSignal) =>
     commandData<{ items: QueueItem[]; count: number }>(id, "get_queue", {
       includeCompleted,
-    }),
+    }, signal),
   queueMessage: (id: string, message: string, deliverAs: string) =>
     commandData<{ accepted: boolean; entryId: string; queue: string }>(
       id,
@@ -496,14 +505,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ title }),
     }),
-  openSession: (id: string) =>
-    request<SessionSummary>(`/sessions/${id}/open`, { method: "POST" }),
-  runtimeState: (id: string) => commandData<RuntimeState>(id, "get_state"),
-  stats: (id: string) => commandData<unknown>(id, "get_stats"),
-  models: (id: string) =>
-    commandData<{ models: ModelDescriptor[] }>(id, "get_available_models"),
-  thinkingLevels: (id: string) =>
-    commandData<{ levels: string[] }>(id, "get_available_thinking_levels"),
+  openSession: (id: string, signal?: AbortSignal) =>
+    request<SessionSummary>(`/sessions/${id}/open`, { method: "POST", signal }),
+  runtimeState: (id: string, signal?: AbortSignal) =>
+    commandData<RuntimeState>(id, "get_state", {}, signal),
+  stats: (id: string, signal?: AbortSignal) => commandData<unknown>(id, "get_stats", {}, signal),
+  models: (id: string, signal?: AbortSignal) =>
+    commandData<{ models: ModelDescriptor[] }>(id, "get_available_models", {}, signal),
+  thinkingLevels: (id: string, signal?: AbortSignal) =>
+    commandData<{ levels: string[] }>(id, "get_available_thinking_levels", {}, signal),
   tools: (id: string) => commandData<ToolCatalog>(id, "get_available_tools"),
 };
 

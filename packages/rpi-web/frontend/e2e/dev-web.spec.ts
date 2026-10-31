@@ -2242,22 +2242,22 @@ test("delayed diagnostics from another chat cannot replace the active chat queue
   });
   await page.goto("/");
   await expect.poll(() => pending).toBe(true);
+  const oldReadCancelled = page.waitForEvent("requestfailed", {
+    predicate: (request) =>
+      request.url().includes(`/${sessionId}/commands`) &&
+      request.postDataJSON()?.type === "get_queue",
+  });
   await page
     .getByRole("button", { name: "New session", exact: false })
     .first()
     .click();
+  await oldReadCancelled;
   await expect(
     page.getByRole("heading", { name: "New session" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Toggle inspector" }).click();
   await expect(page.locator(".queue-item")).toContainText("Current chat queue");
-  const oldResponse = page.waitForResponse(
-    (res) =>
-      res.url().includes(`/${sessionId}/commands`) &&
-      res.request().postDataJSON().type === "get_queue",
-  );
   release();
-  await (await oldResponse).finished();
   await chooseMenuOption(page, "Language", "zh");
   await expect(page.locator(".inspector h2")).toHaveText("会话诊断");
   await expect(page.locator(".queue-item")).toContainText("Current chat queue");
@@ -9556,27 +9556,40 @@ test.describe("todo progress regression", () => {
         result("todo-full-after", full),
       ]);
       await page.goto("/");
-      const cards = page.locator(".todo-card");
-      await expect(cards).toHaveCount(3);
+      const cards = page.locator(".transcript-row > .todo-card");
+      await expect(cards).toHaveCount(1);
+      const latest = cards.first();
+      await expect(latest).toHaveJSProperty("open", false);
+      await latest.locator(":scope > summary").click();
+      const history = latest.locator(".todo-history");
+      await expect(history).toHaveJSProperty("open", false);
+      await expect(history.locator(":scope > summary")).toHaveText(language === "zh" ? "先前 2 次更新" : "2 earlier updates");
+      await expect(history.locator(".todo-card").first()).toBeHidden();
+      await history.locator(":scope > summary").click();
+      // Previous full and filtered results keep their own original cards.
+      const originals = history.locator(".todo-card");
+      await expect(originals).toHaveCount(2);
       for (let index = 0; index < 3; index++) {
-        const card = cards.nth(index);
+        const card = index < 2 ? originals.nth(index) : latest;
+        const summary = card.locator(":scope > summary");
         await expect(card).toHaveClass(/tool-done/);
-        await expect(card).toHaveJSProperty("open", false);
-        await expect(card.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
-        await expect(card.locator("summary")).not.toContainText("0/1");
-        await expect(card.locator("summary .tool-status")).toHaveAttribute("title", operationDone(language));
-        await expect(card.locator("summary .tool-status .sr-only")).toHaveText(operationDone(language));
-        await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
-        await expect(card.locator(".tool-elapsed")).not.toContainText("~");
-        await card.locator(":scope > summary").click();
-        await expect(card.locator(".todo-list li")).toHaveCount(index === 1 ? 1 : 7);
-        await expect(card.locator(".todo-list li.done")).toHaveCount(index === 1 ? 0 : 6);
-        await expect(card.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
+        await expect(card).toHaveJSProperty("open", index === 2);
+        await expect(summary.locator(".tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(summary).not.toContainText("0/1");
+        await expect(summary.locator(".tool-status")).toHaveAttribute("title", operationDone(language));
+        await expect(summary.locator(".tool-status .sr-only")).toHaveText(operationDone(language));
+        await expect(summary.locator(".tool-elapsed")).toHaveText("0.0s");
+        await expect(summary.locator(".tool-elapsed")).not.toContainText("~");
+        if (index < 2) await summary.click();
+        const detail = card.locator(":scope > .todo-detail");
+        await expect(detail.locator(":scope > .todo-list li")).toHaveCount(index === 1 ? 1 : 7);
+        await expect(detail.locator(":scope > .todo-list li.done")).toHaveCount(index === 1 ? 0 : 6);
+        await expect(detail.locator("input, button, [role=checkbox]")).toHaveCount(0);
         if (index === 1) {
-          await expect(card.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
-          await expect(card.locator(".todo-scope")).toBeVisible();
+          await expect(detail.locator(":scope > .todo-scope")).toHaveText(scopeText(language, 1, 7));
+          await expect(detail.locator(":scope > .todo-scope")).toBeVisible();
         } else {
-          await expect(card.locator(".todo-scope")).toHaveCount(0);
+          await expect(detail.locator(":scope > .todo-scope")).toHaveCount(0);
         }
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -9601,6 +9614,7 @@ test.describe("todo progress regression", () => {
         { content: "Error: todo storage unavailable", generic: true, isError: true },
       ];
       await snapshot(page, cases.flatMap((entry, index) => [
+        { role: "assistant", content: [{ type: "text", text: `Independent todo representation ${index}` }] },
         { role: "assistant", content: [call(`todo-case-${index}`)] },
         result(`todo-case-${index}`, entry.content, entry.isError),
       ]));
@@ -9626,10 +9640,16 @@ test.describe("todo progress regression", () => {
         await card.locator(":scope > summary").click();
         await expect(card.locator(".todo-list li")).toHaveCount(entry.shown!);
         await expect(card.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
-        if (entry.shown! < entry.total!) {
+        if (entry.shown! > 0 && entry.shown! < entry.total!) {
           await expect(card.locator(".todo-scope")).toHaveText(scopeText(language, entry.shown!, entry.total!));
         } else {
           await expect(card.locator(".todo-scope")).toHaveCount(0);
+        }
+        if (entry.shown === 0) {
+          await expect(card.locator(".todo-list")).toHaveCount(0);
+          if (entry.total! > 0) await expect(card.locator(".todo-summary-only")).toHaveText(language === "zh"
+            ? "本次结果仅包含进度汇总，未返回任务明细。"
+            : "This result contains only a progress summary; task details were not returned.");
         }
         if (entry.total === 0) await expect(card.locator(".todo-detail")).toContainText(language === "zh" ? "暂无待办任务。" : "No tasks.");
         if (index === 2) {
@@ -10071,6 +10091,884 @@ test.describe("ask tool card", () => {
         await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
         await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
         await readonly(page);
+      } finally { releases.forEach(release => release()); }
+    });
+  }
+});
+
+
+import { groupTodoUpdates } from "../src/todoGroups";
+import type { Row } from "../src/transcript";
+
+test.describe("todo update grouping", () => {
+  const timing = { elapsedMs: 0, running: false };
+  const full = `9/9 completed\n${Array.from({ length: 9 }, (_, index) => `[✓] #${index}: Completed task ${index}`).join("\n")}`;
+  const partial = "9/10 completed\n[ ] #9: Verify remaining task";
+  const latestResult = "9/11 completed\n[ ] #9: Verify remaining task\n[ ] #10: Document verification";
+  const call = (id: string, name = "todo") => ({
+    type: "toolCall", id, name, arguments: { action: "list", includeDone: false }, webTiming: timing,
+  });
+  const pair = (id: string, content: string, name = "todo") => [
+    { role: "assistant", entryId: `${id}-call`, content: [call(id, name)] },
+    { role: "toolResult", entryId: `${id}-result`, toolCallId: id, toolName: name, content, webTiming: timing },
+  ];
+  const messages = () => [
+    ...pair("group-first", full),
+    ...pair("group-second", partial, "functions.todo"),
+    ...pair("group-latest", latestResult),
+  ];
+  const topCards = (page: Page) => page.locator(".transcript-row > .tool-card");
+  const progress = (language: "en" | "zh", total: number) =>
+    language === "zh" ? `9/${total} 项任务已完成` : `9/${total} tasks completed`;
+  const earlier = (language: "en" | "zh", count: number) =>
+    language === "zh" ? `先前 ${count} 次更新` : `${count} earlier updates`;
+  async function snapshot(page: Page, entries: unknown[], extra = {}) {
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "ready", messages: entries, events: [], lastSeq: 4, hasMore: false, ...extra,
+    } }));
+  }
+  function historyReads(page: Page) {
+    const reads: Array<Record<string, unknown>> = [];
+    page.on("request", request => {
+      if (!request.url().includes(`/api/v1/sessions/${sessionId}/commands`)) return;
+      const body = request.postDataJSON();
+      if (["get_messages", "get_history", "prompt", "queue_message", "history_mutation"].includes(body?.type)) reads.push(body);
+    });
+    return reads;
+  }
+  async function readonly(page: Page) {
+    await expect(page.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox], .todo-detail [contenteditable=true]")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  }
+
+  for (const language of ["en", "zh"] as const) {
+    test(`9/9 → 9/10 → 9/11 keeps one latest card with collapsed original history in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      let snapshots = 0;
+      await page.route(snapshotRoute, route => {
+        snapshots++;
+        return route.fulfill({ json: { sessionId, status: "ready", messages: messages(), events: [], lastSeq: 4, hasMore: false } });
+      });
+      const reads = historyReads(page);
+      await page.goto("/");
+      const latest = topCards(page);
+      await expect(latest).toHaveCount(1);
+      await expect(latest).toHaveClass(/todo-card/);
+      await expect(latest).toHaveClass(/tool-done/);
+      await expect(latest).toHaveJSProperty("open", false);
+      await expect(latest.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 11));
+      // Projection replaces only RowView; native call/result wrappers survive.
+      for (const id of ["first", "second", "latest"]) {
+        await expect(page.locator(`[data-transcript-row="call-group-${id}"]`)).toHaveCount(1);
+        await expect(page.locator(`[data-transcript-row="group-${id}-result:end"]`)).toHaveCount(1);
+      }
+      await expect(page.locator('[data-transcript-row="call-group-first"] > .tool-card')).toHaveCount(1);
+      await expect(page.locator('[data-transcript-row="call-group-second"] > .tool-card, [data-transcript-row="call-group-latest"] > .tool-card')).toHaveCount(0);
+      await latest.locator(":scope > summary").click();
+      const history = latest.locator(".todo-history");
+      await expect(history).toHaveJSProperty("open", false);
+      await expect(history.locator(":scope > summary")).toHaveText(earlier(language, 2));
+      const originals = history.locator(".todo-card");
+      await expect(originals).toHaveCount(2);
+      for (const original of await originals.all()) {
+        await expect(original).toHaveJSProperty("open", false);
+        await expect(original).toBeHidden();
+      }
+      await expect(latest.locator(":scope > .todo-detail > .todo-list li")).toHaveCount(2);
+      await expect(latest.locator(":scope > .todo-detail > .todo-scope")).toHaveText(language === "zh"
+        ? "本次结果仅列出 2/11 项任务，进度包含全部任务。"
+        : "This result lists 2 of 11 tasks. Progress includes the entire list.");
+      await latest.screenshot({ path: test.info().outputPath(`todo-latest-history-collapsed-${language}.png`) });
+      await history.locator(":scope > summary").click();
+      for (let index = 0; index < 2; index++) {
+        const original = originals.nth(index);
+        await expect(original).toBeVisible();
+        await expect(original).toHaveJSProperty("open", false);
+        await expect(original.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, index + 9));
+        await expect(original.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await original.locator(":scope > summary").click();
+        await expect(original.locator(".todo-list li")).toHaveCount(index === 0 ? 9 : 1);
+        await expect(original.locator(".todo-list li.done")).toHaveCount(index === 0 ? 9 : 0);
+      }
+      await history.locator(":scope > summary").click();
+      await expect(originals.first()).toBeHidden();
+      await readonly(page);
+      // The existing 450ms diagnostics timer may read get_history once per load.
+      // Expanding cards must not fetch message pages or submit mutations.
+      expect(reads.filter(body => body.type !== "get_history")).toEqual([]);
+      expect(reads.filter(body => body.type === "get_history").length).toBeLessThanOrEqual(snapshots);
+      expect(snapshots).toBe(1);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+
+
+    test(`SSE pending → running → done preserves latest expansion, history toggle and zero timing in ${language}`, async ({ page }) => {
+      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await mockHost(page);
+      let reloaded = false;
+      let snapshots = 0;
+      await page.route(snapshotRoute, route => {
+        snapshots++;
+        return route.fulfill({ json: { sessionId, status: reloaded ? "ready" : "running", messages: reloaded ? messages() : messages().slice(0, 4), events: [], lastSeq: reloaded ? 7 : 4, hasMore: false } });
+      });
+      const reads = historyReads(page);
+      const releases: Array<() => void> = [];
+      const gates = Array.from({ length: 3 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      const events = [
+        { seq: 5, type: "message_end", message: { role: "assistant", content: [call("group-latest", "functions.todo")] } },
+        { seq: 6, type: "tool_execution_update", toolCallId: "group-latest", toolName: "functions.todo", partialResult: { text: latestResult }, webTiming: { elapsedMs: 0, running: true } },
+        { seq: 7, type: "tool_execution_end", toolCallId: "group-latest", toolName: "functions.todo", isError: false, result: { content: [{ type: "text", text: latestResult }] }, webTiming: timing },
+      ];
+      let attempts = 0;
+      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+        const index = attempts++;
+        if (index >= events.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+        await gates[index];
+        const event = events[index];
+        await route.fulfill({ contentType: "text/event-stream", body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
+      });
+      try {
+        await page.goto("/");
+        const latest = topCards(page);
+        await expect(latest).toHaveCount(1);
+        await latest.locator(":scope > summary").click();
+        await expect(latest).toHaveJSProperty("open", true);
+        releases[0]();
+        await expect(latest).toHaveClass(/tool-pending/);
+        await expect(latest).toHaveJSProperty("open", true);
+        const history = latest.locator(".todo-history");
+        await expect(history.locator(":scope > summary")).toHaveText(earlier(language, 2));
+        await expect(history).toHaveJSProperty("open", false);
+        await history.locator(":scope > summary").click();
+        await expect(history).toHaveJSProperty("open", true);
+        await expect(history.locator(".todo-card")).toHaveCount(2);
+        await history.locator(":scope > summary").click();
+        releases[1]();
+        await expect(latest).toHaveClass(/tool-running/);
+        await expect(latest).toHaveClass(/todo-card/);
+        await expect(latest).toHaveJSProperty("open", true);
+        await expect(history).toHaveJSProperty("open", false);
+        await expect(latest.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 11));
+        await history.locator(":scope > summary").click();
+        await expect(history.locator(".todo-card").first()).toHaveJSProperty("open", false);
+        releases[2]();
+        await expect(latest).toHaveClass(/tool-done/);
+        await expect(latest).toHaveJSProperty("open", true);
+        await expect(history).toHaveJSProperty("open", true);
+        await expect(latest.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await expect(history.locator(".tool-elapsed")).toHaveText(["0.0s", "0.0s"]);
+        await readonly(page);
+        expect(snapshots).toBe(1);
+        reloaded = true;
+        await page.reload();
+        await expect(latest).toHaveCount(1);
+        await expect(latest).toHaveJSProperty("open", false);
+        await expect(latest.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 11));
+        await latest.locator(":scope > summary").click();
+        await expect(history).toHaveJSProperty("open", false);
+        await history.locator(":scope > summary").click();
+        await expect(history.locator(".todo-card")).toHaveCount(2);
+        await expect(history.locator(".tool-elapsed")).toHaveText(["0.0s", "0.0s"]);
+        expect(snapshots).toBe(2);
+        expect(reads.filter(body => body.type !== "get_history")).toEqual([]);
+        expect(reads.filter(body => body.type === "get_history").length).toBeLessThanOrEqual(snapshots);
+        await readonly(page);
+      } finally { releases.forEach(release => release()); }
+    });
+  }
+
+  test("simultaneously active calls stay visible even when a later call completes", async ({ page }) => {
+    await mockHost(page);
+    await snapshot(page, [{ role: "assistant", content: [
+      call("parallel-pending"),
+      { ...call("parallel-running", "functions.todo"), webTiming: { elapsedMs: 0, running: true } },
+      call("parallel-later"),
+    ] }], { status: "running" });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let sent = false;
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+      if (sent) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      sent = true;
+      await gate;
+      const event = { type: "tool_execution_end", toolCallId: "parallel-later", toolName: "todo", result: { content: [{ type: "text", text: full }] }, webTiming: timing };
+      return route.fulfill({ contentType: "text/event-stream", body: `retry: 60000\nid: 5\nevent: tool_execution_end\ndata: ${JSON.stringify(event)}\n\n` });
+    });
+    try {
+      await page.goto("/");
+      await expect(topCards(page)).toHaveCount(3);
+      await expect(topCards(page).nth(0)).toHaveClass(/tool-pending/);
+      await expect(topCards(page).nth(1)).toHaveClass(/tool-running/);
+      release();
+      await expect(topCards(page).nth(2)).toHaveClass(/tool-done/);
+      await expect(topCards(page)).toHaveCount(3);
+      await expect(topCards(page).nth(0)).toHaveClass(/tool-pending/);
+      await expect(topCards(page).nth(1)).toHaveClass(/tool-running/);
+      await expect(page.locator(".todo-history")).toHaveCount(0);
+    } finally { release(); }
+  });
+
+
+  test("paged adjacent todo prepend merges without extra reads and preserves the reading anchor", async ({ page }) => {
+    await mockHost(page);
+    await snapshot(page, [...pair("group-latest", latestResult), ...upwardPagingMessages], { firstId: "group-latest-call", hasMore: true });
+    const requests: Array<{ type: string; beforeId?: string; limit?: number }> = [];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
+      const body = route.request().postDataJSON();
+      if (!["get_messages", "get_history"].includes(body.type)) return route.fallback();
+      requests.push(body);
+      if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+      await held;
+      return route.fulfill({ json: response({ messages: messages().slice(0, 4), firstId: "group-first-call", hasMore: false }, "get_messages") });
+    });
+    try {
+      await page.goto("/");
+      await expect(topCards(page)).toHaveCount(1);
+      await scrollPagingTo(page, 120);
+      await expect.poll(() => requests.length).toBe(1);
+      await scrollPagingTo(page, 450);
+      const anchor = await visiblePagingAnchor(page);
+      release();
+      await expect(page.locator('[data-transcript-row="call-group-latest"] > .todo-card')).toHaveCount(1);
+      await expect(topCards(page)).toHaveCount(1);
+      await expectPagingAnchor(page, anchor);
+      await expect(page.getByRole("button", { name: "Load earlier messages" })).toHaveCount(0);
+      const latest = topCards(page);
+      await expect(latest.locator(":scope > summary .tool-summary-meta")).toHaveText(progress("en", 11));
+      await latest.locator(":scope > summary").click();
+      await expect(latest.locator(".todo-history > summary")).toHaveText("2 earlier updates");
+      await latest.locator(".todo-history > summary").click();
+      await expect(latest.locator(".todo-history .todo-card")).toHaveCount(2);
+      await expect(page.locator(".message.user")).toHaveCount(20);
+      expect(requests).toMatchObject([{ type: "get_messages", beforeId: "group-latest-call", limit: 48 }]);
+    } finally { release(); }
+  });
+
+  test("held adjacent todo pagination preserves the expanded card itself as the reading anchor", async ({ page }) => {
+    await mockHost(page);
+    const tallResult = `0/36 completed\n${Array.from({ length: 36 }, (_, index) => `[ ] #${index}: Remaining verification task ${index}`).join("\n")}`;
+    await snapshot(page, [...pair("group-latest", tallResult), ...upwardPagingMessages], { firstId: "group-latest-call", hasMore: true });
+    const reads = historyReads(page);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
+      await held;
+      return route.fulfill({ json: response({ messages: messages().slice(0, 4), firstId: "group-first-call", hasMore: false }, "get_messages") });
+    });
+    try {
+      await page.goto("/");
+      const wrapper = page.locator('[data-transcript-row="call-group-latest"]');
+      const latest = wrapper.locator(":scope > .todo-card");
+      await expect(latest).toHaveCount(1);
+      await latest.locator(":scope > summary").click();
+      await expect(latest).toHaveJSProperty("open", true);
+      await expect(latest.locator(":scope > .todo-detail > .todo-list li")).toHaveCount(36);
+      const originalWrapper = await wrapper.elementHandle();
+      const originalCard = await latest.elementHandle();
+      await scrollPagingTo(page, 120);
+      await expect.poll(() => reads.filter(body => body.type === "get_messages").length).toBe(1);
+      for (const top of [110, 90, 130, 100]) await scrollPagingTo(page, top);
+      // Unlike the prose-anchor regression, the viewport must begin inside the
+      // expanded todo itself when the held page commits.
+      await scrollPagingTo(page, 450);
+      const anchor = await visiblePagingAnchor(page);
+      expect(anchor.id).toBe("call-group-latest");
+      expect(anchor.offset).toBeLessThan(0);
+      expect(await latest.evaluate(element => element.getBoundingClientRect().bottom > element.closest(".transcript")!.getBoundingClientRect().top + 20)).toBe(true);
+      release();
+      await expect(latest.locator(".todo-history > summary")).toHaveText("2 earlier updates");
+      await expect(topCards(page)).toHaveCount(1);
+      await expect(page.locator('[data-transcript-row="call-group-first"] > .todo-card')).toHaveCount(0);
+      expect(await wrapper.evaluate((element, original) => element === original, originalWrapper)).toBe(true);
+      expect(await latest.evaluate((element, original) => element === original, originalCard)).toBe(true);
+      await expect(latest).toHaveJSProperty("open", true);
+      const offset = () => wrapper.evaluate(element => element.getBoundingClientRect().top - element.closest(".transcript")!.getBoundingClientRect().top);
+      await expect.poll(async () => Math.abs(await offset() - anchor.offset)).toBeLessThanOrEqual(2);
+      await page.waitForTimeout(250);
+      await expect.poll(async () => Math.abs(await offset() - anchor.offset)).toBeLessThanOrEqual(2);
+      await latest.locator(".todo-history > summary").click();
+      await expect(latest.locator(".todo-history .todo-card")).toHaveCount(2);
+      await expect(latest.locator(".todo-history .todo-card").first()).toBeVisible();
+      await expect(page.getByRole("button", { name: "Load earlier messages" })).toHaveCount(0);
+      expect(reads.filter(body => body.type === "get_messages")).toMatchObject([{ type: "get_messages", beforeId: "group-latest-call", limit: 48 }]);
+      expect(reads.filter(body => !["get_messages", "get_history"].includes(String(body.type)))).toEqual([]);
+    } finally { release(); }
+  });
+
+  test("native footer on an invisible result wrapper stays between independently grouped runs", async ({ page }) => {
+    await mockHost(page);
+    await snapshot(page, messages());
+    await page.route(/\/api\/v1\/sessions\/[^/]+\/run-timings\/query$/, route => route.fulfill({ json: {
+      timings: [{ runId: "todo-footer-run", lane: "main", finalEntryId: "group-second-result", startedAt: 1000, finishedAt: 1000, elapsedMs: 0, outcome: "completed" }],
+      complete: true, cursor: "g", scannedBytes: 100, totalBytes: 100,
+    } }));
+    await page.goto("/");
+    const footer = page.locator('.run-elapsed[data-run-id="todo-footer-run"]');
+    await expect(footer).toBeVisible();
+    await expect(topCards(page)).toHaveCount(2);
+    await expect(topCards(page).nth(0).locator(":scope > summary .tool-summary-meta")).toHaveText(progress("en", 10));
+    await expect(topCards(page).nth(1).locator(":scope > summary .tool-summary-meta")).toHaveText(progress("en", 11));
+    const wrapper = page.locator('[data-transcript-row="group-second-result:end"]');
+    await expect(wrapper.locator(":scope > .run-elapsed")).toHaveCount(1);
+    await expect(wrapper.locator(".tool-card")).toHaveCount(0);
+    await expect(wrapper.locator('xpath=following-sibling::*[@data-transcript-row="call-group-latest"]').locator(".todo-card")).toHaveCount(1);
+    await expect(page.locator(".tool-card .run-elapsed")).toHaveCount(0);
+    await topCards(page).first().locator(":scope > summary").click();
+    await expect(topCards(page).first().locator(".todo-history > summary")).toHaveText("1 earlier updates");
+  });
+
+  const tool = (id: string, overrides: Partial<Extract<Row, { kind: "tool" }>> = {}): Extract<Row, { kind: "tool" }> => ({
+    kind: "tool", id, name: "todo", status: "done", result: full, ...overrides,
+  });
+
+  test("pure projection anchors at the first row, normalizes aliases, skips invisible boundaries and never mutates input", () => {
+    const first = tool("first");
+    const second = tool("second", { name: " FUNCTIONS.TODO " });
+    const last = tool("last");
+    const rows: Row[] = [first, { kind: "boundary", id: "native-result" }, second, last];
+    const before = JSON.stringify(rows);
+    for (const row of rows) Object.freeze(row);
+    Object.freeze(rows);
+    const footers: ReadonlyMap<string, unknown> = new Map();
+    const grouped = groupTodoUpdates(rows, footers);
+    expect([...grouped.keys()]).toEqual(["first", "second", "last"]);
+    expect(grouped.get("first")?.latest).toBe(last);
+    expect(grouped.get("first")?.previous).toEqual([first, second]);
+    expect(grouped.get("first")?.previous[0]).toBe(first);
+    expect(grouped.get("second")).toBeNull();
+    expect(grouped.get("last")).toBeNull();
+    expect(grouped.has("native-result")).toBe(false);
+    expect(JSON.stringify(rows)).toBe(before);
+    expect(footers.size).toBe(0);
+    expect(groupTodoUpdates(rows, footers)).toEqual(grouped);
+    expect(grouped.get("first")?.previous).toHaveLength(2);
+    expect(groupTodoUpdates([], footers).size).toBe(0);
+  });
+
+
+  test("pure projection preserves an existing owner across prepends without mutating rows or owners", () => {
+    const first = tool("first");
+    const second = tool("second");
+    const current = tool("current");
+    const owners: ReadonlySet<string> = Object.freeze(new Set(["current"]));
+    const rows: Row[] = [first, { kind: "boundary", id: "native-result" }, second, current];
+    const before = JSON.stringify(rows);
+    for (const row of rows) Object.freeze(row);
+    Object.freeze(rows);
+    const footers: ReadonlyMap<string, unknown> = new Map();
+    expect(groupTodoUpdates([current], footers, owners).get("current")).toEqual({ latest: current, previous: [] });
+    const grouped = groupTodoUpdates(rows, footers, owners);
+    expect(grouped.get("current")).toEqual({ latest: current, previous: [first, second] });
+    expect(grouped.get("current")?.latest).toBe(current);
+    expect(grouped.get("first")).toBeNull();
+    expect(grouped.get("second")).toBeNull();
+    expect(grouped.has("native-result")).toBe(false);
+    expect(groupTodoUpdates(rows, footers, owners)).toEqual(grouped);
+    // A stale preserved ID cannot own a group after its native row disappears.
+    const removed = groupTodoUpdates(rows.slice(0, -1), footers, owners);
+    expect(removed.get("first")).toEqual({ latest: second, previous: [first] });
+    expect(removed.get("second")).toBeNull();
+    expect(removed.has("current")).toBe(false);
+    expect(JSON.stringify(rows)).toBe(before);
+    expect([...owners]).toEqual(["current"]);
+    expect(footers.size).toBe(0);
+  });
+
+  const barriers: Array<{ label: string; row: Row }> = [
+    { label: "error even with parsed todo output", row: tool("barrier", { status: "error" }) },
+    { label: "unparsed finished result", row: tool("barrier", { result: "Unknown todo output" }) },
+    { label: "missing finished result", row: tool("barrier", { result: undefined }) },
+    { label: "todo carrying an image", row: tool("barrier", { images: [{ url: "data:image/png;base64,AA==" }] }) },
+    { label: "pending todo carrying an image", row: tool("barrier", { status: "pending", images: [{ url: "image.png" }] }) },
+    { label: "user prose", row: { kind: "text", id: "barrier", role: "user", text: "Continue" } },
+    { label: "assistant prose", row: { kind: "text", id: "barrier", role: "assistant", text: "Next step" } },
+    { label: "thinking", row: { kind: "thinking", id: "barrier", text: "Consider next step" } },
+    { label: "note", row: { kind: "note", id: "barrier", text: "Run stopped" } },
+    { label: "standalone image", row: { kind: "image", id: "barrier", role: "assistant", image: { url: "image.png" } } },
+    { label: "other tool", row: tool("barrier", { name: "read" }) },
+    { label: "noncanonical suffix", row: tool("barrier", { name: "other.todo" }) },
+  ];
+  for (const { label, row } of barriers) {
+    test(`pure projection breaks at ${label}`, () => {
+      const first = tool("first");
+      const last = tool("last");
+      const grouped = groupTodoUpdates([first, row, last], new Map());
+      expect([...grouped.keys()]).toEqual(["first", "last"]);
+      expect(grouped.get("first")).toEqual({ latest: first, previous: [] });
+      expect(grouped.get("last")).toEqual({ latest: last, previous: [] });
+      const second = tool("second");
+      const later = tool("later");
+      const owners: ReadonlySet<string> = new Set(["later"]);
+      const preserved = groupTodoUpdates([first, second, row, last, later], new Map(), owners);
+      // An existing owner in the later group must not absorb earlier calls
+      // across this visible/semantic barrier.
+      expect(preserved.get("first")).toEqual({ latest: second, previous: [first] });
+      expect(preserved.get("second")).toBeNull();
+      expect(preserved.get("last")).toBeNull();
+      expect(preserved.get("later")).toEqual({ latest: later, previous: [last] });
+      expect([...owners]).toEqual(["later"]);
+    });
+  }
+
+  for (const footerAt of ["first", "native-result", "second"]) {
+    test(`pure projection breaks after native footer at ${footerAt}`, () => {
+      const first = tool("first");
+      const second = tool("second");
+      const third = tool("third");
+      const rows: Row[] = [first, { kind: "boundary", id: "native-result" }, second, third];
+      const footers: ReadonlyMap<string, unknown> = new Map([[footerAt, Object.freeze({ runId: "native-run" })]]);
+      const grouped = groupTodoUpdates(rows, footers);
+      if (footerAt === "second") {
+        expect(grouped.get("first")).toEqual({ latest: second, previous: [first] });
+        expect(grouped.get("second")).toBeNull();
+        expect(grouped.get("third")).toEqual({ latest: third, previous: [] });
+      } else {
+        expect(grouped.get("first")).toEqual({ latest: first, previous: [] });
+        expect(grouped.get("second")).toEqual({ latest: third, previous: [second] });
+        expect(grouped.get("third")).toBeNull();
+      }
+      const owners: ReadonlySet<string> = new Set(["third"]);
+      const preserved = groupTodoUpdates(rows, footers, owners);
+      if (footerAt === "second") {
+        expect(preserved.get("first")).toEqual({ latest: second, previous: [first] });
+        expect(preserved.get("second")).toBeNull();
+        expect(preserved.get("third")).toEqual({ latest: third, previous: [] });
+      } else {
+        expect(preserved.get("first")).toEqual({ latest: first, previous: [] });
+        expect(preserved.get("second")).toBeNull();
+        expect(preserved.get("third")).toEqual({ latest: third, previous: [second] });
+      }
+      expect([...owners]).toEqual(["third"]);
+      expect([...footers.keys()]).toEqual([footerAt]);
+    });
+  }
+
+  for (const status of ["pending", "running"] as const) {
+    test(`pure projection includes ${status} unparsed todo but never hides an earlier active call`, () => {
+      const first = tool("first");
+      const active = tool("active", { status, result: undefined });
+      const later = tool("later", { status, result: undefined, name: "functions.todo" });
+      const finished = tool("finished");
+      const grouped = groupTodoUpdates([first, active, later, finished], new Map());
+      expect(grouped.get("first")).toEqual({ latest: active, previous: [first] });
+      expect(grouped.get("active")).toBeNull();
+      expect(grouped.get("later")).toEqual({ latest: later, previous: [] });
+      expect(grouped.get("finished")).toEqual({ latest: finished, previous: [] });
+    });
+  }
+});
+
+
+test.describe("delegation tool card", () => {
+  const timing = { elapsedMs: 0, running: false };
+  const args = { task: "Review parser without edits", role: "reviewer", maxTurns: 8, timeoutSeconds: 300 };
+  const native = (extra: Record<string, unknown> = {}) => ({ kind: "rpi-delegation", ...args, status: "completed", turns: 3, turnLimited: false, childId: "child-1", sessionId: "child-session-1", report: "# Report\n\n- Parser checked\n\n```ts\nconst checked = true;\n```\n\n[Reference](https://example.com/)\n", ...extra });
+  const call = (id: string, input: unknown = args, name = "delegate_task") => ({ type: "toolCall", id, name, arguments: input, webTiming: timing });
+  const result = (id: string, content: unknown, isError = false, toolName = "delegate_task") => ({ role: "toolResult", toolCallId: id, toolName, content, isError, webTiming: timing });
+  const text = (text: string) => [{ type: "text", text }];
+  const snapshot = (page: Page, messages: unknown[]) => page.route(snapshotRoute, route => route.fulfill({ json: { sessionId, status: "ready", messages, events: [], lastSeq: 4, hasMore: false } }));
+  async function setup(page: Page, language: "en" | "zh") {
+    await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+    await page.addInitScript(lang => {
+      localStorage.setItem("rpi-web-language", lang);
+      localStorage.setItem("rpi-web-tool-name-mode", "mapped");
+    }, language);
+    await mockHost(page);
+    const mutations: unknown[] = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON() as { type?: string };
+      if (!String(body.type).startsWith("get_")) mutations.push(body);
+      if (body.type === "get_history") return route.fulfill({ json: response({ records: [], total: 0, hasMore: false }, "get_history") });
+      return route.fallback();
+    });
+    return mutations;
+  }
+  async function readonlyCard(card: ReturnType<Page["locator"]>) {
+    // Safe report links and copy-code buttons are permitted.
+    await expect(card.locator("form, input, select, textarea, [contenteditable=true], [role=checkbox]")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: /^(run|retry|cancel|abort|follow|fork|运行|重试|取消|终止)$/i })).toHaveCount(0);
+  }
+  for (const language of ["en", "zh"] as const) {
+    const done = language === "zh" ? "委派调用已完成" : "Delegation call completed";
+    const completed = language === "zh" ? "已完成" : "completed";
+    const failed = language === "zh" ? "失败" : "failed";
+    const mapped = language === "zh" ? "委派任务" : "Delegated task";
+    test(`native Markdown, exact opt-in raw data and actual zero timing in ${language}`, async ({ page }) => {
+      const mutations = await setup(page, language);
+      const output = JSON.stringify(native());
+      await snapshot(page, [{ role: "assistant", content: [call("report")] }, result("report", text(output))]);
+      await page.goto("/");
+      const card = page.locator(".delegation-card");
+      await expect(card).toHaveJSProperty("open", false);
+      await expect(card).toHaveClass(/tool-done/);
+      const summary = card.locator(":scope > summary");
+      await expect(summary.locator(".tool-action")).toHaveText(mapped);
+      await expect(summary.locator(".tool-status")).toHaveAttribute("title", done);
+      await expect(summary.locator(".tool-elapsed")).toHaveText("0.0s");
+      await summary.click();
+      await expect(card.locator(".delegation-task")).toHaveText(args.task);
+      await expect(card.locator(".delegation-role")).toHaveText(args.role);
+      await expect(card.locator(".delegation-status")).toHaveText(completed);
+      await expect(card.locator(".delegation-turns")).toHaveText("3");
+      await expect(card.locator(".delegation-report h1")).toHaveText("Report");
+      await expect(card.locator(".delegation-report li")).toHaveText("Parser checked");
+      await expect(card.locator(".delegation-report pre code")).toContainText("const checked = true;");
+      await expect(card.locator(".tool-arguments, .tool-result-pre, .delegation-detail > pre")).toHaveCount(0);
+      const execution = card.locator(".delegation-execution"), raw = card.locator(".delegation-raw");
+      await expect(execution).toHaveJSProperty("open", false);
+      await expect(execution.locator("dl")).toBeHidden();
+      await expect(raw).toHaveJSProperty("open", false);
+      await expect(raw.locator("pre")).toBeHidden();
+      await execution.locator("summary").click();
+      await expect(execution.locator("dd")).toHaveText(["8", "300s", "child-1", "child-session-1"]);
+      await expect(summary).not.toContainText("300s");
+      await raw.locator("summary").click();
+      expect(JSON.parse((await raw.locator("pre").textContent())!)).toEqual({ input: args, output });
+      await raw.locator("summary").click();
+      await expect(raw.locator("pre")).toBeHidden();
+      await readonlyCard(card);
+      expect(mutations).toEqual([]);
+      await page.screenshot({ path: test.info().outputPath(`delegation-${language}.png`), fullPage: true });
+    });
+
+    test(`plain, object, native wrappers, JSON args, aliases and orphan fallback in ${language}`, async ({ page }) => {
+      await setup(page, language);
+      const valid = [
+        { id: "plain", name: "delegate_task", input: args, output: "Plain report" },
+        { id: "object", name: "functions.delegate_task", input: args, output: native() },
+        { id: "json", name: " FUNCTIONS.DeLeGaTe_TaSk ", input: JSON.stringify(args), output: { content: text(JSON.stringify(native())) } },
+        { id: "wrapped", name: "DELEGATE_TASK", input: args, output: { text: JSON.stringify(native()) } },
+        { id: "content", name: "delegate_task", input: args, output: { content: JSON.stringify(native()) } },
+        { id: "orphan", name: "delegate_task", output: text(JSON.stringify(native())) },
+        { id: "native-wins", name: "delegate_task", input: { task: 42 }, output: native() },
+      ];
+      const generic = [
+        { id: "other", name: "other.delegate_task", input: args, output: native() },
+        { id: "suffix", name: "delegate_task_extra", input: args, output: native() },
+        { id: "missing", name: "delegate_task", input: {}, output: "Plain report" },
+        { id: "blank", name: "delegate_task", input: { task: " " }, output: native({ task: "" }) },
+        { id: "bad-orphan", name: "delegate_task", output: native({ task: 42 }) },
+        { id: "plain-orphan", name: "delegate_task", output: "Plain report" },
+        { id: "image", name: "delegate_task", input: args, output: [...text(JSON.stringify(native())), { type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" }] },
+      ];
+      const entries = [...valid, ...generic];
+      await snapshot(page, entries.flatMap(entry => [
+        ...("input" in entry ? [{ role: "assistant", content: [call(entry.id, entry.input, entry.name)] }] : []),
+        result(entry.id, entry.output, false, entry.name),
+      ]));
+      await page.goto("/");
+      const cards = page.locator(".tool-card");
+      await expect(cards).toHaveCount(entries.length);
+      for (const [index, entry] of valid.entries()) {
+        const card = cards.nth(index);
+        await expect(card).toHaveClass(/delegation-card/);
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".delegation-report")).toContainText(entry.id === "plain" ? "Plain report" : "Report");
+        await expect(card.locator(".delegation-task")).toHaveText(args.task);
+        await readonlyCard(card);
+        await card.locator(":scope > summary").click();
+      }
+      for (let index = valid.length; index < entries.length; index++) await expect(cards.nth(index)).not.toHaveClass(/delegation-card/);
+      await cards.last().locator(":scope > summary").click();
+      await expect(cards.last().locator("img")).toHaveCount(1);
+    });
+
+    test(`unknown and malformed JSON remain folded without invented budgets in ${language}`, async ({ page }) => {
+      await setup(page, language);
+      const input = JSON.stringify({ task: "Inspect unknown result", maxTurns: 0, timeoutSeconds: 1 });
+      const outputs: unknown[] = ['{"kind":"unknown","report":"Not a report"}', '{"kind":"rpi-delegation","report":', ["unknown"], { unexpected: "payload" }, JSON.stringify(native({ report: "", turns: -1, maxTurns: 33, timeoutSeconds: 1801, childId: "", sessionId: "" }))];
+      await snapshot(page, outputs.flatMap((output, index) => [{ role: "assistant", content: [call(`unknown-${index}`, input)] }, result(`unknown-${index}`, output)]));
+      await page.goto("/");
+      const cards = page.locator(".delegation-card");
+      await expect(cards).toHaveCount(outputs.length);
+      for (const [index, output] of outputs.entries()) {
+        const card = cards.nth(index);
+        await expect(card).toHaveJSProperty("open", false);
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(".delegation-empty")).toHaveText(index === outputs.length - 1 ? language === "zh" ? "未记录报告。" : "No report recorded." : language === "zh" ? "无法识别此结果，可展开原始数据查看。" : "Unrecognized result. See raw data for details.");
+        await expect(card.locator(".delegation-report, .delegation-execution, .delegation-turns")).toHaveCount(0);
+        const raw = card.locator(".delegation-raw");
+        await expect(raw).toHaveJSProperty("open", false);
+        await expect(raw.locator("pre")).toBeHidden();
+        await raw.locator("summary").click();
+        expect(JSON.parse((await raw.locator("pre").textContent())!)).toEqual({ input, output });
+        await card.locator(":scope > summary").click();
+      }
+    });
+
+    test(`stdout errors, cancellation and timeout are not success; turnLimited is only a warning in ${language}`, async ({ page }) => {
+      await setup(page, language);
+      const failures = ["subagent failed: parser crashed", "subagent cancelled: parent aborted", "subagent timeout: exceeded 300 seconds"];
+      await snapshot(page, [...failures.flatMap((failure, index) => [{ role: "assistant", content: [call(`error-${index}`)] }, result(`error-${index}`, text(failure), true)]), { role: "assistant", content: [call("limited")] }, result("limited", text(JSON.stringify(native({ turns: 8, turnLimited: true }))))]);
+      await page.goto("/");
+      const cards = page.locator(".delegation-card");
+      await expect(cards).toHaveCount(4);
+      for (const [index, failure] of failures.entries()) {
+        const card = cards.nth(index);
+        await expect(card).toHaveClass(/tool-error/);
+        await expect(card).not.toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", true);
+        await expect(card.locator(":scope > summary .tool-status")).toHaveAttribute("title", failed);
+        await expect(card.locator(".delegation-error")).toContainText(failure);
+        await expect(card.locator(".delegation-status, .delegation-limit")).toHaveCount(0);
+        await expect(card.locator(".delegation-raw")).toHaveJSProperty("open", false);
+      }
+      const limited = cards.last();
+      await expect(limited).toHaveClass(/tool-done/);
+      await expect(limited.locator(":scope > summary .tool-status")).toHaveAttribute("title", done);
+      await limited.locator(":scope > summary").click();
+      await expect(limited.locator(".delegation-status")).toHaveText(completed);
+      await expect(limited.locator(".delegation-turns")).toHaveText("8");
+      await expect(limited.locator(".delegation-limit")).toHaveText(language === "zh" ? "已达到轮数上限，已完成的工作请查看报告。" : "Turn limit reached; see the report for completed work.");
+      await expect(limited.locator(".delegation-report h1")).toHaveText("Report");
+    });
+
+    test(`SSE pending to plain progress to JSON report preserves toggles, reload and error opening in ${language}`, async ({ page }) => {
+      const mutations = await setup(page, language);
+      const output = JSON.stringify(native());
+      const initial = [{ role: "assistant", content: [call("live"), call("live-error")] }];
+      let reloaded = false;
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 7 : 4, events: [], hasMore: false,
+        messages: reloaded ? [...initial, result("live", text(output)), result("live-error", "subagent cancelled: parent aborted", true)] : initial,
+      } }));
+      const releases: Array<() => void> = [];
+      const gates = Array.from({ length: 2 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      const events = [
+        [{ seq: 5, type: "tool_execution_update", toolCallId: "live", toolName: "delegate_task", partialResult: { text: "## Working\n\n- Inspecting parser" }, webTiming: { elapsedMs: 0, running: true } }],
+        [{ seq: 6, type: "tool_execution_end", toolCallId: "live", toolName: "delegate_task", isError: false, result: { content: text(output) }, webTiming: timing },
+          { seq: 7, type: "tool_execution_end", toolCallId: "live-error", toolName: "delegate_task", isError: true, result: { content: text("subagent cancelled: parent aborted") }, webTiming: timing }],
+      ];
+      let attempts = 0;
+      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+        const index = attempts++;
+        if (index >= events.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+        await gates[index];
+        return route.fulfill({ contentType: "text/event-stream", body: `retry: 100\n${events[index].map(event => `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")}` });
+      });
+      try {
+        await page.goto("/");
+        const live = page.locator(".delegation-card").first(), error = page.locator(".delegation-card").nth(1);
+        await expect(live).toHaveClass(/tool-pending/);
+        await live.locator(":scope > summary").click();
+        await expect(live.locator(".delegation-empty")).toHaveText(language === "zh" ? "等待子任务输出…" : "Waiting for the subagent's output…");
+        const execution = live.locator(".delegation-execution"), raw = live.locator(".delegation-raw");
+        await execution.locator("summary").click();
+        await raw.locator("summary").click();
+        releases[0]();
+        await expect(live).toHaveClass(/tool-running/);
+        await expect(live).toHaveJSProperty("open", true);
+        await expect(live.locator(".delegation-report h4")).toHaveText(language === "zh" ? "实时进度" : "Live progress");
+        await expect(live.locator(".delegation-report h2")).toHaveText("Working");
+        await expect(execution).toHaveJSProperty("open", true);
+        await expect(raw).toHaveJSProperty("open", true);
+        await expect(raw.locator("pre")).toContainText("Inspecting parser");
+        await raw.locator("summary").click();
+        await expect(error).toHaveJSProperty("open", false);
+        releases[1]();
+        await expect(live).toHaveClass(/tool-done/);
+        await expect(live).toHaveJSProperty("open", true);
+        await expect(execution).toHaveJSProperty("open", true);
+        await expect(raw).toHaveJSProperty("open", false);
+        await expect(live.locator(".delegation-report h1")).toHaveText("Report");
+        await expect(live.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await expect(live.locator(":scope > summary .tool-status")).toHaveAttribute("title", done);
+        await raw.locator("summary").click();
+        expect(JSON.parse((await raw.locator("pre").textContent())!).output).toEqual({ content: text(output) });
+        await expect(error).toHaveClass(/tool-error/);
+        await expect(error).toHaveJSProperty("open", true);
+        await expect(error.locator(".delegation-error")).toContainText("subagent cancelled: parent aborted");
+        await expect(error.locator(":scope > summary .tool-status")).toHaveAttribute("title", failed);
+        await live.locator(":scope > summary").click();
+        reloaded = true;
+        await page.reload();
+        await expect(live).toHaveClass(/tool-done/);
+        await expect(live).toHaveJSProperty("open", false);
+        await live.locator(":scope > summary").click();
+        await expect(live.locator(".delegation-report h1")).toHaveText("Report");
+        await expect(execution).toHaveJSProperty("open", false);
+        await expect(raw).toHaveJSProperty("open", false);
+        await expect(live.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await expect(error).toHaveClass(/tool-error/);
+        await expect(error).toHaveJSProperty("open", true);
+        expect(mutations).toEqual([]);
+      } finally { releases.forEach(release => release()); }
+    });
+
+    test(`hostile long text is inert and bounded; name preference preserves detail state in ${language}`, async ({ page }) => {
+      const mutations = await setup(page, language);
+      const errors: string[] = [];
+      page.on("pageerror", error => errors.push(error.message));
+      const hostile = '<img src=x onerror="window.__delegationExecuted=1"><script>window.__delegationExecuted=1</script>';
+      const token = "LongUnbrokenToken".repeat(180);
+      const input = { ...args, task: `${hostile} ${token}`, role: `reviewer-${token}` };
+      const output = JSON.stringify(native({ ...input, childId: token, sessionId: `session-${token}`, report: `# Safe report\n\n${hostile}\n\n${token}\n\n[Unsafe](javascript:window.__delegationExecuted=1)\n\n[Safe](https://example.com/)\n\n\`\`\`text\n${token}\n\`\`\`` }));
+      await snapshot(page, [{ role: "assistant", content: [call("hostile", input, "functions.delegate_task")] }, result("hostile", text(output), false, "functions.delegate_task")]);
+      await page.goto("/");
+      const card = page.locator(".delegation-card"), summary = card.locator(":scope > summary");
+      await summary.click();
+      await card.locator(".delegation-execution > summary").click();
+      await card.locator(".delegation-raw > summary").click();
+      await expect(card.locator(".delegation-task")).toHaveText(input.task);
+      await expect(card.locator(".delegation-role")).toHaveText(input.role);
+      await expect(card.locator("script, iframe, object, embed, img, [onerror], [onclick], a[href^='javascript:']")).toHaveCount(0);
+      await expect(card.locator(".delegation-report a[href='https://example.com/']")).toHaveCount(1);
+      expect(await page.evaluate(() => (window as unknown as Record<string, unknown>).__delegationExecuted)).toBeUndefined();
+      const before = await card.locator(".delegation-detail").textContent();
+      for (const mode of ["native", "mapped"] as const) {
+        await page.keyboard.press("Control+,");
+        const group = page.getByRole("group", { name: language === "zh" ? "工具名称" : "Tool names", exact: true });
+        await expect(group).toBeVisible();
+        const label = language === "zh" ? mode === "native" ? "原生名称" : "映射名称" : mode === "native" ? "Native names" : "Mapped names";
+        await group.getByRole("button", { name: label, exact: true }).click();
+        await page.keyboard.press("Escape");
+        await expect(group).toBeHidden();
+        await expect(summary.locator(".tool-action")).toHaveText(mode === "native" ? "functions.delegate_task" : mapped);
+        await expect(summary.locator(".tool-action")).toHaveAttribute("title", mode === "native" ? "functions.delegate_task" : mapped);
+        await expect(card).toHaveJSProperty("open", true);
+        await expect(card.locator(".delegation-execution")).toHaveJSProperty("open", true);
+        await expect(card.locator(".delegation-raw")).toHaveJSProperty("open", true);
+        await expect(summary.locator(".tool-elapsed")).toHaveText("0.0s");
+        expect(await card.locator(".delegation-detail").textContent()).toBe(before);
+        expect(await page.evaluate(() => localStorage.getItem("rpi-web-tool-name-mode"))).toBe(mode);
+        expect(await card.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
+      expect(JSON.parse((await card.locator(".delegation-raw pre").textContent())!)).toEqual({ input, output });
+      await readonlyCard(card);
+      expect(errors).toEqual([]);
+      expect(mutations).toEqual([]);
+    });
+  }
+});
+
+import { delegationInfo } from "../src/delegation";
+
+test("delegation tool card preserves report indentation and native errors without guessing child success", () => {
+  const output = { kind: "rpi-delegation", task: "Inspect", report: "    indented code\n\nReport\n", turns: 0, maxTurns: 3, timeoutSeconds: 10 };
+  const result = delegationInfo({}, { content: [{ type: "text", text: JSON.stringify({ content: [{ type: "text", text: JSON.stringify(output) }] }) }] });
+  expect(result?.report).toBe(output.report);
+  expect(result?.status).toBe("");
+  expect(result?.turns).toBe(0);
+  expect(delegationInfo({ task: "Inspect" }, { ...output, report: undefined, error: "Native failure" })?.report).toBe("Native failure");
+  expect(delegationInfo({ task: "Inspect" }, { ...output, report: "  ", message: "Native diagnostic" })?.report).toBe("Native diagnostic");
+});
+
+test("delegation tool card bounds deeply nested envelopes and rejects unsafe numeric metadata", () => {
+  let output: unknown = { kind: "rpi-delegation", task: "Inspect", report: "Report" };
+  for (let i = 0; i < 8; i++) output = { content: JSON.stringify(output) };
+  expect(delegationInfo({ task: "Inspect", maxTurns: 999, timeoutSeconds: -1 }, output)).toMatchObject({ report: "", unknownResult: true, maxTurns: undefined, timeoutSeconds: undefined });
+  expect(delegationInfo({}, output)).toBeNull();
+  expect(delegationInfo({ task: "Inspect" }, { kind: "rpi-delegation", turns: Number.MAX_SAFE_INTEGER + 1, turnLimited: "true", report: "Report" })).toMatchObject({ turns: undefined, turnLimited: false, status: "" });
+});
+
+test.describe("todo summary-only results", () => {
+  const timing = { elapsedMs: 0, running: false };
+  const call = (id: string) => ({ type: "toolCall", id, name: "todo", arguments: { action: "list", includeDone: false }, webTiming: timing });
+  const result = (id: string, text: string) => ({ role: "toolResult", toolName: "todo", toolCallId: id, content: [{ type: "text", text }], webTiming: timing });
+  const noDetails = (language: "en" | "zh") => language === "zh"
+    ? "本次结果仅包含进度汇总，未返回任务明细。"
+    : "This result contains only a progress summary; task details were not returned.";
+  const progress = (language: "en" | "zh", done: number, total: number) => language === "zh"
+    ? `${done}/${total} 项任务已完成` : `${done}/${total} tasks completed`;
+  async function setup(page: Page, language: "en" | "zh") {
+    await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
+    await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    await mockHost(page);
+  }
+
+  for (const language of ["en", "zh"] as const) {
+    test(`4/4 and other header-only results are not empty task lists in ${language}`, async ({ page }) => {
+      await setup(page, language);
+      const oldTasks = `0/4 completed\n${Array.from({ length: 4 }, (_, i) => `[ ] #${i}: Earlier task ${i}`).join("\n")}`;
+      const cases = [{ text: "4/4 completed", done: 4, total: 4 }, { text: "1/4 completed", done: 1, total: 4 }, { text: "0/4 completed", done: 0, total: 4 }, { text: "No todos", done: 0, total: 0 }];
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: "ready", lastSeq: 4, events: [], messages: [
+          { role: "assistant", content: [call("summary-previous")] }, result("summary-previous", oldTasks),
+          ...cases.flatMap((entry, i) => [
+            ...(i ? [{ role: "assistant", content: [{ type: "text", text: `Independent summary ${i}` }] }] : []),
+            { role: "assistant", content: [call(`summary-${i}`)] }, result(`summary-${i}`, entry.text),
+          ]),
+        ],
+      } }));
+      await page.goto("/");
+      const cards = page.locator(".transcript-row > .todo-card");
+      await expect(cards).toHaveCount(cases.length);
+      for (const [i, entry] of cases.entries()) {
+        const card = cards.nth(i);
+        await expect(card.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, entry.done, entry.total));
+        await expect(card.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await card.locator(":scope > summary").click();
+        const current = card.locator(":scope > .todo-detail");
+        await expect(current.locator(":scope > .todo-list, :scope > .todo-scope")).toHaveCount(0);
+        if (entry.total) {
+          await expect(current.locator(":scope > .todo-summary-only")).toHaveText(noDetails(language));
+          await expect(current.locator(":scope > .todo-empty")).toHaveCount(0);
+        } else {
+          await expect(current.locator(":scope > .todo-empty")).toHaveText(language === "zh" ? "暂无待办任务。" : "No tasks.");
+          await expect(current.locator(":scope > .todo-summary-only")).toHaveCount(0);
+        }
+      }
+      const latest = cards.first(), history = latest.locator(".todo-history");
+      await expect(history).toHaveJSProperty("open", false);
+      await expect(history.locator(".todo-list")).toBeHidden();
+      await latest.screenshot({ path: test.info().outputPath(`todo-summary-${language}.png`) });
+      await history.locator(":scope > summary").click();
+      const previous = history.locator(".todo-card");
+      await expect(previous.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 0, 4));
+      await previous.locator(":scope > summary").click();
+      await expect(previous.locator(".todo-list li")).toHaveCount(4);
+      await expect(previous.locator(".todo-list li.done")).toHaveCount(0);
+      await expect(latest.locator(":scope > .todo-detail > .todo-list")).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+
+    test(`partial list to 4/4 summary removes the empty checklist live and after reload in ${language}`, async ({ page }) => {
+      await setup(page, language);
+      let reloaded = false;
+      const messages = [{ role: "assistant", content: [call("summary-live")] }];
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 6 : 4, events: [],
+        messages: reloaded ? [...messages, result("summary-live", "4/4 completed")] : messages,
+      } }));
+      const releases: Array<() => void> = [];
+      const gates = Array.from({ length: 2 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      let attempts = 0;
+      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+        const index = attempts++;
+        if (index > 1) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+        await gates[index];
+        const event = index === 0
+          ? { seq: 5, type: "tool_execution_update", toolCallId: "summary-live", toolName: "todo", partialResult: { text: "3/4 completed\n[ ] #3: Final check" }, webTiming: { elapsedMs: 0, running: true } }
+          : { seq: 6, type: "tool_execution_end", toolCallId: "summary-live", toolName: "todo", result: { content: [{ type: "text", text: "4/4 completed" }] }, webTiming: timing };
+        return route.fulfill({ contentType: "text/event-stream", body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
+      });
+      try {
+        await page.goto("/");
+        const card = page.locator(".transcript-row > .tool-card");
+        await card.locator(":scope > summary").click();
+        releases[0]();
+        await expect(card.locator(".todo-scope")).toBeVisible();
+        await expect(card.locator(".todo-list li")).toHaveCount(1);
+        releases[1]();
+        await expect(card).toHaveClass(/tool-done/);
+        await expect(card).toHaveJSProperty("open", true);
+        await expect(card.locator(".todo-summary-only")).toHaveText(noDetails(language));
+        await expect(card.locator(".todo-list, .todo-scope, .todo-empty")).toHaveCount(0);
+        await expect(card.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        reloaded = true;
+        await page.reload();
+        await card.locator(":scope > summary").click();
+        await expect(card.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 4, 4));
+        await expect(card.locator(".todo-summary-only")).toHaveText(noDetails(language));
+        await expect(card.locator(".todo-list, .todo-scope, .todo-empty")).toHaveCount(0);
       } finally { releases.forEach(release => release()); }
     });
   }
