@@ -743,15 +743,12 @@ pub fn translate_event(event: &Value) -> Option<Value> {
             }))
         }
         "tool_execution_start" => {
-            let tool = event
-                .get("toolName")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
+            let name = event.get("toolName").and_then(Value::as_str);
+            let tool = name.unwrap_or("tool");
             let args = event.get("args").cloned().unwrap_or(Value::Null);
             let mut update = json!({
                 "sessionUpdate": "tool_call",
                 "toolCallId": tool_call_id(event),
-                "name": tool,
                 "title": title_for_tool(tool, &args),
                 "kind": kind_for_tool(tool),
                 "status": "in_progress",
@@ -765,25 +762,26 @@ pub fn translate_event(event: &Value) -> Option<Value> {
             if !diffs.is_empty() {
                 update["content"] = Value::Array(diffs);
             }
-            Some(update)
+            Some(with_native_tool_name(update, name))
         }
         "tool_execution_update" => {
             let text = tool_result_text(event.get("partialResult"));
             if text.is_empty() {
                 return None;
             }
-            Some(json!({
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": tool_call_id(event),
-                "status": "in_progress",
-                "content": [{"type": "content", "content": {"type": "text", "text": text}}],
-            }))
+            Some(with_native_tool_name(
+                json!({
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": tool_call_id(event),
+                    "status": "in_progress",
+                    "content": [{"type": "content", "content": {"type": "text", "text": text}}],
+                }),
+                event.get("toolName").and_then(Value::as_str),
+            ))
         }
         "tool_execution_end" => {
-            let tool = event
-                .get("toolName")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
+            let name = event.get("toolName").and_then(Value::as_str);
+            let tool = name.unwrap_or("tool");
             let is_error = event
                 .get("isError")
                 .and_then(Value::as_bool)
@@ -801,10 +799,18 @@ pub fn translate_event(event: &Value) -> Option<Value> {
                 update["content"] =
                     json!([{"type": "content", "content": {"type": "text", "text": text}}]);
             }
-            Some(update)
+            Some(with_native_tool_name(update, name))
         }
         _ => None,
     }
+}
+
+/// Add only a supplied native name; display fallbacks are not tool identities.
+pub(crate) fn with_native_tool_name(mut update: Value, name: Option<&str>) -> Value {
+    if let Some(name) = name {
+        update["name"] = json!(name);
+    }
+    update
 }
 
 fn tool_call_id(event: &Value) -> Value {
@@ -1025,6 +1031,7 @@ mod tests {
 
     include!("session_compact_tests.rs");
     include!("session_compact_lifecycle_tests.rs");
+    include!("tool_name_tests.rs");
 
     #[test]
     fn bypass_reaches_children_and_overrides_environment_activation() {
