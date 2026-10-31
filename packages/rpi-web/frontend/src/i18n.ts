@@ -249,9 +249,9 @@ const messages = {
     timelineImageMessage: "Image message",
     timelineLoadEarlier: "Show earlier messages in timeline",
     timelineScrollHint:
-      "Drag up or down to switch messages. Scroll to browse; use Up and Down to preview, Enter to jump.",
+      "Up to ten ticks stay visible. Scroll to browse; drag to switch, or use Up/Down to preview and Enter to jump.",
     timelineLoadedOnly:
-      "Loaded messages only. Scroll up in the conversation to load earlier messages.",
+      "Loaded messages only. Scroll up to the timeline's earlier edge to load a page, or use ↑.",
     nativeToolNames: "Native names",
     mappedToolNames: "Mapped names",
     english: "English",
@@ -566,8 +566,8 @@ const messages = {
     timelineImageMessage: "图片消息",
     timelineLoadEarlier: "在时间线中显示更早的消息",
     timelineScrollHint:
-      "按住侧栏上下滑动切换消息，滚轮浏览。上下方向键预览，回车跳转。",
-    timelineLoadedOnly: "仅显示已加载的消息，在对话中向上滚动可加载更早记录。",
+      "最多常显十个刻度，更多可滚动查看。按住上下滑动切换消息；上下方向键预览，回车跳转。",
+    timelineLoadedOnly: "仅显示已加载的消息，向上滑到时间线较早边缘可加载一页，或点击↑。",
     nativeToolNames: "原生名称",
     mappedToolNames: "映射名称",
     english: "English",

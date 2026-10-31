@@ -55,6 +55,7 @@ export function ConversationTimeline({
   language,
   hasMore,
   loadingEarlier,
+  historyCursor,
   onLoadEarlier,
   onNavigate,
 }: {
@@ -63,7 +64,8 @@ export function ConversationTimeline({
   language: Language;
   hasMore: boolean;
   loadingEarlier: boolean;
-  onLoadEarlier: () => void;
+  historyCursor: string;
+  onLoadEarlier: () => Promise<void>;
   onNavigate: (target: HTMLElement) => void;
 }) {
   const entries = useMemo(
@@ -75,6 +77,21 @@ export function ConversationTimeline({
   const root = useRef<HTMLElement>(null);
   const list = useRef<HTMLOListElement>(null);
   const tooltip = useRef<HTMLDivElement>(null);
+  const pendingPage = useRef(false);
+  const mounted = useRef(true);
+  const [pageSettled, setPageSettled] = useState(0);
+  const restoredKey = useRef<string | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const attemptedCursor = useRef<string | null>(null);
+  const wheelIntent = useRef({ time: -Infinity, earlier: false, used: false });
+  const railAnchor = useRef<{ id: string; offset: number; key: string } | null>(
+    null,
+  );
   const drag = useRef<{
     pointerId: number;
     node: HTMLOListElement;
@@ -106,6 +123,83 @@ export function ConversationTimeline({
     key: Parameters<typeof translate>[1],
     values?: Record<string, string | number>,
   ) => translate(language, key, values);
+
+  const rememberRail = () => {
+    const node = list.current;
+    if (!node) return;
+    const top = node.getBoundingClientRect().top;
+    const button = Array.from(
+      node.querySelectorAll<HTMLButtonElement>(".timeline-node"),
+    ).find((item) => item.getBoundingClientRect().bottom > top + 3);
+    railAnchor.current = button
+      ? {
+          id: button.dataset.timelineTarget!,
+          offset: button.getBoundingClientRect().top - top,
+          key: targetKey,
+        }
+      : null;
+  };
+  const requestEarlier = (manual = false) => {
+    if (
+      !hasMore ||
+      loadingEarlier ||
+      pendingPage.current ||
+      !historyCursor ||
+      (!manual && attemptedCursor.current === historyCursor)
+    )
+      return false;
+    pendingPage.current = true;
+    attemptedCursor.current = historyCursor;
+    rememberRail();
+    // The owner performs exactly one bounded native page; do not opt into its
+    // transcript-at-top continuation loop or navigate on behalf of the reader.
+    void onLoadEarlier()
+      .catch(() => {})
+      .finally(() => {
+        pendingPage.current = false;
+        if (mounted.current) setPageSettled((value) => value + 1);
+      });
+    return true;
+  };
+  const wheelAtEdge = () => {
+    const intent = wheelIntent.current;
+    if (
+      intent.earlier &&
+      !intent.used &&
+      performance.now() - intent.time < 250 &&
+      !drag.current &&
+      (list.current?.scrollTop ?? 0) <= 24
+    ) {
+      if (requestEarlier()) intent.used = true;
+    }
+  };
+  useLayoutEffect(() => {
+    const anchor = railAnchor.current;
+    const node = list.current;
+    if (!anchor || !node) return;
+    if (anchor.key === targetKey) {
+      // Failures and pages without user nodes still complete their anchor lease.
+      if (!pendingPage.current) railAnchor.current = null;
+      return;
+    }
+    const button = Array.from(
+      node.querySelectorAll<HTMLButtonElement>(".timeline-node"),
+    ).find((item) => item.dataset.timelineTarget === anchor.id);
+    if (button) {
+      node.scrollTop +=
+        button.getBoundingClientRect().top -
+        node.getBoundingClientRect().top -
+        anchor.offset;
+      restoredKey.current = targetKey;
+      // Protect the subsequent ResizeObserver/active-node frame as well as the
+      // prepend commit, even after a slow response and pointer departure.
+      browsing.current.until = performance.now() + 1000;
+    }
+    // A live tail update can change membership while the requested page is
+    // still pending. Preserve the lease for its eventual prepend as well.
+    if (pendingPage.current) anchor.key = targetKey;
+    else railAnchor.current = null;
+  }, [targetKey, pageSettled]);
 
   const stopDrag = () => {
     const gesture = drag.current;
@@ -170,6 +264,8 @@ export function ConversationTimeline({
   }, [transcript, targetKey]);
 
   const reveal = (button: HTMLElement) => {
+    // A key/follow-driven reveal is not the tail of the last wheel gesture.
+    wheelIntent.current.earlier = false;
     const container = list.current;
     if (!container) return;
     const offset = button.offsetTop;
@@ -183,10 +279,15 @@ export function ConversationTimeline({
   };
 
   useEffect(() => {
+    if (restoredKey.current === targetKey) {
+      restoredKey.current = null;
+      return;
+    }
     if (
       browsing.current.pointer ||
       browsing.current.focus ||
       drag.current ||
+      railAnchor.current ||
       performance.now() < browsing.current.until
     )
       return;
@@ -233,6 +334,7 @@ export function ConversationTimeline({
     const target = targets.current.get(rowId);
     if (!target || !transcript.current?.contains(target)) return;
     onNavigate(target);
+    railAnchor.current = null;
     setActive(rowId);
     setPreview(null);
   };
@@ -262,6 +364,7 @@ export function ConversationTimeline({
     showPreview(button, id);
   };
   const startDrag = (event: PointerEvent<HTMLOListElement>) => {
+    wheelIntent.current.earlier = false;
     if (!event.isPrimary || event.button !== 0 || drag.current) return;
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
       ".timeline-node",
@@ -319,8 +422,14 @@ export function ConversationTimeline({
     gesture.y = event.clientY;
     if (gesture.moved) scrub(gesture);
     else navigate(gesture.startId);
+    const box = gesture.node.getBoundingClientRect();
+    const earlierEdge =
+      gesture.moved &&
+      gesture.node.scrollTop <= 24 &&
+      gesture.y < box.top + Math.min(24, box.height / 4);
     stopDrag();
     setPreview(null);
+    if (earlierEdge) requestEarlier();
   };
   const cancelDrag = (event: PointerEvent<HTMLOListElement>) => {
     if (event.target !== event.currentTarget) return;
@@ -350,6 +459,8 @@ export function ConversationTimeline({
               : -1;
     if (next < 0) return;
     event.preventDefault();
+    if (index === 0 && (event.key === "ArrowUp" || event.key === "Home"))
+      requestEarlier();
     const button =
       list.current?.querySelectorAll<HTMLButtonElement>(".timeline-node")[next];
     if (!button) return;
@@ -381,6 +492,17 @@ export function ConversationTimeline({
         className="timeline-panel"
         aria-label={t("conversationTimeline")}
         aria-describedby={descriptionId}
+        onWheelCapture={(event) => {
+          const now = performance.now();
+          if (now - wheelIntent.current.time >= 250)
+            wheelIntent.current.used = false;
+          wheelIntent.current.time = now;
+          wheelIntent.current.earlier = event.deltaY < 0;
+          browsing.current.until = now + 1000;
+          if (event.deltaY > 0 && (list.current?.scrollTop ?? 0) > 24)
+            attemptedCursor.current = null;
+          wheelAtEdge();
+        }}
         onFocusCapture={() => {
           browsing.current.focus = true;
         }}
@@ -407,7 +529,7 @@ export function ConversationTimeline({
             title={t("timelineLoadEarlier")}
             disabled={loadingEarlier}
             aria-busy={loadingEarlier}
-            onClick={onLoadEarlier}
+            onClick={() => requestEarlier(true)}
           >
             <span aria-hidden="true">{loadingEarlier ? "…" : "↑"}</span>
           </button>
@@ -426,6 +548,11 @@ export function ConversationTimeline({
             event.stopPropagation();
           }}
           onScroll={() => {
+            if (railAnchor.current && railAnchor.current.key === targetKey)
+              rememberRail();
+            if ((list.current?.scrollTop ?? 0) > 24)
+              attemptedCursor.current = null;
+            wheelAtEdge();
             if (drag.current) return;
             const button = document.activeElement;
             if (

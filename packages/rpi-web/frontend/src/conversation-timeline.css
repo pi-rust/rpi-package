@@ -18,7 +18,7 @@
   top: 50%;
   left: 5px;
   width: 24px;
-  height: min(280px, calc(100% - 24px));
+  height: min(270px, calc(100% - 24px));
   transform: translateY(-50%);
   display: flex;
   align-items: center;
@@ -61,6 +61,9 @@
   user-select: none;
   cursor: ns-resize;
   min-height: 0;
+  /* Ten 24px nodes plus the list's 6px padding; the ↑ has its own space. */
+  max-height: 246px;
+  flex-shrink: 1;
   border-radius: 8px;
 }
 .timeline-panel ol[data-scrubbing] {
@@ -91,7 +94,7 @@
   height: 2px;
   border-radius: 2px;
   background: currentColor;
-  opacity: 0.4;
+  opacity: 0.75;
   transition:
     width 120ms ease,
     opacity 120ms ease;
