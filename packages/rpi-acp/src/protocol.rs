@@ -374,6 +374,8 @@ pub fn initialize_result() -> Value {
                 }
             },
             "loadSession": true,
+            // ACP stdio is implicit; never advertise unsupported network transports.
+            "mcpCapabilities": {"http": false, "sse": false},
             "auth": {"logout": {}},
             "sessionCapabilities": {"resume": {}, "delete": {}, "close": {}},
             "promptCapabilities": {
@@ -875,16 +877,16 @@ pub async fn run(
                         continue;
                     }
                 };
-                if let Some(mcp_servers) = params.get("mcpServers") {
-                    if !mcp_servers.is_array() {
-                        writer
-                            .respond_error(&id, -32602, "mcpServers must be an array")
-                            .await;
+                let cwd = PathBuf::from(cwd);
+                let servers = match crate::mcp::parse(params, &cwd) {
+                    Ok(servers) => servers.unwrap_or_default(),
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
                         continue;
                     }
-                }
+                };
                 let session_id = uuid::Uuid::new_v4().to_string();
-                match open_session(&session_id, PathBuf::from(cwd), None).await {
+                match open_session_with_tools(&session_id, cwd, None, servers).await {
                     Ok((session, state)) => {
                         let mut result = json!({"sessionId": session_id});
                         match config_options_for(&session, &state).await {
@@ -1051,12 +1053,30 @@ pub async fn run(
                         continue;
                     }
                 };
+                let cwd = PathBuf::from(cwd);
+                let servers = match crate::mcp::parse(params, &cwd) {
+                    Ok(servers) => servers,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
                 let existing = sessions.lock().await.get(session_id).cloned();
                 let opened = if let Some(session) = existing {
-                    session.state().await.map(|state| (session, state))
+                    prepare_session_tools(&session, session_id, cwd, servers)
+                        .await
+                        .map(|state| (session, state))
                 } else {
                     match crate::history::saved_session(session_id) {
-                        Ok(path) => open_session(session_id, PathBuf::from(cwd), Some(&path)).await,
+                        Ok(path) => {
+                            open_session_with_tools(
+                                session_id,
+                                cwd,
+                                Some(&path),
+                                servers.unwrap_or_default(),
+                            )
+                            .await
+                        }
                         Err(error) => Err(error),
                     }
                 };
@@ -1521,24 +1541,69 @@ async fn config_options_for(session: &Arc<Session>, state: &Value) -> Result<Val
     Ok(config_options(&models, &thinking, state))
 }
 
+#[cfg(test)]
 async fn open_session(
     id: &str,
     cwd: PathBuf,
     saved: Option<&std::path::Path>,
 ) -> Result<(Arc<Session>, Value), String> {
+    open_session_with_tools(id, cwd, saved, Vec::new()).await
+}
+
+async fn open_session_with_tools(
+    id: &str,
+    cwd: PathBuf,
+    saved: Option<&std::path::Path>,
+    servers: Vec<rpi_extcore::external_tools::StdioToolServer>,
+) -> Result<(Arc<Session>, Value), String> {
+    validate_session_workspace(id, &cwd, saved, !servers.is_empty())?;
+    let session = Session::spawn(id.to_owned(), cwd.clone(), saved).await?;
+    match prepare_session_tools(&session, id, cwd, Some(servers)).await {
+        Ok(state) => Ok((session, state)),
+        Err(error) => {
+            session.kill().await;
+            Err(error)
+        }
+    }
+}
+
+/// Both fresh load and resume enter this preflight before native/MCP spawn.
+fn validate_session_workspace(
+    id: &str,
+    cwd: &std::path::Path,
+    saved: Option<&std::path::Path>,
+    has_tools: bool,
+) -> Result<(), String> {
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err("cwd must be an existing absolute directory".into());
     }
-    let session = Session::spawn(id.to_owned(), cwd, saved).await?;
-    match session.state().await {
-        Ok(state) if state["sessionId"] == id => Ok((session, state)),
-        result => {
-            session.kill().await;
-            Err(result
-                .err()
-                .unwrap_or_else(|| "backend opened a different sessionId".into()))
+    // No-MCP restores retain historical behavior, including old headers.
+    if has_tools {
+        if let Some(saved) = saved {
+            crate::history::validate_restored_workspace(saved, id, cwd)?;
         }
     }
+    Ok(())
+}
+
+/// Check native identity before any MCP discovery, and configure before replay.
+/// Omission on a live session is deliberately not an explicit empty config.
+async fn prepare_session_tools(
+    session: &Session,
+    id: &str,
+    cwd: PathBuf,
+    servers: Option<Vec<rpi_extcore::external_tools::StdioToolServer>>,
+) -> Result<Value, String> {
+    let state = session.state().await?;
+    if state["sessionId"] != id {
+        return Err("backend opened a different sessionId".into());
+    }
+    if let Some(servers) = servers {
+        session
+            .configure_stdio_tools(servers, cwd, format!("acp:{id}"))
+            .await?;
+    }
+    Ok(state)
 }
 
 #[cfg(test)]
@@ -1546,6 +1611,7 @@ mod tests {
     use super::*;
 
     include!("protocol_compact_tests.rs");
+    include!("protocol_mcp_tests.rs");
 
     #[test]
     fn durable_extension_parses_queue_mutations() {

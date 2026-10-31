@@ -28,6 +28,14 @@ The public API is protocol-neutral, but it still expects a compatible native
 `rpi --mode rpc` executable at runtime. The crate does not bundle that binary,
 manage credentials, or provide an HTTP/ACP transport.
 
+`history::saved_session_metadata` validates the authoritative native v4 header
+and exact ID using a 64 KiB first-line limit without reading messages or
+persisting a sidecar. ACP uses this neutral metadata for nonempty-MCP fresh
+load/resume preflight: existing recorded and requested workspaces must resolve
+to the same directory, otherwise reject before spawning. Empty/missing recorded
+directories retain native fallback; no-MCP compatibility remains unchanged.
+This metadata snapshot is not a concurrent-filesystem sandbox.
+
 ## Modules
 
 | Module | Responsibility |
@@ -41,6 +49,72 @@ manage credentials, or provide an HTTP/ACP transport.
 | `registry`, `projects`, `timing` | Durable supplemental metadata, project catalog and tool timings |
 | `workspace`, `process` | Scoped file/Git access and background native processes |
 | `reply`, `protocol` | Neutral operation outcomes and the existing native command contract |
+
+## Session-owned stdio tools
+
+`external_tools::StdioToolServer` and
+`HostSession::configure_stdio_tools(servers, cwd, scope)` accept explicit stdio
+configuration without ACP types, temporary configuration files, or persistence
+of command arguments/environment. Configuration is intentionally not `Debug`.
+The caller must provide an absolute working directory and a scope. Empty initial
+configuration works with older native hosts; nonempty configuration requires
+both native commands `configure_external_tools` / `external_tool_response` and
+events `external_tool_request` / `external_tool_request_closed` before any MCP
+child starts. Identical explicit live configuration is accepted; changed live
+configuration requires closing and reopening the session. ACP handles only its
+wire validation/mapping: omitted live configuration retains the existing one,
+while a fresh load/resume requires reproviding configuration and credentials.
+Configuration/environment secrets are not persisted in transcripts, registry
+metadata or another database. The neutral API bounds configuration to 16 servers
+and 256 KiB encoded configuration.
+
+Configuration holds the run lease. Discovery has one 30-second total deadline,
+then all definitions are installed by one atomic native configure command before
+publishing the session-owned bridge. Native rejection leaves no candidate owner;
+cancellation after sending registration fails the host closed because commit is
+otherwise ambiguous. Discovery drop cancels its `Control` and retains the blocking
+worker join before runtime shutdown. No raw MCP/native errors containing server
+configuration are forwarded by this bridge.
+
+Native names are `mcp_` plus the first 60 hexadecimal SHA-256 digits of a
+length-delimited `(server name, tool name)` tuple. Original labels appear only
+in bounded descriptions. Schemas must already have an object root with
+`type: object`; they are not silently rewritten. Native schema restrictions still
+apply. Registration is limited to 128 tools / 256 KiB, descriptions to 8 KiB,
+active calls and the reliable reader queue to 64, calls to 45 seconds, and native
+outcome frames to 1 MiB. Queue overflow fails the connection closed, not just its
+broadcast subscribers. Raw text/image results, `isError`, `structuredContent`,
+and unknown metadata are retained in raw `externalToolResult` for native
+validation/projection; unsupported content blocks produce explicit errors rather
+than disappearing. Native rpi owns tool/schema validation, call provenance,
+result projection and persisted history. ACP separately formats native events
+and replay; it is not the native result projector. Runtime scope is explicit and
+per-session, independent of the deterministic 64-character exported tool name.
+This path does not add resources, prompts, OAuth, HTTP/SSE transports, plugin
+activation, remote attachment or shared service deployment.
+
+`HostSession` owns the bridge; reader/runtime routing is weak. Native closures
+synchronously cancel calls and guarded queued output. Abort cancels current calls
+without disposing the configured runtime (a cancelled MCP target needs explicit
+fresh discovery before it can be used again; calls never automatically reconnect
+or replay). Finish, termination, shutdown and owner
+drop cancel the bridge. A separately retained supervisor joins all bounded call
+workers and shuts down the MCP runtime on a blocking cleanup worker; it never
+retains the session or bridge, avoiding owner cycles. Output already committed
+to an OS pipe cannot be recalled, and cleanup inherits the core/platform limits
+of terminating child processes and joining blocking I/O.
+
+## Stdio validation
+
+Default package tests cover host registration/routing and lifecycle semantics.
+Run `cargo test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge`
+for real MCP shell-child cancellation, timeout, result and owner-drop fixtures.
+Their native peer is in memory: these are not real-native smoke tests. The
+three-OS CI runs those fixtures without a real-native binary. The separate
+Windows Python harness and required provenance flags are described in the
+[ACP README](../rpi-acp/README.md#stdio-validation-and-native-smoke). Inspect that
+harness's retained diagnostic results for actual execution evidence. A source
+test or configured CI step is not evidence that this native smoke passed.
 
 ## Project image reads
 

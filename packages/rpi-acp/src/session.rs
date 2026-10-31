@@ -130,6 +130,11 @@ impl Session {
         }))
     }
 
+    #[cfg(test)]
+    pub(crate) async fn attach_for_test(rpc: Arc<HostSession>) -> Result<Arc<Self>, String> {
+        Self::attach(rpc).await
+    }
+
     async fn send(&self, value: Value) -> Result<(), String> {
         self.rpc.notify(value).await
     }
@@ -137,6 +142,16 @@ impl Session {
     /// Wait for backend startup and obtain the authoritative active branch.
     pub async fn state(&self) -> Result<Value, String> {
         self.rpc.state().await
+    }
+
+    /// Thin neutral-core mapping; extcore owns discovery, registration and cleanup.
+    pub async fn configure_stdio_tools(
+        &self,
+        servers: Vec<rpi_extcore::external_tools::StdioToolServer>,
+        cwd: PathBuf,
+        scope: String,
+    ) -> Result<(), String> {
+        self.rpc.configure_stdio_tools(servers, cwd, scope).await
     }
 
     pub async fn history_read(&self) -> Result<rpi_extcore::history::page::HistoryRead, String> {

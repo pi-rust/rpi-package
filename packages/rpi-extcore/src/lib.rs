@@ -25,6 +25,7 @@
 pub mod dialogs;
 pub mod durable;
 pub mod events;
+pub mod external_tools;
 pub mod history;
 pub mod host;
 pub mod message;

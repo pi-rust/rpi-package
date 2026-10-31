@@ -32,6 +32,7 @@
 pub mod auth;
 pub mod diag;
 mod history;
+mod mcp;
 pub mod protocol;
 mod questions;
 pub mod session;

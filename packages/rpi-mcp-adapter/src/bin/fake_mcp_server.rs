@@ -80,6 +80,14 @@ fn main() {
             stdout.flush().unwrap();
             continue;
         }
+        // Emit the valid response too: mixed request/response input must retire
+        // the connection, not merely be swallowed until a later valid reply.
+        if (mode("--mixed-list") && method == "tools/list")
+            || (mode("--mixed-call") && method == "tools/call")
+        {
+            writeln!(stdout, "{}", json!({"jsonrpc":"2.0","id":id,"method":"ping","result":{},"error":{"code":-1,"message":"mixed frame"}})).unwrap();
+            stdout.flush().unwrap();
+        }
         if mode("--notify") {
             writeln!(
                 stdout,
@@ -189,7 +197,15 @@ fn main() {
             }
             "tools/list" => {
                 let echo = json!({"name":"echo","description":"Echo one value","inputSchema":{"type":"object","properties":{"value":{"type":"string"}}}});
-                if mode("--paged") {
+                if mode("--duplicate-tools") {
+                    json!({"tools":[echo.clone(),echo]})
+                } else if mode("--invalid-schema") {
+                    json!({"tools":[{"name":"echo","inputSchema":{"type":"array"}}]})
+                } else if mode("--catalog-metadata") {
+                    let mut echo = echo;
+                    echo["unknownMetadata"] = json!("x".repeat(4096));
+                    json!({"tools":[echo]})
+                } else if mode("--paged") {
                     if request["params"]["cursor"] == "page2" {
                         json!({"tools":[{"name":"counter","inputSchema":{"type":"object"}},{"name":"fail","inputSchema":{"type":"object"}},{"name":"image","inputSchema":{"type":"object"}}]})
                     } else {
@@ -219,6 +235,9 @@ fn main() {
                 }
                 calls += 1;
                 match request["params"]["name"].as_str().unwrap_or("") {
+                    "typed_raw" if mode("--typed-raw") => {
+                        json!({"isError":true,"content":[{"type":"text","text":"raw error","annotations":{"priority":0.5}}],"structuredContent":{"arguments":request["params"]["arguments"]},"opaqueMetadata":{"retained":true}})
+                    }
                     "counter" => {
                         json!({"content":[{"type":"text","text":format!("{}:{calls}", std::process::id())}]})
                     }
