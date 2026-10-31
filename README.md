@@ -6,18 +6,20 @@ Rust-native extension packages for the `rpi` agent, built against the stable
 The workspace includes tools, workflow extensions, provider integrations and
 client adapters. Each package has its own version and setup guide. The
 [package catalog](catalog/packages.json) records installation commands and
-versioned prebuilt manifests for catalog extensions.
+versioned prebuilt manifests for catalog extensions. See the
+[tool guidance contract](docs/tool-guidance.md) for model-facing descriptions,
+parameter schemas, and regression checks.
 
 ## Packages
 
 | Package | Tools and capabilities |
 | --- | --- |
-| [rpi-mcp-adapter](packages/rpi-mcp-adapter/README.md) | Connect MCP servers with `mcp_list`, `mcp_call` and `mcp_request` |
+| [rpi-mcp-adapter](packages/rpi-mcp-adapter/README.md) | Discover/call tools and manage resources with `mcp_list`, `mcp_call`, `mcp_resource`; raw diagnostics with `mcp_request` |
 | [rpi-subagents](packages/rpi-subagents/README.md) | Delegate work with `delegate_task` |
 | [rpi-orchestrator](packages/rpi-orchestrator/README.md) | Bounded child agents and task graphs with `subagent`, `plan` and `dispatch` |
 | [rpi-durable](packages/rpi-durable/README.md) | Persist and resume workflow checkpoints with `durable` |
 | [rpi-lens](packages/rpi-lens/README.md) | Inspect code with `code_lens` |
-| [rpi-codegraph](packages/rpi-codegraph/README.md) | Query code relationships with `codegraph` |
+| [rpi-codegraph](packages/rpi-codegraph/README.md) | Query indexed symbols, source, and relationships with `codegraph_*` (automatically initializes/syncs the index) |
 | [rpi-todo](packages/rpi-todo/README.md) | Track tasks with `todo` |
 | [rpi-goal](packages/rpi-goal/README.md) | Maintain a persistent project objective with `goal` |
 | [rpi-plan-mode](packages/rpi-plan-mode/README.md) | Plan work with `/plan`, `plan_mode_start` and `plan_mode_complete` |

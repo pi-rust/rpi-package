@@ -88,6 +88,62 @@ rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动 TCP �
 旧模式仅作为临时回退，后续计划移除；新集成应直接消费 delta，并在完整边界消息
 到达时校准状态。compact 不代表整个事件流完全无快照、严格线性或可无损重放。
 
+### 工具契约、默认值与安全边界
+
+工具名仍为 `rpc_server` / `rpc_client`，使用 TCP JSONL，**不是 HTTP 服务**。
+实际注册的 description/schema 与下列说明保持一致；不新增 prompt API 或 hook。
+
+- `rpc_server.action` 可省略，默认 `start`。`stop` / `status` 必须给非空 `id`；
+  `list` 不需要参数。只有 `start` 读取监听、令牌与子进程启动字段。
+  未把所有字段设为 required，也未关闭顶层额外属性，兼容宿主注入的可选 `__rpi`。
+- `start` 默认监听 `127.0.0.1:9800`，创建注册项和后台运行时，不立即启动子进程。
+  `port` 范围为 0..65535；现有实现虽然允许 0，但返回/存储地址仍为 `:0`，
+  不能据此发现实际端口供 `rpc_client` 使用。建议选择已知可用端口。
+- 默认生成令牌；`token` 非空时使用指定值，空串/省略则生成。
+  实际支持的 `noToken:true` 会覆盖 `token` 并完全禁用认证，默认 false。
+  **start/status/list/server_status 返回值和服务日志包含明文令牌**，勿复制到公开回复、
+  工单、仓库或不可信日志中；事件/响应也可能包含敏感内容。生成器输出 32 位十六进制，
+  此处不承诺其密码学强度。TCP 无 TLS；令牌认证不提供加密。
+  `0.0.0.0` 会暴露所有 IPv4 接口；只使用回环或受保护的可信网络，禁认证时尤其如此。
+- `start_session` 才启动当前可执行文件，固定前缀 `--mode rpc`，使用监听启动时保存的参数。
+  不经 shell 拼接，但工具、扩展、资源与子进程仍有宿主权限；不是沙箱。
+  未传的选项由子进程 CLI/配置决定，并不保证继承当前父会话选择。
+  `baseUrl` 是模型提供商端点，不是监听地址；只配置可信端点。
+- 字符串启动选项非空白时才转发；省略/null 不发对应 flag。
+  `provider/model/baseUrl/systemPrompt/thinking/name/session/sessionId/sessionDir`
+  对应 `--provider/--model/--base-url/--system-prompt/--thinking/--name/--session/--session-id/--session-dir`。
+  参数值按原样交给原生 CLI，可能出现在进程列表中，不要放密钥。
+- 数组省略视为 `[]`，null 非法，最多 128 个非空字符串。
+  `tools` / `excludeTools` 非空时以逗号合并为 `--tools` / `--exclude-tools`；
+  `appendSystemPrompt/extensionsDir/extension/skill/promptTemplate` 各元素重复传
+  `--append-system-prompt/--extensions-dir/--extension/--skill/--prompt-template`。
+  本包不校验资源内容或处理发现/优先级冲突，只加载可信资源。
+- 开关 `noSession/noTools/noBuiltinTools/noSkills/noPromptTemplates/noContextFiles/noExtensions/enablePiPackages/offline/headless`
+  省略/null/false 不发 flag，true 传对应 kebab-case flag；默认不启用这些开关，
+  不代表对原生 CLI 默认加载行为作额外保证。`offline` 不是防火墙，也不关闭 TCP。
+  `approve` 是例外：省略不发任何 flag（沿用子 CLI/配置默认），true 传 `--approve`，
+  false 传 `--no-approve`，null 非法。自动批准可能放行文件修改/命令执行，请明确评估。
+- `session` 与 `sessionId` 只要键存在就互斥；`noSession:true` 与任一键存在冲突，
+  **即使其值为 null**。这些原生持久会话选项不同于服务生成的实时 `session-N` 句柄。
+- `rpc_client` 必填非空 `serverId` 和 `method`；`serverId` 必须来自当前扩展的运行中注册项，
+  不是远程 URL/地址。每次调用新建连接并自动使用保存的令牌认证，不要手动把 token 填入 params。
+  `params` 默认 `{}`，各方法条件见下表；任意未知方法会返回 JSON-RPC 错误。
+- `subscribe:false` 默认返回 `{serverId,method,result:<完整 JSON-RPC 响应>}`；
+  **工具成功不代表远端成功**，须检查 `result.error`。`send` 的 sent 仅表示写入 stdin，非任务完成。
+  `subscribe:true` 只是本地接收模式，应配合 `method:"subscribe"` 和 `params.sessionId`；
+  返回 `{serverId,method,events,eventCount}`，包含订阅确认和原始通知，不是增量工具输出，
+  没有历史回放。广播缓冲为 256 条，落后可能收到 `lagged`。
+- `timeoutSeconds` 省略/null 为 30，范围 1..300。外层等待包含连接/重试/认证，
+  内层发送后另计接收期限，认证最多等 5 秒；因此不能保证一定拿到部分收集结果。
+  事件收集仅限时、无条数/字节上限。客户端仅识别顶层 `session_end`，
+  当前服务的结束事件封装于 `params.event`，不保证因此提前退出或结果完整。
+- 客户端超时/取消不保证后台 worker 立即退出，也不取消/回滚远端命令或结束子进程。
+  不要盲目重试 `start_session` / `send` 等有副作用的方法。
+  创建者负责 `stop_session` 或 `rpc_server stop`；宿主 SessionShutdown 也会尝试停止所有注册服务。
+  `stop` 先移除注册项，再通知 accept 循环退出、kill/wait 已跟踪子进程；
+  不保证已有连接、监听资源或后台运行时线程全部释放。
+  启动/停止等待上限为 10/5 秒；超时或取消不回滚已产生的副作用，需检查实际资源状态。
+
 ### 客户端连接
 
 #### 方式一：使用 nc 测试
@@ -95,6 +151,9 @@ rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动 TCP �
 ```bash
 # 连接服务器
 nc 127.0.0.1 9800
+
+# 默认开启认证：先使用 start 返回的 token（此处仅占位，不要公开真实令牌）
+{"jsonrpc":"2.0","id":0,"method":"authenticate","params":{"token":"<private-token>"}}
 
 # 发送启动会话请求（每行一个 JSON）
 {"jsonrpc":"2.0","id":1,"method":"start_session","params":{}}
@@ -188,15 +247,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 可用方法
 
-| 方法 | 说明 |
+| 方法 | 参数 / 说明 |
 |------|------|
-| `start_session` | 启动新会话 |
-| `send` | 发送命令到会话 |
-| `stop_session` | 停止会话 |
-| `list_sessions` | 列出所有会话 |
-| `server_status` | 获取服务器状态 |
-| `subscribe` | 订阅事件流 |
-| `ping` | 心跳检测 |
+| `start_session` | 忽略 params；使用服务保存的启动参数启动新子进程，返回实时 `sessionId` |
+| `send` | 必须 `sessionId`、`command`；将原生 JSON 命令写到该子进程 stdin；sent 不表示执行完成 |
+| `stop_session` | 必须 `sessionId`；从会话表移除并 kill/wait 子进程 |
+| `list_sessions` | 忽略 params；列出会话快照，不是历史记录 |
+| `server_status` | 忽略 params；服务状态，包含明文 token，必须保密 |
+| `subscribe` | 必须有效 `sessionId`；订阅当前连接上的后续事件，工具收集还需 `subscribe:true` |
+| `ping` | 忽略 params；返回 pong，不保证模型或子进程健康 |
+
+## Schema 回归检查
+
+`src/lib.rs` 的 `tool_schemas()` 同时供插件实际注册和 Rust 单元测试使用，不维护测试专用 schema。
+测试覆盖实际 description/JSON、每个字段说明、默认值、条件必填、可选 `__rpi` 顶层兼容、
+令牌/approve/会话冲突、方法参数与结果/超时边界。无网络监听或子进程启动副作用。
+
+运行实际注册 schema 的 Rust 回归测试（无需网络监听）：
+
+```bash
+cargo test --locked -p rpi-server registered_schemas
+```
+
+如需只检查 Rust 测试编译而不执行，可用 `cargo check -p rpi-server --tests`（需要工作区依赖可用）。
 
 ## 协议格式
 

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{json, Value};
 
-use crate::{parse_input, resolve_path, run_tool, DESCRIPTION, PARAMETERS};
+use crate::{parse_input, registered_tool_schema, resolve_path, run_tool};
 
 /// Minimal temp directory; removed on drop so a failing test leaves no files.
 struct TempDir {
@@ -866,34 +866,70 @@ fn missing_path_becomes_a_read_error_naming_the_file() {
 
 #[test]
 fn description_documents_exactness_and_replace_all() {
-    assert!(
-        DESCRIPTION.contains("Copy each oldText from read output, preserving whitespace"),
-        "got: {DESCRIPTION}"
-    );
+    let registered = registered_tool_schema();
+    let description = registered.description.to_string_lossy();
+    for constraint in [
+        "Copy each oldText from read output, preserving whitespace",
+        "NFKC",
+        "same original snapshot",
+        "replaceAll",
+        "no-op",
+        "not syntax validation or a dry run",
+        "non-atomic",
+        "external-writer races",
+        "IO failures are not a rollback guarantee",
+    ] {
+        assert!(
+            description.contains(constraint),
+            "missing {constraint}: {description}"
+        );
+    }
     for relaxed in ["tolerates", "fuzzy", "indentation drift", "10-pass"] {
         assert!(
-            !DESCRIPTION.contains(relaxed),
-            "description must not promise relaxed matching ({relaxed}): {DESCRIPTION}"
+            !description.contains(relaxed),
+            "description must not promise relaxed matching ({relaxed}): {description}"
         );
     }
 }
 
 #[test]
 fn schema_is_the_fork_edit_input() {
-    let schema: Value = serde_json::from_str(PARAMETERS).expect("schema is valid JSON");
+    let registered = registered_tool_schema();
+    assert_eq!(registered.name.to_string_lossy(), "edit");
+    let schema: Value = serde_json::from_str(&registered.parameters.to_string_lossy())
+        .expect("registered schema is valid JSON");
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["additionalProperties"], true); // Host injects __rpi.
     assert_eq!(schema["required"], json!(["path", "edits"]));
-    assert_eq!(
-        schema["properties"]["edits"]["items"]["required"],
-        json!(["oldText", "newText"])
-    );
-    let replace_all = &schema["properties"]["edits"]["items"]["properties"]["replaceAll"];
-    assert_eq!(replace_all["type"], json!("boolean"));
-    let description = |field: &str| {
-        schema["properties"]["edits"]["items"]["properties"][field]["description"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned()
-    };
+    let properties = &schema["properties"];
+    assert_eq!(properties.as_object().unwrap().len(), 2);
+    assert_eq!(properties["path"]["type"], "string");
+    assert_eq!(properties["path"]["minLength"], 1);
+    assert_eq!(properties["edits"]["type"], "array");
+    assert_eq!(properties["edits"]["minItems"], 1);
+    for name in ["path", "edits"] {
+        assert!(!properties[name]["description"].as_str().unwrap().is_empty());
+    }
+    assert!(properties["path"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("__rpi.cwd"));
+    let item = &properties["edits"]["items"];
+    assert_eq!(item["type"], "object");
+    assert_eq!(item["required"], json!(["oldText", "newText"]));
+    assert_eq!(item["properties"].as_object().unwrap().len(), 3);
+    assert_eq!(item["properties"]["oldText"]["type"], "string");
+    assert_eq!(item["properties"]["oldText"]["minLength"], 1);
+    assert_eq!(item["properties"]["newText"]["type"], "string");
+    assert!(item["properties"]["newText"].get("minLength").is_none()); // Empty deletes.
+    let replace_all = &item["properties"]["replaceAll"];
+    assert_eq!(replace_all["type"], "boolean");
+    assert_eq!(replace_all["default"], false);
+    let description = |field: &str| item["properties"][field]["description"].as_str().unwrap();
     assert!(description("replaceAll").contains("Replace every occurrence of oldText"));
+    assert!(description("replaceAll").contains("only when no exact match exists"));
     assert!(description("oldText").contains("exactly once in the file unless replaceAll is set"));
+    assert!(description("oldText").contains("must not overlap"));
+    assert!(description("newText").contains("Empty string deletes"));
+    assert!(description("newText").contains("no-op"));
 }

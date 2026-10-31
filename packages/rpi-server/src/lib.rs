@@ -647,55 +647,76 @@ use rpi_plugin_sdk::callbacks::free_string;
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
+const SERVER_DESCRIPTION: &str = "Manage extension-local TCP JSONL listeners, not HTTP. Default start opens a listener and stores child launch defaults; status/stop require id. Child sessions start separately through rpc_client. Default is loopback with token authentication; non-loopback binds expose session control over unencrypted TCP. Results/logs contain secret tokens: do not publish them. Stop requests listener shutdown and terminates tracked children; session shutdown attempts cleanup. Timeout/cancellation does not undo side effects; inspect state before retrying. Explicitly stop sessions/listeners you create.";
+const CLIENT_DESCRIPTION: &str = "Send JSON-RPC to a running server using its extension-local serverId; authentication is automatic. start_session creates a child, send writes a native command, stop_session terminates a child. method=subscribe with subscribe=true collects live events, not history. Results contain raw JSON-RPC responses: inspect nested errors even when the tool succeeds. Timeout/cancellation does not cancel remote work or imply rollback: do not blindly retry side-effecting methods. Clean up sessions with stop_session and listeners with rpc_server stop. Responses/events may contain secrets; redact before sharing.";
+
 const SERVER_PARAMETERS: &str = r#"{
   "type":"object",
   "properties":{
-    "action":{"type":"string","enum":["start","stop","status","list"]},
-    "id":{"type":"string"},
-    "bind":{"type":"string"},
-    "port":{"type":"integer","minimum":0,"maximum":65535},
-    "token":{"type":"string"},
-    "provider":{"type":"string"},
-    "model":{"type":"string"},
-    "baseUrl":{"type":"string"},
-    "systemPrompt":{"type":"string"},
-    "appendSystemPrompt":{"type":"array","items":{"type":"string"}},
-    "thinking":{"type":"string","enum":["off","minimal","low","medium","high","xhigh","max"]},
-    "rpcMessageUpdates":{"type":"string","enum":["snapshot","compact-deltas"],"description":"Native RPC delta payload mode; omitted uses the executable default (compatible with older hosts)."},
-    "name":{"type":"string"},
-    "session":{"type":"string"},
-    "sessionId":{"type":"string"},
-    "sessionDir":{"type":"string"},
-    "noSession":{"type":"boolean"},
-    "tools":{"type":"array","items":{"type":"string"}},
-    "excludeTools":{"type":"array","items":{"type":"string"}},
-    "noTools":{"type":"boolean"},
-    "noBuiltinTools":{"type":"boolean"},
-    "noSkills":{"type":"boolean"},
-    "noPromptTemplates":{"type":"boolean"},
-    "noContextFiles":{"type":"boolean"},
-    "noExtensions":{"type":"boolean"},
-    "enablePiPackages":{"type":"boolean"},
-    "extensionsDir":{"type":"array","items":{"type":"string"}},
-    "extension":{"type":"array","items":{"type":"string"}},
-    "skill":{"type":"array","items":{"type":"string"}},
-    "promptTemplate":{"type":"array","items":{"type":"string"}},
-    "offline":{"type":"boolean"},
-    "approve":{"type":"boolean"}
+    "action":{"type":"string","enum":["start","stop","status","list"],"default":"start","description":"Optional; defaults to start. start opens a listener; status reads one server; stop removes/stops one server and kills tracked children; list returns all registered server snapshots. Only start reads launch/network fields; stop/status require id."},
+    "id":{"type":"string","description":"Non-blank extension-local server id returned by start/list; required only for stop/status. Not a child session id. No default; ignored for start/list."},
+    "bind":{"type":"string","default":"127.0.0.1","description":"Start only. Non-blank TCP bind host; omitted/null defaults to 127.0.0.1. 0.0.0.0 exposes all IPv4 interfaces; TCP has no TLS. Prefer loopback; not an HTTP URL."},
+    "port":{"type":"integer","minimum":0,"maximum":65535,"default":9800,"description":"Start only. TCP port, default 9800; 0 requests an OS-assigned port, but returned/stored address currently retains :0 and cannot be used by rpc_client to discover that port. Use a known available port for client calls. null is invalid."},
+    "token":{"type":"string","description":"Start only. Secret authentication token; omitted/empty generates one. noToken=true overrides it. Included in status/results and server logs: do not echo, commit or share. Authentication does not encrypt TCP traffic."},
+    "noToken":{"type":"boolean","default":false,"description":"Start only. Default false requires connection authentication; true disables it and ignores token, allowing any reachable client to control sessions/children. Use only on trusted local networks, preferably loopback."},
+    "provider":{"type":"string","description":"Start only. Non-blank value forwarded as --provider to future children. Omitted/null: no flag, child CLI/config defaults apply (not necessarily the parent session's selection)."},
+    "model":{"type":"string","description":"Start only. Non-blank value forwarded as --model; omitted/null: child CLI/config default. Does not change existing children."},
+    "baseUrl":{"type":"string","description":"Start only. Non-blank provider endpoint forwarded as --base-url; omitted/null: child default. Not the TCP listener address. Only use trusted endpoints; child provider traffic may carry credentials/content."},
+    "systemPrompt":{"type":"string","description":"Start only. Non-blank value forwarded verbatim as --system-prompt; omitted/null: no flag. Native CLI interprets it; no prompt expansion API is provided here. Values appear in child process arguments; avoid secrets."},
+    "appendSystemPrompt":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"description":"Non-empty native CLI value; forwarded verbatim."},"description":"Start only. Default [] (omit); up to 128 non-empty strings, each forwarded as --append-system-prompt. null is invalid. Stored for future children, not sent to existing sessions."},
+    "thinking":{"type":"string","enum":["off","minimal","low","medium","high","xhigh","max"],"description":"Start only. Child thinking level forwarded as --thinking; omitted/null uses the child default."},
+    "rpcMessageUpdates":{"type":"string","enum":["snapshot","compact-deltas"],"description":"Start only. Native RPC delta payload mode, forwarded as --rpc-message-updates=<mode> to future children. Omit to use the executable default and remain compatible with older hosts; null and any other value are invalid. Use snapshot only for legacy consumers; compact-deltas consumers must handle deltas and complete boundary messages."},
+    "name":{"type":"string","description":"Start only. Non-blank child name forwarded as --name; omitted/null: no flag. Does not name the listener or select its registry id."},
+    "session":{"type":"string","description":"Start only. Non-blank native session selector forwarded as --session; omitted/null emits no flag. Key presence conflicts with sessionId and with noSession=true, even if null. Not the server-generated session-N handle."},
+    "sessionId":{"type":"string","description":"Start only. Non-blank native session id forwarded as --session-id; omitted/null emits no flag. Key presence conflicts with session and with noSession=true, even if null. Not rpc_client params.sessionId, which addresses a live child."},
+    "sessionDir":{"type":"string","description":"Start only. Non-blank native session storage path forwarded as --session-dir; omitted/null: child default. Child may read/write files with host privileges; no sandbox or path validation is added."},
+    "noSession":{"type":"boolean","default":false,"description":"Start only. true emits --no-session (disable native session persistence); omitted/null/false emits nothing. true conflicts with presence of session/sessionId. Does not disable creation of live RPC child sessions."},
+    "tools":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"description":"Non-empty native tool selector; avoid commas unless intended as CLI separators."},"description":"Start only. Default []; up to 128 non-empty strings joined by commas as one --tools value when nonempty. Native CLI resolves tool availability and conflicts; null invalid."},
+    "excludeTools":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"description":"Non-empty native tool selector; comma-separated CLI semantics apply."},"description":"Start only. Default []; up to 128 non-empty strings joined by commas as --exclude-tools when nonempty. Excludes child tools; null invalid; no server-side precedence resolution."},
+    "noTools":{"type":"boolean","default":false,"description":"Start only. true forwards --no-tools; omitted/null/false emits nothing. Native CLI controls resulting tool set; does not restrict TCP management methods."},
+    "noBuiltinTools":{"type":"boolean","default":false,"description":"Start only. true forwards --no-builtin-tools; omitted/null/false emits nothing. Child CLI determines interaction with tools/noTools."},
+    "noSkills":{"type":"boolean","default":false,"description":"Start only. true forwards --no-skills; omitted/null/false emits nothing. Child CLI determines resource discovery and explicit skill handling."},
+    "noPromptTemplates":{"type":"boolean","default":false,"description":"Start only. true forwards --no-prompt-templates; omitted/null/false emits nothing. Child CLI determines template loading."},
+    "noContextFiles":{"type":"boolean","default":false,"description":"Start only. true forwards --no-context-files; omitted/null/false emits nothing. Child CLI determines context file loading; not filesystem isolation."},
+    "noExtensions":{"type":"boolean","default":false,"description":"Start only. true forwards --no-extensions; omitted/null/false emits nothing. Child CLI resolves discovery and explicit extension options; not a sandbox."},
+    "enablePiPackages":{"type":"boolean","default":false,"description":"Start only. true forwards --enable-pi-packages; omitted/null/false emits nothing (child defaults apply). Enable only trusted package sources; packages may execute code."},
+    "extensionsDir":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"description":"Non-empty trusted directory path, passed verbatim without validation."},"description":"Start only. Default []; up to 128 non-empty values, repeated --extensions-dir. null invalid. Child CLI loads resources with host privileges."},
+    "extension":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"description":"Non-empty trusted native extension specifier, passed verbatim."},"description":"Start only. Default []; up to 128 values, repeated --extension; null invalid. Extensions can execute code; no server-side validation or isolation."},
+    "skill":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"description":"Non-empty native skill resource specifier, passed verbatim."},"description":"Start only. Default []; up to 128 values, repeated --skill; null invalid. Child CLI resolves resources; only load trusted content."},
+    "promptTemplate":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"description":"Non-empty native prompt-template resource specifier, passed verbatim."},"description":"Start only. Default []; up to 128 values, repeated --prompt-template; null invalid. No server prompt API or hook; native child resolves templates."},
+    "offline":{"type":"boolean","default":false,"description":"Start only. true forwards --offline; omitted/null/false emits nothing. Native CLI defines offline behavior; this is not a network firewall and does not disable the TCP listener."},
+    "headless":{"type":"boolean","default":false,"description":"Start only. true forwards --headless; omitted/null/false emits nothing. Native CLI determines headless behavior; server itself always uses TCP JSONL."},
+    "approve":{"type":"boolean","description":"Start only. Omitted: no approval flag, child CLI/config default applies. true emits --approve (automatic approval, potentially dangerous); false emits --no-approve. null invalid. Decide explicitly for unattended children: enabled tools/extensions may modify files or run commands with host privileges."}
   }
 }"#;
 
 const CLIENT_PARAMETERS: &str = r#"{
   "type":"object",
   "properties":{
-    "serverId":{"type":"string"},
-    "method":{"type":"string"},
-    "params":{"type":"object"},
-    "subscribe":{"type":"boolean","description":"Enable streaming subscription"},
-    "timeoutSeconds":{"type":"integer","minimum":1,"maximum":300}
+    "serverId":{"type":"string","description":"Required non-blank id from rpc_server start/list in this extension process. Must still be running. Not a TCP address or child session id; no default. Connection and token authentication use its stored metadata."},
+    "method":{"type":"string","description":"Required non-blank JSON-RPC method, no default. start_session spawns current executable using server launch defaults (params ignored); send writes params.command to child stdin (acknowledgement is not completion); stop_session kills/waits for a child. list_sessions, server_status, ping read state (server_status includes secret token). subscribe requires params.sessionId; use subscribe=true to collect events. Unknown methods return nested JSON-RPC errors, not necessarily tool errors."},
+    "params":{"type":"object","default":{},"description":"Method-specific payload, default {}. send requires string sessionId (live child handle returned by start_session) and command (native JSON command); stop_session/subscribe require sessionId. start_session/list_sessions/server_status/ping ignore payload. Forwarded without command validation; send may cause file/process/network side effects under child privileges. Do not put the server token here; authentication is automatic."},
+    "subscribe":{"type":"boolean","default":false,"description":"Default false returns the first full JSON-RPC response under result; inspect its error field. true collects responses/live notifications under events/eventCount. Use with method=subscribe and params.sessionId; this flag alone does not subscribe. No history/replay or completeness guarantee. Collection is time-limited, not count/byte-limited; timeout may return an error rather than partial events."},
+    "timeoutSeconds":{"type":"integer","minimum":1,"maximum":300,"default":30,"description":"Wait budget in seconds, default 30 (omitted/null), range 1..300. Timeout/cancellation does not cancel or roll back remote commands or terminate children. Check state before retrying side-effecting methods."}
   },
   "required":["serverId","method"]
 }"#;
+
+// Shared by registration and tests: tests inspect exactly the schemas we register.
+fn tool_schemas() -> [StableToolSchema; 2] {
+    [
+        StableToolSchema {
+            name: StbString::from_string("rpc_server".into()),
+            description: StbString::from_string(SERVER_DESCRIPTION.into()),
+            parameters: StbString::from_string(SERVER_PARAMETERS.into()),
+        },
+        StableToolSchema {
+            name: StbString::from_string("rpc_client".into()),
+            description: StbString::from_string(CLIENT_DESCRIPTION.into()),
+            parameters: StbString::from_string(CLIENT_PARAMETERS.into()),
+        },
+    ]
+}
 
 // ── Plugin entry ──────────────────────────────────────────────────────────────
 rpi_plugin_sdk::export_plugin!(|api| {
@@ -708,21 +729,7 @@ rpi_plugin_sdk::export_plugin!(|api| {
         return 1;
     };
 
-    let server_schema = Box::new(StableToolSchema {
-        name: StbString::from_string("rpc_server".into()),
-        description: StbString::from_string(
-            "Start and manage a TCP JSONL server with streaming subscriptions.".into(),
-        ),
-        parameters: StbString::from_string(SERVER_PARAMETERS.into()),
-    });
-
-    let client_schema = Box::new(StableToolSchema {
-    name: StbString::from_string("rpc_client".into()),
-    description: StbString::from_string(
-        "Send a JSON-RPC request to a running TCP server. Set subscribe=true for streaming responses.".into(),
-    ),
-    parameters: StbString::from_string(CLIENT_PARAMETERS.into()),
-});
+    let [server_schema, client_schema] = tool_schemas().map(Box::new);
 
     let first = register(
         &*server_schema,
@@ -840,6 +847,99 @@ mod tests {
     fn schemas_are_valid_json() {
         assert!(serde_json::from_str::<Value>(SERVER_PARAMETERS).is_ok());
         assert!(serde_json::from_str::<Value>(CLIENT_PARAMETERS).is_ok());
+    }
+
+    #[test]
+    fn registered_schemas_are_documented_and_keep_optional_fields() {
+        let schemas = tool_schemas();
+        for (schema, expected_name) in schemas.iter().zip(["rpc_server", "rpc_client"]) {
+            assert_eq!(schema.name.to_string_lossy(), expected_name);
+            assert!(!schema.description.to_string_lossy().trim().is_empty());
+            let parameters: Value =
+                serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
+            assert_eq!(parameters["type"], "object");
+            // Do not close the object: host-injected optional __rpi must remain accepted.
+            assert_ne!(parameters["additionalProperties"], false);
+            for (name, field) in parameters["properties"].as_object().unwrap() {
+                assert!(
+                    field["description"]
+                        .as_str()
+                        .is_some_and(|s| !s.trim().is_empty()),
+                    "{expected_name}.{name} needs guidance"
+                );
+                if field["type"] == "array" {
+                    assert_eq!(field["maxItems"], 128);
+                    assert_eq!(field["items"]["minLength"], 1);
+                    assert!(field["items"]["description"].is_string());
+                }
+            }
+            if expected_name == "rpc_server" {
+                assert!(parameters.get("required").is_none());
+                assert_eq!(parameters["properties"]["action"]["default"], "start");
+                assert_eq!(
+                    parameters["properties"]["action"]["enum"],
+                    json!(["start", "stop", "status", "list"])
+                );
+            } else {
+                assert_eq!(parameters["required"], json!(["serverId", "method"]));
+            }
+        }
+        for schema in schemas {
+            free_string(schema.name);
+            free_string(schema.description);
+            free_string(schema.parameters);
+        }
+    }
+
+    #[test]
+    fn registered_schemas_keep_defaults_and_limits() {
+        let [server, client] = tool_schemas();
+        let s: Value = serde_json::from_str(&server.parameters.to_string_lossy()).unwrap();
+        let c: Value = serde_json::from_str(&client.parameters.to_string_lossy()).unwrap();
+        let sp = &s["properties"];
+        let cp = &c["properties"];
+        assert_eq!(sp["bind"]["default"], "127.0.0.1");
+        assert_eq!(sp["port"]["default"], 9800);
+        assert_eq!(sp["port"]["minimum"], 0);
+        assert_eq!(sp["port"]["maximum"], 65535);
+        assert_eq!(sp["noToken"]["default"], false);
+        assert!(sp["approve"].get("default").is_none());
+        assert_eq!(cp["params"]["default"], json!({}));
+        assert_eq!(cp["subscribe"]["default"], false);
+        assert_eq!(cp["timeoutSeconds"]["default"], 30);
+        assert_eq!(cp["timeoutSeconds"]["minimum"], 1);
+        assert_eq!(cp["timeoutSeconds"]["maximum"], 300);
+        assert_eq!(sp["headless"]["default"], false);
+        assert_eq!(
+            sp["thinking"]["enum"],
+            json!(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+        );
+        for schema in [server, client] {
+            free_string(schema.name);
+            free_string(schema.description);
+            free_string(schema.parameters);
+        }
+    }
+
+    #[test]
+    fn launch_options_keep_approval_and_session_conditions() {
+        let (_, defaults) = launch_args(&json!({})).unwrap();
+        assert!(!defaults
+            .iter()
+            .any(|arg| arg == "--approve" || arg == "--no-approve"));
+        for (value, flag) in [(true, "--approve"), (false, "--no-approve")] {
+            let (_, args) = launch_args(&json!({"approve": value})).unwrap();
+            assert!(args.iter().any(|arg| arg == flag));
+        }
+        assert!(launch_args(&json!({"approve": null})).is_err());
+        for params in [
+            json!({"session": "s", "sessionId": "id"}),
+            json!({"session": null, "sessionId": null}),
+            json!({"noSession": true, "session": null}),
+            json!({"noSession": true, "sessionId": null}),
+        ] {
+            assert!(launch_args(&params).is_err(), "{params}");
+        }
     }
 
     #[test]
