@@ -24,14 +24,18 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     env:
       RPI_OFFLINE: '1'
-      RPI_AGENT_DIR: ${{ runner.temp }}/mcp-agent
-      RPI_CODING_AGENT_DIR: ${{ runner.temp }}/mcp-agent
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Isolate fixture agent directories
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/mcp-agent"
+          echo "RPI_AGENT_DIR=$RUNNER_TEMP/mcp-agent" >> "$GITHUB_ENV"
+          echo "RPI_CODING_AGENT_DIR=$RUNNER_TEMP/mcp-agent" >> "$GITHUB_ENV"
       - name: Check package and included-test formatting
         run: |
           cargo fmt --check -p rpi-mcp-core -p rpi-mcp-adapter
