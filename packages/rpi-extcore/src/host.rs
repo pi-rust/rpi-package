@@ -510,13 +510,45 @@ impl HostSession {
             .map_err(|_| "a prompt is already running".into())
     }
     pub async fn begin_prompt(&self, message: String) -> Result<crate::run::PromptRun, String> {
+        self.begin_operation(crate::run::RunKind::Prompt, json!({"message":message}))
+            .await
+    }
+
+    /// Compact using the same subscription, lease and cancellation as a prompt.
+    pub async fn begin_compaction(
+        &self,
+        instructions: Option<String>,
+    ) -> Result<crate::run::PromptRun, String> {
+        if !self.supports_command("compact") {
+            return Err("native host does not support compact".into());
+        }
+        let mut command = json!({});
+        if let Some(instructions) = instructions {
+            command["customInstructions"] = json!(instructions);
+        }
+        self.begin_operation(crate::run::RunKind::Compact, command)
+            .await
+    }
+
+    async fn begin_operation(
+        &self,
+        kind: crate::run::RunKind,
+        mut command: Value,
+    ) -> Result<crate::run::PromptRun, String> {
         let lease = self.try_run_lease()?;
         let events = self.subscribe_raw();
         let cancellation = self.cancellation.subscribe();
         let id = json!(uuid::Uuid::new_v4().to_string());
-        self.notify(json!({"type":"prompt","id":id,"message":message}))
-            .await?;
-        Ok(crate::run::PromptRun::new(events, cancellation, id, lease))
+        command["type"] = json!(kind.command());
+        command["id"] = id.clone();
+        self.notify(command).await?;
+        Ok(crate::run::PromptRun::new(
+            events,
+            cancellation,
+            id,
+            kind,
+            lease,
+        ))
     }
     pub async fn abort_run(&self) -> Result<(), String> {
         self.cancellation
@@ -992,6 +1024,8 @@ async fn publish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("host_compact_tests.rs");
 
     #[tokio::test]
     async fn bounded_history_boundary_fails_on_publication_and_changes() {

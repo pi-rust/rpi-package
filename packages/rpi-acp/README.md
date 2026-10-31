@@ -367,8 +367,8 @@ Registry's handshake (and its pass/fail rule) locally.
   supported (`promptCapabilities.embeddedContext: true`). Images/audio are not
   (`rpi --mode rpc` takes a single text prompt).
 * Only `agent_message_chunk`, `agent_thought_chunk`, `tool_call` (with `diff`
-  content for `edit`/`write`), `tool_call_update`, and `plan` updates are
-  emitted.
+  content for `edit`/`write`), `tool_call_update`, `plan`, and the capability-gated
+  `available_commands_update` described below are emitted.
 * **`session/request_permission`** is used: when a child's plugin opens a UI
   dialog mid-run (e.g. the `rpi-permission-gate` extension confirming a `bash`
   command), `rpi-acp` maps it to a `session/request_permission` request and
@@ -383,9 +383,25 @@ Registry's handshake (and its pass/fail rule) locally.
   compatibility fallback. Clients that advertise neither capability cancel
   questions. Closure, timeout, prompt cancellation and disconnect retire pending
   requests, including when the client never answers.
-* Prompt templates / slash commands are not advertised as
-  `available_commands_update`: `--mode rpc` does not expand prompt templates
-  (only the host TUI does), so a client-side command list would be misleading.
+* After a successful new/load/resume response, hosts advertising native
+  `compact` receive a standard `available_commands_update` listing only
+  `/compact`. A pure-text prompt beginning with the exact `/compact` token
+  (followed by whitespace or end of input) invokes native compaction; the
+  optional remainder is passed as full multiline custom instructions, with
+  surrounding whitespace trimmed. Mixed resource/media blocks and
+  `/compactness` remain ordinary prompts. Unsupported explicit `/compact`
+  requests return an error; no command is advertised for those hosts.
+  Compaction uses the ordinary run lease, streaming/dialog loop and cancellation
+  path. Acceptance and intermediate events do not finish it: `agent_settled`
+  supplies the optional summary once, with compacted/declined ending normally,
+  aborted cancelled, and failed/unknown outcomes returning an error. If a local
+  cancellation was requested, a failed settlement also ends as cancelled and
+  does not display a failure summary: native can report provider abortion as
+  failed. This still waits for settlement and does not change ordinary prompt
+  failure handling. A declined result without a summary displays
+  `Nothing to compact yet.` Existing global run timeout and shutdown behavior
+  is unchanged; this adds no new deadline.
+  Prompt templates and other slash commands are not advertised or expanded.
 * Authentication is signalled out of band through the terminal method above, so
   `authenticate` is a tolerant no-op rather than a real handler; rpi never asks
   the client to collect a secret.

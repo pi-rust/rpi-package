@@ -185,6 +185,10 @@ impl Session {
         runtime.refresh_branch().await
     }
 
+    pub fn compact_available(&self) -> bool {
+        self.rpc.supports_command("compact")
+    }
+
     pub fn durable_available(&self) -> bool {
         self.durable.is_some()
     }
@@ -220,7 +224,10 @@ impl Session {
         acp_session_id: &str,
         blocks: &[ContentBlock],
     ) -> Result<&'static str, String> {
-        let mut run = self.rpc.begin_prompt(prompt_text(blocks)).await?;
+        let mut run = match compact_instructions(blocks) {
+            Some(instructions) => self.rpc.begin_compaction(instructions).await?,
+            None => self.rpc.begin_prompt(prompt_text(blocks)).await?,
+        };
         let mut cancelled = false;
         let mut dialogs = DialogTasks::default();
 
@@ -552,6 +559,24 @@ async fn handle_ui_dialog(
             .await;
     }
     let _ = session.send(response).await;
+}
+
+/// Only pure text can invoke the adapter command, never resource contents.
+/// Keep the full (possibly multiline) instruction body, trimming its edges.
+fn compact_instructions(blocks: &[ContentBlock]) -> Option<Option<String>> {
+    if !blocks
+        .iter()
+        .all(|block| matches!(block, ContentBlock::Text { .. }))
+    {
+        return None;
+    }
+    let text = prompt_text(blocks);
+    let tail = text.trim().strip_prefix("/compact")?;
+    if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let instructions = tail.trim();
+    Some((!instructions.is_empty()).then(|| instructions.to_owned()))
 }
 
 /// Flatten ACP prompt content blocks into the text `rpi --mode rpc` accepts.
@@ -894,6 +919,9 @@ fn tool_result_text(result: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("session_compact_tests.rs");
+    include!("session_compact_lifecycle_tests.rs");
 
     #[test]
     fn bypass_reaches_children_and_overrides_environment_activation() {

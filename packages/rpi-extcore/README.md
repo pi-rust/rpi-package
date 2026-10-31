@@ -79,6 +79,18 @@ Ok(())
 
 `HostSession::spawn_options` supports explicitly configured executables, model/provider, permission policy, new sessions, exact saved files and forks. `begin_prompt` subscribes before sending, holds a run lease and returns a protocol-independent run tracker. Prompt acceptance is not completion; only authoritative settlement completes the run. Adapters map `RunOutcome` to their wire formats.
 
+`begin_compaction(Option<String>)` requires the native `compact` command and
+uses that same lease, subscription and cancellation path. Its `RunKind::Compact`
+tracker waits for correlated acceptance then `agent_settled`, without requiring
+compaction-specific intermediate events. It emits the optional terminal summary
+once as a neutral text delta (or `Nothing to compact yet.` for a declined result
+without a summary). Compacted/declined map to `Completed`, aborted to `Cancelled`,
+and failed/unknown outcomes to errors. After a locally requested cancellation,
+a failed settlement instead maps to `Cancelled` without a failure-summary delta
+(native can report provider abortion as failed); acceptance and authoritative
+settlement are still required. Prompt tracker behavior, run timeouts and shutdown
+ownership are unchanged.
+
 `HostSession::subscribe_raw` is an internal adapter feed, including native response frames. Request callers receive their original IDs; native request IDs are isolated internally. Slow live subscribers receive an explicit resync requirement rather than silently truncated success. ACP treats overflow of its prompt stream as a failed run and stops that backend, retaining its established behavior.
 
 ### Compact native message updates
