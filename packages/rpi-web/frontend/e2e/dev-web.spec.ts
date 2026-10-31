@@ -6771,7 +6771,7 @@ test.describe("attachment cards", () => {
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (
-        request.resourceType() === "image" ||
+        (request.resourceType() === "image" && url.pathname !== "/favicon.svg") ||
         /\.docx$/i.test(url.pathname) ||
         url.pathname.includes("/uploads/") ||
         /\/projects\/[^/]+\/file$/.test(url.pathname)
