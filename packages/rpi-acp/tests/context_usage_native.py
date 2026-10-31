@@ -413,7 +413,10 @@ def run(args):
             before = disk_state(path)
             calls = len(model.calls)
             frozen()
-            probe = Transport([args.rpi, "--mode", "rpc", "--session", path, "--local-only"],
+            # Native resolves --session within its explicit storage root (same
+            # contract as HostSession), not arbitrary paths outside that root.
+            probe = Transport([args.rpi, "--mode", "rpc", "--session", path,
+                               "--session-dir", root / "sessions" / sid, "--local-only"],
                               env, root, label + "-native", win, workspace)
             try:
                 ready = probe.receive(time.monotonic() + 20)
