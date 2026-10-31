@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-orchestrator-v0.1.10...rpi-orchestrator-v0.1.11) - 2026-10-31
+
+### Fixed
+
+- *(tools)* clarify guidance and complete parameter schemas ([#135](https://github.com/pi-rust/rpi-package/pull/135))
+
 ## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-orchestrator-v0.1.9...rpi-orchestrator-v0.1.10) - 2026-10-26
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.0...rpi-goal-v0.2.1) - 2026-10-31
+
+### Fixed
+
+- *(tools)* clarify guidance and complete parameter schemas ([#135](https://github.com/pi-rust/rpi-package/pull/135))
+
 ## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.1.11...rpi-goal-v0.2.0) - 2026-10-29
 
 ### Other
