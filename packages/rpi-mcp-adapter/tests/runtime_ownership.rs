@@ -171,22 +171,52 @@ fn is_running(pid: u32) -> bool {
 }
 #[cfg(unix)]
 fn is_running(pid: u32) -> bool {
-    // Linux zombies have exited but kill -0 still succeeds. No raw platform FFI.
+    // An exited, unreaped child still answers kill -0. Linux exposes its state
+    // in /proc; macOS needs ps. Do not conflate zombie lifetime with execution.
     if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
-        if stat
-            .rsplit_once(") ")
-            .is_some_and(|(_, rest)| rest.starts_with('Z'))
-        {
-            return false;
+        if let Some((_, state)) = stat.rsplit_once(") ") {
+            return !state.starts_with('Z');
         }
     }
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success()
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("process-state probe must execute");
+    let state = std::str::from_utf8(&output.stdout).unwrap().trim();
+    if output.status.success() {
+        assert!(!state.is_empty(), "ps succeeded without a process state");
+        return !state.starts_with('Z');
+    }
+    assert!(
+        output.status.code() == Some(1) && state.is_empty() && output.stderr.is_empty(),
+        "process-state probe failed: {output:?}"
+    );
+    false // ps reports no matching PID, not an observation/permission error.
+}
+
+#[cfg(unix)]
+#[test]
+fn exited_unreaped_child_is_not_observed_as_running() {
+    struct Reap(std::process::Child);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Reap(
+        std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap(),
+    );
+    let pid = child.0.id();
+    assert_running(pid);
+    child.0.kill().unwrap();
+    // Intentionally observe exit before wait(), matching the dead MCP leader.
+    // Reap still owns cleanup if an assertion panics; no fixture is left behind.
+    assert_exited(pid);
+    child.0.wait().unwrap();
 }
 fn assert_running(pid: u32) {
     assert!(
