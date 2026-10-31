@@ -83,6 +83,8 @@ fn forwarded_model_provider_from(args: &[String]) -> (Option<String>, Option<Str
 pub struct Session {
     rpc: Arc<HostSession>,
     durable: Option<Arc<DurableRuntime>>,
+    configuration:
+        tokio::sync::OnceCell<Option<Arc<rpi_extcore::configuration::ConfigurationRuntime>>>,
     #[cfg(test)]
     events: Option<rpi_extcore::host::TestEvents>,
 }
@@ -125,6 +127,7 @@ impl Session {
         Ok(Arc::new(Self {
             rpc,
             durable,
+            configuration: tokio::sync::OnceCell::new(),
             #[cfg(test)]
             events: None,
         }))
@@ -361,9 +364,27 @@ impl Session {
         stop_reason
     }
 
+    pub(crate) fn configuration_lifecycle(&self) -> broadcast::Receiver<Value> {
+        self.rpc.subscribe_raw()
+    }
+
+    pub(crate) async fn configuration(
+        &self,
+    ) -> Result<Option<Arc<rpi_extcore::configuration::ConfigurationRuntime>>, String> {
+        self.configuration
+            .get_or_try_init(|| {
+                rpi_extcore::configuration::ConfigurationRuntime::try_attach(self.rpc.clone())
+            })
+            .await
+            .cloned()
+    }
+
     /// Kill the child (session/close, process shutdown).
     pub async fn kill(&self) {
         self.rpc.terminate().await;
+        if let Some(Some(runtime)) = self.configuration.get() {
+            runtime.shutdown().await;
+        }
     }
 }
 
@@ -1020,6 +1041,7 @@ mod tests {
         let session = Arc::new(Session {
             rpc: rpc.clone(),
             durable: Some(DurableRuntime::empty(rpc)),
+            configuration: tokio::sync::OnceCell::new(),
             events: Some(events),
         });
         (session, commands)
@@ -1141,6 +1163,7 @@ mod tests {
         let unavailable = Session {
             rpc: session.rpc.clone(),
             durable: None,
+            configuration: tokio::sync::OnceCell::new(),
             events: None,
         };
         let error = unavailable.durable_state().await.unwrap_err();

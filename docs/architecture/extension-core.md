@@ -180,6 +180,43 @@ installed-extension qualification, Unix native execution or deployment.
 - Acceptance acknowledges a command; `agent_end` does not complete a run. `agent_settled` determines the outcome. Reconcile cumulative/final text snapshots before responding to clients.
 - Subscribe before sending or taking a replay boundary. Preserve request-ID isolation, bounded queues, timeouts, cancellation cleanup and explicit overflow/resync handling.
 
+## Live model/thinking observation
+
+Extcore's `configuration::ConfigurationRuntime` owns one shared observer per
+native host, typed bounded snapshots/revisions and lease-free serialized
+setters/readback. It polls at 2-second intervals, skipping missed ticks. Refresh
+and setter/readback share a 10-second total budget including gate wait; initial
+read has 10 seconds after obtaining the attach-owner lock. Up to two
+state/catalog/state consistency attempts detect ordinary changes, not atomicity
+or ABA. Latest-state watch coalescing is not event history; poll errors retain
+the last good snapshot and mutation failure is not rollback. Missing required
+observation capabilities leaves the legacy adapter path; thinking choices are
+optional, while bad advertised replies remain errors. See the
+[core contract](../../packages/rpi-extcore/README.md#live-runtime-configuration).
+
+ACP owns full-list `config_option_update` projection, initial-response ordering,
+one forwarder per attached session and the setter/delivered-revision gate. Core
+retains native thinking current even outside choices; ACP omits an
+unrepresentable select instead of lying about current state. No boolean options,
+session modes, Web configuration changes or parallel persistence are added.
+Only live configuration delivery has an explicit 2-second write deadline; a
+possibly partial frame must make the whole connection terminal before being
+dropped. Other writes retain existing backpressure, with interrupted-frame
+fail-closed protection. Close/delete terminate native resources, cancel/join the
+poll worker and drain/stop the transport forwarder; a failed 2-second drain
+closes the connection, not just that session. Shutdown joins the owned poll
+worker, not caller-owned operation futures; cancellation is cooperative.
+
+The existing three-OS workflow adds explicit core/ACP configuration and dispatcher
+fixture filters, included-file rustfmt and AST-only native-harness validation.
+Its all-target check includes the native fixture example; no native harness is
+run in CI. The authored Windows harness and isolated test-only DLL use SDK
+`SetThinkingLevel` action 8 plus native readback for an independent change.
+Neither authored harnesses nor configured gates prove a native/CI pass or an
+installed DLL upgrade. Fresh source/binary/build provenance and retained execution
+results are required separately. Earlier local-validation records below do not
+qualify this Stage 8 configuration slice.
+
 ## Deployment boundary
 
 The dependency graph describes shared code. Separate `rpi --acp`, `rpi --webserver` and `rpi-http` processes still own separate runtime instances. To share live sessions, clients must connect to one service instance. HTTP can embed a caller-owned `Arc<Service>`; sharing JSON files between independent processes is not a live-session transport. Use a single writer per registry.

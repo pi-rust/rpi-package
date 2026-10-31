@@ -78,6 +78,10 @@ pub(crate) fn validate_restored_workspace(
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) static FAIL_REPLAY_EMIT_FOR: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
+
 pub(crate) struct Replay {
     // Keep the native run lease until replay and the load response complete.
     _read: rpi_extcore::history::page::HistoryRead,
@@ -102,6 +106,16 @@ impl Replay {
         writer: &crate::protocol::Writer,
         id: &str,
     ) -> Result<(), String> {
+        // Deterministically exercise a spool-read failure after preparation,
+        // without closing the still-live native session or ACP connection.
+        #[cfg(test)]
+        {
+            let mut fault = FAIL_REPLAY_EMIT_FOR.lock().unwrap();
+            if fault.as_deref() == Some(id) {
+                *fault = None;
+                return Err("fixture replay spool read failed".into());
+            }
+        }
         while let Some(messages) = self.spool.pop()? {
             self._read.ensure_active()?;
             for message in messages {

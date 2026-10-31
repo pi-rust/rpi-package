@@ -78,6 +78,40 @@ not a transactional filesystem snapshot; a listed session may later fail to load
 `modified_at_ms` is observed filesystem mtime, not authoritative last activity;
 no title is invented from message text.
 
+## Live runtime configuration
+
+`configuration::ConfigurationRuntime::try_attach(Arc<HostSession>)` shares one
+observer per host and returns `None` when `get_state` or `get_available_models`
+is not advertised. Advertised malformed replies are errors, not legacy fallback.
+`get_available_thinking_levels` is optional; without it, thinking is absent.
+The neutral snapshot contains model identity/catalog, optional native thinking
+current/choices and a monotonic revision. It introduces no ACP types or persisted
+configuration, and does not acquire the prompt/run lease.
+
+Polling starts after 2 seconds, uses a 2-second interval and skips missed ticks.
+Each refresh or setter-plus-readback has one 10-second total budget, including
+waiting for the shared mutation/refresh gate. Initial reading also has a
+10-second budget, but waiting for the attach-owner lock is outside that budget.
+Reads bracket the catalog and optional thinking choices with `get_state`, with
+at most two consistency attempts. This detects ordinary changes, not an atomic
+native transaction or ABA. Watch delivery coalesces to the latest state, not an
+audit log; equal snapshots do not increment revision. Poll errors retain the
+last good snapshot. Setter failure/readback timeout is not rollback: native
+state may already have changed.
+
+Validation caps catalogs at 1024 models, thinking choices at 32 and individual
+strings at 4096 UTF-8 bytes. Native thinking current may legitimately be outside
+its choices; core retains it faithfully and adapters decide representability.
+`shutdown().await` signals cancellation and joins the owned poll worker; a
+cancelled shutdown can be retried. Caller-owned refresh/setter futures observe
+cooperative cancellation, rather than being joined by shutdown. Host closure
+stops observation; owner drop cancels/aborts as a non-async fallback, with weak
+host ownership to avoid cycles.
+
+Fixture coverage lives in `src/configuration_tests.rs`; run
+`cargo test --locked -p rpi-extcore --lib configuration::tests`.
+This is fixture coverage, not real-native execution or installed-host validation.
+
 ## Modules
 
 | Module | Responsibility |
@@ -88,6 +122,7 @@ no title is invented from message text.
 | `events` | Replay boundary, event ordering, duplicate suppression and explicit resync requirements |
 | `history` | Native transcript validation and active-branch recovery without client formatting |
 | `session_catalog` | Caller-owned bounded native-header discovery, continuation and frozen summary pages |
+| `configuration` | Shared bounded model/thinking observation, revision watch and serialized setters/readback |
 | `dialogs` | Question deadlines and validated answers, including multiple choices and comments |
 | `registry`, `projects`, `timing` | Durable supplemental metadata, project catalog and tool timings |
 | `workspace`, `process` | Scoped file/Git access and background native processes |

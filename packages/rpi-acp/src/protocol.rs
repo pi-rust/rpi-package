@@ -32,6 +32,15 @@ use tokio::sync::{oneshot, watch, Mutex};
 
 use crate::session::Session;
 
+#[path = "configuration.rs"]
+mod configuration;
+#[cfg(test)]
+#[path = "protocol_configuration_dispatch_tests.rs"]
+mod protocol_configuration_dispatch_tests;
+#[cfg(test)]
+#[path = "protocol_configuration_tests.rs"]
+mod protocol_configuration_tests;
+
 /// The pollable stdin reader, re-exported so the frontends can build one.
 pub use rpi_plugin_sdk::stdio::StdinLines;
 
@@ -153,6 +162,7 @@ pub struct Writer {
     /// keyed by the JSON-RPC id we sent. The client's response (an object with
     /// `id` and no `method`) resolves the matching oneshot.
     pending: std::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>,
+    terminal: watch::Sender<bool>,
     closed: std::sync::atomic::AtomicBool,
     next_id: AtomicU64,
     questions: std::sync::atomic::AtomicBool,
@@ -164,6 +174,7 @@ impl Writer {
     pub fn new() -> Self {
         Self {
             out: Mutex::new(Box::new(tokio::io::stdout())),
+            terminal: watch::channel(false).0,
             pending: std::sync::Mutex::new(HashMap::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(1),
@@ -172,12 +183,57 @@ impl Writer {
         }
     }
 
+    async fn terminal(&self) {
+        let mut rx = self.terminal.subscribe();
+        if !*rx.borrow_and_update() {
+            let _ = rx.changed().await;
+        }
+    }
+
     async fn write(&self, value: &Value) -> std::io::Result<()> {
         let mut line = value.to_string();
         line.push('\n');
-        let mut out = self.out.lock().await;
-        out.write_all(line.as_bytes()).await?;
-        out.flush().await
+        let write = async {
+            let mut out = self.out.lock().await;
+            // Declare AFTER the output guard so cancellation closes the stream
+            // before releasing the mutex to another waiting writer.
+            let mut frame = FrameWrite {
+                writer: self,
+                complete: false,
+            };
+            if self.closed.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            out.write_all(line.as_bytes()).await?;
+            out.flush().await?;
+            frame.complete = true;
+            Ok(())
+        };
+        // Cancellation is terminal for the entire stream, never per session.
+        // Mark it terminal BEFORE dropping a potentially partial write future.
+        tokio::pin!(write);
+        tokio::select! {
+            biased;
+            _ = self.terminal() => Err(std::io::ErrorKind::BrokenPipe.into()),
+            result = &mut write => {
+                if result.is_err() { self.close(); }
+                result
+            },
+        }
+    }
+
+    /// Bound only live configuration delivery. Other ACP writes retain their
+    /// existing backpressure behavior. A timeout invalidates the whole stream
+    /// before the potentially partial frame is dropped.
+    async fn write_configuration(&self, value: &Value) -> std::io::Result<()> {
+        tokio::select! {
+            biased;
+            result = self.write(value) => result,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                self.close();
+                Err(std::io::ErrorKind::TimedOut.into())
+            }
+        }
     }
 
     /// Answer a JSON-RPC request.
@@ -262,6 +318,7 @@ impl Writer {
     pub fn close(&self) {
         let mut pending = self.pending.lock().unwrap();
         self.closed.store(true, Ordering::Release);
+        self.terminal.send_replace(true);
         pending.clear();
     }
 
@@ -294,6 +351,7 @@ impl Writer {
     pub(crate) fn with_output(out: impl AsyncWrite + Unpin + Send + 'static) -> Self {
         Self {
             out: Mutex::new(Box::new(out)),
+            terminal: watch::channel(false).0,
             pending: std::sync::Mutex::new(HashMap::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(1),
@@ -321,6 +379,20 @@ impl Writer {
     pub(crate) async fn resolve(&self, id: u64, result: Value) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
             let _ = tx.send(result);
+        }
+    }
+}
+
+/// Cancelling any existing writer user (including legacy prompt/durable tasks)
+/// must fail closed, rather than release a partial frame onto a live stream.
+struct FrameWrite<'a> {
+    writer: &'a Writer,
+    complete: bool,
+}
+impl Drop for FrameWrite<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.writer.close();
         }
     }
 }
@@ -719,14 +791,95 @@ pub async fn run(
 
 // The same dispatcher is exercised by model-free transport fixtures.
 async fn run_connection(
+    stop: watch::Receiver<bool>,
+    poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+) -> i32 {
+    run_connection_with_sessions(
+        stop,
+        poll_line,
+        pending,
+        writer,
+        list_root,
+        Arc::new(Mutex::new(HashMap::new())),
+    )
+    .await
+}
+
+async fn run_connection_with_sessions(
+    stop: watch::Receiver<bool>,
+    poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+) -> i32 {
+    run_connection_with_opener(
+        stop,
+        poll_line,
+        pending,
+        writer,
+        list_root,
+        sessions,
+        |id, cwd, servers| async move { open_session_with_tools(&id, cwd, None, servers).await },
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn run_connection_with_test_opener<F, Fut>(
+    stop: watch::Receiver<bool>,
+    poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+    mut open: F,
+) -> i32
+where
+    F: FnMut(String, PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<(Arc<Session>, Value), String>>,
+{
+    run_connection_with_opener(
+        stop,
+        poll_line,
+        pending,
+        writer,
+        list_root,
+        sessions,
+        |id, cwd, servers| {
+            assert!(servers.is_empty());
+            open(id, cwd)
+        },
+    )
+    .await
+}
+
+async fn run_connection_with_opener<F, Fut>(
     mut stop: watch::Receiver<bool>,
     mut poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
     mut pending: Option<String>,
     writer: Arc<Writer>,
     list_root: Result<PathBuf, String>,
-) -> i32 {
-    let sessions: Arc<Mutex<HashMap<String, Arc<Session>>>> = Arc::new(Mutex::new(HashMap::new()));
+    sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+    mut open: F,
+) -> i32
+where
+    F: FnMut(String, PathBuf, Vec<rpi_extcore::external_tools::ToolServer>) -> Fut,
+    Fut: std::future::Future<Output = Result<(Arc<Session>, Value), String>>,
+{
     let mut durable_watchers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    let mut configuration_watchers: HashMap<String, configuration::Forwarder> = HashMap::new();
+    let terminal_writer = writer.clone();
+    let mut terminal_stop = stop.clone();
+    let terminal_task = tokio::spawn(async move {
+        if !*terminal_stop.borrow_and_update() {
+            let _ = terminal_stop.changed().await;
+        }
+        terminal_writer.close();
+    });
     let mut prompt_tasks: HashMap<String, PromptTask> = HashMap::new();
     let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut list_tasks = crate::session_list::ListTasks::new(list_root);
@@ -738,7 +891,13 @@ async fn run_connection(
     // into its own log, so this is what turns "transport closed" into a cause.
     let mut reason = "stdin closed (client hung up)";
     'input: loop {
+        if writer.closed.load(Ordering::Acquire) {
+            break;
+        }
         let line = loop {
+            if writer.closed.load(Ordering::Acquire) {
+                break 'input;
+            }
             if let Some(line) = pending.take() {
                 break line;
             }
@@ -920,8 +1079,18 @@ async fn run_connection(
                     }
                 };
                 let session_id = uuid::Uuid::new_v4().to_string();
-                match open_session_with_tools(&session_id, cwd, None, servers).await {
+                match open(session_id.clone(), cwd, servers).await {
                     Ok((session, state)) => {
+                        let lifecycle = session.configuration_lifecycle();
+                        let runtime = match session.configuration().await {
+                            Ok(runtime) => runtime,
+                            Err(error) => {
+                                session.kill().await;
+                                writer.session_error(&id, "session/new", &error).await;
+                                continue;
+                            }
+                        };
+                        let prepared = runtime.as_ref().map(configuration::Forwarder::prepare);
                         let mut result = json!({"sessionId": session_id});
                         match config_options_for(&session, &state).await {
                             Ok(config) => result["configOptions"] = config["configOptions"].clone(),
@@ -939,9 +1108,24 @@ async fn run_connection(
                         if let Some(watcher) = watcher {
                             durable_watchers.insert(session_id.clone(), watcher);
                         }
+                        if let Some((_, _, config)) = &prepared {
+                            result["configOptions"] = config["configOptions"].clone();
+                        }
                         writer
                             .respond_session(&id, result, &session_id, compact_available)
                             .await;
+                        if let Some((rx, gate, _)) = prepared {
+                            configuration_watchers.insert(
+                                session_id.clone(),
+                                configuration::Forwarder::start(
+                                    rx,
+                                    gate,
+                                    writer.clone(),
+                                    session_id,
+                                    lifecycle,
+                                ),
+                            );
+                        }
                     }
                     Err(error) => writer.session_error(&id, "session/new", &error).await,
                 }
@@ -1116,6 +1300,17 @@ async fn run_connection(
                 };
                 match opened {
                     Ok((session, state)) => {
+                        let lifecycle = session.configuration_lifecycle();
+                        let runtime = match session.configuration().await {
+                            Ok(runtime) => runtime,
+                            Err(error) => {
+                                if !sessions.lock().await.contains_key(session_id) {
+                                    session.kill().await;
+                                }
+                                writer.session_error(&id, method, &error).await;
+                                continue;
+                            }
+                        };
                         let updates = if method == "session/load" {
                             crate::history::Replay::prepare(&session, session_id)
                                 .await
@@ -1125,6 +1320,16 @@ async fn run_connection(
                         };
                         match updates {
                             Ok(mut replay) => {
+                                // Retain the old observer until replay has succeeded.
+                                // Its projection gate serializes replay/response with live
+                                // configuration delivery, including replay emission failure.
+                                let old_gate = configuration_watchers
+                                    .get(session_id)
+                                    .map(|watcher| watcher.gate.clone());
+                                let replay_guard = match &old_gate {
+                                    Some(gate) => Some(gate.lock().await),
+                                    None => None,
+                                };
                                 if let Some(replay) = replay.as_mut() {
                                     if let Err(error) = replay.emit(&writer, session_id).await {
                                         if !sessions.lock().await.contains_key(session_id) {
@@ -1134,6 +1339,15 @@ async fn run_connection(
                                         continue;
                                     }
                                 }
+                                drop(replay_guard);
+                                if let Some(watcher) = configuration_watchers.remove(session_id) {
+                                    watcher.stop(&writer).await;
+                                    if writer.closed.load(Ordering::Acquire) {
+                                        break 'input;
+                                    }
+                                }
+                                let prepared =
+                                    runtime.as_ref().map(configuration::Forwarder::prepare);
                                 let mut result = json!({});
                                 match config_options_for(&session, &state).await {
                                     Ok(config) => {
@@ -1156,9 +1370,24 @@ async fn run_connection(
                                 if let Some(watcher) = watcher {
                                     durable_watchers.insert(session_id.to_owned(), watcher);
                                 }
+                                if let Some((_, _, config)) = &prepared {
+                                    result["configOptions"] = config["configOptions"].clone();
+                                }
                                 writer
                                     .respond_session(&id, result, session_id, compact_available)
                                     .await;
+                                if let Some((rx, gate, _)) = prepared {
+                                    configuration_watchers.insert(
+                                        session_id.to_owned(),
+                                        configuration::Forwarder::start(
+                                            rx,
+                                            gate,
+                                            writer.clone(),
+                                            session_id.to_owned(),
+                                            lifecycle,
+                                        ),
+                                    );
+                                }
                                 drop(replay);
                             }
                             Err(error) => {
@@ -1199,6 +1428,44 @@ async fn run_connection(
                 let session = sessions.lock().await.get(&session_id).cloned();
                 match session {
                     Some(session) => {
+                        let lifecycle = session.configuration_lifecycle();
+                        match session.configuration().await {
+                            Ok(Some(runtime)) => {
+                                let prepared = if configuration_watchers.contains_key(&session_id) {
+                                    None
+                                } else {
+                                    Some(configuration::Forwarder::prepare(&runtime))
+                                };
+                                let gate = match &prepared {
+                                    Some((_, gate, _)) => gate.clone(),
+                                    None => configuration_watchers[&session_id].gate.clone(),
+                                };
+                                configuration::set(
+                                    &runtime, &gate, &writer, &id, &config_id, &value,
+                                )
+                                .await;
+                                if let Some((rx, gate, _)) = prepared {
+                                    configuration_watchers.insert(
+                                        session_id.clone(),
+                                        configuration::Forwarder::start(
+                                            rx,
+                                            gate,
+                                            writer.clone(),
+                                            session_id,
+                                            lifecycle,
+                                        ),
+                                    );
+                                }
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                writer
+                                    .session_error(&id, "session/set_config_option", &error)
+                                    .await;
+                                continue;
+                            }
+                        }
                         let applied: Result<(), String> = match config_id.as_str() {
                             "model" => match value.as_str() {
                                 Some(selected) => {
@@ -1267,6 +1534,14 @@ async fn run_connection(
                     &mut prompt_tasks,
                 )
                 .await;
+                // Native cleanup precedes waiting for output to drain. If the
+                // frame cannot drain, stop() marks the WHOLE connection terminal.
+                if let Some(watcher) = configuration_watchers.remove(&session_id) {
+                    watcher.stop(&writer).await;
+                    if writer.closed.load(Ordering::Acquire) {
+                        break 'input;
+                    }
+                }
                 if method == "session/close" {
                     // Close deliberately preserves the native transcript so a
                     // later load/resume can reopen it. Repeating close is safe.
@@ -1368,9 +1643,16 @@ async fn run_connection(
         }
     }
 
+    // Retain existing best-effort list completions on EOF. ListTasks owns
+    // terminal cancellation of its writes; FrameWrite closes a partial stream.
+    list_tasks.shutdown().await;
     // Resolve pending client requests before tearing down every child.
     writer.close();
-    list_tasks.shutdown().await;
+    terminal_task.abort();
+    let _ = terminal_task.await;
+    for (_, watcher) in configuration_watchers.drain() {
+        watcher.stop(&writer).await;
+    }
     stop_all_prompt_tasks(&mut prompt_tasks).await;
     for task in logout_tasks {
         task.abort();
@@ -1434,6 +1716,25 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("medium");
 
+    config_options_with_identity(
+        models,
+        thinking,
+        current_provider,
+        current_model_id,
+        current_thinking,
+        true,
+    )
+}
+
+/// Presentation only: typed callers pass the already-resolved identity verbatim.
+fn config_options_with_identity(
+    models: &Value,
+    thinking: &Value,
+    current_provider: &str,
+    current_model_id: &str,
+    current_thinking: &str,
+    legacy_fallback: bool,
+) -> Value {
     // Keep the provider in the value so two providers may expose the same model
     // id without colliding. With multiple providers, use ACP's grouped select
     // form so Zed exposes the provider boundary.
@@ -1490,27 +1791,35 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
         groups.pop().map(|(_, options)| options).unwrap_or_default()
     };
 
-    let current_value = selections
-        .iter()
-        .find(|(provider, id, _)| provider == current_provider && id == current_model_id)
-        .map(|(_, _, value)| value.clone())
-        .or_else(|| {
-            selections
-                .iter()
-                .find(|(_, id, _)| id == current_model_id)
-                .map(|(_, _, value)| value.clone())
-        })
-        // ACP requires currentValue to identify an available option. Older
-        // hosts may not report modelId/provider yet, so use the first model
-        // instead of emitting the invalid "/" value.
-        .or_else(|| selections.first().map(|(_, _, value)| value.clone()))
-        .unwrap_or_else(|| {
-            if current_provider.is_empty() {
-                current_model_id.to_owned()
-            } else {
-                format!("{current_provider}/{current_model_id}")
-            }
-        });
+    let current_value = if !legacy_fallback {
+        if current_provider.is_empty() {
+            current_model_id.to_owned()
+        } else {
+            format!("{current_provider}/{current_model_id}")
+        }
+    } else {
+        selections
+            .iter()
+            .find(|(provider, id, _)| provider == current_provider && id == current_model_id)
+            .map(|(_, _, value)| value.clone())
+            .or_else(|| {
+                selections
+                    .iter()
+                    .find(|(_, id, _)| id == current_model_id)
+                    .map(|(_, _, value)| value.clone())
+            })
+            // ACP requires currentValue to identify an available option. Older
+            // hosts may not report modelId/provider yet, so use the first model
+            // instead of emitting the invalid "/" value.
+            .or_else(|| selections.first().map(|(_, _, value)| value.clone()))
+            .unwrap_or_else(|| {
+                if current_provider.is_empty() {
+                    current_model_id.to_owned()
+                } else {
+                    format!("{current_provider}/{current_model_id}")
+                }
+            })
+    };
 
     let thinking_options: Vec<Value> = thinking
         .as_array()
@@ -1565,6 +1874,9 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
 /// `configOptions` object. `state` is the `get_state` result already held by
 /// the caller, so it is not re-read here.
 async fn config_options_for(session: &Arc<Session>, state: &Value) -> Result<Value, String> {
+    if let Some(runtime) = session.configuration().await? {
+        return Ok(configuration::present(&runtime.snapshot()));
+    }
     let models = session.available_models().await?;
     // Model switching must remain available if an older host lacks this optional query.
     let thinking = match session.available_thinking_levels().await {
