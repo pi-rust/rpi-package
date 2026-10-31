@@ -44,10 +44,23 @@ fn now_ms() -> u64 {
 type Pending = Arc<StdMutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
 type Worker = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
 
+enum CommandControl {
+    Tools(rpi_mcp_core::Control),
+    FileIO(crate::file_io::FileIOCancellation),
+}
+impl CommandControl {
+    fn cancelled(&self) -> bool {
+        match self {
+            Self::Tools(c) => c.check().is_err(),
+            Self::FileIO(c) => c.is_cancelled(),
+        }
+    }
+}
+
 struct Outbound {
     value: Value,
     pending_id: Option<String>,
-    control: Option<rpi_mcp_core::Control>,
+    control: Option<CommandControl>,
 }
 
 /// A bridge can use correlation/writing without retaining its owning session.
@@ -73,6 +86,38 @@ impl BridgeCommands {
             response["success"] == true && response["data"]["accepted"].is_boolean()
         });
         if !valid && control.check().is_ok() {
+            runtime.fail_closed();
+        }
+    }
+}
+
+/// Neutral client file-I/O command handle. It never retains HostSession.
+#[derive(Clone)]
+pub(crate) struct FileIOCommands {
+    commands: mpsc::Sender<Outbound>,
+    pending: Pending,
+    runtime: std::sync::Weak<HostRuntime>,
+}
+impl FileIOCommands {
+    pub fn fail_closed(&self) {
+        if let Some(runtime) = self.runtime.upgrade() {
+            runtime.fail_closed();
+        }
+    }
+    pub async fn respond(&self, value: Value, cancel: crate::file_io::FileIOCancellation) {
+        let Some(runtime) = self.runtime.upgrade() else {
+            return;
+        };
+        let mut closed = runtime.closed_signal.subscribe();
+        let result = tokio::select! {
+            biased;
+            _ = closed.wait_for(|v| *v) => return,
+            _ = cancel.cancelled() => return,
+            result = dispatch_inner(&self.commands, &self.pending, value, Duration::from_secs(5), None, Some(cancel.clone())) => result,
+        };
+        if !cancel.is_cancelled()
+            && !result.is_ok_and(|r| r["success"] == true && r["data"]["accepted"].is_boolean())
+        {
             runtime.fail_closed();
         }
     }
@@ -105,13 +150,32 @@ async fn dispatch(
 async fn dispatch_control(
     commands: &mpsc::Sender<Outbound>,
     pending: &Pending,
+    value: Value,
+    timeout: Duration,
+    control: Option<rpi_mcp_core::Control>,
+) -> Result<Value, String> {
+    dispatch_inner(commands, pending, value, timeout, control, None).await
+}
+
+async fn dispatch_inner(
+    commands: &mpsc::Sender<Outbound>,
+    pending: &Pending,
     mut value: Value,
     timeout: Duration,
     control: Option<rpi_mcp_core::Control>,
+    file_cancel: Option<crate::file_io::FileIOCancellation>,
 ) -> Result<Value, String> {
     let original_id = value.get("id").cloned();
     let id = uuid::Uuid::new_v4().to_string();
     value["id"] = json!(id);
+    if value["type"] == "file_io_response" && !crate::file_io::fits_payload(&value) {
+        value
+            .as_object_mut()
+            .expect("file I/O frame")
+            .remove("result");
+        value["error"] =
+            json!({"code":"too_large", "message":"client file I/O exceeds payload limit"});
+    }
     let (reply, receive) = oneshot::channel();
     pending
         .lock()
@@ -126,7 +190,9 @@ async fn dispatch_control(
             .send(Outbound {
                 value,
                 pending_id: Some(id),
-                control,
+                control: control
+                    .map(CommandControl::Tools)
+                    .or_else(|| file_cancel.map(CommandControl::FileIO)),
             })
             .await
             .map_err(|_| "native rpi host command channel closed".to_string())?;
@@ -160,7 +226,7 @@ async fn write_commands(
         if outbound
             .control
             .as_ref()
-            .is_some_and(|c| c.check().is_err())
+            .is_some_and(CommandControl::cancelled)
         {
             continue;
         }
@@ -226,6 +292,7 @@ pub struct HostSession {
     commands: mpsc::Sender<Outbound>,
     external_config: Mutex<Option<crate::external_tools::Configuration>>,
     external_owner: StdMutex<Option<Arc<crate::external_tools::Bridge>>>,
+    file_io_owner: StdMutex<Option<Arc<crate::file_io::FileIOService>>>,
     pub(crate) usage_gate: Mutex<()>,
     pub(crate) configuration_owner:
         Mutex<std::sync::Weak<crate::configuration::ConfigurationRuntime>>,
@@ -243,9 +310,27 @@ struct HostRuntime {
     closed: Mutex<bool>,
     closed_signal: tokio::sync::watch::Sender<bool>,
     external_bridge: StdMutex<std::sync::Weak<crate::external_tools::Bridge>>,
+    file_io_bridge: StdMutex<std::sync::Weak<crate::file_io::FileIOService>>,
 }
 
 impl HostRuntime {
+    fn file_io(&self) -> Option<Arc<crate::file_io::FileIOService>> {
+        self.file_io_bridge
+            .lock()
+            .expect("file I/O bridge")
+            .upgrade()
+    }
+
+    fn route_file_io(&self, value: &Value) -> Result<(), ()> {
+        if let Some(service) = self.file_io() {
+            return service.route(value);
+        }
+        if value["type"] == "file_io_request" {
+            return Err(());
+        }
+        Ok(())
+    }
+
     fn bridge(&self) -> Option<Arc<crate::external_tools::Bridge>> {
         self.external_bridge
             .lock()
@@ -265,6 +350,9 @@ impl HostRuntime {
 
     fn fail_closed(self: &Arc<Self>) {
         self.closed_signal.send_replace(true);
+        if let Some(service) = self.file_io() {
+            service.close();
+        }
         if let Some(bridge) = self.bridge() {
             bridge.close();
         }
@@ -283,6 +371,9 @@ impl HostRuntime {
         }
         worker.take();
         self.finish().await;
+        if let Some(service) = self.file_io() {
+            service.join().await;
+        }
         if let Some(bridge) = self.bridge() {
             bridge.join().await;
         }
@@ -290,6 +381,9 @@ impl HostRuntime {
 
     async fn finish(&self) {
         self.closed_signal.send_replace(true);
+        if let Some(service) = self.file_io() {
+            service.close();
+        }
         if let Some(bridge) = self.bridge() {
             bridge.close();
         }
@@ -483,6 +577,67 @@ impl HostSession {
         Ok(())
     }
 
+    /// Install immutable client file authority while idle. The handler must not
+    /// retain this session. Changed authority requires closing/reopening it.
+    /// Once native registration is attempted, every failure/caller cancellation
+    /// fails the host closed because configuration commit can be ambiguous.
+    pub async fn configure_file_io(
+        &self,
+        capabilities: crate::file_io::FileIOCapabilities,
+        handler: Arc<dyn crate::file_io::FileIOHandler>,
+    ) -> Result<(), String> {
+        let _lease = self.try_run_lease()?;
+        self.ensure_running().await?;
+        if let Some(owner) = self.file_io_owner.lock().expect("file I/O owner").as_ref() {
+            return if owner.matches(capabilities, &handler) {
+                Ok(())
+            } else {
+                Err("file I/O configuration changed; close and reopen the session".into())
+            };
+        }
+        if !crate::file_io::supports_profile(&self.ready["fileIO"])
+            || !self.supports_command("configure_file_io")
+            || !self.supports_command("file_io_response")
+            || !self.supports_event("file_io_request")
+            || !self.supports_event("file_io_request_closed")
+        {
+            return Err("native host does not support client file I/O".into());
+        }
+        let mut closed = self.runtime.closed_signal.subscribe();
+        let mut cancellation = self.cancellation.subscribe();
+        let mut transaction = ExternalConfigurationGuard {
+            runtime: self.runtime.clone(),
+            armed: true,
+        };
+        let response = tokio::select! {
+            biased;
+            _ = closed.wait_for(|v| *v) => return Err("native host closed during file I/O configuration".into()),
+            _ = cancellation.changed() => return Err("file I/O configuration cancelled".into()),
+            response = self.send_timeout(json!({"type":"configure_file_io", "readText":capabilities.read_text, "writeText":capabilities.write_text}), Duration::from_secs(5)) => response?,
+        };
+        if response["success"] != true {
+            return Err("native file I/O configuration rejected".into());
+        }
+        self.ensure_running().await?;
+        let owner = crate::file_io::FileIOService::start(
+            capabilities,
+            handler,
+            FileIOCommands {
+                commands: self.commands.clone(),
+                pending: self.runtime.pending.clone(),
+                runtime: Arc::downgrade(&self.runtime),
+            },
+        );
+        let mut routing = self.runtime.file_io_bridge.lock().expect("file I/O bridge");
+        if *self.runtime.closed_signal.borrow() {
+            return Err("native host closed during file I/O configuration".into());
+        }
+        *routing = Arc::downgrade(&owner);
+        *self.file_io_owner.lock().expect("file I/O owner") = Some(owner);
+        transaction.armed = false;
+        Ok(())
+    }
+
     /// Start a native host for a durable session id.
     ///
     /// `--session-id` makes the id authoritative instead of letting the child
@@ -614,6 +769,7 @@ impl HostSession {
             closed: Mutex::new(false),
             closed_signal: tokio::sync::watch::channel(false).0,
             external_bridge: StdMutex::new(std::sync::Weak::new()),
+            file_io_bridge: StdMutex::new(std::sync::Weak::new()),
         });
         let session = Arc::new(Self {
             worker: Arc::new(Mutex::new(None)),
@@ -626,6 +782,7 @@ impl HostSession {
             commands,
             external_config: Mutex::new(None),
             external_owner: StdMutex::new(None),
+            file_io_owner: StdMutex::new(None),
             usage_gate: Mutex::new(()),
             configuration_owner: Mutex::new(std::sync::Weak::new()),
         });
@@ -673,7 +830,8 @@ impl HostSession {
                     .await;
                     continue;
                 };
-                if runtime.route_external(&value).is_err() {
+                if runtime.route_external(&value).is_err() || runtime.route_file_io(&value).is_err()
+                {
                     break;
                 }
                 if value["type"] == "response" {
@@ -759,6 +917,25 @@ impl HostSession {
             .await
     }
 
+    /// Ordered plain text/image prompt. Never falls back to legacy text or
+    /// strips images when the native profile is missing/incompatible.
+    pub async fn begin_prompt_content(
+        &self,
+        content: crate::prompt::PromptContent,
+    ) -> Result<crate::run::PromptRun, String> {
+        crate::prompt::PromptProfile::from_ready(&self.ready["promptContent"])?;
+        self.begin_operation(
+            crate::run::RunKind::Prompt,
+            json!({"contentBlocks":content}),
+        )
+        .await
+    }
+
+    /// Exact native committed message-ID semantics, not inferred from version.
+    pub fn supports_message_ids(&self) -> bool {
+        self.ready["semantics"]["messageIds"] == "sessionEntryId-v1"
+    }
+
     /// Compact using the same subscription, lease and cancellation as a prompt.
     pub async fn begin_compaction(
         &self,
@@ -786,16 +963,19 @@ impl HostSession {
         let id = json!(uuid::Uuid::new_v4().to_string());
         command["type"] = json!(kind.command());
         command["id"] = id.clone();
+        if command.get("contentBlocks").is_some() {
+            crate::prompt::PromptProfile::from_ready(&self.ready["promptContent"])?
+                .validate_command(&command)?;
+        }
         self.notify(command).await?;
-        Ok(crate::run::PromptRun::new(
-            events,
-            cancellation,
-            id,
-            kind,
-            lease,
-        ))
+        let mut run = crate::run::PromptRun::new(events, cancellation, id, kind, lease);
+        run.tracker.require_message_ids(self.supports_message_ids());
+        Ok(run)
     }
     pub async fn abort_run(&self) -> Result<(), String> {
+        if let Some(service) = self.runtime.file_io() {
+            service.cancel_calls();
+        }
         if let Some(bridge) = self.runtime.bridge() {
             bridge.cancel_calls();
         }
@@ -826,6 +1006,9 @@ impl HostSession {
     }
 
     async fn terminate_worker(&self) {
+        if let Some(service) = self.runtime.file_io() {
+            service.close();
+        }
         if let Some(bridge) = self.runtime.bridge() {
             bridge.close();
         }
@@ -874,6 +1057,7 @@ impl HostSession {
             commands,
             external_config: Mutex::new(None),
             external_owner: StdMutex::new(None),
+            file_io_owner: StdMutex::new(None),
             usage_gate: Mutex::new(()),
             configuration_owner: Mutex::new(std::sync::Weak::new()),
             runtime: Arc::new(HostRuntime {
@@ -897,6 +1081,7 @@ impl HostSession {
                 closed: Mutex::new(false),
                 closed_signal: tokio::sync::watch::channel(false).0,
                 external_bridge: StdMutex::new(std::sync::Weak::new()),
+                file_io_bridge: StdMutex::new(std::sync::Weak::new()),
             }),
         });
         let runtime = session.runtime.clone();
@@ -975,6 +1160,9 @@ impl HostSession {
 
     /// Best-effort `stop` before the registry drops this session.
     pub async fn stop(&self) {
+        if let Some(service) = self.runtime.file_io() {
+            service.close();
+        }
         if let Some(bridge) = self.runtime.bridge() {
             bridge.close();
         }
@@ -1183,6 +1371,9 @@ impl HostSession {
 impl Drop for HostSession {
     fn drop(&mut self) {
         self.runtime.closed_signal.send_replace(true);
+        if let Some(owner) = self.file_io_owner.lock().expect("file I/O owner").take() {
+            owner.close();
+        }
         if let Some(bridge) = self.external_owner.lock().expect("external owner").take() {
             bridge.close();
         }
@@ -1208,8 +1399,11 @@ pub struct TestEvents(Arc<HostSession>);
 #[cfg(any(test, feature = "test-support"))]
 impl TestEvents {
     pub fn send(&self, value: Value) -> Result<usize, broadcast::error::SendError<Value>> {
-        if self.0.runtime.route_external(&value).is_err() {
+        if self.0.runtime.route_external(&value).is_err()
+            || self.0.runtime.route_file_io(&value).is_err()
+        {
             self.0.runtime.fail_closed();
+            return Err(broadcast::error::SendError(value));
         }
         let mut delivered = false;
         if value["type"] == "response" {
@@ -1303,6 +1497,7 @@ mod tests {
 
     include!("host_compact_tests.rs");
     include!("external_tools_host_tests.rs");
+    include!("host_file_io_tests.rs");
 
     #[tokio::test]
     async fn bounded_history_boundary_fails_on_publication_and_changes() {

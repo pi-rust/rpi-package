@@ -97,6 +97,7 @@ async fn compact_shares_prompt_stream_and_holds_lease_through_cancel() {
         rpc,
         context_presentation: tokio::sync::Mutex::default(),
         durable: None,
+        file_io: tokio::sync::OnceCell::new(),
         configuration: tokio::sync::OnceCell::new(),
         events: Some(events),
     });

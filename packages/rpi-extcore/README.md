@@ -36,6 +36,73 @@ to the same directory, otherwise reject before spawning. Empty/missing recorded
 directories retain native fallback; no-MCP compatibility remains unchanged.
 This metadata snapshot is not a concurrent-filesystem sandbox.
 
+## Native identity, ordered prompts and client text I/O
+
+These are source contracts requiring a supporting native binary, not a claim
+that a published crate or installed host already provides them. Native remains
+the owner of message identities, pixel admission, built-in tool execution and
+transcripts; core provides neutral validation, correlation and lifecycle.
+
+- `HostSession::supports_message_ids()` requires the exact native advertisement
+  `ready.semantics.messageIds == "sessionEntryId-v1"`, never a version guess.
+  Core projects optional native `messageId` onto assistant text/thinking deltas,
+  including final-snapshot reconciliation, and rejects missing/invalid/changing
+  identity under the advertised contract. IDs must be nonempty, control-free and
+  at most 256 UTF-8 bytes. Validated native history exposes `entryId`; page and
+  fallback readers preserve it without synthesizing identity. Old hosts retain
+  ID-less live output. Tool-call IDs and compaction summaries are not message
+  identities; adapters decide which content chunks expose the optional field.
+- `prompt::{PromptBlock, PromptContent, PromptProfile}` and
+  `HostSession::begin_prompt_content` carry ordered plain text/inline PNG/JPEG.
+  Core checks canonical standard base64, MIME/signature and structural budgets;
+  native owns actual pixel decode, orientation and model-input admission.
+  Exact v1 `ready.promptContent` is required before writing an ordered prompt;
+  old/incompatible profiles fail closed, never omit images or fall back to text.
+  `begin_prompt(String)` remains the unchanged legacy path. Constructors check
+  aggregate blocks; the writer separately checks the final correlated command,
+  including JSON escaping, envelope and LF.
+- The v1 ordered profile caps blocks at 64, images at 4, each image at 256 KiB
+  decoded / 349,528 base64 bytes, all images at 512 KiB decoded, aggregate text
+  at 32 KiB UTF-8 and the complete prompt frame at 768 KiB. Native allows at
+  most 2000 pixels per side / 4,000,000 pixels and a 32 MiB best-effort decoder
+  allocation budget, not a hard total heap limit. URI/path input and fetching,
+  data URLs, APNG, JPEG-XT, orientation transforms and lossy text fallback are
+  not provided by this API. Native inbound frames remain 1 MiB.
+- `file_io::{FileIOCapabilities, FileIOHandler, FileIORequest, FileIOResponse,
+  FileIOCancellation}` and `HostSession::configure_file_io` install one
+  session-owned neutral text handler while idle under the run lease. The exact
+  native `fileIO` profile and configure/response commands plus request/closed
+  events are mandatory. Identical capabilities with the same handler `Arc` are
+  idempotent; changing either requires close/reopen. A handler must not retain
+  `HostSession`; transport correlation must be retired on future drop (RAII).
+  There are no ACP, filesystem-source or MCP calls inside this service.
+
+Read/write authority is independent: neither flag uses legacy local tools;
+read-only delegates read and rejects write/edit; write-only delegates write,
+keeps read local and rejects edit; both delegate read/write and edit's complete
+read-modify-write. Native permission hooks still precede execution. Selected
+client operations never fall back to host source I/O, including image-file
+reads; shell/extensions and unselected local operations are not an OS sandbox.
+Write/edit serialization is per router + lexical path, not CAS or rollback;
+a lost acknowledgement can follow a committed write. No automatic retry/replay.
+
+The service admits at most 64 pending requests, with a bounded reliable reader
+queue, 256 KiB UTF-8 text and 768 KiB encoded JSON payload. Native waits up to
+60 seconds; core handlers have a 50-second deadline from admission (queue wait
+included), followed by separately bounded 5-second native response dispatch.
+Adapter handlers may impose a shorter deadline (ACP: 45 seconds). Cancellation,
+settlement, native request closure, disconnect and owner shutdown cancel/retire
+owned work; malformed/overflow routing fails closed rather than losing a request
+silently. These are layered cooperative budgets, not a hard global shutdown
+bound or remote-write undo guarantee.
+
+Normal `cargo test --locked -p rpi-extcore -p rpi-acp` includes the new identity,
+ordered-prompt, file-I/O and replay fixtures. The provenance-gated Windows
+[`message_image_fs_native.py`](../rpi-acp/tests/message_image_fs_native.py) is
+separate authored proof infrastructure; see the
+[ACP validation scope](../rpi-acp/README.md#three-capability-validation-scope).
+No build, test execution, native pass or deployment is established by this text.
+
 ## Read-only session discovery
 
 `session_catalog::SessionCatalog::new(root, CatalogLimits::default())` is a
