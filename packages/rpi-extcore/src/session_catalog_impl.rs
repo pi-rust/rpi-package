@@ -575,16 +575,15 @@ fn scan_step(
         let depth = scan.stack.len();
         let frame = scan.stack.last().unwrap();
         let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            // A native timestamp is UTF-8/ASCII. Still recognize a raw-byte
-            // same-ID suffix at leaf depth, rather than hiding a corrupt or
-            // duplicate candidate merely because its prefix is not UTF-8.
+        let Some(name) = candidate_name(
+            &name,
             if depth == 3 {
-                let suffix = format!("_{}.jsonl", frame.id.as_ref().unwrap());
-                if name.as_encoded_bytes().ends_with(suffix.as_bytes()) {
-                    return Err(CatalogError::Unavailable);
-                }
-            }
+                frame.id.as_deref()
+            } else {
+                None
+            },
+        )?
+        else {
             continue;
         };
         let path = entry.path();
@@ -640,6 +639,23 @@ fn scan_step(
             _ => unreachable!(),
         }
     }
+}
+fn candidate_name<'a>(
+    name: &'a std::ffi::OsStr,
+    leaf_id: Option<&str>,
+) -> Result<Option<&'a str>, CatalogError> {
+    if let Some(text) = name.to_str() {
+        return Ok(Some(text));
+    }
+    // Recognize a raw-byte same-ID suffix even when its timestamp is not UTF-8.
+    // This pure check is testable on filesystems that cannot create such names.
+    if leaf_id.is_some_and(|id| {
+        name.as_encoded_bytes()
+            .ends_with(format!("_{id}.jsonl").as_bytes())
+    }) {
+        return Err(CatalogError::Unavailable);
+    }
+    Ok(None)
 }
 fn canonical_uuid(s: &str) -> bool {
     uuid::Uuid::parse_str(s).is_ok_and(|u| u.hyphenated().to_string() == s)

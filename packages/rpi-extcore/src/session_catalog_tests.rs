@@ -588,6 +588,25 @@ async fn session_catalog_symlink_negatives() {
     }
 }
 #[cfg(unix)]
+#[test]
+fn session_catalog_non_utf8_candidate_recognition_without_filesystem() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let sid = id();
+    let mut raw = vec![0xff];
+    raw.extend_from_slice(format!("_{sid}.jsonl").as_bytes());
+    let name = OsString::from_vec(raw);
+    assert_eq!(
+        candidate_name(&name, Some(&sid)),
+        Err(CatalogError::Unavailable)
+    );
+    assert_eq!(candidate_name(&name, Some(&id())), Ok(None));
+    assert_eq!(candidate_name(&name, None), Ok(None));
+}
+
+// Linux filesystems support arbitrary non-NUL name bytes. macOS APFS rejects
+// this fixture at creation (EILSEQ); the pure production recognition test above
+// still executes there, rather than skipping an unexpected fixture failure.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn session_catalog_non_utf8_same_id_candidate_fails_closed() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
