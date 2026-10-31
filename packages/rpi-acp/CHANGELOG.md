@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.3...rpi-acp-v0.2.4) - 2026-10-31
+
+### Fixed
+
+- *(acp)* bound active-branch history replay preparation
+- *(acp)* preserve full resource URIs in prompt references
+
+### Other
+
+- Merge pull request #130 from pi-rust/codex/acp-stage1-bounded-history
+
 ## [0.2.3](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.2...rpi-acp-v0.2.3) - 2026-10-30
 
 ### Other
