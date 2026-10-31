@@ -149,6 +149,14 @@ fn message_updates(message: &Value) -> Vec<Value> {
             &json!({"type":"tool_execution_end", "toolCallId":message["toolCallId"],
             "isError":message["isError"], "result":message}),
         )
+        // Preserve the existing replay result presentation (including todo rawOutput).
+        // The message's name is metadata, not an input to end-event formatting.
+        .map(|update| {
+            crate::session::with_native_tool_name(
+                update,
+                message.get("toolName").and_then(Value::as_str),
+            )
+        })
         .into_iter()
         .collect();
     }
@@ -179,6 +187,8 @@ fn message_updates(message: &Value) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("history_tool_name_tests.rs");
 
     #[test]
     fn replay_follows_active_branch_and_preserves_tool_results() {

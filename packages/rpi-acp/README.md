@@ -15,6 +15,30 @@ The source implementation delegates native RPC children, isolated command reques
 A compatible native external-tool build is required for nonempty MCP
 configuration; updating only the bridge does not upgrade the host.
 
+## Tool name fidelity
+
+Stable ACP v1 `ToolCall.name` and `ToolCallUpdate.name` preserve a supplied native
+programmatic tool name verbatim on start, nonempty progress, end, and saved
+result replay. The name is distinct from the human-readable `title`; no trimming,
+MCP export reverse-mapping, invented alias or name cache is used. Missing, null
+or non-string native names are omitted, not replaced with the generic display
+fallback `tool`. Legacy replay does not guess a missing result name from an
+adjacent call. Empty progress remains suppressed; status/kind, diff/todo/plan,
+raw input/output and run/transport lifecycle behavior are unchanged.
+
+This is a small optional-field fidelity fix: starts already carried known native
+names, and omitted update names previously meant “unchanged” to clients. It is
+not a new tool engine or a claim of complete ACP capability coverage. Existing
+extcore raw events and validated history already preserve the source metadata;
+only ACP wire presentation changes, with no new core API or transcript owner.
+Rust projection and production-prompt fixtures cover supplied/absent names and
+partial progress. The separate Windows `tests/tool_names_native.py --help` proof
+requires explicit frozen bridge/native provenance and checks actual read success,
+failure, raw native events/JSONL and fresh load/resume. Native read need not emit
+partial updates: inspect recorded phases; do not infer native progress coverage
+from fixtures or authored harnesses. Neither qualifies an installed extension,
+Unix native execution or deployment.
+
 ## Context usage updates
 
 ACP v1 `usage_update` reports the native context estimate as `used` and the

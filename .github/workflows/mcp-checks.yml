@@ -68,6 +68,15 @@ jobs:
         run: |
           rustfmt --edition 2021 --check packages/rpi-extcore/src/context_usage_tests.rs packages/rpi-acp/src/context_usage_tests.rs packages/rpi-acp/src/protocol_context_usage_tests.rs
           python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/context_usage_native.py').read_text(encoding='utf-8'))"
+      - name: Test optional native tool-name fidelity fixtures
+        run: |
+          cargo test --locked -p rpi-acp tool_name
+          cargo test --locked -p rpi-acp names_do_not_create_empty_progress_or_change_tool_presentation
+          cargo test --locked -p rpi-acp replay_missing_result_name_does_not_guess_from_adjacent_call
+      - name: Check included tool-name tests and native harness syntax
+        run: |
+          rustfmt --edition 2021 --check packages/rpi-acp/src/tool_name_tests.rs packages/rpi-acp/src/history_tool_name_tests.rs
+          python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/tool_names_native.py').read_text(encoding='utf-8'))"
       - name: Test default package compatibility and runtime ownership
         run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
       - name: Test configured core HTTP transport with loopback fixtures
@@ -91,7 +100,7 @@ jobs:
         run: cargo package --locked -p rpi-mcp-core
       - name: Verify the adapter against the unpublished workspace core
         run: cargo package --locked -p rpi-mcp-adapter --config 'patch.crates-io.rpi-mcp-core.path="packages/rpi-mcp-core"'
-      # Real-native ACP/MCP, session/list, configuration and context usage smokes require
+      # Real-native ACP/MCP, session/list, configuration, context usage and tool-name smokes require
       # separately verified native/bridge binaries (plus the isolated test DLL
       # for configuration) and prebuild provenance. This fixture-only job does
       # not run them or qualify an installed extension.
