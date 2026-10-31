@@ -615,9 +615,7 @@ export default function App() {
   });
   const [projectId, setProjectId] = useState("");
   const projectRef = useRef("");
-  const [workbenchOpen, setWorkbenchOpen] = useState(
-    () => window.innerWidth >= 1100,
-  );
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useStoredNumber(
     "rpi-sidebar-width",
     248,
