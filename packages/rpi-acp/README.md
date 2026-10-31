@@ -435,14 +435,71 @@ returns a `model` Session Config Option. Its values use `provider/model`, so
 selecting a model also selects its Provider; when several Providers are
 available, Zed receives them as grouped choices. `session/set_config_option`
 forwards the selected value to the child RPC as `modelId` plus `provider`.
-Thinking levels are exposed as a separate `thought_level` option.
+Thinking levels use option ID `thinking` (category `thought_level`).
+
+### Live configuration updates
+
+For hosts advertising `get_state` and `get_available_models`, ACP uses extcore's
+[single bounded observer](../rpi-extcore/README.md#live-runtime-configuration).
+Successful new/load/resume replies contain the full `configOptions` list;
+subscription precedes the reply, and forwarding starts only after it is written.
+Later presentation changes emit standard `session/update` with
+`sessionUpdate: "config_option_update"` and the full list, without needing a
+prompt. This covers the existing model/thinking selects only, not boolean
+options or session modes.
+
+The observer polls every 2 seconds (skipping missed ticks); each refresh has a
+10-second total budget including its mutation/refresh gate, with at most two
+state-bracketed consistency attempts. These are latest-state observations,
+not atomic native snapshots, ABA detection or an audit of every transition.
+Poll failures retain the last good state. The thinking query is optional.
+If native thinking current is outside its available choices, the typed ACP
+projection omits that select rather than inventing a selected value. Typed model
+setters resolve the advertised value against exact catalog identities, preserving
+slash-containing IDs and providerless models. If legacy wire values collide,
+the model select is omitted and ambiguous selections are rejected before native
+mutation. Missing observer capabilities keep the legacy configuration path; malformed replies
+from advertised capabilities do not silently fall back. Configuration stays
+native-owned and in memory: reopening reads fresh native startup/history state,
+not a bridge-persisted copy of the previous live selection.
+
+One connection-owned forwarder per session shares a projection/revision gate
+with `session/set_config_option`. Setters read back full native configuration
+and record the successfully delivered revision while holding that gate; a queued
+watch value cannot overwrite the setter reply. Repeated successful load/resume
+replaces/rebases the forwarder; failed replay retains the existing observer.
+Lifecycle broadcast lag is not treated as native closure.
+
+Only live configuration notifications and successful typed setter replies get
+an explicit 2-second write deadline (including output-lock wait/flush). Existing
+other writes do not acquire this deadline. An interrupted/failed frame or a
+configuration write timeout makes the **whole connection** terminal before a
+possibly partial JSON frame is discarded; no session can append another frame.
+Close/delete first clean up native resources and the core poll worker, then
+stop/drain the forwarder; if it cannot drain within 2 seconds the connection
+becomes terminal. Disconnect/host shutdown retire transport tasks. These are
+not a new global shutdown deadline or native-mutation rollback guarantee.
+
+Focused fixtures are `configuration_tests.rs`, `protocol_configuration_tests.rs`
+and `protocol_configuration_dispatch_tests.rs` (new/load/resume ordering,
+setter readback, replay-failure retention, close and partial-write policy).
+The three-OS workflow selects these explicitly; configured gates are not passing
+CI evidence. `tests/configuration_native.py` and
+`examples/configuration_fixture.rs` are authored native proof infrastructure,
+not a verified native pass. The independent fixture invokes SDK
+`SetThinkingLevel` **action 8**, then native `GetThinkingLevel` readback, rather
+than using ACP's setter to manufacture an external change. Execution requires
+explicit binary/DLL hashes and prebuild source/build provenance in an isolated
+agent-extension directory; CI only parses the harness syntax. No installed DLL
+change, native execution, deployment or cross-platform native qualification is
+implied.
 
 These controls are session-level settings in Zed's ACP thread configuration,
 not Zed's global `agent.default_model` setting. If they do not appear, enable
 `RPI_ACP_DEBUG=1` in Zed's environment and check its agent stderr log for
 `config options unavailable`; the child rpi must support
-`get_available_models`, `set_model`, and (optionally)
-`get_available_thinking_levels`.
+`get_state`, `get_available_models`, `set_model`, and (optionally)
+`get_available_thinking_levels`; changing thinking requires `set_thinking_level`.
 
 The flag only affects this process and its ACP session children; it does not change
 system environment variables or saved permission settings. It overrides
@@ -577,9 +634,10 @@ Registry's handshake (and its pass/fail rule) locally.
 * Prompt input: `text`, `resource_link`, and embedded `resource` blocks are
   supported (`promptCapabilities.embeddedContext: true`). Images/audio are not
   (`rpi --mode rpc` takes a single text prompt).
-* Only `agent_message_chunk`, `agent_thought_chunk`, `tool_call` (with `diff`
-  content for `edit`/`write`), `tool_call_update`, `plan`, and the capability-gated
-  `available_commands_update` described below are emitted.
+* Updates include `agent_message_chunk`, `agent_thought_chunk`, `tool_call`
+  (with `diff` content for `edit`/`write`), `tool_call_update`, `plan`,
+  `config_option_update` on the live configuration path, and the capability-gated
+  `available_commands_update` described below.
 * **`session/request_permission`** is used: when a child's plugin opens a UI
   dialog mid-run (e.g. the `rpi-permission-gate` extension confirming a `bash`
   command), `rpi-acp` maps it to a `session/request_permission` request and

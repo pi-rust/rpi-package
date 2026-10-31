@@ -28,9 +28,11 @@
 | image / audio / 其它多模态 | **未完成且明确不支持** | native `--mode rpc` 当前只接收单一文本 prompt；ACP capability 不会虚报 image/audio。 |
 | tool call / tool call update | **已完成（native 依赖）** | native event 映射到 ACP；native child 是实际执行者，ACP 只做 presentation mapping。 |
 | diff / plan | **已完成（native event 依赖）** | edit/write diff、todo/plan event 已映射；能力取决于 native event 是否提供。 |
-| 配置选项通知、boolean、mode | **部分完成** | model/thinking select 和 `set_config_option` 已实现；config update notification、boolean option 和 session mode 尚未实现。 |
-| slash commands | **未完成** | native RPC 不展开 prompt templates；不广告虚假的 `available_commands_update`。 |
-| usage / notice / compaction | **未完成** | native 尚未提供稳定 ACP usage/notice/compaction 语义，未做空操作映射。 |
+| model/thinking 配置选项通知 | **已实现（当前源码，native 依赖）** | `configuration.rs` 将 extcore 单 observer 的 latest-state revision 投影为完整 `configOptions`；new/load/resume 响应之后才发送 `config_option_update`，setter 与 forwarder 共用 revision gate。2s poll、10s refresh（含 gate wait）、最多2次一致性尝试；不是 atomic/ABA 或事件审计，poll 错误保留 last good。thinking query 可选；current 不在 choices 时省略 select，不伪造值；缺观察 capability 保留 legacy path，已广告的坏回复不 fallback。仅 live config 写入有2s deadline；partial/超时令整个连接 terminal，close 清理 poll worker/forwarder。详见 [ACP README](../../packages/rpi-acp/README.md#live-configuration-updates)。fixtures/CI 配置不等于已通过；native harness 仅已编写，独立 SDK action8 + readback proof 尚需新 provenance/执行证据，无 installed DLL 变更。 |
+| boolean 配置 / session mode | **未完成** | 本 slice 仅既有 model/thinking select，不新增 boolean option 或 mode。 |
+| slash commands | **部分完成（仅 `/compact`）** | `protocol.rs::respond_session` 仅在 native 广告 `compact` 时发送 `available_commands_update`；`session.rs` 仅识别纯文本精确 `/compact` token，可带多行 instructions；prompt templates 与其它 slash commands 不广告/不展开。 |
+| compaction | **已实现（native 依赖）** | `HostSession::begin_compaction` 共用 run lease/取消，等待 `agent_settled`；compacted/declined 正常结束，aborted 取消，failed/unknown 为错误（本地请求取消后的 failed 按 cancelled）；declined 无 summary 显示 `Nothing to compact yet.`。`session_compact_tests.rs` / `session_compact_lifecycle_tests.rs` 有 fixtures，不代表 native qualification。 |
+| usage / notice | **未完成** | 没有完整稳定 ACP usage/notice 映射，不因 compaction 支持而宣称完成。 |
 | 权限 request | **已完成（受限）** | 明确 `purpose: permission` 的 native dialog 映射到 `session/request_permission`；取消/断连会关闭 pending dialog。 |
 | Elicitation form | **已完成（受限）** | 协商 `clientCapabilities.elicitation.form` 后使用 `elicitation/create`，返回值仍由 native dialog schema 校验。 |
 | Elicitation URL | **未完成** | 没有 native URL elicitation/完成回调接口，不广告支持。 |

@@ -9,6 +9,7 @@ async fn compact_reuses_dialog_and_tool_updates_then_settles() {
     let session = Arc::new(Session {
         rpc,
         durable: None,
+        configuration: tokio::sync::OnceCell::new(),
         events: Some(events),
     });
     let (output, peer) = tokio::io::duplex(8192);
@@ -68,6 +69,7 @@ async fn compact_stream_lag_and_host_closure_are_errors() {
         let session = Arc::new(Session {
             rpc,
             durable: None,
+            configuration: tokio::sync::OnceCell::new(),
             events: Some(events),
         });
         let task = tokio::spawn({

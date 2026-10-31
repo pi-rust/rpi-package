@@ -226,6 +226,8 @@ pub struct HostSession {
     commands: mpsc::Sender<Outbound>,
     external_config: Mutex<Option<crate::external_tools::Configuration>>,
     external_owner: StdMutex<Option<Arc<crate::external_tools::Bridge>>>,
+    pub(crate) configuration_owner:
+        Mutex<std::sync::Weak<crate::configuration::ConfigurationRuntime>>,
 }
 
 // Shared with the reader and finalizer, without retaining the owning session.
@@ -348,6 +350,10 @@ struct HostState {
 }
 
 impl HostSession {
+    pub(crate) fn closed_receiver(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.runtime.closed_signal.subscribe()
+    }
+
     /// Compatibility wrapper for explicit stdio configuration.
     pub async fn configure_stdio_tools(
         &self,
@@ -619,6 +625,7 @@ impl HostSession {
             commands,
             external_config: Mutex::new(None),
             external_owner: StdMutex::new(None),
+            configuration_owner: Mutex::new(std::sync::Weak::new()),
         });
 
         let pending_writer = pending.clone();
@@ -865,6 +872,7 @@ impl HostSession {
             commands,
             external_config: Mutex::new(None),
             external_owner: StdMutex::new(None),
+            configuration_owner: Mutex::new(std::sync::Weak::new()),
             runtime: Arc::new(HostRuntime {
                 raw_events,
                 events: broadcast::channel(capacity).0,
