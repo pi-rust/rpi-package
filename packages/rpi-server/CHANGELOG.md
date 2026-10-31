@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8](https://github.com/pi-rust/rpi-package/compare/rpi-server-v0.3.7...rpi-server-v0.3.8) - 2026-10-31
+
+### Fixed
+
+- *(tools)* clarify guidance and complete parameter schemas ([#135](https://github.com/pi-rust/rpi-package/pull/135))
+
 ## [0.3.7](https://github.com/pi-rust/rpi-package/compare/rpi-server-v0.3.6...rpi-server-v0.3.7) - 2026-10-30
 
 ### Fixed
