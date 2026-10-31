@@ -53,12 +53,14 @@ provided on the item. Blank strings are treated as absent for these text fields.
 Options and ids never inherit. A batch item may omit `question` when effective
 text is supplied by the top level, so it is not schema-required on every item.
 
-Option objects use a required `title` and optional string `description`. Both
-strings and object titles must remain nonblank after trimming; descriptions
-are trimmed and may be empty. The model-facing schema advertises only canonical
-arguments and string/object choices. Batch questions and choices are fully
-inline (no `$ref`/`$defs`), so provider schema conversion preserves their shape.
-Runtime compatibility is unchanged; see below.
+Option objects should use `title` and optional string `description`. Both
+strings and effective object titles must remain nonblank after trimming;
+descriptions are trimmed and may be empty. The schema leaves `title` optional
+so legacy title aliases can pass host validation before parsing (see below).
+The model-facing schema advertises only canonical arguments and string/object
+choices. Batch questions and choices are fully inline (no `$ref`/`$defs`), so
+provider schema conversion preserves their shape. Runtime compatibility is
+unchanged.
 
 `type=confirm` uses only trimmed `summary` (fallback `question`) and a fixed
 Yes/No selector with id `confirm`. It ignores `questions`, options, context,

@@ -1932,7 +1932,7 @@ fn tool_schema() -> StableToolSchema {
     });
     StableToolSchema {
         name: StbString::from_string(TOOL.into()),
-        description: StbString::from_string("Persist workflow checkpoints, a recovery journal, and a manual work queue in the current native session branch, not a shared workspace/project queue. Use goal for one context-injected objective; use durable for explicit steps or recovery. Start replaces the workflow; checkpoint requires a running workflow; complete requires all steps completed. Inspect status before recover or retrying interrupted side effects: recover only creates a queued recovery point and never replays tools. Claim queued items before manual execution, then finish claimed items. No workers, delegation, scheduling, or exactly-once guarantee; separate sessions do not share claims. reset clears only the workflow; forget_run clears only the journal.".into()),
+        description: StbString::from_string("Persist workflow checkpoints, a recovery journal, and a manual work queue in the current native session branch, not a shared workspace/project queue. Independent native sessions do not share claims. A host-managed child created by delegate_task shares the parent workflow, queue, and claims. Do not start/reset it without explicit authorization. Use goal for one context-injected objective; use durable for explicit steps or recovery. Start replaces the workflow; checkpoint requires a running workflow; complete requires all steps completed. Inspect status before recover or retrying interrupted side effects: recover only creates a queued recovery point and never replays tools. Claim queued items before manual execution, then finish claimed items. No workers, delegation, scheduling, or exactly-once guarantee. reset clears only the workflow; forget_run clears only the journal.".into()),
         parameters: StbString::from_string(parameters.to_string()),
     }
 }
@@ -1987,6 +1987,18 @@ mod tests {
             rules[4]["then"]["properties"]["status"]["enum"],
             json!(["completed", "failed"])
         );
+    }
+
+    #[test]
+    fn registered_guidance_warns_about_shared_delegate_task_state() {
+        let schema = tool_schema();
+        let description = schema.description.to_string_lossy();
+        assert!(description.contains("delegate_task"));
+        assert!(description.contains("shares the parent workflow, queue, and claims"));
+        assert!(description.contains("Do not start/reset it without explicit authorization"));
+        schema.name.free_with(Some(free_string));
+        schema.description.free_with(Some(free_string));
+        schema.parameters.free_with(Some(free_string));
     }
 
     #[test]

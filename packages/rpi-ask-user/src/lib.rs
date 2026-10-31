@@ -776,6 +776,7 @@ fn ask_command(args_json, out, _user_data) {
 const TOOL_DESCRIPTION: &str = "Ask for a missing decision or explicit confirmation through an attached interactive UI. Use one question, 1-3 sequential questions, or type=confirm with summary. Options open a selector; otherwise an input editor. Optional timeout is seconds per question; confirm has no timeout. Timeout/cancellation closes the dialog and errors. Returns a summary and details.answers {id, question, values, text, confirmed}. Read values/text for selections; confirmed only indicates whether a selector's first value is Yes (null for input), not general approval.";
 
 fn question_properties() -> Value {
+    // Host validation runs before alias parsing, so canonical option titles stay optional.
     json!({
         "question":{"type":"string","description":"Nonblank question text, 1-500 trimmed characters; batch items may fall back to the top-level question."},
         "context":{"type":"string","description":"Optional background shown with the question."},
@@ -787,7 +788,7 @@ fn question_properties() -> Value {
                 {"type":"object","properties":{
                     "title":{"type":"string","minLength":1,"description":"Nonblank visible and returned choice title."},
                     "description":{"type":"string","description":"Optional choice explanation."}
-                },"required":["title"],"additionalProperties":true}
+                },"additionalProperties":true}
             ]
         },"description":"Up to 20 strings or {title, description} choices. Omitted/empty opens an input editor. Not inherited by batch items."},
         "allowMultiple":{"type":"boolean","default":false,"description":"Allow multiple selector choices; default false."},
@@ -929,7 +930,7 @@ mod tests {
             assert_eq!(alternatives[0]["type"], "string");
             let option = &alternatives[1];
             assert_eq!(option["type"], "object");
-            assert_eq!(option["required"], json!(["title"]));
+            assert!(option.get("required").is_none()); // Legacy title aliases must validate.
             assert_eq!(option["properties"].as_object().unwrap().len(), 2);
             assert_eq!(option["properties"]["title"]["type"], "string");
             assert_eq!(option["properties"]["description"]["type"], "string");
@@ -938,6 +939,43 @@ mod tests {
         schema.name.free_with(Some(free_string));
         schema.description.free_with(Some(free_string));
         schema.parameters.free_with(Some(free_string));
+    }
+
+    #[test]
+    fn registered_schema_accepts_option_aliases_before_parsing() {
+        let schema = tool_schema();
+        let params: Value = serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
+        schema.name.free_with(Some(free_string));
+        schema.description.free_with(Some(free_string));
+        schema.parameters.free_with(Some(free_string));
+        let validator = jsonschema::JSONSchema::compile(&params).unwrap();
+
+        for field in ["title", "label", "text", "value", "name"] {
+            let mut option = json!({"description": " Target platform "});
+            option[field] = json!(" Linux ");
+            let question = json!({"question": "Choose?", "options": [option]});
+            for input in [question.clone(), json!({"questions": [question]})] {
+                // The host validates registered metadata before entering the parser.
+                if let Err(errors) = validator.validate(&input) {
+                    panic!(
+                        "schema rejected {field}: {}",
+                        errors
+                            .map(|error| error.to_string())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    );
+                }
+                let AskPlan::Questions { questions } = plan(input) else {
+                    panic!("expected questions")
+                };
+                assert_eq!(questions.len(), 1);
+                assert_eq!(questions[0].options[0].title, "Linux");
+                assert_eq!(
+                    questions[0].options[0].description.as_deref(),
+                    Some("Target platform")
+                );
+            }
+        }
     }
 
     #[test]

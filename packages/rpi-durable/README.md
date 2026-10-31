@@ -63,8 +63,13 @@ in-memory state is not advanced in that case.
 Use `durable` for explicit workflow steps, recovery metadata, and manually
 consumed work items. Use `goal` for a single context-injected objective across
 turns. Durable state belongs to the current **native session branch**, not the
-cwd or a shared workspace: another session/subagent does not automatically share
-this queue or its claims. It does not delegate work or run background workers.
+cwd or a shared workspace. Independent native sessions (including fresh
+`subagent` subprocesses) do not automatically share this queue or its claims.
+A host-managed child created by `delegate_task` instead uses the parent's
+extension tools and **shares the parent workflow, queue, and claims**. Its
+separate transcript/session ID does not provide isolated durable state. From
+such a child, do not `start`/`reset` the workflow without explicit authorization
+from the parent. Durable does not delegate work or run background workers.
 
 - Omit `action` to read `status`; actions are case-sensitive.
 - `start` requires both `name` and a nonempty `steps` array. It replaces the
