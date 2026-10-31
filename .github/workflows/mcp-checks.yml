@@ -1,0 +1,56 @@
+name: MCP foundation checks
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-mcp-core/**'
+      - 'packages/rpi-mcp-adapter/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/mcp-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp:
+    name: MCP (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      RPI_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Isolate fixture agent directories
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/mcp-agent"
+          echo "RPI_AGENT_DIR=$RUNNER_TEMP/mcp-agent" >> "$GITHUB_ENV"
+          echo "RPI_CODING_AGENT_DIR=$RUNNER_TEMP/mcp-agent" >> "$GITHUB_ENV"
+      - name: Check package and included-test formatting
+        run: |
+          cargo fmt --check -p rpi-mcp-core -p rpi-mcp-adapter
+          rustfmt --edition 2021 --check packages/rpi-mcp-adapter/src/http_tests.rs
+      - name: Test protocol compatibility and runtime ownership
+        run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter
+      - name: Check all targets
+        run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter --all-targets
+      # The pinned SDK's export_plugin! macro has an existing adapter Clippy
+      # not_unsafe_ptr_arg_deref failure. Do not suppress it or label it passing.
+      - name: Strict core Clippy
+        run: cargo clippy --locked -p rpi-mcp-core --all-targets -- -D warnings
+      - name: Build the adapter library
+        run: cargo build --locked -p rpi-mcp-adapter --lib
+      - name: Verify the standalone core package
+        run: cargo package --locked -p rpi-mcp-core
+      - name: Verify the adapter against the unpublished workspace core
+        run: cargo package --locked -p rpi-mcp-adapter --config 'patch.crates-io.rpi-mcp-core.path="packages/rpi-mcp-core"'

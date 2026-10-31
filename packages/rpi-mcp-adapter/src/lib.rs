@@ -1,14 +1,9 @@
 #![forbid(unsafe_code)]
 
-mod config;
-mod connection;
-mod control;
-mod http;
+use rpi_mcp_core::{config, connection, control, http, transport};
 mod jsonrpc;
 mod kit;
-mod process;
 mod runtime;
-mod transport;
 
 pub use config::{Exposure, HttpServer, McpConfig, McpServerConfig, StdioServer};
 pub use connection::{
@@ -16,16 +11,36 @@ pub use connection::{
     parse_tools_list, tools_call_request, tools_list_request, ServerInfo, PROTOCOL_VERSION,
 };
 pub use control::Control;
-pub use jsonrpc::{
+pub use rpi_mcp_core::jsonrpc::{
     call_result_text, tool_list, ErrorObject, Notification, Request, Response, Tool,
+};
+pub use rpi_mcp_core::{
+    ClientIdentity, CoreRequestContext, DiscoveredServer, McpRuntime, ResourceUpdate,
+    ResourceUpdateBatch,
 };
 pub use runtime::{
     call_from_config, call_from_config_with_timeout, close_from_config, discover_from_config,
-    resources_from_config, shutdown_connections, take_resource_updates, DiscoveredServer,
-    ResourceUpdate,
+    resources_from_config, shutdown_connections, take_resource_updates,
 };
 use serde_json::{json, Value};
-pub use transport::{http_request, StdioTransport};
+pub use transport::StdioTransport;
+
+/// Compatibility HTTP helper retains the adapter's wire identity.
+pub fn http_request(
+    config: &McpServerConfig,
+    request: &Request,
+    timeout_seconds: u64,
+) -> Result<Response, String> {
+    let McpServerConfig::Http(server) = config else {
+        return Err("HTTP transport requires an HTTP MCP server config".into());
+    };
+    let mut transport = http::HttpTransport::with_user_agent(
+        server,
+        concat!("rpi-mcp-adapter/", env!("CARGO_PKG_VERSION")),
+    )?;
+    transport.set_timeout(timeout_seconds);
+    transport.request(request, &Control::default())
+}
 
 fn mcp_call(params: &Value, control: &Control) -> Result<Value, String> {
     jsonrpc::agent_tool_result(&runtime::call(params, control)?)
@@ -59,7 +74,10 @@ fn mcp_request(params: &Value, control: &Control) -> Result<Value, String> {
         timeout,
         exposure: Default::default(),
     };
-    let mut transport = http::HttpTransport::new(&server)?;
+    let mut transport = http::HttpTransport::with_user_agent(
+        &server,
+        concat!("rpi-mcp-adapter/", env!("CARGO_PKG_VERSION")),
+    )?;
     let result = transport.raw(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params.get("params").cloned().unwrap_or(json!({}))}), control)?;
     Ok(kit::text_result(result.to_string()))
 }

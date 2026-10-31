@@ -20,6 +20,31 @@ flowchart TD
 - **rpi-acp** owns ACP JSON-RPC, capabilities, content conversion, stopReason mapping, tool/diff/plan formatting, client request tasks and Zed/terminal-auth integration. Client request tasks belong here because they manage ACP transport resources; native run, text and answer semantics belong to the core.
 - **rpi-web** owns Vite/React resources, `build.rs` embedding, frontend routes, Web configuration and native-extension/standalone entrypoints. The extracted core and HTTP code link into its existing extension library; users do not install additional extension libraries.
 
+## Reusable MCP foundation
+
+`rpi-mcp-adapter -> rpi-mcp-core` is a separate reusable-library boundary:
+
+- **rpi-mcp-core** owns caller-instanced MCP connections, request context,
+  subscriptions, delivery-batch lifetimes, transport bounds, cancellation and
+  process-tree cleanup. It does not depend on the plugin SDK, ACP, HTTP server
+  types or frontend code. MCP Streamable HTTP is an existing client transport,
+  not an Axum/service adapter.
+- **rpi-mcp-adapter** owns the existing plugin ABI/four tools, SDK context and
+  session-environment interpretation, compatibility default runtime, host tool
+  result projection, and custom TurnEnd messages. Core returns neutral resource
+  updates and retryable batches, not host-role messages.
+- Every core runtime owns its registry and queues. Sharing configuration files
+  or using identical scope strings does not share connections across instances.
+  Share an `Arc<McpRuntime>` deliberately when one service should own them.
+- Core denies unsafe code except for its private audited OS process module,
+  which owns Windows suspended/headless Job Object setup and Unix process groups.
+  ABI-free does not mean all platform FFI is unsafe-free.
+
+This extraction does not yet add an `rpi-extcore -> rpi-mcp-core` dependency or
+connect ACP `mcpServers` to native external-tool registration. That integration
+remains separate; native process/RPC/run ownership stays in extcore and ACP-only
+configuration/capability mappings stay in ACP.
+
 ## Preserved behavior
 
 - Keep `--webserver`, `--web`, `--acp` and existing standalone entrypoints.

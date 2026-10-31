@@ -30,6 +30,9 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     pub fn new(server: &HttpServer) -> Result<Self, String> {
+        Self::with_user_agent(server, concat!("rpi-mcp-core/", env!("CARGO_PKG_VERSION")))
+    }
+    pub fn with_user_agent(server: &HttpServer, user_agent: &str) -> Result<Self, String> {
         let url = validate_mcp_url(&server.url)?;
         let mut headers = reqwest::header::HeaderMap::new();
         for (name, value) in &server.headers {
@@ -44,7 +47,7 @@ impl HttpTransport {
             .tcp_nodelay(true)
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("rpi-mcp-adapter/", env!("CARGO_PKG_VERSION")))
+            .user_agent(user_agent)
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -91,7 +94,7 @@ impl HttpTransport {
             }
         })
     }
-    pub(crate) fn raw(&mut self, value: Value, control: &Control) -> Result<Value, String> {
+    pub fn raw(&mut self, value: Value, control: &Control) -> Result<Value, String> {
         let method = value
             .get("method")
             .and_then(Value::as_str)
@@ -230,22 +233,14 @@ impl HttpTransport {
         }
         Err("MCP SSE stream ended before matching response".into())
     }
-    pub(crate) fn request(
-        &mut self,
-        request: &Request,
-        control: &Control,
-    ) -> Result<Response, String> {
+    pub fn request(&mut self, request: &Request, control: &Control) -> Result<Response, String> {
         let value = self.raw(
             serde_json::to_value(request).map_err(|e| e.to_string())?,
             control,
         )?;
         decode_response(value, request.id)
     }
-    pub(crate) fn notify(
-        &mut self,
-        notification: &Notification,
-        control: &Control,
-    ) -> Result<(), String> {
+    pub fn notify(&mut self, notification: &Notification, control: &Control) -> Result<(), String> {
         self.raw(
             serde_json::to_value(notification).map_err(|e| e.to_string())?,
             control,
