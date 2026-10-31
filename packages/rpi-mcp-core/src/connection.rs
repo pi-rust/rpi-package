@@ -93,7 +93,7 @@ pub fn parse_tools_call(response: Response) -> Result<String, String> {
     Ok(jsonrpc::call_result_text(&result))
 }
 
-pub(crate) fn check_tool_result(result: &Value) -> Result<(), String> {
+pub fn check_tool_result(result: &Value) -> Result<(), String> {
     if result.get("isError").and_then(Value::as_bool) == Some(true) {
         return Err(format!(
             "MCP tool execution failed: {}",

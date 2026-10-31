@@ -9,6 +9,23 @@ HTTP connections. The host registers four stable tools:
 - `mcp_request`: send a raw HTTP JSON-RPC request for compatibility/diagnostics.
   This low-level tool does not manage initialization; use the other tools for normal MCP calls.
 
+## Shared core and compatibility boundary
+
+The reusable connection runtime lives in [`rpi-mcp-core`](../rpi-mcp-core/README.md).
+It owns MCP connections, resource subscriptions, bounded queues, cancellation and
+process-tree cleanup without depending on the plugin SDK or ACP. Its
+`McpRuntime` instances are caller-owned and use explicit scope/cwd context.
+
+This adapter retains its four tools, ABI callbacks and public library helpers.
+Its compatibility facade owns a default core runtime; SDK host/session context,
+active-session fallback, tool-result projection and TurnEnd message formatting
+remain here. The adapter explicitly supplies its existing MCP client identity
+and HTTP User-Agent, rather than adopting the new core crate version.
+
+This is an extraction of existing stdio/Streamable HTTP behavior, not new OAuth,
+sampling or ACP `mcpServers` integration. Native external-tool registration is a
+separate interface and is not connected by this package change.
+
 ## Configuration and discovery
 
 ```json

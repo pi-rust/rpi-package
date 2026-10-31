@@ -203,6 +203,17 @@ fn managed_flow(sse: bool) {
     )
     .unwrap();
     let seen = server.seen.lock().unwrap();
+    let (_, _, initialize) = seen
+        .iter()
+        .find(|(_, _, value)| value["method"] == "initialize")
+        .unwrap();
+    assert_eq!(
+        initialize["params"]["clientInfo"],
+        json!({"name":"rpi-mcp-adapter","version":"0.2.4"})
+    );
+    assert!(seen
+        .iter()
+        .all(|(_, headers, _)| headers.contains("user-agent: rpi-mcp-adapter/0.2.4")));
     assert_eq!(
         seen.iter()
             .filter(|(_, _, v)| v["method"] == "initialize")

@@ -5,7 +5,7 @@ use crate::process::ProcessTree;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{
     mpsc::{self, Receiver, SyncSender},
     Arc, Mutex,
@@ -17,8 +17,7 @@ pub use crate::http::http_request;
 type WriteJob = (String, SyncSender<Result<(), String>>);
 #[derive(Debug)]
 pub struct StdioTransport {
-    child: Child,
-    tree: ProcessTree,
+    child: ProcessTree,
     writer: Option<SyncSender<WriteJob>>,
     stdout: Option<Receiver<Result<String, String>>>,
     workers: Vec<JoinHandle<()>>,
@@ -80,24 +79,28 @@ impl StdioTransport {
         if let Some(cwd) = cwd {
             builder.current_dir(cwd);
         }
-        ProcessTree::prepare(&mut builder);
-        let mut child = builder
+        builder
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        // Spawn returns an RAII tree owner before any fallible pipe setup.
+        let mut child = ProcessTree::spawn(&mut builder)
             .map_err(|e| format!("failed to start MCP stdio server: {e}"))?;
-        let tree = match ProcessTree::attach(&child) {
-            Ok(tree) => tree,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
-        let mut stdin = child.stdin.take().ok_or("MCP stdin unavailable")?;
-        let stdout = child.stdout.take().ok_or("MCP stdout unavailable")?;
-        let mut stderr_pipe = child.stderr.take().ok_or("MCP stderr unavailable")?;
+        let mut stdin = child
+            .child_mut()
+            .stdin
+            .take()
+            .ok_or("MCP stdin unavailable")?;
+        let stdout = child
+            .child_mut()
+            .stdout
+            .take()
+            .ok_or("MCP stdout unavailable")?;
+        let mut stderr_pipe = child
+            .child_mut()
+            .stderr
+            .take()
+            .ok_or("MCP stderr unavailable")?;
         let (writes, jobs) = mpsc::sync_channel::<WriteJob>(16);
         let writer = std::thread::spawn(move || {
             while let Ok((line, done)) = jobs.recv() {
@@ -177,7 +180,6 @@ impl StdioTransport {
         });
         Ok(Self {
             child,
-            tree,
             writer: Some(writes),
             stdout: Some(receiver),
             workers: vec![writer, reader, logger],
@@ -274,9 +276,9 @@ impl StdioTransport {
     pub fn stop(&mut self) {
         self.writer.take();
         self.stdout.take(); // Release any reader blocked sending into the bounded queue.
-        self.tree.kill();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+                            // Always signal the entire tree, even after its leader has exited:
+                            // descendants may still own stdin/stdout/stderr and block worker joins.
+        self.child.stop();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
