@@ -10,13 +10,13 @@
   flex: 0 1 auto;
 }
 .workspace .transcript-frame:has(.conversation-timeline) .transcript {
-  padding-right: 34px;
+  padding-left: 34px;
 }
 .conversation-timeline {
   position: absolute;
   z-index: 4;
   top: 50%;
-  right: 5px;
+  left: 5px;
   width: 24px;
   height: min(280px, calc(100% - 24px));
   transform: translateY(-50%);
@@ -131,7 +131,7 @@
 .conversation-timeline:has(.timeline-preview)::before {
   content: "";
   position: absolute;
-  right: 100%;
+  left: 100%;
   width: 8px;
   top: 0;
   bottom: 0;
@@ -139,7 +139,7 @@
 }
 .timeline-preview {
   position: absolute;
-  right: calc(100% + 8px);
+  left: calc(100% + 8px);
   transform: translateY(-50%);
   width: max-content;
   max-width: min(240px, calc(100vw - 64px));
@@ -183,10 +183,10 @@
 }
 @media (max-width: 767px) {
   .workspace .transcript-frame:has(.conversation-timeline) .transcript {
-    padding-right: 36px;
+    padding-left: 36px;
   }
   .conversation-timeline {
-    right: 3px;
+    left: 3px;
     width: 28px;
   }
   .conversation-timeline .timeline-node {
