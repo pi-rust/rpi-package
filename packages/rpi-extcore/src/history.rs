@@ -1,8 +1,9 @@
 //! Read native transcript branches without projecting a client protocol.
+pub mod page;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
 };
 pub fn find_saved_session(directory: &Path, id: &str) -> Result<PathBuf, String> {
@@ -27,7 +28,13 @@ pub fn find_saved_session(directory: &Path, id: &str) -> Result<PathBuf, String>
             let path = file.path();
             let mut reader = BufReader::new(std::fs::File::open(&path).map_err(|e| e.to_string())?);
             let mut line = String::new();
-            reader.read_line(&mut line).map_err(|e| e.to_string())?;
+            (&mut reader)
+                .take(page::MAX_PAGE_BYTES as u64 + 1)
+                .read_line(&mut line)
+                .map_err(|e| e.to_string())?;
+            if line.len() > page::MAX_PAGE_BYTES {
+                return Err("saved session header exceeds byte budget".into());
+            }
             let header: Value =
                 serde_json::from_str(&line).map_err(|e| format!("invalid session header: {e}"))?;
             if header["kind"] != "header" || header["version"] != 4 || header["id"] != id {

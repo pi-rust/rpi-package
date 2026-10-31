@@ -36,11 +36,42 @@ fn find_saved_session(directory: &Path, id: &str) -> Result<PathBuf, String> {
     rpi_extcore::history::find_saved_session(directory, id)
         .map_err(|error| error.replace("no saved native session", "no saved ACP session"))
 }
-pub(crate) fn replay(path: &Path, leaf: Option<&str>) -> Result<Vec<Value>, String> {
-    Ok(rpi_extcore::history::branch_messages(path, leaf)?
-        .iter()
-        .flat_map(message_updates)
-        .collect())
+pub(crate) struct Replay {
+    // Keep the native run lease until replay and the load response complete.
+    _read: rpi_extcore::history::page::HistoryRead,
+    spool: rpi_extcore::history::page::HistorySpool,
+}
+impl Replay {
+    pub(crate) async fn prepare(
+        session: &crate::session::Session,
+        id: &str,
+    ) -> Result<Self, String> {
+        let read = session.history_read().await?;
+        let saved = if read.supports_pages() {
+            None
+        } else {
+            Some(saved_session(id)?)
+        };
+        let spool = read.prepare(saved.as_deref()).await?;
+        Ok(Self { _read: read, spool })
+    }
+    pub(crate) async fn emit(
+        &mut self,
+        writer: &crate::protocol::Writer,
+        id: &str,
+    ) -> Result<(), String> {
+        while let Some(messages) = self.spool.pop()? {
+            self._read.ensure_active()?;
+            for message in messages {
+                for update in message_updates(&message) {
+                    writer
+                        .notify("session/update", json!({"sessionId":id,"update":update}))
+                        .await;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 #[cfg(test)]
 fn branch_updates(

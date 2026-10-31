@@ -61,6 +61,30 @@ the transcript. An unknown or missing session returns an error rather than
 silently opening an empty conversation. Sessions created by ACP 0.1.1 and older
 were temporary (`--no-session`) and cannot be restored after their backend exits.
 
+Replay is prepared and validated by core before any ACP update is emitted.
+Native paging is at most 128 messages / 8 MiB of serialized reply data per page,
+anchored to a stable leaf, total count and event boundary. A private temporary
+page spool (512 MiB maximum; Unix mode 0600) reverses the newest-first page
+traversal without retaining the full transcript. Preparation is limited to 30
+seconds, with each
+RPC limited to 15 seconds or the remaining budget. Old hosts that do not
+advertise `get_messages` instead use a genuinely bounded native-file read
+(64 MiB total, 8 MiB per line); malformed advertised paging never falls back.
+Oversized, incomplete or changing histories return a session error, not
+truncated success. An already attached backend survives replay errors.
+`session/resume` does not request pages or perform adapter/core transcript reads
+for replay; native still restores its own context. See the
+[core history contract](../rpi-extcore/README.md#bounded-active-branch-replay-preparation)
+for cleanup and filesystem caveats. Load still runs inline in the existing ACP
+dispatcher: a client cancellation received during load is processed only after
+load returns, not as an immediate interruption of preparation or replay.
+
+Run the model-free paged/old-host fixture with
+`python -B packages/rpi-acp/tests/bounded_history.py --bridge <bridge>`.
+For a real native v4 transcript with 513 active and 19 off-branch messages,
+use `python -B packages/rpi-acp/tests/bounded_history_native.py --bridge <bridge> --rpi <rpi>`;
+it verifies five native pages and exact replay across fresh process restarts.
+
 ### Durable control plane
 
 rpi-aware ACP clients may call the extension method
