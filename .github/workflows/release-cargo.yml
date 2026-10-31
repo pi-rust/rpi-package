@@ -1,8 +1,7 @@
 name: Version and publish crates
 
 on:
-  push:
-    branches: [main]
+  # Automatic releases are paused; keep manual publishing available.
   workflow_dispatch:
 
 permissions:
