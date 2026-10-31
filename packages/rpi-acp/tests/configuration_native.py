@@ -211,7 +211,8 @@ def run(args):
         models = json.loads((root / "agent/models.json").read_text(encoding="utf-8"))
         reasoning = models["providers"]["fixture"]["models"][0]
         reasoning["reasoning"] = True
-        plain = dict(reasoning, id="plain", name="plain", reasoning=False)
+        plain = dict(reasoning, id="plain", name="plain", reasoning=False,
+                     thinkingLevelMap={"minimal": None, "low": None, "medium": None, "high": None})
         models["providers"]["fixture"]["models"].append(plain)
         h.dump(root / "agent/models.json", models)
         workspace = root / "workspace"
