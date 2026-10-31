@@ -276,7 +276,7 @@ async fn external_cancelled_queued_response_is_not_written() {
         .send(Outbound {
             value: json!({"type":"external_tool_response","requestId":"retired","error":"no"}),
             pending_id: None,
-            control: Some(control.clone()),
+            control: Some(CommandControl::Tools(control.clone())),
         })
         .await
         .unwrap();

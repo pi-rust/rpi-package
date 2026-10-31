@@ -45,6 +45,9 @@ mod protocol_configuration_tests;
 #[cfg(test)]
 #[path = "protocol_context_usage_tests.rs"]
 mod protocol_context_usage_tests;
+#[cfg(test)]
+#[path = "protocol_response_progress_tests.rs"]
+mod protocol_response_progress_tests;
 
 /// The pollable stdin reader, re-exported so the frontends can build one.
 pub use rpi_plugin_sdk::stdio::StdinLines;
@@ -129,12 +132,17 @@ fn durable_mutation(params: &Value) -> Result<DurableMutation, String> {
 /// ACP protocol major version we speak. Stable v1.
 pub const PROTOCOL_VERSION: u64 = 1;
 
-/// One block of a `session/prompt` message. Modeled types are the ones we act
-/// on; every other ACP block (`image`, `audio`, …) lands in [`ContentBlock::Other`]
-/// and is ignored, matching our advertised `promptCapabilities`.
+/// Ordered ACP input; URI metadata on inline images is inert and never fetched.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+        #[serde(default)]
+        uri: Option<String>,
+    },
     Text {
         text: String,
     },
@@ -166,7 +174,8 @@ pub struct Writer {
     /// In-flight agent → client requests (e.g. `session/request_permission`),
     /// keyed by the JSON-RPC id we sent. The client's response (an object with
     /// `id` and no `method`) resolves the matching oneshot.
-    pending: std::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>,
+    pending: std::sync::Mutex<HashMap<u64, ClientPending>>,
+    file_io: std::sync::Mutex<rpi_extcore::file_io::FileIOCapabilities>,
     terminal: watch::Sender<bool>,
     closed: std::sync::atomic::AtomicBool,
     next_id: AtomicU64,
@@ -175,10 +184,26 @@ pub struct Writer {
     elicitation: std::sync::atomic::AtomicBool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientRequestError {
+    Rpc { code: i64, message: String },
+    InvalidResponse,
+    TooLarge,
+    Capacity,
+    Cancelled,
+    Disconnected,
+}
+
+struct ClientPending {
+    tx: oneshot::Sender<Result<Value, ClientRequestError>>,
+    max_response_bytes: Option<usize>,
+}
+
 impl Writer {
     pub fn new() -> Self {
         Self {
             out: Mutex::new(Box::new(tokio::io::stdout())),
+            file_io: std::sync::Mutex::default(),
             terminal: watch::channel(false).0,
             pending: std::sync::Mutex::new(HashMap::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
@@ -314,26 +339,55 @@ impl Writer {
     /// Send an agent → client request and await its response. Resolves to the
     /// `result` object, or `Null` if the connection closes first.
     pub async fn request(&self, method: &str, params: Value) -> Value {
+        self.request_checked(method, params, None)
+            .await
+            .unwrap_or(Value::Null)
+    }
+
+    /// Preserve errors versus successful null, with bounded shared admission.
+    pub async fn request_checked(
+        &self,
+        method: &str,
+        params: Value,
+        max_response_bytes: Option<usize>,
+    ) -> Result<Value, ClientRequestError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.pending.lock().unwrap();
             if self.closed.load(Ordering::Acquire) {
-                return Value::Null;
+                return Err(ClientRequestError::Disconnected);
             }
-            pending.insert(id, tx);
+            if pending.len() >= 64 {
+                return Err(ClientRequestError::Capacity);
+            }
+            pending.insert(
+                id,
+                ClientPending {
+                    tx,
+                    max_response_bytes,
+                },
+            );
         }
-        // A cancelled dialog drops its pending request even when the client never replies.
         let _request = PendingRequest { writer: self, id };
         if self
-            .write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await
             .is_err()
         {
             self.close();
-            return Value::Null;
+            return Err(ClientRequestError::Disconnected);
         }
-        rx.await.unwrap_or(Value::Null)
+        rx.await.unwrap_or(Err(ClientRequestError::Disconnected))
+    }
+
+    pub(crate) fn file_io_capabilities(&self) -> rpi_extcore::file_io::FileIOCapabilities {
+        *self.file_io.lock().unwrap()
+    }
+
+    fn negotiate_file_io(&self, params: &Value) -> Result<(), String> {
+        *self.file_io.lock().unwrap() = crate::file_io::capabilities(params)?;
+        Ok(())
     }
 
     pub fn close(&self) {
@@ -372,6 +426,7 @@ impl Writer {
     pub(crate) fn with_output(out: impl AsyncWrite + Unpin + Send + 'static) -> Self {
         Self {
             out: Mutex::new(Box::new(out)),
+            file_io: std::sync::Mutex::default(),
             terminal: watch::channel(false).0,
             pending: std::sync::Mutex::new(HashMap::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
@@ -390,16 +445,25 @@ impl Writer {
     /// owning dialog task send the native cancellation frame and retire its
     /// transport resource without aborting the Rust task.
     pub(crate) async fn cancel_request(&self, id: u64) {
-        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
-            let _ = tx.send(Value::Null);
+        if let Some(pending) = self.pending.lock().unwrap().remove(&id) {
+            let _ = pending.tx.send(Err(ClientRequestError::Cancelled));
         }
     }
 
     /// Route a client response (an object with `id` and no `method`) to the
     /// request that produced it.
     pub(crate) async fn resolve(&self, id: u64, result: Value) {
-        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
-            let _ = tx.send(result);
+        self.resolve_checked(id, Ok(result));
+    }
+
+    pub(crate) fn resolve_checked(&self, id: u64, mut result: Result<Value, ClientRequestError>) {
+        if let Some(pending) = self.pending.lock().unwrap().remove(&id) {
+            if let (Some(limit), Ok(value)) = (pending.max_response_bytes, &result) {
+                if !crate::file_io::within_json_budget(value, limit) {
+                    result = Err(ClientRequestError::TooLarge);
+                }
+            }
+            let _ = pending.tx.send(result);
         }
     }
 }
@@ -472,8 +536,8 @@ pub fn initialize_result() -> Value {
             "auth": {"logout": {}},
             "sessionCapabilities": {"resume": {}, "delete": {}, "close": {}, "list": {}},
             "promptCapabilities": {
-                // `--mode rpc` takes a single text prompt; no multimodal input.
-                "image": false,
+                // Adapter support; old native peers reject images before writing.
+                "image": true,
                 "audio": false,
                 // Editor context (open files / selections) arrives as `resource`
                 // blocks, which we inline into the prompt text.
@@ -569,7 +633,7 @@ enum RpcMessage {
     },
     Response {
         id: Value,
-        result: Value,
+        result: Result<Value, ClientRequestError>,
     },
 }
 
@@ -664,16 +728,29 @@ fn parse_rpc_message(message: Value) -> Result<RpcMessage, Value> {
     };
     let has_result = object.contains_key("result");
     let has_error = object.contains_key("error");
-    if !has_result && !has_error {
-        return Err(rpc_error(id, -32600, "invalid request"));
-    }
-    if has_result == has_error || (has_error && !object["error"].is_object()) {
-        return Err(Value::Null);
-    }
-    Ok(RpcMessage::Response {
-        id,
-        result: object.get("result").cloned().unwrap_or(Value::Null),
-    })
+    // A malformed response retires its matching request explicitly instead of
+    // responding to a response or silently waiting for the file deadline.
+    let result = if has_result == has_error {
+        Err(ClientRequestError::InvalidResponse)
+    } else if has_error {
+        let error = &object["error"];
+        match (error["code"].as_i64(), error["message"].as_str()) {
+            (Some(code), Some(message))
+                if message.len() <= rpi_extcore::file_io::MAX_ERROR_BYTES =>
+            {
+                Err(ClientRequestError::Rpc {
+                    code,
+                    message: message.to_owned(),
+                })
+            }
+            _ => Err(ClientRequestError::InvalidResponse),
+        }
+    } else {
+        // Move untrusted result; never clone its potentially huge text payload.
+        let mut message = message;
+        Ok(message.as_object_mut().unwrap().remove("result").unwrap())
+    };
+    Ok(RpcMessage::Response { id, result })
 }
 
 fn request_params<'a>(
@@ -878,10 +955,127 @@ where
     .await
 }
 
-async fn run_connection_with_opener<F, Fut>(
+// Only nonresponses consume ingress capacity. Never await a full queue: doing
+// so would strand responses behind requests while lifecycle dispatch is busy.
+// The 65th queued nonresponse fails the connection closed instead. This is a
+// queue bound, not a new input-frame byte limit; feature budgets still apply.
+const INPUT_QUEUE_CAPACITY: usize = 64;
+
+async fn route_connection_input(
     mut stop: watch::Receiver<bool>,
     mut poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
     mut pending: Option<String>,
+    writer: Arc<Writer>,
+    input: tokio::sync::mpsc::Sender<Result<RpcMessage, Value>>,
+) -> std::io::Result<()> {
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(10));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        if *stop.borrow() || writer.closed.load(Ordering::Acquire) {
+            writer.close();
+            return Ok(());
+        }
+        // The probe's first line precedes every subsequent stdin line.
+        let next = match pending.take() {
+            Some(line) => Ok(rpi_plugin_sdk::stdio::InputLine::Line(line)),
+            None => poll_line(),
+        };
+        let line = match next {
+            Ok(rpi_plugin_sdk::stdio::InputLine::Line(line)) => line,
+            // Do not close Writer on EOF: the dispatcher must first drain the
+            // queued requests and perform its existing prompt/list cleanup.
+            Ok(rpi_plugin_sdk::stdio::InputLine::Eof) => return Ok(()),
+            Ok(rpi_plugin_sdk::stdio::InputLine::Pending) => {
+                tokio::select! {
+                    biased;
+                    _ = writer.terminal() => return Ok(()),
+                    _ = stop.changed() => {
+                        writer.close();
+                        return Ok(());
+                    }
+                    _ = tick.tick() => {},
+                }
+                continue;
+            }
+            Err(error) => {
+                diagln!("[rpi-acp] stdin read error: {error}");
+                writer.close();
+                return Err(error);
+            }
+        };
+        let line = line.trim();
+        if !line.is_empty() {
+            let rpc = match serde_json::from_str(line) {
+                Ok(message) => parse_rpc_message(message),
+                Err(error) => Err(rpc_error(
+                    Value::Null,
+                    -32700,
+                    format!("parse error: {error}"),
+                )),
+            };
+            match rpc {
+                Ok(RpcMessage::Response { id, result }) => {
+                    if let Some(id) = id.as_u64() {
+                        writer.resolve_checked(id, result);
+                    }
+                }
+                Err(error) if error.is_null() => {}
+                other => match input.try_send(other) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        diagln!("[rpi-acp] stdin request queue overflow (limit 64)");
+                        writer.close();
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "ACP stdin request queue overflow (limit 64)",
+                        ));
+                    }
+                },
+            }
+        }
+        // Even an always-ready source must let serialized dispatch, stop and
+        // native file workers progress. No spawned/detached stdin task or Send
+        // bound on the original FnMut reader is needed.
+        tokio::task::yield_now().await;
+    }
+}
+
+async fn run_connection_with_opener<F, Fut>(
+    stop: watch::Receiver<bool>,
+    poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+    open: F,
+) -> i32
+where
+    F: FnMut(String, PathBuf, Vec<rpi_extcore::external_tools::ToolServer>) -> Fut,
+    Fut: std::future::Future<Output = Result<(Arc<Session>, Value), String>>,
+{
+    let (tx, rx) = tokio::sync::mpsc::channel(INPUT_QUEUE_CAPACITY);
+    let (outcome_tx, outcome_rx) = oneshot::channel();
+    let ingress_stop = stop.clone();
+    let ingress_writer = writer.clone();
+    // Both futures are owned and polled here. Lifecycle requests remain in one
+    // ordered dispatcher; only checked client responses bypass that queue.
+    let ingress = async move {
+        let outcome =
+            route_connection_input(ingress_stop, poll_line, pending, ingress_writer, tx).await;
+        let _ = outcome_tx.send(outcome);
+    };
+    let ((), exit_code) = tokio::join!(
+        ingress,
+        dispatch_connection(stop, rx, outcome_rx, writer, list_root, sessions, open),
+    );
+    exit_code
+}
+
+async fn dispatch_connection<F, Fut>(
+    mut stop: watch::Receiver<bool>,
+    mut input: tokio::sync::mpsc::Receiver<Result<RpcMessage, Value>>,
+    input_outcome: oneshot::Receiver<std::io::Result<()>>,
     writer: Arc<Writer>,
     list_root: Result<PathBuf, String>,
     sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
@@ -905,9 +1099,6 @@ where
     let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut list_tasks = crate::session_list::ListTasks::new(list_root);
 
-    let mut tick = tokio::time::interval(std::time::Duration::from_millis(10));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut exit_code = 0;
     // Why the loop ended, reported once at the bottom. Zed forwards agent stderr
     // into its own log, so this is what turns "transport closed" into a cause.
     let mut reason = "stdin closed (client hung up)";
@@ -915,62 +1106,27 @@ where
         if writer.closed.load(Ordering::Acquire) {
             break;
         }
-        let line = loop {
-            if writer.closed.load(Ordering::Acquire) {
-                break 'input;
-            }
-            if let Some(line) = pending.take() {
-                break line;
-            }
-            if *stop.borrow() {
-                reason = "stopped by the host (session shutdown)";
-                break 'input;
-            }
-            match poll_line() {
-                Ok(rpi_plugin_sdk::stdio::InputLine::Line(line)) => break line,
-                Ok(rpi_plugin_sdk::stdio::InputLine::Eof) => break 'input,
-                Ok(rpi_plugin_sdk::stdio::InputLine::Pending) => {
-                    tokio::select! {
-                        biased;
-                        _ = stop.changed() => {
-                            reason = "stopped by the host (session shutdown)";
-                            break 'input;
-                        }
-                        _ = tick.tick() => {},
-                    }
-                }
-                Err(error) => {
-                    diagln!("[rpi-acp] stdin read error: {error}");
-                    reason = "stdin read error";
-                    exit_code = 2;
-                    break 'input;
-                }
-            }
-        };
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+        if *stop.borrow() {
+            reason = "stopped by the host (session shutdown)";
+            break;
         }
-        let message: Value = match serde_json::from_str(line) {
-            Ok(value) => value,
-            Err(error) => {
-                // Parse errors are the one JSON-RPC error that has no usable
-                // request id. They still get a response, unlike notifications.
-                writer
-                    .write(&rpc_error(
-                        Value::Null,
-                        -32700,
-                        format!("parse error: {error}"),
-                    ))
-                    .await
-                    .ok();
-                continue;
+        let rpc = tokio::select! {
+            biased;
+            _ = stop.changed() => {
+                reason = "stopped by the host (session shutdown)";
+                break;
             }
+            _ = writer.terminal() => break,
+            next = input.recv() => match next {
+                Some(rpc) => rpc,
+                None => break,
+            },
         };
-        let rpc = match parse_rpc_message(message) {
+        let rpc = match rpc {
             Ok(message) => message,
-            Err(error) if error.is_null() => continue,
             Err(error) => {
+                // Preserve parse/request errors in input order. Malformed
+                // notifications and responses were filtered by the parser.
                 writer.write(&error).await.ok();
                 continue;
             }
@@ -979,7 +1135,7 @@ where
             RpcMessage::Request { id, method, params } => (id, method, params),
             RpcMessage::Response { id, result } => {
                 if let Some(numeric_id) = id.as_u64() {
-                    writer.resolve(numeric_id, result).await;
+                    writer.resolve_checked(numeric_id, result);
                 }
                 continue;
             }
@@ -1044,6 +1200,10 @@ where
                     }
                 }
                 let initialize_params = Value::Object(params.clone());
+                if let Err(error) = writer.negotiate_file_io(&initialize_params) {
+                    writer.respond_error(&id, -32602, &error).await;
+                    continue;
+                }
                 writer.negotiate_questions(&initialize_params);
                 let terminal_auth = client_supports_terminal_auth(&initialize_params);
                 writer
@@ -1102,6 +1262,11 @@ where
                 let session_id = uuid::Uuid::new_v4().to_string();
                 match open(session_id.clone(), cwd, servers).await {
                     Ok((session, state)) => {
+                        if let Err(error) = session.configure_file_io(&writer, &session_id).await {
+                            session.kill().await;
+                            writer.session_error(&id, "session/new", &error).await;
+                            continue;
+                        }
                         let lifecycle = session.configuration_lifecycle();
                         let runtime = match session.configuration().await {
                             Ok(runtime) => runtime,
@@ -1327,6 +1492,13 @@ where
                 };
                 match opened {
                     Ok((session, state)) => {
+                        if let Err(error) = session.configure_file_io(&writer, session_id).await {
+                            if !sessions.lock().await.contains_key(session_id) {
+                                session.kill().await;
+                            }
+                            writer.session_error(&id, method, &error).await;
+                            continue;
+                        }
                         let lifecycle = session.configuration_lifecycle();
                         let runtime = match session.configuration().await {
                             Ok(runtime) => runtime,
@@ -1698,6 +1870,16 @@ where
     for (_, session) in sessions.lock().await.drain() {
         session.kill().await;
     }
+    // The owned ingress sends its actual outcome, independently of queue
+    // capacity. A closed Writer must not turn a real read/overflow error into
+    // normal EOF (or log exit 0). Closing above also wakes an idle ingress.
+    let exit_code = match input_outcome.await {
+        Ok(Ok(())) => 0,
+        _ => {
+            reason = "stdin ingress failed";
+            2
+        }
+    };
     // One line, always: with Zed this lands in its log as `agent stderr`, and it
     // is what a client's "transport closed" actually corresponds to.
     diagln!("[rpi-acp] server stopping ({reason}, exit {exit_code})");
@@ -1997,6 +2179,58 @@ mod tests {
     use super::*;
 
     include!("protocol_compact_tests.rs");
+
+    #[test]
+    fn checked_client_response_preserves_error_null_and_rejects_ambiguous_frames() {
+        let response = parse_rpc_message(json!({"jsonrpc":"2.0","id":1,"result":null})).unwrap();
+        assert!(matches!(
+            response,
+            RpcMessage::Response {
+                result: Ok(Value::Null),
+                ..
+            }
+        ));
+        let response =
+            parse_rpc_message(json!({"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":""}}))
+                .unwrap();
+        assert!(matches!(
+            response,
+            RpcMessage::Response {
+                result: Err(ClientRequestError::Rpc { code: -32002, .. }),
+                ..
+            }
+        ));
+        for frame in [
+            json!({"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-1,"message":"no"}}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":"bad","message":"no"}}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"x".repeat(4097)}}),
+        ] {
+            assert!(matches!(
+                parse_rpc_message(frame).unwrap(),
+                RpcMessage::Response {
+                    result: Err(ClientRequestError::InvalidResponse),
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn writer_negotiates_client_fs_without_claiming_terminal_methods() {
+        let writer = Writer::new();
+        writer
+            .negotiate_file_io(&json!({"clientCapabilities":{"fs":{"readTextFile":true}}}))
+            .unwrap();
+        assert!(writer.file_io_capabilities().read_text);
+        assert!(!writer.file_io_capabilities().write_text);
+        assert!(writer
+            .negotiate_file_io(&json!({"clientCapabilities":{"fs":{"writeTextFile":"true"}}}))
+            .is_err());
+        assert_eq!(
+            initialize_result()["agentCapabilities"]["promptCapabilities"]["image"],
+            true
+        );
+    }
     include!("protocol_mcp_tests.rs");
     include!("protocol_session_list_tests.rs");
 
@@ -2175,8 +2409,7 @@ mod tests {
     #[test]
     fn unknown_content_block_is_ignored() {
         let image: ContentBlock =
-            serde_json::from_value(json!({"type":"image","data":"...","mimeType":"image/png"}))
-                .unwrap();
+            serde_json::from_value(json!({"type":"video","data":"..."})).unwrap();
         assert!(matches!(image, ContentBlock::Other));
     }
 

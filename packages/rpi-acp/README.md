@@ -132,7 +132,10 @@ anchored to a stable leaf, total count and event boundary. A private temporary
 page spool (512 MiB maximum; Unix mode 0600) reverses the newest-first page
 traversal without retaining the full transcript. Preparation is limited to 30
 seconds, with each
-RPC limited to 15 seconds or the remaining budget. Old hosts that do not
+RPC limited to 15 seconds or the remaining budget. Before replay emission, ACP
+also requests a non-consuming, one-page-at-a-time core validation walk with a
+separate 30-second budget. These are two bounded phases, not one aggregate
+30-second load deadline. Old hosts that do not
 advertise `get_messages` instead use a genuinely bounded native-file read
 (64 MiB total, 8 MiB per line); malformed advertised paging never falls back.
 Oversized, incomplete or changing histories return a session error, not
@@ -143,6 +146,10 @@ for replay; native still restores its own context. See the
 for cleanup and filesystem caveats. Load still runs inline in the existing ACP
 dispatcher: a client cancellation received during load is processed only after
 load returns, not as an immediate interruption of preparation or replay.
+Validated client responses (including filesystem acknowledgements) are routed
+independently while lifecycle work waits. Other incoming requests retain FIFO
+ordering in a 64-item queue; overflowing that queue closes the connection with
+an error rather than stalling responses behind an unbounded backlog.
 
 Run the model-free paged/old-host fixture with
 `python -B packages/rpi-acp/tests/bounded_history.py --bridge <bridge>`.
@@ -690,12 +697,14 @@ Registry's handshake (and its pass/fail rule) locally.
 
 * **Stable ACP v1** with durable sessions. `loadSession` and session resume are
   advertised; sessions restore native rpi history after reconnection.
-* The client-side `fs/*` and `terminal/*` methods are **not** used: rpi runs its
-  own `read`/`write`/`edit`/`bash` tools in the session `cwd`. This keeps the
-  agent behavior identical to the terminal.
-* Prompt input: `text`, `resource_link`, and embedded `resource` blocks are
-  supported (`promptCapabilities.embeddedContext: true`). Images/audio are not
-  (`rpi --mode rpc` takes a single text prompt).
+* Client `fs/read_text_file` and `fs/write_text_file` are used only when the
+  client independently negotiates them; see [client text files](#client-text-files).
+  Without either capability, the original local tools remain in use.
+  Client `terminal/*` is not implemented; `bash` still executes natively.
+* Prompt input: `text`, `resource_link`, embedded `resource`, and bounded inline
+  PNG/JPEG images are supported (`embeddedContext: true`, `image: true`).
+  Image prompts require a compatible native profile; audio and other media are
+  not supported. See [inline image prompts](#inline-image-prompts).
 * Updates include `agent_message_chunk`, `agent_thought_chunk`, `tool_call`
   (with `diff` content for `edit`/`write`), `tool_call_update`, `plan`,
   `config_option_update` on the live configuration path, and the capability-gated
@@ -736,6 +745,135 @@ Registry's handshake (and its pass/fail rule) locally.
 * Authentication is signalled out of band through the terminal method above, so
   `authenticate` is a tolerant no-op rather than a real handler; rpi never asks
   the client to collect a secret.
+
+## Native message identity
+
+Stable ACP v1 ContentChunk's optional `messageId` is the native transcript
+entry ID, not a provider response ID, tool-call ID, hash, or adapter-generated
+counter. Live assistant text/thinking chunks (including reconciliation of final
+snapshots) carry it only when native advertises the exact
+`ready.semantics.messageIds: "sessionEntryId-v1"` contract. Core rejects missing,
+malformed or changing assistant identity under that contract instead of guessing.
+Legacy hosts without that advertisement retain ID-less live output.
+
+`session/load` uses validated native `entryId` for replayed user text/images and
+assistant text/thinking chunks. Multiple blocks of one message share the same
+ID; distinct native messages remain distinct even if their text is identical.
+This does not add a live user echo, put IDs inside content blocks, or attach
+message identity to tools, plans, configuration/usage updates or compaction
+summaries. `session/resume` still does not replay history. Native owns identity
+and persistence; ACP has no second identity ledger.
+
+## Inline image prompts
+
+An ACP image block uses `{"type":"image","data":"<base64>","mimeType":"image/png"}`
+(or `image/jpeg`). Text, resource conversions and images retain their input
+order. Optional ACP image `uri` metadata is inert: it is never fetched or opened.
+Only canonical standard base64 with exact PNG/JPEG MIME/signature agreement is
+accepted. Data URLs, URL-safe/whitespace base64, APNG, JPEG-XT, audio and other
+formats are not supported. Native additionally validates actual pixel decoding,
+orientation and the selected model's image input support before admission.
+Images needing orientation transforms must be normalized by the client; this
+path does not silently resize, re-encode, drop, or replace images with text.
+
+The ordered native profile permits 1..64 content blocks, at most 4 images,
+256 KiB decoded per image (349,528 base64 bytes), 512 KiB decoded images total,
+and 32 KiB aggregate UTF-8 text. The complete serialized native prompt command,
+including correlation ID, escaping and LF, is limited to 768 KiB. Native caps
+images at 2000 pixels per side / 4,000,000 pixels and advertises a 32 MiB
+**best-effort decoder allocation budget**, not a process-wide heap/RSS limit
+(JPEG scratch allocations are not all accounted). Native inbound frames remain
+limited to 1 MiB.
+
+ACP advertises adapter image support at initialize, before creating a native
+session. Each image prompt must still pass extcore's exact v1
+`ready.promptContent` profile gate; old/incompatible native fails before any
+prompt command is written, with no image-to-text fallback. Pure-text/resource
+input retains its existing legacy text conversion and does not acquire these
+new ordered-image budgets. History replay preflights images before emitting
+updates and preserves user image blocks with their native entry identity.
+
+## Client text files
+
+Negotiate independent boolean flags in `initialize`:
+
+```json
+{"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true}}}
+```
+
+Missing flags mean false; malformed flags are rejected. Successful new/load/
+resume configures native while idle, before tools execute. Nonempty selection
+requires native `ready.fileIO` v1 plus commands `configure_file_io` /
+`file_io_response` and events `file_io_request` / `file_io_request_closed`.
+Unsupported native fails explicitly; no requested authority is silently ignored.
+The live session configuration is immutable in core; close/reopen to change it.
+A fresh ACP connection negotiates again, not from transcript metadata.
+
+| Client read | Client write | Built-in `read` | Built-in `write` | Built-in `edit` |
+| --- | --- | --- | --- | --- |
+| false | false | Original host path | Original host path | Original host path |
+| true | false | Client text | Rejected | Rejected |
+| false | true | Original host path | Client text | Rejected |
+| true | true | Client text | Client text | Client full read + client write |
+
+Delegated operations use `fs/read_text_file` / `fs/write_text_file` with the ACP
+`sessionId` and an absolute lexical path resolved from the native session cwd.
+Read requests optionally include one-based `line` and positive `limit`; return
+raw unnumbered text in `{"content":"..."}` with the requested range applied
+once. Edit requests read the complete file, failing rather than truncating, then
+write the full modified text. Write acknowledgement is `{}` (optional `_meta`);
+null is tolerated. Errors are not acknowledgements.
+
+Native owns tool execution, matching/edit rules and permission-before-execution;
+ACP only forwards bounded text requests. Selected client operations do not
+probe/read/write the host source file or create local parent directories, even
+on denial, malformed replies, timeout or disconnect. Client text reads cannot
+fall back to host image-file reads. This is not an OS sandbox: write-only still
+leaves `read` local, and shell commands, extensions, configuration/session storage
+and unrelated tools are outside this delegation boundary. Client buffers are
+not copied into a new bridge-owned filesystem or history database.
+
+At most 64 requests are pending; text is limited to 256 KiB UTF-8, independently
+of the 768 KiB encoded JSON payload limit (escaping can reach that first).
+Native inbound frames are bounded to 1 MiB. Native waits up to 60 seconds;
+core gives handlers 50 seconds including queue time and separately bounds native
+response dispatch to 5 seconds; ACP gives each client operation 45 seconds
+including queued frame writing. These layered deadlines are not a global hard
+shutdown bound. Cancellation, native closure, settlement and disconnect retire
+correlation/owned work; late or duplicate replies cannot revive it. A write may
+already have committed when its acknowledgement is lost: no rollback, CAS,
+automatic retry or replay is promised. Native serializes write/edit mutations
+per router and lexical path, not symlink/file identity or external editors.
+
+## Three-capability validation scope
+
+Normal Cargo tests include the new core identity/prompt/file-I/O tests, ACP
+history/image/filesystem mapping fixtures, and native CLI/tool/harness tests.
+The existing six-package command in `.github/workflows/mcp-checks.yml` selects
+package fixtures; native's workspace CI selects its own tests. The package job
+also retains direct MCP core and stdio/HTTP bridge checks. Neither fixture CI nor
+harness source is evidence of a fresh native pass.
+
+From the package repository, inspect the authored Windows proof harness:
+
+```text
+python -B packages/rpi-acp/tests/message_image_fs_native.py --help
+python -B packages/rpi-acp/tests/message_image_fs_native.py --bridge <absolute-bridge.exe> --rpi <absolute-rpi.exe> --bridge-sha <sha256> --native-sha <sha256> --prebuild-inventory <absolute-parent-inventory.json> --diagnostics-dir C:/Users/bigfish/.cargo/target/acp-stage12-01/<new-run-directory>
+```
+
+The parent must freeze complete tracked/untracked Rust, Python, Cargo and
+`.cargo` input hashes for both worktrees **before** either build. The inventory
+also binds successful post-freeze build times, binary paths and hashes; these
+are parent attestations, not cryptographic build proof. The harness neither
+builds nor discovers installed binaries and requires a new target-only evidence
+directory. It uses a local model fixture and real native/bridge processes for
+ordered PNG/JPEG provider payload, live/history ID and client-buffer/disk-
+divergence checks. Inspect retained `results.json`, provenance, wire/provider/
+transcript evidence and cleanup audits before claiming a pass. It does not
+qualify thought streaming, old-native execution, permission denial (the isolated
+fixture disables the gate), cancellation/late-response behavior, Unix native,
+an installed extension, CI success, publication or deployment. Those behaviors
+need their separate fixtures/proofs. No execution result is claimed here.
 
 ## Questions and ACP Elicitation
 
