@@ -113,3 +113,21 @@ python packages/rpi-http/tests/native_smoke.py --http /path/to/rpi-http --rpi /p
 ```
 
 The native smoke test exercises authentication, metadata, snapshots, SSE, restart recovery and the absence of frontend routes without model calls.
+
+## Optional paginated message queries
+
+Matching native ready frames advertise `get_message_summaries` and
+`get_message_window`. Core exposes typed, validated user-only summary pages
+(default 10, maximum 100) and read-only nearby message windows (default 48,
+maximum 100). Cursors are exclusive native entry IDs; `leafId` pins the branch
+snapshot. A removed snapshot leaf is a conflict. There is no full-transcript
+fallback or second transcript store for unsupported hosts.
+
+HTTP maps these services to authenticated `GET
+/api/v1/sessions/{id}/message-summaries?role=user&limit=10&beforeId=...&leafId=...`
+and `GET /api/v1/sessions/{id}/message-window?anchorId=...&limit=48&leafId=...`.
+Window continuation uses exactly one of `anchorId`, `beforeId`, `afterId`.
+Old native hosts return unsupported (HTTP 501); malformed queries return 400,
+invalid host pages 502, and removed snapshot leaves 409. Existing `/api/v1`,
+legacy `get_messages`, snapshot/SSE replay boundaries and native ownership are
+unchanged. Installing/restarting matching runtime layers is a separate step.

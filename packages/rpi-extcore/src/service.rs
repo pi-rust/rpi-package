@@ -1,5 +1,6 @@
 //! Session and workspace operations shared by protocol adapters.
 pub use crate::run_timing::RunTimingsQuery;
+mod message_queries;
 use crate::{
     durable::{DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE},
     host::HostSession,
@@ -8,6 +9,10 @@ use crate::{
     registry::{Registry, RegistryEntry},
     reply::{IntoReply, ReplyKind, ServiceReply, ServiceResult},
     workspace::{self, Project},
+};
+pub use message_queries::{
+    message_summaries, message_window, MessageSummary, MessageSummaryPage, MessageSummaryQuery,
+    MessageWindowPage, MessageWindowQuery,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -1373,6 +1378,7 @@ pub async fn snapshot_with_options(
     json!({
         "sessionId": id,
         "messages": data["messages"].clone(),
+        "supportedCommands": session.ready()["supportedCommands"].clone(),
         "status": host_snapshot.status,
         "total": data["total"].clone(),
         "truncated": data["truncated"].clone(),

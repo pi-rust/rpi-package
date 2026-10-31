@@ -8,10 +8,14 @@ import {
   type KeyboardEvent,
   type PointerEvent,
   type RefObject,
+  type ReactNode,
 } from "react";
 import type { Row } from "./transcript";
 import { userMessageParts } from "./attachments";
 import { translate, type Language } from "./i18n";
+
+import { useTimelineSummaries } from "./useTimelineSummaries";
+import { HistoricalMessageReader } from "./HistoricalMessageReader";
 
 const previews = new WeakMap<Row, string>();
 
@@ -53,12 +57,20 @@ export function ConversationTimeline({
   rows,
   transcript,
   language,
-  hasMore,
-  loadingEarlier,
-  historyCursor,
-  onLoadEarlier,
+  hasMore: transcriptHasMore,
+  loadingEarlier: transcriptLoading,
+  historyCursor: transcriptCursor,
+  onLoadEarlier: loadTranscriptEarlier,
   onNavigate,
+  sessionId = "",
+  nativeQueries = false,
+  snapshotLeafId = "",
+  renderHistoricalRow,
 }: {
+  sessionId?: string;
+  nativeQueries?: boolean;
+  snapshotLeafId?: string;
+  renderHistoricalRow?: (row: Row) => ReactNode;
   rows: Row[];
   transcript: RefObject<HTMLDivElement | null>;
   language: Language;
@@ -68,10 +80,35 @@ export function ConversationTimeline({
   onLoadEarlier: () => Promise<void>;
   onNavigate: (target: HTMLElement) => void;
 }) {
-  const entries = useMemo(
-    () => timelineEntries(rows, language),
-    [rows, language],
-  );
+  const native = useTimelineSummaries(sessionId, nativeQueries, snapshotLeafId);
+  const [historicalAnchor, setHistoricalAnchor] = useState<{ entryId: string; leafId: string } | null>(null);
+  const loadedEntries = useMemo(() => timelineEntries(rows, language), [rows, language]);
+  const entries = useMemo(() => {
+    if (!native.enabled || !native.page) return loadedEntries;
+    const loaded = new Map(loadedEntries.map((entry) => [entry.id, entry]));
+    const result = native.page.messages.map((message) => ({
+      id: message.entryId,
+      rowId: loaded.get(message.entryId)?.rowId ?? `native:${message.entryId}`,
+      preview: message.preview || translate(language, "timelineImageMessage"),
+    }));
+    const seen = new Set(result.map((entry) => entry.id));
+    // Weave the contiguous loaded/live fragment around matching native IDs.
+    // Never sort entry IDs, infer timestamps, or duplicate image/text turns.
+    let before: string | null = null;
+    for (const entry of [...loadedEntries].reverse()) {
+      if (!seen.has(entry.id)) {
+        const index = before ? result.findIndex((item) => item.id === before) : -1;
+        result.splice(index < 0 ? result.length : index, 0, entry);
+        seen.add(entry.id);
+      }
+      before = entry.id;
+    }
+    return result;
+  }, [native.enabled, native.page, loadedEntries, language]);
+  const hasMore = native.enabled ? Boolean(native.page?.hasMore) : transcriptHasMore;
+  const loadingEarlier = transcriptLoading || (native.enabled && native.loading);
+  const historyCursor = native.enabled ? native.page?.nextBeforeId ?? "" : transcriptCursor;
+  const onLoadEarlier = native.enabled ? native.loadEarlier : loadTranscriptEarlier;
   const targetKey = JSON.stringify(entries.map((entry) => entry.rowId));
   const targets = useRef(new Map<string, HTMLElement>());
   const root = useRef<HTMLElement>(null);
@@ -80,6 +117,7 @@ export function ConversationTimeline({
   const pendingPage = useRef(false);
   const mounted = useRef(true);
   const [pageSettled, setPageSettled] = useState(0);
+  const initialFill = useRef({ pages: 0, cursor: "", done: false });
   const restoredKey = useRef<string | null>(null);
   useEffect(() => {
     mounted.current = true;
@@ -173,6 +211,29 @@ export function ConversationTimeline({
       if (requestEarlier()) intent.used = true;
     }
   };
+  // Ten visible slots are not ten loaded questions: a tool-heavy 48-message
+  // page may contain just one. Fill once, without delaying the snapshot/SSE,
+  // using the same single-flight cursor/anchor owner as manual rail paging.
+  useEffect(() => {
+    const fill = initialFill.current;
+    if (native.enabled) return;
+    if (fill.done || loadingEarlier || pendingPage.current || !historyCursor)
+      return;
+    if (
+      entries.length >= 10 ||
+      !hasMore ||
+      fill.pages >= 10 ||
+      fill.cursor === historyCursor
+    ) {
+      fill.done = true;
+      return;
+    }
+    if (requestEarlier()) {
+      fill.pages++;
+      fill.cursor = historyCursor;
+    } else fill.done = true;
+  });
+
   useLayoutEffect(() => {
     const anchor = railAnchor.current;
     const node = list.current;
@@ -330,9 +391,16 @@ export function ConversationTimeline({
       previous?.id === id && previous.top === top ? previous : { id, top },
     );
   };
-  const navigate = (rowId: string) => {
+  const navigate = (rowId: string, openReader = true) => {
     const target = targets.current.get(rowId);
-    if (!target || !transcript.current?.contains(target)) return;
+    if (!target || !transcript.current?.contains(target)) {
+      const entry = entries.find((entry) => entry.rowId === rowId);
+      if (openReader && native.enabled && native.page?.leafId && entry && renderHistoricalRow) {
+        setHistoricalAnchor({ entryId: entry.id, leafId: native.page.leafId });
+        setPreview(null);
+      }
+      return;
+    }
     onNavigate(target);
     railAnchor.current = null;
     setActive(rowId);
@@ -359,7 +427,7 @@ export function ConversationTimeline({
     const id = button.dataset.timelineTarget!;
     if (gesture.lastId !== id) {
       gesture.lastId = id;
-      navigate(id);
+      navigate(id, false);
     }
     showPreview(button, id);
   };
@@ -420,7 +488,7 @@ export function ConversationTimeline({
     if (!gesture || gesture.pointerId !== event.pointerId) return;
     gesture.x = event.clientX;
     gesture.y = event.clientY;
-    if (gesture.moved) scrub(gesture);
+    if (gesture.moved) { scrub(gesture); navigate(gesture.lastId); }
     else navigate(gesture.startId);
     const box = gesture.node.getBoundingClientRect();
     const earlierEdge =
@@ -472,7 +540,7 @@ export function ConversationTimeline({
     ? focused
     : active || entries[0]?.rowId;
 
-  if (!entries.length && !hasMore) return null;
+  if (!entries.length && !hasMore && !native.error) return null;
   return (
     <aside
       className="conversation-timeline"
@@ -519,7 +587,7 @@ export function ConversationTimeline({
       >
         <p id={descriptionId} className="timeline-description">
           {t("timelineScrollHint")}
-          {hasMore ? ` ${t("timelineLoadedOnly")}` : ""}
+          {hasMore ? ` ${t(native.enabled ? "timelineSummaryScope" : "timelineLoadedOnly")}` : ""}
         </p>
         {hasMore && (
           <button
@@ -562,7 +630,14 @@ export function ConversationTimeline({
               list.current?.contains(button)
             )
               showPreview(button, preview.id);
-            else setPreview(null);
+            else {
+              // A prepend/reveal can queue a scroll event after pointerenter.
+              // Keep the real tick under the pointer previewed, not a stale ID.
+              const hovered = list.current?.querySelector<HTMLButtonElement>(".timeline-node:hover");
+              if (hovered && browsing.current.pointer)
+                showPreview(hovered, hovered.dataset.timelineTarget!);
+              else setPreview(null);
+            }
           }}
         >
           {entries.map((entry, index) => (
@@ -625,10 +700,18 @@ export function ConversationTimeline({
           <span className="timeline-label">{previewEntry.preview}</span>
           {hasMore && (
             <small className="timeline-earlier">
-              {t("timelineLoadedOnly")}
+              {t(native.enabled ? "timelineSummaryScope" : "timelineLoadedOnly")}
             </small>
           )}
         </div>
+      )}
+      {native.enabled && native.error && (
+        <div className="timeline-query-error" role="alert">
+          {native.error}<button type="button" onClick={native.retry}>{t("historyContextRetry")}</button>
+        </div>
+      )}
+      {native.enabled && historicalAnchor && renderHistoricalRow && (
+        <HistoricalMessageReader key={`${historicalAnchor.entryId}:${historicalAnchor.leafId}`} sessionId={sessionId} anchorId={historicalAnchor.entryId} leafId={historicalAnchor.leafId} language={language} renderRow={renderHistoricalRow} onClose={() => setHistoricalAnchor(null)} />
       )}
     </aside>
   );

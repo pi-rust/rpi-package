@@ -210,19 +210,18 @@ code {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: linear-gradient(145deg, #369eff, #0065d1);
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
   flex-shrink: 0;
-  box-shadow: 0 1px 2px #0070e526;
 }
+.rpi-logo { display: block; flex-shrink: 0; }
+.brand-mark .rpi-logo, .login-mark .rpi-logo { width: 100%; height: 100%; }
 .brand-mark.large {
   height: 58px;
   width: 58px;
   border-radius: 17px;
-  box-shadow: 0 7px 17px #0077e323;
 }
 .status-dot {
   width: 6px;
@@ -1426,6 +1425,10 @@ details[open] > summary:before {
   white-space: nowrap;
   font-size: 12px;
   font-weight: 450;
+}
+.tool-success-mark {
+  flex-shrink: 0;
+  color: var(--green);
 }
 .tool-target {
   min-width: 0;

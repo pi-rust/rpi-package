@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Fetch user-only timeline summaries in ten-question pages through capability-gated, leaf-pinned core/HTTP APIs. Open unloaded questions in a read-only 48-message historical context window with both paging directions, cancellation, explicit errors and a bounded old-host fallback.
+- Add a default-closed execution trace with a correlated call tree, native-duration timeline, bounded inert details and an optional top-five duration ranking. Reuse already-observed messages, SSE and timings without extra trace requests, guessed execution schedules or external services.
+- Preview project-contained Markdown/inline-code file links on demand with read-only syntax highlighting, line/range positioning, copy, retry and isolated cancellation. Keep fenced code inert and open HTTP(S) links in a safe new tab.
+- Apply the locally bundled light rpi mark to workspace/login branding and browser icons; use 15px question-timeline spacing on desktop and phones.
+
+### Fixed
+
+- Fill the initial ten-question rail through bounded legacy history pages when native summaries are unsupported, preserving reading anchors and stopping on errors, exhausted/nonadvancing cursors or the ten-page budget.
+- Preserve local model/thinking/command notices in their original message gaps through snapshot refresh and history pagination.
+- Display original skill directory names for explicit SKILL.md reads and place successful-tool checks after elapsed time, before the disclosure chevron.
+- End unfinished trace observations as unknown when the native host closes, without fabricating a settlement or duration; restore timeline keyboard focus after closing historical context, including development StrictMode.
+- Keep new browser-test screenshots in Playwright-managed output paths instead of developer-specific directories.
+
 ## [0.1.27](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.26...rpi-web-v0.1.27) - 2026-10-31
 
 ### Other

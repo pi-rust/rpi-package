@@ -13,12 +13,13 @@
   padding-left: 34px;
 }
 .conversation-timeline {
+  --timeline-step: 15px;
   position: absolute;
   z-index: 4;
   top: 50%;
   left: 5px;
   width: 24px;
-  height: min(270px, calc(100% - 24px));
+  height: min(calc(10 * var(--timeline-step) + 30px), calc(100% - 24px));
   transform: translateY(-50%);
   display: flex;
   align-items: center;
@@ -61,8 +62,8 @@
   user-select: none;
   cursor: ns-resize;
   min-height: 0;
-  /* Ten 24px nodes plus the list's 6px padding; the ↑ has its own space. */
-  max-height: 246px;
+  /* Ten compact nodes plus the list's 6px padding; ↑ has its own space. */
+  max-height: calc(10 * var(--timeline-step) + 6px);
   flex-shrink: 1;
   border-radius: 8px;
 }
@@ -81,8 +82,8 @@
   align-items: center;
   justify-content: center;
   width: 100%;
-  height: 24px;
-  min-height: 24px;
+  height: var(--timeline-step);
+  min-height: var(--timeline-step);
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -189,11 +190,27 @@
     padding-left: 36px;
   }
   .conversation-timeline {
+    --timeline-step: 15px;
     left: 3px;
     width: 28px;
   }
   .conversation-timeline .timeline-node {
-    height: 24px;
-    min-height: 24px;
+    height: var(--timeline-step);
+    min-height: var(--timeline-step);
   }
 }
+.timeline-query-error {
+  position: absolute;
+  top: 0;
+  left: 28px;
+  width: min(240px, calc(100vw - 84px));
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+.timeline-query-error button { display: block; margin-top: 8px; }
