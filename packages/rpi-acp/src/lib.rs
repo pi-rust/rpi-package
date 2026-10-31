@@ -36,6 +36,7 @@ mod mcp;
 pub mod protocol;
 mod questions;
 pub mod session;
+mod session_list;
 pub mod zed;
 
 use rpi_plugin_sdk::{

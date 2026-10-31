@@ -13,6 +13,12 @@ pub(crate) fn session_directory(id: &str) -> Result<PathBuf, String> {
     {
         return Err("unknown sessionId: older ACP versions used temporary sessions that cannot be restored after exit; start a new conversation".into());
     }
+    Ok(session_root()?.join(id))
+}
+
+/// Resolve configuration only; listing captures this once per connection.
+/// Keep UUID validation in session_directory before resolving the root.
+pub(crate) fn session_root() -> Result<PathBuf, String> {
     let root = if let Some(path) = std::env::var_os("RPI_ACP_SESSION_DIR") {
         PathBuf::from(path)
     } else {
@@ -24,7 +30,7 @@ pub(crate) fn session_directory(id: &str) -> Result<PathBuf, String> {
     if !root.is_absolute() {
         return Err("RPI_ACP_SESSION_DIR must be an absolute path".into());
     }
-    Ok(root.join(id))
+    Ok(root)
 }
 
 // rpi stores JSONL files in a cwd-named subdirectory of --session-dir.

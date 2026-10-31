@@ -33,7 +33,7 @@ are part of this package.
    extension. This is what makes an ACP stdio server possible inside an `rpi`
    process at all — see *Requirements* below.
 2. **Serves ACP v1** on stdio (`initialize`, `session/new`, `session/prompt`,
-   `session/cancel`, `session/load`, `session/resume`,
+   `session/cancel`, `session/load`, `session/resume`, `session/list`,
    `session/set_config_option` and the rpi extension `session/durable`. See
    `src/protocol.rs`.
 3. **Backs each ACP session with a child `rpi --mode rpc` process** rooted at
@@ -87,6 +87,52 @@ Run the model-free paged/old-host fixture with
 For a real native v4 transcript with 513 active and 19 off-branch messages,
 use `python -B packages/rpi-acp/tests/bounded_history_native.py --bridge <bridge> --rpi <rpi>`;
 it verifies five native pages and exact replay across fresh process restarts.
+
+### Discovering saved sessions
+
+Initialization advertises ACP v1 `sessionCapabilities.list: {}`.
+`session/list` accepts absent/null/object params with optional nullable `cwd`
+and `cursor`. `cwd` must be an existing absolute directory. The connection
+captures the existing ACP session-root configuration once; listing does not
+create it, launch native/MCP processes, run models, or modify saved sessions.
+It discovers persisted native transcripts, not merely in-memory sessions.
+
+Responses contain `sessions` with `sessionId`, absolute recorded `cwd` and,
+when representable, `updatedAt` from observed file mtime. That timestamp is not
+authoritative last user/model activity. This slice deliberately omits `title`,
+message counts and private filesystem/tool configuration. Wire pages are fixed
+at 50; client metadata cannot increase them. Ordering is native header creation
+time descending, then canonical UUID ascending, not mtime.
+
+**Continue while `nextCursor` is present, including empty scan pages.**
+Cursors are opaque and connection-local; retain the same cwd filter. Scan tokens
+are single-use, including the scan request that returns the first populated
+page. Tokens issued for frozen result pages are retryable. Idle tokens expire
+on later admission after 60 seconds; fresh queries may evict an older nonbusy
+generation (maximum two). Restart with no cursor after `-32602` for a stale or
+invalid token. New/deleted files require a fresh query; discovery is not a
+transaction and a listed session may no longer load.
+
+The neutral [core catalog contract](../rpi-extcore/README.md#read-only-session-discovery)
+sets global and per-step budgets, validates native v4 identity/layout and bounds
+first-line parsing to 64 KiB (small charged read-ahead is possible). No transcript
+body/tail is parsed. Invalid params/cursors map to `-32602`, request cancellation
+or deadline to `-32800`, and resource/access/conflict/unavailable failures to
+fixed sanitized `-32001` errors. `$/cancel_request` targets just that list
+request. EOF/host shutdown cancels and joins tasks/workers without requiring a
+stalled peer to drain response bytes; final delivery is best effort after
+transport closure. OS filesystem calls remain cooperative, not hard-preemptible;
+filesystem checks are not a hostile concurrent-writer sandbox. Cwd is a filter,
+not authentication or an authorization boundary.
+
+Focused Rust tests exercise the production dispatcher with replaced transport,
+plus synthetic native-header fixtures. Three-platform CI is fixture-only.
+`python -B packages/rpi-acp/tests/session_list_native.py --help` describes the
+separate Windows real-native proof and required prebuild source/binary
+provenance. Its three native-created conversations are distinct from the
+101-file synthetic pagination fixture. Inspect actual retained results before
+claiming a native pass; neither source nor CI qualifies an installed extension,
+Unix native execution or deployment.
 
 ### Client-provided MCP tools (stdio and Streamable HTTP)
 

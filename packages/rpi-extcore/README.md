@@ -36,6 +36,48 @@ to the same directory, otherwise reject before spawning. Empty/missing recorded
 directories retain native fallback; no-MCP compatibility remains unchanged.
 This metadata snapshot is not a concurrent-filesystem sandbox.
 
+## Read-only session discovery
+
+`session_catalog::SessionCatalog::new(root, CatalogLimits::default())` is a
+protocol-neutral, caller-owned catalog; construction performs validation only.
+`page(CatalogQuery { cwd, cursor, limit }, CatalogControl)` advances a bounded
+scan or returns a frozen page. Call `shutdown().await` to cancel and drain owned
+workers. Dropping a page cancels its control without releasing admission early;
+catalog drop cancels workers, which retain their cleanup owner until exit.
+
+The explicit root contains `UUID/encoded-cwd/timestamp_UUID.jsonl`. Discovery
+validates canonical lowercase UUID, native v4 header identity, creation timestamp,
+filename and encoded absolute recorded cwd. Only the first line (64 KiB including
+newline) is parsed; reads can include up to 1,023 discarded body bytes of bounded
+read-ahead, charged to actual-read budgets. There are no body/tail parses, native
+processes, writes, registry overlays or credential configuration. Matching
+malformed/duplicate candidates fail; unrelated entries still consume budget.
+Subdirectory symlinks and Windows reparse points are rejected; the configured
+root itself may canonicalize. Metadata/open checks are separate operations, not
+a hostile concurrent-filesystem sandbox. A cwd filter is an existing absolute
+directory, compared canonically, not through blanket Windows lowercasing.
+Missing recorded directories remain discoverable without a filter.
+
+Defaults cap each step at 256 entries / 4 MiB actual reads / cooperative 250 ms;
+a generation at 10,000 entries / 64 MiB reads / 16 MiB summary accounting /
+30 seconds cumulative active work. These generation budgets fail with
+`LimitExceeded`, never truncated success; caller cancellation/deadline have
+separate errors. Header scratch, cursor/vector overhead are additionally bounded
+by entry/path limits, not an exact allocator/RSS measurement. At most two workers
+and two generations are admitted, without an unbounded wait queue. Synchronous
+kernel I/O cannot be hard-preempted.
+
+Incomplete scans return **empty sessions with a continuation**. Completion
+freezes summaries sorted by `created_at_ms` descending then UUID ascending;
+pages allow 1..=100 rows. Cursors are opaque, process-local and bound to canonical
+cwd and limit. Scan tokens are single-use (even the one finishing discovery);
+frozen-page tokens are retryable. Idle expiry is checked on admission after
+60 seconds, and a fresh generation may evict the oldest nonbusy generation.
+Stale/foreign/changed-filter tokens fail explicitly. This is observed discovery,
+not a transactional filesystem snapshot; a listed session may later fail to load.
+`modified_at_ms` is observed filesystem mtime, not authoritative last activity;
+no title is invented from message text.
+
 ## Modules
 
 | Module | Responsibility |
@@ -45,6 +87,7 @@ This metadata snapshot is not a concurrent-filesystem sandbox.
 | `service` | Project/session operations, forks, clones, organization metadata, transcript snapshots, session lifecycle and OAuth refresh |
 | `events` | Replay boundary, event ordering, duplicate suppression and explicit resync requirements |
 | `history` | Native transcript validation and active-branch recovery without client formatting |
+| `session_catalog` | Caller-owned bounded native-header discovery, continuation and frozen summary pages |
 | `dialogs` | Question deadlines and validated answers, including multiple choices and comments |
 | `registry`, `projects`, `timing` | Durable supplemental metadata, project catalog and tool timings |
 | `workspace`, `process` | Scoped file/Git access and background native processes |

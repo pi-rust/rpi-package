@@ -21,7 +21,7 @@
 | `session/close` | **已完成（第一批）** | 协商 `sessionCapabilities.close`；取消并等待活动 prompt/dialog，再关闭 child/watcher；保留 native history，之后可 load/resume；重复 close 对有效持久会话幂等。 |
 | `session/delete` | **已完成（第一批清理统一）** | 与 close 共用活动任务、dialog、watcher、child 的 graceful cleanup，之后删除持久目录；重复 delete 幂等。 |
 | `session/load` / `session/resume` | **已完成（现有 v1 + 第一批生命周期）** | native transcript 是 source of truth；load replay active branch，resume 不 replay；close 后可重新 attach。 |
-| `session/list`、cwd 过滤、稳定分页/cursor、metadata | **未完成** | 当前 ACP 仍不能发现持久会话目录；不能只列内存 session。中立发现/读取接口需要先落在 extcore。 |
+| `session/list`、cwd 过滤、稳定分页/cursor、metadata | **已完成（有界发现 slice）** | extcore 中立 `session_catalog` 只读验证 ACP store 内 native v4 header，固定深度、预算、取消/worker owner、全局 createdAt 降序/UUID 升序冻结分页；ACP 广告 `list: {}`，wire 固定50，扫描空页有 cursor 必须续取。游标绑定连接/规范 cwd，scan 单次、冻结页可重试，60s idle/admission 过期、最多2代可淘汰。只返回 ID/cwd/可选 observed mtime，省略 title，不读 message/tail、不建立 sidecar、不启动 native/MCP。详见 [ACP README](../../packages/rpi-acp/README.md#discovering-saved-sessions)。Rust/CI fixtures 不等于真实 native 或已安装扩展资格；Windows provenance-gated smoke 必须另看执行结果。 |
 | 有界、可续的历史/事件边界 | **部分完成** | extcore snapshot/history 已有 bounded read、seq boundary、replay-gap 检测；ACP load replay 尚未暴露分页 cursor。 |
 | 消息 ID | **未完成** | native transcript 内部有 ID，但 v1 `session/update` message-id RFD 的完整映射尚未实现。 |
 | text / resource link / embedded text resource | **已完成（受限）** | 映射为 native text；绝对 URI/file 语义依赖 native cwd/工具。 |
