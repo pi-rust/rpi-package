@@ -187,6 +187,30 @@ impl Writer {
             .await;
     }
 
+    /// Session commands must follow the successful new/load/resume response.
+    async fn respond_session(
+        &self,
+        id: &Value,
+        result: Value,
+        session_id: &str,
+        compact_available: bool,
+    ) {
+        self.respond(id, result).await;
+        if compact_available {
+            self.notify(
+                "session/update",
+                json!({
+                    "sessionId": session_id,
+                    "update": {"sessionUpdate":"available_commands_update", "availableCommands":[{
+                        "name":"compact", "description":"Compact the conversation context",
+                        "input":{"hint":"Optional instructions"}
+                    }]}
+                }),
+            )
+            .await;
+        }
+    }
+
     /// Answer a JSON-RPC request with an error.
     pub async fn respond_error(&self, id: &Value, code: i64, message: &str) {
         let _ = self
@@ -874,11 +898,14 @@ pub async fn run(
                             writer.clone(),
                             session_id.clone(),
                         );
+                        let compact_available = session.compact_available();
                         sessions.lock().await.insert(session_id.clone(), session);
                         if let Some(watcher) = watcher {
                             durable_watchers.insert(session_id.clone(), watcher);
                         }
-                        writer.respond(&id, result).await;
+                        writer
+                            .respond_session(&id, result, &session_id, compact_available)
+                            .await;
                     }
                     Err(error) => writer.session_error(&id, "session/new", &error).await,
                 }
@@ -1070,11 +1097,14 @@ pub async fn run(
                                     writer.clone(),
                                     session_id.to_owned(),
                                 );
+                                let compact_available = session.compact_available();
                                 sessions.lock().await.insert(session_id.to_owned(), session);
                                 if let Some(watcher) = watcher {
                                     durable_watchers.insert(session_id.to_owned(), watcher);
                                 }
-                                writer.respond(&id, result).await;
+                                writer
+                                    .respond_session(&id, result, session_id, compact_available)
+                                    .await;
                                 drop(replay);
                             }
                             Err(error) => {
@@ -1514,6 +1544,8 @@ async fn open_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("protocol_compact_tests.rs");
 
     #[test]
     fn durable_extension_parses_queue_mutations() {

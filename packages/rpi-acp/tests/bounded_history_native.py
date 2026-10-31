@@ -199,7 +199,8 @@ def native_pages(rpi, env, root, logs, path, expected, ids):
 
 
 def run(bridge, rpi, root, logs):
-    env = dict(os.environ, **fixture_environment(root))
+    from compact_protocol import controls, environment
+    env = environment(root)
     store = root / "sessions"
     env.update(RPI_BIN=rpi, RPI_ACP_SESSION_DIR=str(store),
                RPI_ACP_NO_AUTO_REGISTER_ZED="1", RPI_ACP_NO_PERMISSION_GATE="1")
@@ -239,12 +240,12 @@ def run(bridge, rpi, root, logs):
                     texts.append(update["content"]["text"])
                 assert texts == expected, (name, texts)
             else:
-                assert updates == [], updates
+                assert not controls(updates, session_id)[0], updates
             _, updates = success(peer, "session/resume", params)
-            assert updates == [], ("late or repeated history", updates)
+            assert not controls(updates, session_id)[0], ("late or repeated history", updates)
             for missing in ("rpi-old-1", str(uuid.uuid4())):
                 response, updates = peer.request("session/load", dict(params, sessionId=missing))
-                assert "error" in response and not updates, (response, updates)
+                assert "error" in response and not controls(updates, session_id)[0], (response, updates)
             # All bytes after the last response are retained by the reader. Once
             # EOF has joined it, there must be no additional replay notifications.
         finally:
@@ -254,7 +255,7 @@ def run(bridge, rpi, root, logs):
             item = peer.output.get_nowait()
             if not isinstance(item, EOFError):
                 remaining.append(item)
-        assert remaining == [], ("updates after final response", remaining)
+        assert not controls(remaining, session_id)[0], ("updates after final response", remaining)
     print("PASS: native v4 fork; 513 active / 19 offbranch; five 128-bounded native pages; "
           "exact oldest-first replay before load response twice across restart; "
           "resume without replay; unknown sessions fail; graceful EOF and joined readers")

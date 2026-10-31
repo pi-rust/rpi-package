@@ -15,13 +15,29 @@ impl PromptRun {
         events: broadcast::Receiver<Value>,
         cancellation: watch::Receiver<u64>,
         id: Value,
+        kind: RunKind,
         lease: OwnedMutexGuard<()>,
     ) -> Self {
         Self {
             events,
             cancellation,
-            tracker: RunTracker::new(id),
+            tracker: RunTracker::for_kind(id, kind),
             _lease: lease,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunKind {
+    Prompt,
+    Compact,
+}
+
+impl RunKind {
+    pub(crate) fn command(self) -> &'static str {
+        match self {
+            Self::Prompt => "prompt",
+            Self::Compact => "compact",
         }
     }
 }
@@ -41,6 +57,8 @@ pub struct RunProgress {
 
 pub struct RunTracker {
     id: Value,
+    kind: RunKind,
+    compact_settled: bool,
     accepted: bool,
     messages: MessageProjection,
     stream_error: Option<String>,
@@ -48,8 +66,14 @@ pub struct RunTracker {
 
 impl RunTracker {
     pub fn new(id: Value) -> Self {
+        Self::for_kind(id, RunKind::Prompt)
+    }
+
+    pub fn for_kind(id: Value, kind: RunKind) -> Self {
         Self {
             id,
+            kind,
+            compact_settled: false,
             accepted: false,
             messages: MessageProjection::default(),
             stream_error: None,
@@ -58,6 +82,9 @@ impl RunTracker {
 
     pub fn observe(&mut self, event: &Value, cancelled: bool) -> RunProgress {
         let mut progress = RunProgress::default();
+        if self.compact_settled {
+            return progress;
+        }
         if event["type"] == "response" && event["id"] == self.id {
             if event["success"] != true {
                 progress.outcome = Some(if cancelled {
@@ -65,13 +92,50 @@ impl RunTracker {
                 } else {
                     Err(event["error"]
                         .as_str()
-                        .unwrap_or("agent rejected the prompt")
-                        .into())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("agent rejected the {}", self.kind.command())))
                 });
             } else if event.pointer("/data/accepted") != Some(&Value::Bool(true)) {
-                progress.outcome = Some(Err("rpi did not acknowledge prompt acceptance".into()));
+                progress.outcome = Some(Err(format!(
+                    "rpi did not acknowledge {} acceptance",
+                    self.kind.command()
+                )));
             } else {
                 self.accepted = true;
+            }
+            return progress;
+        }
+        if self.kind == RunKind::Compact {
+            if event["type"] == "agent_settled" && self.accepted {
+                self.compact_settled = true;
+                let outcome = event["outcome"].as_str().unwrap_or("unknown");
+                // Native can settle a cancelled provider request as `failed`
+                // (e.g. Request aborted). A locally requested cancellation wins
+                // over that failure, but only after authoritative settlement.
+                let cancelled_failure = cancelled && outcome == "failed";
+                if let Some(summary) = event["summary"]
+                    .as_str()
+                    .filter(|text| !cancelled_failure && !text.is_empty())
+                    .or_else(|| (outcome == "declined").then_some("Nothing to compact yet."))
+                {
+                    progress
+                        .deltas
+                        .push(serde_json::json!({"kind":"text","text":summary}));
+                }
+                progress.outcome = Some(match outcome {
+                    "compacted" | "declined" => Ok(RunOutcome::Completed),
+                    "aborted" => Ok(RunOutcome::Cancelled),
+                    "failed" if cancelled_failure => Ok(RunOutcome::Cancelled),
+                    "failed" => Err(event["error"]
+                        .as_str()
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or("rpi compaction failed")
+                        .into()),
+                    outcome => Err(format!("rpi compaction did not complete: {outcome}")),
+                });
+            } else if matches!(event["type"].as_str(), Some("session_end" | "host_closed")) {
+                progress.outcome =
+                    Some(Err("rpi session ended before compaction completed".into()));
             }
             return progress;
         }
@@ -124,6 +188,8 @@ impl RunTracker {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    include!("run_compact_tests.rs");
 
     #[test]
     fn acceptance_is_correlated_and_settlement_repairs_the_tail() {
