@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.4...rpi-extcore-v0.2.5) - 2026-10-31
+
+### Added
+
+- *(acp)* route compact through the shared native run lifecycle
+
 ## [0.2.4](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.3...rpi-extcore-v0.2.4) - 2026-10-31
 
 ### Fixed
