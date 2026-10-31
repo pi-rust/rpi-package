@@ -147,6 +147,28 @@ is never silently rebased or persisted. No-MCP restores retain compatibility.
 As with other filesystem reads, metadata/canonicalization/open are separate
 operations, not a hostile concurrent-filesystem guarantee.
 
+## Bounded session discovery
+
+`rpi-extcore::session_catalog` is an independent, caller-instanced read-only
+service over an explicitly supplied native-transcript root. It owns validation,
+finite resumable filesystem scans, generation budgets, cancellation/worker
+cleanup, opaque cursor admission and globally sorted frozen summary pages.
+Native v4 headers remain authoritative; there is no new registry writer,
+transcript store, native spawn, model call or Web catalog change.
+
+ACP resolves its existing ACP store, supplies cwd/cursor/limit and maps neutral
+summaries/errors to v1 `session/list`. It owns capability negotiation,
+connection-scoped request IDs/tasks, cancellation notifications, transport-close
+output policy and RFC3339 formatting. It omits titles and treats optional mtime
+as observed filesystem metadata, not authoritative activity. Empty scan pages
+with a continuation are not completion. Cursor lifetime is bounded to the
+connection's retained generations; listing grants no new filesystem authority.
+See [core bounds and filesystem limits](../../packages/rpi-extcore/README.md#read-only-session-discovery)
+and [ACP wire semantics](../../packages/rpi-acp/README.md#discovering-saved-sessions).
+No fork/title/archive/mode/remote/v2 capability is implied. Fixture tests and
+three-platform CI do not substitute for provenance-gated Windows native smoke,
+installed-extension qualification, Unix native execution or deployment.
+
 ## Preserved behavior
 
 - Keep `--webserver`, `--web`, `--acp` and existing standalone entrypoints.

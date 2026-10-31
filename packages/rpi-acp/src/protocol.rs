@@ -5,7 +5,7 @@
 //!
 //! * client → agent requests we implement: `initialize`, `session/new`,
 //!   `session/prompt`, `session/load`, `session/resume`, `session/close`,
-//!   `session/delete`, and the rpi extension `session/durable`; notifications
+//!   `session/delete`, `session/list`, and the rpi extension `session/durable`; notifications
 //!   `session/cancel` and `$/cancel_request`.
 //! * agent → client: `session/update` notifications (streamed text, thinking,
 //!   tool calls), optional `session/durable_update` notifications, and one
@@ -377,7 +377,7 @@ pub fn initialize_result() -> Value {
             // ACP supports implicit stdio and explicit Streamable HTTP, not SSE.
             "mcpCapabilities": {"http": true, "sse": false},
             "auth": {"logout": {}},
-            "sessionCapabilities": {"resume": {}, "delete": {}, "close": {}},
+            "sessionCapabilities": {"resume": {}, "delete": {}, "close": {}, "list": {}},
             "promptCapabilities": {
                 // `--mode rpc` takes a single text prompt; no multimodal input.
                 "image": false,
@@ -703,15 +703,33 @@ async fn stop_all_prompt_tasks(prompt_tasks: &mut HashMap<String, PromptTask>) {
 /// The owner reports the returned code to the host's stdio lifecycle. The
 /// stop receiver also lets SessionShutdown end an idle server without input.
 pub async fn run(
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     mut input: StdinLines,
-    mut pending: Option<String>,
+    pending: Option<String>,
 ) -> i32 {
-    let writer = Arc::new(Writer::new());
+    run_connection(
+        stop,
+        || input.poll_line(),
+        pending,
+        Arc::new(Writer::new()),
+        crate::history::session_root(),
+    )
+    .await
+}
+
+// The same dispatcher is exercised by model-free transport fixtures.
+async fn run_connection(
+    mut stop: watch::Receiver<bool>,
+    mut poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    mut pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+) -> i32 {
     let sessions: Arc<Mutex<HashMap<String, Arc<Session>>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut durable_watchers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let mut prompt_tasks: HashMap<String, PromptTask> = HashMap::new();
     let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut list_tasks = crate::session_list::ListTasks::new(list_root);
 
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(10));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -728,7 +746,7 @@ pub async fn run(
                 reason = "stopped by the host (session shutdown)";
                 break 'input;
             }
-            match input.poll_line() {
+            match poll_line() {
                 Ok(rpi_plugin_sdk::stdio::InputLine::Line(line)) => break line,
                 Ok(rpi_plugin_sdk::stdio::InputLine::Eof) => break 'input,
                 Ok(rpi_plugin_sdk::stdio::InputLine::Pending) => {
@@ -800,8 +818,24 @@ pub async fn run(
         // request. Keeping them briefly makes close/cancel races deterministic,
         // while avoiding an unbounded task map.
         prompt_tasks.retain(|_, task| !task.handle.is_finished());
+        list_tasks.reap().await;
+        // IDs retain their JSON type: 1 and "1" are separate requests. Check
+        // both task classes before parsing parameters.
+        if let Some(id) = &id {
+            let key = request_key(id);
+            if prompt_tasks.contains_key(&key) || list_tasks.contains(&key) {
+                writer
+                    .respond_error(id, -32600, "duplicate request id")
+                    .await;
+                continue;
+            }
+        }
 
         match (id, method.as_str()) {
+            (Some(id), "session/list") => {
+                let key = request_key(&id);
+                list_tasks.start(id, key, &params, writer.clone()).await;
+            }
             (Some(id), "initialize") => {
                 let params = match request_params(&params, "initialize") {
                     Ok(params) => params,
@@ -1285,7 +1319,8 @@ pub async fn run(
                 } else {
                     false
                 };
-                if !prompt_found {
+                let list_found = list_tasks.cancel(&key);
+                if !prompt_found && !list_found {
                     if let Some(numeric_id) = request_id.as_u64() {
                         writer.cancel_request(numeric_id).await;
                     }
@@ -1335,6 +1370,7 @@ pub async fn run(
 
     // Resolve pending client requests before tearing down every child.
     writer.close();
+    list_tasks.shutdown().await;
     stop_all_prompt_tasks(&mut prompt_tasks).await;
     for task in logout_tasks {
         task.abort();
@@ -1617,6 +1653,7 @@ mod tests {
 
     include!("protocol_compact_tests.rs");
     include!("protocol_mcp_tests.rs");
+    include!("protocol_session_list_tests.rs");
 
     #[test]
     fn durable_extension_parses_queue_mutations() {

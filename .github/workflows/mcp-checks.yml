@@ -44,7 +44,14 @@ jobs:
       - name: Check package and included-test formatting
         run: |
           cargo fmt --check -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp
-          rustfmt --edition 2021 --check packages/rpi-mcp-core/src/configured_http_tests.rs packages/rpi-mcp-adapter/src/http_tests.rs packages/rpi-extcore/src/external_tools.rs packages/rpi-extcore/src/external_tools_tests.rs packages/rpi-extcore/src/external_tools_host_tests.rs packages/rpi-acp/src/protocol_mcp_tests.rs
+          rustfmt --edition 2021 --check packages/rpi-mcp-core/src/configured_http_tests.rs packages/rpi-mcp-adapter/src/http_tests.rs packages/rpi-extcore/src/external_tools.rs packages/rpi-extcore/src/external_tools_tests.rs packages/rpi-extcore/src/external_tools_host_tests.rs packages/rpi-acp/src/protocol_mcp_tests.rs packages/rpi-extcore/src/session_catalog_tests.rs packages/rpi-acp/src/protocol_session_list_tests.rs packages/rpi-acp/src/session_list_tests.rs packages/rpi-acp/src/session_list_fixture_tests.rs
+      - name: Test bounded native-header catalog and ACP discovery fixtures
+        run: |
+          cargo test --locked -p rpi-extcore session_catalog
+          cargo test --locked -p rpi-acp session_list
+          cargo test --locked -p rpi-acp list_dispatcher
+      - name: Check provenance-gated native harness syntax without running it
+        run: python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/session_list_native.py').read_text(encoding='utf-8'))"
       - name: Test default package compatibility and runtime ownership
         run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
       - name: Test configured core HTTP transport with loopback fixtures
@@ -66,5 +73,6 @@ jobs:
         run: cargo package --locked -p rpi-mcp-core
       - name: Verify the adapter against the unpublished workspace core
         run: cargo package --locked -p rpi-mcp-adapter --config 'patch.crates-io.rpi-mcp-core.path="packages/rpi-mcp-core"'
-      # Real-native ACP/MCP smoke requires separately verified native/bridge
-      # binaries and provenance records. This fixture-only job does not run it.
+      # Real-native ACP/MCP and session/list smokes require separately verified
+      # native/bridge binaries and prebuild provenance. This fixture-only job
+      # does not run them or qualify an installed extension.
