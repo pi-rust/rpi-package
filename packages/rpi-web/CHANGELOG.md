@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.32](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.31...rpi-web-v0.1.32) - 2026-11-01
+
+### Added
+
+- *(web)* add Android client, protected releases and system appearance ([#166](https://github.com/pi-rust/rpi-package/pull/166))
+
 ## [0.1.31](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.30...rpi-web-v0.1.31) - 2026-11-01
 
 ### Fixed
