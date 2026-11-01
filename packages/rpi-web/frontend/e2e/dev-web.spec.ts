@@ -908,7 +908,7 @@ test("rejected prompts restore the draft and remove the optimistic message", asy
     name: "Send a prompt, or type / for commands…",
   });
   await input.fill("Keep this draft");
-  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
   await input.press("Enter");
   await expect(page.locator(".error-banner")).toContainText(
     "a run is already active",
@@ -3121,7 +3121,7 @@ test("an old prompt acknowledgement does not block a new chat or unlock its pend
     name: "Send a prompt, or type / for commands…",
   });
   await composer.fill("First chat request");
-  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
   await composer.press("Enter");
   await expect.poll(() => pending.length).toBe(1);
   await page
@@ -3132,7 +3132,7 @@ test("an old prompt acknowledgement does not block a new chat or unlock its pend
     page.getByRole("heading", { name: "New session" }),
   ).toBeVisible();
   await composer.fill("Second chat request");
-  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
   await composer.press("Enter");
   await expect.poll(() => pending).toEqual([sessionId, "session-2"]);
   const oldFinished = page.waitForResponse(
