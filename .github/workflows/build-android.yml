@@ -54,6 +54,10 @@ jobs:
         with:
           python-version: '3.12'
       - uses: android-actions/setup-android@v3
+        with:
+          # The action's default includes the retired 'tools' SDK package.
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: 'false'
       - uses: gradle/actions/wrapper-validation@v4
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -112,6 +116,9 @@ jobs:
         with:
           python-version: '3.12'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: 'false'
       - uses: gradle/actions/setup-gradle@v4
         with:
           cache-disabled: true
