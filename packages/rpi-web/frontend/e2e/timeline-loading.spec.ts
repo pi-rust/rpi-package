@@ -1,4 +1,15 @@
 import { test as base, expect, type Page } from "@playwright/test";
+import { translate } from "../src/i18n";
+
+const transcript = (page: Page) => page.locator(".transcript");
+const historicalMessage = (page: Page, index: number) =>
+  transcript(page)
+    .locator(".message")
+    .getByText(`Historical native body ${index}`, { exact: true });
+const historyPages = (page: Page) =>
+  page.getByRole("navigation", { name: translate("en", "historyContextPagination"), exact: true });
+const latestMessages = (page: Page) =>
+  page.getByRole("button", { name: translate("en", "jumpToBottom"), exact: true });
 
 // Deliberately independent of dev-web.spec.ts: every API request is intercepted,
 // including read-shaped POSTs; an accidental prompt/mutation fails the fixture.
@@ -1254,23 +1265,32 @@ for (const width of [1280, 390]) {
     await page.screenshot({ path: test.info().outputPath(`native-summary-${width}.png`) });
   });
 }
-for (const closeWith of ["Escape", "Close"] as const) {
-  test(`native historical reader restores timeline keyboard focus after ${closeWith}`, async ({ page, host }) => {
-    enableNative(host);
-    host.windows.push({ data: nativeWindowPage() });
-    await open(page, 10);
-    const question = nodes(page).first();
-    await question.focus();
-    await page.keyboard.press("Enter");
-    const reader = page.getByRole("dialog", { name: "Historical message context" });
-    await expect(reader).toBeVisible();
-    await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
-    if (closeWith === "Escape") await page.keyboard.press("Escape");
-    else await reader.getByRole("button", { name: "Close dialog", exact: true }).click();
-    await expect(reader).not.toBeVisible();
-    await expect(question).toBeFocused();
-  });
-}
+test("native historical keyboard navigation stays inline without a modal or focus trap", async ({ page, host }) => {
+  enableNative(host);
+  const held = gate();
+  host.windows.push({ data: nativeWindowPage(), wait: held });
+  await open(page, 10);
+  const question = nodes(page).first();
+  await question.focus();
+  await page.keyboard.press("Enter");
+  await expect(transcript(page)).toHaveAttribute("data-history-window", "true");
+  await expect(page.locator(".history-window-status")).toContainText(translate("en", "loadingEarlierMessages"));
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(question).toBeFocused();
+  // A delayed result must not pull focus back from the composer or create a trap.
+  const composer = page.locator(".composer textarea");
+  await composer.focus();
+  held.release();
+  await expect(historicalMessage(page, 10)).toBeVisible();
+  await expect(composer).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(transcript(page)).toHaveAttribute("data-history-window", "true");
+  await latestMessages(page).click();
+  await expect(transcript(page)).not.toHaveAttribute("data-history-window", "true");
+  await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(49);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(1);
+});
 
 test("native summary pagination is single-flight, exclusive and pins its branch leaf", async ({ page, host }) => {
   enableNative(host);
@@ -1289,36 +1309,109 @@ test("native summary pagination is single-flight, exclusive and pins its branch 
   await expect(earlier(page)).toHaveCount(0);
 });
 for (const width of [1280, 390]) {
-test(`native historical click reads one bounded window and pages in both directions without changing live chat at ${width}px`, async ({ page, host }) => {
+test(`native historical click replaces the main transcript with bounded pages at ${width}px`, async ({ page, host }) => {
   await page.setViewportSize({ width, height: 860 });
   enableNative(host);
   host.windows.push({ data: nativeWindowPage() }, { data: nativeWindowPage(12, 3, false) }, { data: nativeWindowPage() });
   await open(page, 10);
-  const anchor = await transcriptAnchor(page);
   await nodes(page).first().click();
-  const reader = page.getByRole("dialog", { name: "Historical message context" });
-  await expect(reader).toBeVisible();
-  await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
+  await expect(transcript(page)).toHaveAttribute("data-history-window", "true");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(historicalMessage(page, 10)).toBeVisible();
+  await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(3);
+  await expect(transcript(page)).not.toContainText("Question native 19");
   expect(host.queryReads[1].params).toEqual({ limit: "48", anchorId: "native-10", leafId: "native-pinned-leaf" });
-  await page.screenshot({ path: test.info().outputPath(`native-reader-${width}.png`) });
-  await reader.getByRole("button", { name: "Later page", exact: true }).click();
-  await expect(reader.getByText("Historical native body 14", { exact: true })).toBeVisible();
-  expect(host.queryReads[2].params.afterId).toBe("native-11");
-  await reader.getByRole("button", { name: "Earlier page", exact: true }).click();
-  await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
-  expect(host.queryReads[3].params.beforeId).toBe("native-12");
-  await expect(page.locator(".transcript [data-transcript-row]")).toHaveCount(49);
+  await expect(historyPages(page)).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath(`native-inline-history-${width}.png`) });
+  await historyPages(page).getByRole("button", { name: "Later page", exact: true }).click();
+  await expect(historicalMessage(page, 14)).toBeVisible();
+  await expect(historicalMessage(page, 10)).toHaveCount(0);
+  await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(3);
+  await expect(historyPages(page).getByRole("button", { name: "Later page", exact: true })).toBeDisabled();
+  expect(host.queryReads[2].params).toEqual({ limit: "48", afterId: "native-11", leafId: "native-pinned-leaf" });
+  await historyPages(page).getByRole("button", { name: "Earlier page", exact: true }).click();
+  await expect(historicalMessage(page, 10)).toBeVisible();
+  await expect(historicalMessage(page, 14)).toHaveCount(0);
+  expect(host.queryReads[3].params).toEqual({ limit: "48", beforeId: "native-12", leafId: "native-pinned-leaf" });
+  await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(3);
   expect(host.reads).toHaveLength(0);
-  await page.keyboard.press("Escape"); await expect(reader).not.toBeVisible();
-  await expectTranscriptAnchor(page, anchor);
+  await latestMessages(page).click();
+  await expect(transcript(page)).not.toHaveAttribute("data-history-window", "true");
+  await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(49);
+  await expect(transcript(page)).toContainText("Question native 19");
+  await expect(historicalMessage(page, 10)).toHaveCount(0);
+  await expect(historyPages(page)).toHaveCount(0);
+  expect(host.queryReads).toHaveLength(4);
 });
 }
+for (const width of [1280, 390]) {
+  test(`native inline navigation aligns the requested question within a full window at ${width}px`, async ({ page, host }) => {
+    await page.setViewportSize({ width, height: 860 });
+    enableNative(host);
+    host.windows.push({ data: nativeWindowPage(0, 48, false) });
+    await open(page, 10);
+    await nodes(page).first().click();
+    const body = historicalMessage(page, 10);
+    await expect(body).toBeVisible();
+    await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(48);
+    await expect.poll(() => body.evaluate(element => {
+      const top = element.closest(".transcript")!.getBoundingClientRect().top;
+      return Math.round(element.closest("[data-transcript-row]")!.getBoundingClientRect().top - top);
+    })).toBe(12);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(1);
+    expect(host.reads).toHaveLength(0);
+    await page.screenshot({ path: test.info().outputPath(`native-aligned-inline-${width}.png`) });
+  });
+}
+
+test("native local timeline selection cancels pending historical paging", async ({ page, host }) => {
+  enableNative(host);
+  const held = gate();
+  host.windows.push({ data: nativeWindowPage() }, { data: nativeWindowPage(12), wait: held });
+  await open(page, 10);
+  await nodes(page).first().click();
+  await expect(historicalMessage(page, 10)).toBeVisible();
+  await historyPages(page).getByRole("button", { name: "Later page", exact: true }).click();
+  await expect.poll(() => host.queryReads.filter(read => read.type === "message-window").length).toBe(2);
+  await page.locator('.timeline-node[aria-label*="Native question 11"]').click();
+  held.release();
+  await settle(page);
+  await expect(historicalMessage(page, 11)).toBeVisible();
+  await expect(historicalMessage(page, 14)).toHaveCount(0);
+  await expect(historyPages(page).getByRole("button", { name: "Later page", exact: true })).toBeEnabled();
+  expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(2);
+  expect(host.reads).toHaveLength(0);
+});
+
+test("native historical footer looks up only authoritative metadata for the displayed window", async ({ page, host }) => {
+  enableNative(host);
+  host.windows.push({ data: nativeWindowPage() });
+  const queried: string[][] = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/run-timings/query`, route => {
+    const ids = route.request().postDataJSON().entryIds as string[];
+    queried.push(ids);
+    return route.fulfill({ json: {
+      timings: ids.includes("native-11") ? [{ runId: "historical-run", finalEntryId: "native-11", startedAt: 1000, finishedAt: 4000, elapsedMs: 3000, outcome: "completed" }] : [],
+      complete: true, cursor: null, scannedBytes: 0, totalBytes: 0,
+    } });
+  });
+  await open(page, 10);
+  await nodes(page).first().click();
+  await expect(transcript(page).locator(".run-elapsed")).toContainText("3s");
+  expect(queried.some(ids => ids.length === 3 && ids.includes("native-9") && ids.includes("native-11"))).toBe(true);
+  await latestMessages(page).click();
+  await expect(transcript(page).locator(".run-elapsed")).toHaveCount(0);
+  expect(host.reads).toHaveLength(0);
+});
+
 test("native loaded question navigates locally without fetching a context window", async ({ page, host }) => {
   enableNative(host); await open(page, 10);
   await nodes(page).last().click(); await settle(page);
   expect(host.queryReads).toHaveLength(1);
   expect(host.reads).toHaveLength(0);
-  await expect(page.getByRole("dialog", { name: "Historical message context" })).toHaveCount(0);
+  await expect(transcript(page)).not.toHaveAttribute("data-history-window", "true");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 test("native transient failure is visible and retryable without heavy fallback reads", async ({ page, host }) => {
   enableNative(host); host.summaryPages.unshift({ status: 503 });
@@ -1354,26 +1447,99 @@ test("native summary pagination aborts stale pages when switching sessions", asy
   await expect(nodes(page).first()).toHaveAttribute("aria-label", /Other question 0/);
   expect(host.reads).toHaveLength(0);
 });
-test("native historical context aborts and closes when switching sessions", async ({ page, host }) => {
+test("native inline history aborts when switching sessions", async ({ page, host }) => {
   enableNative(host);
   const held = gate(); host.windows.push({ data: nativeWindowPage(), wait: held }); host.summaryPages.push({ data: otherNativePage() });
   await open(page, 10); await nodes(page).first().click();
   await expect.poll(() => host.queryReads.length).toBe(2);
-  await page.getByRole("dialog", { name: "Historical message context" }).getByRole("button", { name: "Close dialog" }).click();
+  await expect(transcript(page)).toHaveAttribute("data-history-window", "true");
   await page.locator(".project-session-link").filter({ hasText: "Other timeline session" }).click();
   await expect(nodes(page)).toHaveCount(2);
   held.release(); await settle(page);
-  await expect(page.getByRole("dialog", { name: "Historical message context" })).toHaveCount(0);
-  await expect(page.locator(".transcript")).not.toContainText("Historical native body");
+  await expect(transcript(page)).not.toHaveAttribute("data-history-window", "true");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(transcript(page)).not.toContainText("Historical native body");
+  await expect(transcript(page)).toContainText("Question other 1");
+  expect(host.reads).toHaveLength(0);
 });
-test("native context branch conflicts remain visible without a mixed-history fallback", async ({ page, host }) => {
-  enableNative(host); host.windows.push({ status: 409 });
+test("native context branch conflicts stay inline and retry without a mixed-history fallback", async ({ page, host }) => {
+  enableNative(host); host.windows.push({ status: 409 }, { data: nativeWindowPage() });
   await open(page, 10); await nodes(page).first().click();
-  const reader = page.getByRole("dialog", { name: "Historical message context" });
-  await expect(reader.getByRole("alert")).toContainText("Mock bounded query unavailable");
+  await expect(transcript(page)).toHaveAttribute("data-history-window", "true");
+  const status = page.locator(".history-window-status");
+  await expect(status).toContainText("Mock bounded query unavailable");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(transcript(page)).not.toContainText("Question native 19");
   await settle(page);
   expect(host.queryReads).toHaveLength(2); expect(host.reads).toHaveLength(0);
-  await page.keyboard.press("Escape"); await expect(reader).not.toBeVisible();
+  await status.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(historicalMessage(page, 10)).toBeVisible();
+  expect(host.queryReads[2].params).toEqual(host.queryReads[1].params);
+  await latestMessages(page).click();
+  await expect(transcript(page)).not.toHaveAttribute("data-history-window", "true");
+  expect(host.queryReads).toHaveLength(3); expect(host.reads).toHaveLength(0);
+});
+
+test("native rapid A/B history clicks isolate late success and error responses", async ({ page, host }) => {
+  enableNative(host);
+  const first = gate(), second = gate(), staleError = gate();
+  host.windows.push(
+    { data: nativeWindowPage(9), wait: first },
+    { data: nativeWindowPage(14), wait: second },
+    { status: 503, wait: staleError },
+    { data: nativeWindowPage(16) },
+  );
+  await open(page, 10);
+  await nodes(page).first().click();
+  await expect.poll(() => host.queryReads.length).toBe(2);
+  // B must start while A is still held: single-flight applies per selection,
+  // not as a global lock that silently ignores a newer timeline click.
+  await nodes(page).nth(5).click();
+  await expect.poll(() => host.queryReads.length).toBe(3);
+  expect(host.queryReads[2].params.anchorId).toBe("native-15");
+  second.release();
+  await expect(historicalMessage(page, 15)).toBeVisible();
+  first.release();
+  await settle(page);
+  await expect(historicalMessage(page, 15)).toBeVisible();
+  await expect(historicalMessage(page, 10)).toHaveCount(0);
+  await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(3);
+  // Repeat with a stale error; it must not replace the newer success with Retry.
+  await nodes(page).first().click();
+  await expect.poll(() => host.queryReads.length).toBe(4);
+  await nodes(page).nth(7).click();
+  await expect.poll(() => host.queryReads.length).toBe(5);
+  await expect(historicalMessage(page, 17)).toBeVisible();
+  staleError.release();
+  await settle(page);
+  await expect(historicalMessage(page, 17)).toBeVisible();
+  await expect(page.locator(".history-window-status")).not.toContainText("Mock bounded query unavailable");
+  expect(host.queryReads.filter(read => read.type === "message-window").map(read => read.params.anchorId)).toEqual(["native-10", "native-15", "native-10", "native-17"]);
+  expect(host.reads).toHaveLength(0);
+});
+
+test("return to latest cancels pending inline history without a late render or focus theft", async ({ page, host }) => {
+  enableNative(host);
+  const held = gate();
+  host.windows.push({ data: nativeWindowPage(), wait: held });
+  await open(page, 10);
+  await nodes(page).first().click();
+  await expect.poll(() => host.queryReads.length).toBe(2);
+  await expect(transcript(page)).toHaveAttribute("data-history-window", "true");
+  await latestMessages(page).click();
+  await expect(transcript(page)).not.toHaveAttribute("data-history-window", "true");
+  await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(49);
+  const composer = page.locator(".composer textarea");
+  await composer.focus();
+  held.release();
+  await settle(page, 600);
+  await expect(composer).toBeFocused();
+  await expect(transcript(page)).not.toHaveAttribute("data-history-window", "true");
+  await expect(transcript(page)).not.toContainText("Historical native body");
+  await expect(transcript(page)).toContainText("Question native 19");
+  await expect(page.locator(".history-window-status")).toHaveCount(0);
+  expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(1);
+  expect(host.reads).toHaveLength(0);
 });
 
 async function settleEvent(page: Page, live: Gate) {
@@ -1410,29 +1576,42 @@ for (const toolOnly of [false, true]) {
     await settleEvent(page, live);
     try {
       await open(page, 10); await nodes(page).first().click();
-      const reader = page.getByRole("dialog", { name: "Historical message context" });
-      await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
-      await reader.getByRole("button", { name: "Later page", exact: true }).click();
-      await expect(reader.getByText("Historical native body 14", { exact: true })).toBeVisible();
-      await reader.evaluate(element => { element.dataset.testInstance = "pinned-reader"; });
+      const main = transcript(page);
+      await expect(main).toHaveAttribute("data-history-window", "true");
+      await expect(historicalMessage(page, 10)).toBeVisible();
+      await historyPages(page).getByRole("button", { name: "Later page", exact: true }).click();
+      await expect(historicalMessage(page, 14)).toBeVisible();
+      await main.evaluate(element => { element.dataset.testInstance = "pinned-transcript"; });
       host.initial = { messages: toolOnly ? tools("live-tail") : users("native", 21).slice(-1), firstId: "live-tail-cursor", hasMore: true };
       host.nativeLeaf = "append-leaf";
       host.summaryPages.push({ data: { ...nativeSummaryPage(11), leafId: "append-leaf" }, wait: summaries });
       live.release();
       await expect.poll(() => host.queryReads.filter(read => read.type === "message-summaries").length).toBe(2);
-      await expect(reader).toBeVisible();
-      await expect(reader).toHaveAttribute("data-test-instance", "pinned-reader");
-      await expect(reader.getByText("Historical native body 14", { exact: true })).toBeVisible();
+      await expect(main).toHaveAttribute("data-history-window", "true");
+      await expect(main).toHaveAttribute("data-test-instance", "pinned-transcript");
+      await expect(historicalMessage(page, 14)).toBeVisible();
+      await expect(main.locator("[data-transcript-row]")).toHaveCount(3);
+      await expect(main).not.toContainText(toolOnly ? "src/file-0.ts" : "Question native 20");
       expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(2);
       summaries.release();
       await expect(nodes(page)).toHaveCount(10);
-      await expect(reader).toHaveAttribute("data-test-instance", "pinned-reader");
-      await expect(reader.getByText("Historical native body 14", { exact: true })).toBeVisible();
+      await settle(page);
+      await expect(main).toHaveAttribute("data-history-window", "true");
+      await expect(main).toHaveAttribute("data-test-instance", "pinned-transcript");
+      await expect(historicalMessage(page, 14)).toBeVisible();
+      await expect(main.locator("[data-transcript-row]")).toHaveCount(3);
       expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(2);
       expect(host.queryReads.filter(read => read.type === "message-window").every(read => read.params.leafId === "native-pinned-leaf")).toBe(true);
-      await page.keyboard.press("Escape");
-      await expect(reader).not.toBeVisible();
+      await latestMessages(page).click();
+      await expect(main).not.toHaveAttribute("data-history-window", "true");
+      await expect(historicalMessage(page, 14)).toHaveCount(0);
+      // Settlement notes can keep an empty wrapper; count rendered native cards,
+      // not presentation-only placeholders retained by the live reconciler.
+      await expect(main.locator(toolOnly ? ".tool-card" : ".message")).toHaveCount(toolOnly ? 48 : 1);
+      if (!toolOnly) await expect(main).toContainText("Question native 20");
       await expect(nodes(page).last()).toHaveAttribute("aria-label", /Native question 20/);
+      expect(host.reads).toHaveLength(0);
+      expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(2);
     } finally { live.release(); summaries.release(); }
   });
 }

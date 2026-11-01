@@ -28,6 +28,8 @@
 
 ### Fixed
 
+- Navigate unloaded timeline questions inline in the main transcript instead of opening a historical popup. Replace one bounded 48-message page at a time with Earlier/Later controls and inline loading/error/Retry; return through Back to latest, without a modal focus trap. Keep live SSE/snapshots updating separately while live rows are hidden, preserve the selected page through summary refreshes, and cancel/ignore obsolete reads on a newer click, return to latest or session navigation. Reuse the existing native queries and pinned leaf/cursors; no runtime, backend, model, transcript-storage or deployment change.
+
 - Fill the left timeline's initial ten-question window automatically, including tool-heavy snapshots with only one or no user questions. Reuse single-flight 48-message history pages with a ten-page ceiling; stop at ten real questions, exhausted history, failure or no progress. Preserve reading anchors, manual continuation and stale-navigation isolation instead of requiring one upward gesture per newly discovered question.
 - Display the original skill directory name for explicit `SKILL.md` reads in both tool-name modes and languages, without state-dependent action phrases. Keep full paths, native arguments/results, localized status indicators and the trailing success check; leave ordinary reads unchanged.
 - Show a small green success check at the trailing edge of completed tool rows, after elapsed time and before the disclosure chevron, while retaining the leading tool-type icon. Keep pending/running spinners, failure alerts, localized status labels, summary geometry and keyboard disclosure behavior unchanged.
