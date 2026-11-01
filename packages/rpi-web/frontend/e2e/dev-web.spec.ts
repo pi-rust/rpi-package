@@ -908,6 +908,7 @@ test("rejected prompts restore the draft and remove the optimistic message", asy
     name: "Send a prompt, or type / for commands…",
   });
   await input.fill("Keep this draft");
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
   await input.press("Enter");
   await expect(page.locator(".error-banner")).toContainText(
     "a run is already active",
@@ -3120,6 +3121,7 @@ test("an old prompt acknowledgement does not block a new chat or unlock its pend
     name: "Send a prompt, or type / for commands…",
   });
   await composer.fill("First chat request");
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
   await composer.press("Enter");
   await expect.poll(() => pending.length).toBe(1);
   await page
@@ -3130,6 +3132,7 @@ test("an old prompt acknowledgement does not block a new chat or unlock its pend
     page.getByRole("heading", { name: "New session" }),
   ).toBeVisible();
   await composer.fill("Second chat request");
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
   await composer.press("Enter");
   await expect.poll(() => pending).toEqual([sessionId, "session-2"]);
   const oldFinished = page.waitForResponse(
@@ -10440,8 +10443,11 @@ test.describe("todo update grouping", () => {
     try {
       await page.goto("/");
       await expect(topCards(page)).toHaveCount(1);
+      // Startup diagnostics are independent of transcript paging. Wait for and
+      // account for their one history read instead of racing the deferred task.
+      await expect.poll(() => requests).toEqual([{ type: "get_history" }]);
       await scrollPagingTo(page, 120);
-      await expect.poll(() => requests.length).toBe(1);
+      await expect.poll(() => requests.filter(request => request.type === "get_messages").length).toBe(1);
       await scrollPagingTo(page, 450);
       const anchor = await visiblePagingAnchor(page);
       release();
@@ -10456,7 +10462,10 @@ test.describe("todo update grouping", () => {
       await latest.locator(".todo-history > summary").click();
       await expect(latest.locator(".todo-history .todo-card")).toHaveCount(2);
       await expect(page.locator(".message.user")).toHaveCount(20);
-      expect(requests).toMatchObject([{ type: "get_messages", beforeId: "group-latest-call", limit: 48 }]);
+      expect(requests).toMatchObject([
+        { type: "get_history" },
+        { type: "get_messages", beforeId: "group-latest-call", limit: 48 },
+      ]);
     } finally { release(); }
   });
 
