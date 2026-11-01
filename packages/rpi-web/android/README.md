@@ -10,6 +10,16 @@ Android client for rpi Web, alongside [`../frontend/`](../frontend/). **This is 
 - Only `INTERNET` permission. No JavaScript bridge, broad storage permission, third-party cookies, mixed content, file URL access or TLS bypass. Main-frame TLS errors fail closed; off-origin HTTPS navigation requires confirmation and opens a system browser. App backup/transfer is excluded.
 - No offline chat, app-managed downloads, background service, notifications or camera capture. Use the system document picker for existing files. Foreground Web/SSE behavior is provided by the selected node, not a new Android protocol adapter.
 
+## System day/night appearance
+
+From **0.1.2 / code 3**, the native toolbar, loading background, error/retry panel, open dialogs and system bars automatically follow Android's day/night mode. Native `uiMode` changes update the current theme and colors **without recreating the Activity or WebView**, retaining page history, form drafts and pending file callbacks. A fresh launch in night mode uses the dark platform theme. No theme JavaScript is injected.
+
+The online Web workspace separately offers **Settings → Appearance → System / 设置 → 外观 → 随系统** (default for new preferences), listening to `prefers-color-scheme` in real time. Existing explicit light/dark choices remain respected; select System to opt back in. The quick sun/moon button is an explicit manual override, not a three-state cycle. Android shell colors always follow the OS, so a deliberately manual page theme may differ.
+
+**Deployment boundary:** the APK cannot add this new Web setting to an old server frontend. The public development node has been verified via HMR, including the signed Release app's real login page in both OS modes. A production node must deploy the matching frontend separately; this change does not deploy/restart it. Until then, its older page may remain light even with a dark native shell. Third-party custom nodes must implement their own system theme support.
+
+0.1.2 retains the 0.1.1 fixed release certificate; a normal in-place upgrade from **0.1.1 Release** is supported and tested.
+
 ## Install and signing migration
 
 Use a **signed `*-release.apk`**, verify its `.sha256`, and allow installation from the browser/file manager when Android asks. `*-unsigned-release.apk` is a CI verification output, **not installable**; `*-debug.apk` is for disposable testing and uses a different key.
@@ -86,12 +96,13 @@ python -m unittest discover -s tools -p 'test_*.py' -v
 npm ci
 # ANDROID_SERIAL defaults to emulator-5584; physical phones are refused.
 npm run test:emulator
+npm run test:theme
 # After replacing debug with signed release on that disposable emulator:
 python tools/verify-release.py --serial emulator-5584
 ```
 
 The optional Playwright dependency is **test-only**, never part of the APK. Debug smoke uses emulator CDP to intercept a local HTML fixture (no shared fixture endpoint) for real content-URI file selection/cancel/reopen, external-popup confirmation, Back history and IME layout. It also opens the real production/development login pages without supplying credentials or starting model work. The release smoke uses only ADB/UIAutomator (no CDP), checks non-debuggable installation/run-as denial and exercises real login rendering, keyboard/Back, site switching and process-restart preference persistence.
 
-Local migration verification: Python **17/17**, URL-policy **4/4** in both variants, debug/release Lint **0 errors / 3 warnings** (`OldTargetApi`, `UnusedAttribute`, `DataExtractionRules`), debug/unsigned/signed packaging, actual missing-key/wrong-certificate rejection, debug-to-release Android signature rejection and same-signature reinstall. Android 14/API 34 x86_64 emulator with WebView 113: debug smoke **10/10**, release native smoke **6/6**. These are not physical-device, authenticated chat, real attachment-upload or model-task tests.
+Local migration verification: Python **17/17**, URL-policy **4/4** in both variants, debug/release Lint **0 errors / 3 warnings** (`OldTargetApi`, `UnusedAttribute`, `DataExtractionRules`), debug/unsigned/signed packaging, actual missing-key/wrong-certificate rejection, debug-to-release Android signature rejection and same-signature reinstall. Android 14/API 34 x86_64 emulator with WebView 113: debug smoke **10/10**, additional live-system-theme fixture smoke **4/4**, release native smoke **7/7**. Theme checks retain the document marker/draft/history/PID through live mode changes, inspect open native dialogs/error panels, and capture both palettes. Frontend production and public-HMR tests cover system default, live changes, legacy manual preferences, returning to System, reload persistence, storage failures and 390px layout. These are not physical-device, authenticated chat, real attachment-upload or model-task tests.
 
 **Emulator limitation:** that system image has `ro.debuggable=1`. WebView 113's [`SharedStatics.setWebContentsDebuggingEnabled`](https://github.com/chromium/chromium/blob/113.0.5672.136/android_webview/glue/java/src/com/android/webview/chromium/SharedStatics.java#L48-L51) ignores the app's `false` setting on a debug Android build. The release APK is non-debuggable and calls the API with `BuildConfig.DEBUG=false`, but a devtools socket is still observed on this debug OS. Release smoke records this honestly and never connects to it; absence of CDP on a normal non-debug physical device is **not verified here**. Keep system WebView up to date.

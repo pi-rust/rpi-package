@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="shell_background">#161618</color>
+    <color name="page_background">#1C1C1E</color>
+    <color name="shell_text">#F2F2F4</color>
+    <color name="shell_accent">#F4A582</color>
+    <bool name="light_system_bars">false</bool>
+    <style name="AppThemeBase" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/shell_accent</item>
+        <item name="android:windowLightStatusBar">@bool/light_system_bars</item>
+        <item name="android:statusBarColor">@color/shell_background</item>
+        <item name="android:navigationBarColor">@color/shell_background</item>
+        <item name="android:windowBackground">@color/shell_background</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

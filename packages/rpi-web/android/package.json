@@ -1,10 +1,11 @@
 {
   "name": "rpi-web-android-checks",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Optional emulator/CDP smoke tests; not bundled into the APK",
   "scripts": {
-    "test:emulator": "node tools/verify-emulator.cjs"
+    "test:emulator": "node tools/verify-emulator.cjs",
+    "test:theme": "node tools/verify-theme.cjs"
   },
   "devDependencies": {
     "playwright": "1.64.1"

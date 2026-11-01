@@ -5,6 +5,8 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.res.Configuration
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
@@ -52,12 +54,15 @@ class MainActivity : Activity() {
     private val popups = mutableSetOf<WebView>()
     private val preferences by lazy { getSharedPreferences("connection", MODE_PRIVATE) }
     private var backCallback: OnBackInvokedCallback? = null
-    private val bg = Color.rgb(244, 241, 233)
+    private val dialogs = mutableSetOf<AlertDialog>()
+    private val bg get() = getColor(R.color.shell_background)
+    private val textColor get() = getColor(R.color.shell_text)
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         origin = OriginPolicy.normalize(preferences.getString("origin", null) ?: "") ?: OriginPolicy.PRODUCTION
         buildLayout()
+        applySystemTheme()
         createWebView(state?.takeIf { it.getString("origin") == origin }?.getBundle("web"))
         if (Build.VERSION.SDK_INT >= 33) {
             backCallback = OnBackInvokedCallback { navigateBack() }.also {
@@ -79,7 +84,7 @@ class MainActivity : Activity() {
         val ripple = android.util.TypedValue()
         theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
         setBackgroundResource(ripple.resourceId)
-        setTextColor(Color.rgb(48, 48, 46))
+        setTextColor(textColor)
         setOnClickListener { action() }
     }
 
@@ -153,7 +158,7 @@ class MainActivity : Activity() {
             old.destroy()
         }
         web = WebView(this).apply {
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(getColor(R.color.page_background))
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -347,6 +352,68 @@ class MainActivity : Activity() {
         if (OriginPolicy.isInternal(view.url ?: "", origin)) view.reload() else view.loadUrl("$origin/")
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        // Update the Activity theme before WebView receives the configuration:
+        // its prefers-color-scheme derives from android:isLightTheme.
+        theme.applyStyle(R.style.AppTheme, true)
+        super.onConfigurationChanged(newConfig)
+        applySystemTheme()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applySystemTheme() {
+        val light = resources.getBoolean(R.bool.light_system_bars)
+        window.statusBarColor = bg
+        window.navigationBarColor = if (Build.VERSION.SDK_INT >= 27 || !light) bg else Color.rgb(51, 51, 51)
+        var flags = window.decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        if (light) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        if (Build.VERSION.SDK_INT >= 27) {
+            flags = flags and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
+            if (light) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        }
+        window.decorView.systemUiVisibility = flags
+        window.setBackgroundDrawableResource(R.color.shell_background)
+        root.setBackgroundColor(bg)
+        errorPanel.setBackgroundColor(bg)
+        tintText(root)
+        val accent = ColorStateList.valueOf(getColor(R.color.shell_accent))
+        progress.progressTintList = accent
+        web?.setBackgroundColor(getColor(R.color.page_background))
+        dialogs.toList().forEach(::tintDialog)
+    }
+
+    private fun tintText(view: View) {
+        // Do not enter WebView: page styling belongs to the site's theme setting.
+        if (view is WebView) return
+        if (view is TextView) {
+            view.setTextColor(textColor)
+            if (view is EditText) {
+                view.setHintTextColor(textColor)
+                view.backgroundTintList = ColorStateList.valueOf(getColor(R.color.shell_accent))
+            }
+            if (view is Button) {
+                val ripple = android.util.TypedValue()
+                theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
+                view.setBackgroundResource(ripple.resourceId)
+            }
+        }
+        if (view is ViewGroup) for (i in 0 until view.childCount) tintText(view.getChildAt(i))
+    }
+
+    private fun tintDialog(dialog: AlertDialog) {
+        dialog.window?.let { window ->
+            window.decorView.background?.mutate()?.setTint(bg)
+            tintText(window.decorView)
+        }
+    }
+
+    private fun showDialog(dialog: AlertDialog) {
+        dialogs.add(dialog)
+        dialog.setOnDismissListener { dialogs.remove(dialog) }
+        dialog.show()
+        tintDialog(dialog)
+    }
+
     private fun confirmExternal(url: String) {
         if (!OriginPolicy.isHttps(url)) return
         AlertDialog.Builder(this)
@@ -356,7 +423,7 @@ class MainActivity : Activity() {
             .setPositiveButton("打开") { _, _ ->
                 try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)) }
                 catch (_: ActivityNotFoundException) { Toast.makeText(this, "未找到浏览器。", Toast.LENGTH_SHORT).show() }
-            }.show()
+            }.create().let(::showDialog)
     }
 
     private fun showSites() {
@@ -368,7 +435,7 @@ class MainActivity : Activity() {
                     1 -> confirmSite(OriginPolicy.DEVELOPMENT)
                     2 -> customSite()
                 }
-            }.show()
+            }.create().let(::showDialog)
     }
 
     private fun customSite() {
@@ -389,7 +456,7 @@ class MainActivity : Activity() {
                 else { dialog.dismiss(); confirmSite(selected) }
             }
         }
-        dialog.show()
+        showDialog(dialog)
     }
 
     private fun confirmSite(selected: String) {
@@ -402,7 +469,7 @@ class MainActivity : Activity() {
                     origin = selected
                     createWebView()
                 } else Toast.makeText(this, "站点设置保存失败，未切换。", Toast.LENGTH_LONG).show()
-            }.show()
+            }.create().let(::showDialog)
     }
 
     private fun navigateBack() {
@@ -434,6 +501,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         if (Build.VERSION.SDK_INT >= 33) backCallback?.let { onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it) }
+        dialogs.toList().forEach { it.dismiss() }
         cancelFileCallback()
         clearPopups()
         web?.let { content.removeView(it); it.stopLoading(); it.webChromeClient = null; it.destroy() }
