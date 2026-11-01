@@ -1725,7 +1725,7 @@ test("ranking starts closed and revealing a ranked child unfolds both ancestors 
   await expect(details(page)).toContainText("Fixture file contents");
 });
 
-test("native bounded run is solid, tool duration is start-unknown, and LLM time stays unknown", async ({
+test("native bounds and duration-only timings use plain rounded bars while unknown time stays hidden", async ({
   page,
   host,
 }) => {
@@ -1758,8 +1758,16 @@ test("native bounded run is solid, tool duration is start-unknown, and LLM time 
   );
   await expect(tool.locator(".trace-time-bar")).toHaveCSS(
     "border-top-style",
-    "dashed",
+    "none",
   );
+  for (const bar of [rootBar, tool.locator(".trace-time-bar")]) {
+    await expect(bar).toHaveCSS("background-image", "none");
+    await expect(bar).toHaveCSS("border-radius", "999px");
+  }
+  await expect(tool.locator(".trace-time-track")).toHaveCSS("border-radius", "999px");
+  await expect(tool.locator(".trace-time-track")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(tool.locator(".trace-time-cell")).toHaveCSS("background-image", "none");
+  await expect(pane(page).locator(".trace-legend")).toContainText("not completion percentage");
   await expect(tool).toContainText("25 ms · Start unknown");
   const llm = nodes(page, "LLM response");
   await expect(llm.locator(".trace-time-bar")).toHaveAttribute(

@@ -102,7 +102,7 @@ const labels = {
     timeline: "Timeline",
     startUnknown: "Start unknown",
     legend:
-      "Solid: validated native bounds. Dashed: duration only, start unknown. Unknown time is not zero. Each execution uses its own origin.",
+      "Bars compare recorded time, not completion percentage. Positioned bars use validated native bounds; duration-only bars are labeled Start unknown. Unknown time is not zero. Each execution uses its own origin.",
     details: "Observation details",
     status: "Status",
     nodeId: "Observation ID",
@@ -182,7 +182,7 @@ const labels = {
     timeline: "时间轴",
     startUnknown: "起点未知",
     legend:
-      "实线：已验证的原生时间边界。虚线：仅有耗时，起点未知。未知耗时不等于 0。各次执行使用独立起点。",
+      "横条对比已记录耗时，不表示完成百分比。有原生时间边界时按起点定位；仅有耗时则标注起点未知。未知耗时不等于 0，各次执行使用独立起点。",
     details: "观测详情",
     status: "状态",
     nodeId: "观测 ID",
