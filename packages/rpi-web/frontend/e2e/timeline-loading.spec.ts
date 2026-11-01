@@ -1402,23 +1402,37 @@ test("native authoritative leaf refresh discards old summary pages rather than m
     expect(host.reads).toHaveLength(0);
   } finally { live.release(); }
 });
-test("native live snapshot refresh leaves an already-open historical window pinned and independent", async ({ page, host }) => {
-  enableNative(host);
-  host.windows.push({ data: nativeWindowPage() });
-  const live = gate(); await settleEvent(page, live);
-  try {
-    await open(page, 10); await nodes(page).first().click();
-    const reader = page.getByRole("dialog", { name: "Historical message context" });
-    await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
-    host.initial = { messages: users("native", 21).slice(-1), firstId: "native-20", hasMore: true };
-    host.nativeLeaf = "append-leaf";
-    host.summaryPages.push({ data: { ...nativeSummaryPage(11), leafId: "append-leaf" } });
-    live.release();
-    await expect.poll(() => host.queryReads.filter(read => read.type === "message-summaries").length).toBe(2);
-    await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
-    expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(1);
-    await page.keyboard.press("Escape");
-    await expect(nodes(page)).toHaveCount(10);
-    await expect(nodes(page).last()).toHaveAttribute("aria-label", /Native question 20/);
-  } finally { live.release(); }
-});
+for (const toolOnly of [false, true]) {
+  test(`native live snapshot refresh preserves the historical page with a ${toolOnly ? "tool-only" : "user"} live tail`, async ({ page, host }) => {
+    enableNative(host);
+    host.windows.push({ data: nativeWindowPage() }, { data: nativeWindowPage(12, 3, false) });
+    const live = gate(), summaries = gate();
+    await settleEvent(page, live);
+    try {
+      await open(page, 10); await nodes(page).first().click();
+      const reader = page.getByRole("dialog", { name: "Historical message context" });
+      await expect(reader.getByText("Historical native body 10", { exact: true })).toBeVisible();
+      await reader.getByRole("button", { name: "Later page", exact: true }).click();
+      await expect(reader.getByText("Historical native body 14", { exact: true })).toBeVisible();
+      await reader.evaluate(element => { element.dataset.testInstance = "pinned-reader"; });
+      host.initial = { messages: toolOnly ? tools("live-tail") : users("native", 21).slice(-1), firstId: "live-tail-cursor", hasMore: true };
+      host.nativeLeaf = "append-leaf";
+      host.summaryPages.push({ data: { ...nativeSummaryPage(11), leafId: "append-leaf" }, wait: summaries });
+      live.release();
+      await expect.poll(() => host.queryReads.filter(read => read.type === "message-summaries").length).toBe(2);
+      await expect(reader).toBeVisible();
+      await expect(reader).toHaveAttribute("data-test-instance", "pinned-reader");
+      await expect(reader.getByText("Historical native body 14", { exact: true })).toBeVisible();
+      expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(2);
+      summaries.release();
+      await expect(nodes(page)).toHaveCount(10);
+      await expect(reader).toHaveAttribute("data-test-instance", "pinned-reader");
+      await expect(reader.getByText("Historical native body 14", { exact: true })).toBeVisible();
+      expect(host.queryReads.filter(read => read.type === "message-window")).toHaveLength(2);
+      expect(host.queryReads.filter(read => read.type === "message-window").every(read => read.params.leafId === "native-pinned-leaf")).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(reader).not.toBeVisible();
+      await expect(nodes(page).last()).toHaveAttribute("aria-label", /Native question 20/);
+    } finally { live.release(); summaries.release(); }
+  });
+}
