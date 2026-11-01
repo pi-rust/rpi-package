@@ -540,9 +540,9 @@ export function ConversationTimeline({
     ? focused
     : active || entries[0]?.rowId;
 
-  if (!entries.length && !hasMore && !native.error) return null;
   return (
-    <aside
+    <>
+    {(entries.length > 0 || hasMore || native.error) && <aside
       className="conversation-timeline"
       ref={root}
       onPointerEnter={(event) => {
@@ -710,9 +710,10 @@ export function ConversationTimeline({
           {native.error}<button type="button" onClick={native.retry}>{t("historyContextRetry")}</button>
         </div>
       )}
+    </aside>}
       {native.enabled && historicalAnchor && renderHistoricalRow && (
         <HistoricalMessageReader key={`${historicalAnchor.entryId}:${historicalAnchor.leafId}`} sessionId={sessionId} anchorId={historicalAnchor.entryId} leafId={historicalAnchor.leafId} language={language} renderRow={renderHistoricalRow} onClose={() => setHistoricalAnchor(null)} />
       )}
-    </aside>
+    </>
   );
 }
