@@ -328,6 +328,111 @@ fn partial_count_is_bounded_independently_of_bytes() {
     .contains("output limit"));
 }
 
+thread_local! {
+    static PROGRESS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+extern "C" fn collect_progress(partial: StbString, _: *mut std::ffi::c_void) {
+    let text = partial.to_string_lossy();
+    plugin_free_string(partial);
+    PROGRESS.with(|progress| progress.borrow_mut().push(text));
+}
+
+struct PollJob {
+    sender: Sender<JobMessage>,
+    handle: StepHandle,
+}
+
+impl PollJob {
+    fn new() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let handle = JOBS.insert_with_cancel(
+            Job {
+                receiver,
+                progress: String::new(),
+                completed: false,
+                worker: None,
+            },
+            Arc::new(AtomicBool::new(false)),
+        );
+        Self { sender, handle }
+    }
+
+    fn send(&self, text: &str) {
+        self.sender.send(JobMessage::Partial(text.into())).unwrap();
+    }
+
+    fn progress(&self) -> Vec<String> {
+        let result = poll(self.handle, Some(collect_progress), std::ptr::null_mut());
+        // These polls remain pending with an empty payload, so there is no
+        // terminal ABI string to reclaim or unsafe union access in the tests.
+        assert_eq!(result.tag, rpi_plugin_sdk::StepResultTag::Pending);
+        PROGRESS.with(|progress| {
+            progress
+                .take()
+                .into_iter()
+                .map(|text| {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(value["content"][0]["type"], "text");
+                    value["content"][0]["text"].as_str().unwrap().to_owned()
+                })
+                .collect()
+        })
+    }
+}
+
+impl Drop for PollJob {
+    fn drop(&mut self) {
+        destroy(self.handle);
+    }
+}
+
+#[test]
+fn progress_snapshots_accumulate_across_polls_and_coalesce_batches() {
+    let job = PollJob::new();
+    job.send("hello ");
+    assert_eq!(job.progress(), vec!["hello "]);
+    job.send("界");
+    job.send("\n\tcontinued  ");
+    assert_eq!(job.progress(), vec!["hello 界\n\tcontinued  "]);
+    assert!(job.progress().is_empty(), "idle polls must not replay text");
+    job.send("");
+    assert!(job.progress().is_empty(), "empty deltas add no progress");
+}
+
+#[test]
+fn progress_snapshots_retain_prefix_consumed_without_a_callback() {
+    let job = PollJob::new();
+    job.send("prefix ");
+    let result = poll(job.handle, None, std::ptr::null_mut());
+    assert_eq!(result.tag, rpi_plugin_sdk::StepResultTag::Pending);
+    job.send("suffix");
+    assert_eq!(job.progress(), vec!["prefix suffix"]);
+}
+
+#[test]
+fn progress_snapshots_are_isolated_per_invocation() {
+    let first = PollJob::new();
+    let second = PollJob::new();
+    first.send("first");
+    second.send("second");
+    assert_eq!(first.progress(), vec!["first"]);
+    assert_eq!(second.progress(), vec!["second"]);
+    first.send(" task");
+    second.send(" child");
+    assert_eq!(second.progress(), vec!["second child"]);
+    assert_eq!(first.progress(), vec!["first task"]);
+}
+
+#[test]
+fn progress_snapshots_coalesce_many_deltas_without_duplicating_text() {
+    let job = PollJob::new();
+    for _ in 0..MAX_PARTIAL_EVENTS {
+        job.send("界");
+    }
+    assert_eq!(job.progress(), vec!["界".repeat(MAX_PARTIAL_EVENTS)]);
+}
+
 #[test]
 fn destroy_joins_the_worker_and_retires_the_handle() {
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -345,6 +450,7 @@ fn destroy_joins_the_worker_and_retires_the_handle() {
     let handle = JOBS.insert_with_cancel(
         Job {
             receiver: rx,
+            progress: String::new(),
             completed: false,
             worker: Some(worker),
         },

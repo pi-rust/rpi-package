@@ -36,6 +36,9 @@ enum JobMessage {
 }
 struct Job {
     receiver: Receiver<JobMessage>,
+    // The worker queues bounded deltas; tool progress consumers replace the
+    // displayed result, so poll emits a cumulative snapshot instead.
+    progress: String,
     completed: bool,
     worker: Option<JoinHandle<()>>,
 }
@@ -266,7 +269,7 @@ rpi_plugin_sdk::execute_handler!(fn execute(tool_call_id, params, free_params) {
             }
             Err(error) => { let _ = sender.send(JobMessage::Error(error)); None }
         };
-        JOBS.insert_with_cancel(Job { receiver, completed: false, worker }, cancelled)
+        JOBS.insert_with_cancel(Job { receiver, progress: String::new(), completed: false, worker }, cancelled)
     }).unwrap_or(std::ptr::null_mut())
 });
 
@@ -282,18 +285,18 @@ extern "C" fn poll(
         if entry.cancelled.load(Ordering::Acquire) {
             return StepResult::err(StbString::from_string("subagent cancelled".into()));
         }
-        let mut partials = Vec::new();
-        let terminal = {
+        let (progress, terminal) = {
             let mut job = entry.lock();
             if job.completed {
                 return StepResult::err(StbString::from_string(
                     "subagent polled after completion".into(),
                 ));
             }
+            let previous_len = job.progress.len();
             let mut terminal = None;
             while let Ok(message) = job.receiver.try_recv() {
                 match message {
-                    JobMessage::Partial(text) => partials.push(text),
+                    JobMessage::Partial(text) => job.progress.push_str(&text),
                     JobMessage::Done(text) => {
                         job.completed = true;
                         terminal = Some(Ok(text));
@@ -306,12 +309,15 @@ extern "C" fn poll(
                     }
                 }
             }
-            terminal
+            // Coalesce this poll's deltas before cloning/encoding. Do not queue
+            // cumulative strings or emit one growing snapshot for every delta.
+            let progress = (partial_cb.is_some() && job.progress.len() != previous_len)
+                .then(|| job.progress.clone());
+            (progress, terminal)
         };
-        if let Some(callback) = partial_cb {
-            for text in partials {
-                callback(StbString::from_string(tool_result(&text)), user_data);
-            }
+        // Never call foreign code while holding the job lock.
+        if let (Some(callback), Some(text)) = (partial_cb, progress) {
+            callback(StbString::from_string(tool_result(&text)), user_data);
         }
         match terminal {
             Some(Ok(text)) => StepResult::done(StbString::from_string(tool_result(&text))),

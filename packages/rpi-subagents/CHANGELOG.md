@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Send cumulative `delegate_task` text progress snapshots instead of individual
+  child deltas, so snapshot-replacing tool displays retain earlier output.
+  Coalesce available deltas once per plugin poll and keep the final structured
+  report, output limits and cancellation lifecycle unchanged.
+
 ## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-subagents-v0.1.10...rpi-subagents-v0.1.11) - 2026-10-31
 
 ### Fixed
