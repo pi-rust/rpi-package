@@ -4,6 +4,8 @@
 
 ### Added
 
+- Paste clipboard images and files into the composer using the existing project-scoped upload endpoint. Preserve native text paste, queue repeated/multi-file pastes, block premature sending, cancel uploads on session/project changes, and retain successful files and newer attachments across failures or delayed prompt acknowledgements.
+
 - Open project-contained file links and explicit inline-code paths in an on-demand read-only code preview with line/range highlighting, copy controls, cancellation, retry and project isolation. Keep fenced code inert; open HTTP(S) links safely in a new tab and reject unsafe or out-of-project destinations.
 - Use the light rpi three-column mark for workspace/login branding and browser icons. Set question timeline spacing to 15px on desktop and phones without changing ten-question pagination or navigation.
 

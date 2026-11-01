@@ -716,6 +716,14 @@ export default function App() {
   );
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const uploadQueue = useRef<Promise<void>>(Promise.resolve());
+  const uploadScope = useRef<{
+    sessionId: string;
+    projectId: string;
+    controller: AbortController;
+    pending: number;
+  } | null>(null);
+  const attachmentPreviews = useRef(new Set<string>());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("connecting");
   const [loadingSession, setLoadingSession] = useState(false);
@@ -825,14 +833,19 @@ export default function App() {
     null,
   );
 
-  useEffect(() => {
-    setAttachments((current) => {
-      current.forEach((file) => {
-        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
-      });
-      return [];
-    });
-  }, [sessionId]);
+  useLayoutEffect(() => {
+    const scope = { sessionId, projectId, controller: new AbortController(), pending: 0 };
+    uploadScope.current = scope;
+    uploadQueue.current = Promise.resolve();
+    setUploading(false);
+    setAttachments([]);
+    return () => {
+      scope.controller.abort();
+      if (uploadScope.current === scope) uploadScope.current = null;
+      attachmentPreviews.current.forEach(url => URL.revokeObjectURL(url));
+      attachmentPreviews.current.clear();
+    };
+  }, [sessionId, projectId]);
   function requestText(request: TextRequest) {
     return new Promise<string | null>((resolve) => {
       textRequestResolver.current = resolve;
@@ -2237,42 +2250,56 @@ export default function App() {
     }
   }
 
-  async function uploadFiles(files: FileList | null) {
-    if (!files || !projectId || !sessionId) return;
+  async function uploadFiles(files: FileList | File[] | null) {
+    const batch = Array.from(files ?? []);
+    const scope = uploadScope.current;
+    if (!batch.length || !projectId || !sessionId || !scope ||
+        scope.sessionId !== sessionId || scope.projectId !== projectId) return;
+    scope.pending++;
     setUploading(true);
     setError("");
-    try {
-      const uploaded: Attachment[] = [];
-      for (const file of Array.from(files)) {
-        const result = await api.upload(projectId, file);
-        uploaded.push({
-          ...result,
-          previewUrl:
-            isImageAttachment(file.name, file.type) ||
-            isImageAttachment(result.name)
-              ? URL.createObjectURL(file)
-              : undefined,
-        });
+    const current = () => uploadScope.current === scope && !scope.controller.signal.aborted;
+    // Snapshot clipboard/input files immediately, then serialize batches so a
+    // second paste neither disappears nor clears another batch's busy state.
+    uploadQueue.current = uploadQueue.current.then(async () => {
+      try {
+        if (!current()) return;
+        for (const file of batch) {
+          const result = await api.upload(projectId, file, scope.controller.signal);
+          if (!current()) return;
+          const previewUrl = isImageAttachment(file.name, file.type) || isImageAttachment(result.name)
+            ? URL.createObjectURL(file) : undefined;
+          if (previewUrl) attachmentPreviews.current.add(previewUrl);
+          // Keep successful files even if a later file in the batch fails.
+          setAttachments(previous => [...previous, { ...result, previewUrl }]);
+        }
+      } catch (cause) {
+        if (current()) setError(`${t("uploadFailed")}: ${errorText(cause)}`);
+      } finally {
+        if (current()) {
+          scope.pending--;
+          setUploading(scope.pending > 0);
+          if (fileInputRef.current) fileInputRef.current.value = "";
+        }
       }
-      setAttachments((current) => [...current, ...uploaded]);
-    } catch (cause) {
-      setError(`${t("uploadFailed")}: ${errorText(cause)}`);
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
+    });
+    await uploadQueue.current;
   }
 
   function removeAttachment(path: string) {
     setAttachments((current) => {
       const removed = current.find((file) => file.path === path);
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      if (removed?.previewUrl) {
+        URL.revokeObjectURL(removed.previewUrl);
+        attachmentPreviews.current.delete(removed.previewUrl);
+      }
       return current.filter((file) => file.path !== path);
     });
   }
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
+    if (uploadScope.current?.pending) return;
     if (composerContinue) {
       if (loadingSession || connectionFailed || status === "closed" || !sessionId || sendingRef.current) return;
       if (interrupted && supported.has("resume_pending")) {
@@ -2308,9 +2335,14 @@ export default function App() {
     const shouldQueue = wasBusy || Boolean(editingQueueId);
     const clearAttachments = () => {
       attachments.forEach((file) => {
-        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+        if (file.previewUrl) {
+          URL.revokeObjectURL(file.previewUrl);
+          attachmentPreviews.current.delete(file.previewUrl);
+        }
       });
-      setAttachments([]);
+      // An acknowledgement must not clear files pasted after this submission,
+      // including attachments belonging to a newly selected session.
+      setAttachments(current => current.filter(file => !attachments.includes(file)));
     };
     sendingRef.current = true;
     setSending(true);
@@ -4095,6 +4127,22 @@ export default function App() {
                 <textarea
                   ref={composerInputRef}
                   value={draft}
+                  onPaste={(event) => {
+                    if (!sessionId || !projectId) return;
+                    const clipboard = event.clipboardData;
+                    const files = Array.from(clipboard.files);
+                    // Some browsers expose clipboard files only through items.
+                    if (!files.length) {
+                      for (const item of Array.from(clipboard.items)) {
+                        if (item.kind !== "file") continue;
+                        const file = item.getAsFile();
+                        if (file) files.push(file);
+                      }
+                    }
+                    if (!files.length) return; // Keep native text paste/selection.
+                    event.preventDefault();
+                    void uploadFiles(files);
+                  }}
                   onChange={(event) => {
                     updateDraft(event.target.value, sessionId);
                   }}
@@ -4185,7 +4233,7 @@ export default function App() {
                         (!localSlash && (loadingSession || connectionFailed)) ||
                         (!composerAbort && (
                           (!composerContinue && !draft.trim() && attachments.length === 0) ||
-                          !sessionId || sending
+                          !sessionId || sending || uploading
                         ))
                       }
                       onClick={composerAbort ? () => void abort() : undefined}
