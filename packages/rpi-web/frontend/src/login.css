@@ -91,7 +91,7 @@
   height: 52px;
   margin: 0 auto 28px;
   border-radius: 14px;
-  background: var(--text);
+  background: transparent;
   color: var(--bg);
 }
 .login-panel h1 {

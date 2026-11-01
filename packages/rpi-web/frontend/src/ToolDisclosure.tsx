@@ -6,6 +6,8 @@ import {
   type ReactNode,
 } from "react";
 import {
+  BookOpen,
+  Check,
   ChevronRight,
   CircleAlert,
   FileText,
@@ -83,6 +85,7 @@ export function ToolDisclosure({
   target,
   status,
   doneLabel,
+  skillName,
   language,
   className = "",
   targetClassName = "",
@@ -96,6 +99,7 @@ export function ToolDisclosure({
   target?: string;
   status: ToolStatus;
   doneLabel?: string;
+  skillName?: string;
   language: Language;
   className?: string;
   targetClassName?: string;
@@ -105,8 +109,8 @@ export function ToolDisclosure({
 }) {
   const { open, setOpen } = expansion;
   const nameMode = useContext(ToolNameModeContext);
-  const displayName = nameMode === "native" ? toolName : action;
-  const Icon = iconForTool(toolName);
+  const displayName = skillName ?? (nameMode === "native" ? toolName : action);
+  const Icon = skillName ? BookOpen : iconForTool(toolName);
   const label =
     status === "done" && doneLabel
       ? doneLabel
@@ -138,7 +142,10 @@ export function ToolDisclosure({
           <span className="sr-only">{label}</span>
         </span>
         <span className="tool-summary-text">
-          <span className="tool-action" title={displayName}>
+          <span
+            className="tool-action"
+            title={skillName ? toolName : displayName}
+          >
             {displayName}
           </span>
           {target && (
@@ -149,6 +156,9 @@ export function ToolDisclosure({
         </span>
         {meta && <span className="tool-summary-meta">{meta}</span>}
         {timing}
+        {status === "done" && (
+          <Check size={12} className="tool-success-mark" aria-hidden="true" />
+        )}
         <ChevronRight size={14} className="tool-chevron" aria-hidden="true" />
       </summary>
       {children}
@@ -178,11 +188,29 @@ export function toolSummary(
   const path = field("path", "filePath", "file_path", "directory");
   const active = status === "running" || status === "pending";
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
-  if (["read", "read_file", "readfile", "cat"].includes(tool))
+  if (["read", "read_file", "readfile", "cat"].includes(tool)) {
+    // Only explicit SKILL.md reads identify a skill. Never infer one from output,
+    // a directory argument, or a lower-priority path after a malformed field.
+    const key = ["path", "filePath", "file_path"].find((key) =>
+      Object.prototype.hasOwnProperty.call(record, key),
+    );
+    const skillPath = key === undefined ? undefined : record[key];
+    if (typeof skillPath === "string") {
+      const parts = skillPath.split(/[/\\]/);
+      const skillName = parts.at(-2);
+      if (
+        parts.at(-1) === "SKILL.md" &&
+        skillName?.trim() &&
+        !/^(?:\.{1,2}|[a-z]:)$/i.test(skillName) &&
+        !/[\r\n\0]/.test(skillName)
+      )
+        return { skillName, action: skillName, target: skillPath };
+    }
     return {
       action: t(active ? "toolReading" : "toolRead"),
       target: path || name,
     };
+  }
   if (
     [
       "grep",

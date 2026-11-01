@@ -261,6 +261,11 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/sessions/{id}/metadata", post(session_metadata))
         .route("/api/v1/sessions/{id}/commands", post(command))
         .route("/api/v1/sessions/{id}/snapshot", get(snapshot))
+        .route(
+            "/api/v1/sessions/{id}/message-summaries",
+            get(message_summaries),
+        )
+        .route("/api/v1/sessions/{id}/message-window", get(message_window))
         .route("/api/v1/sessions/{id}/run-timings/query", post(run_timings))
         .route(
             "/api/v1/sessions/{id}/durable",
@@ -742,6 +747,22 @@ async fn run_timings(
         }
     };
     HttpReply(service::run_timings(&state.backend, id, query).await)
+}
+
+async fn message_summaries(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<service::MessageSummaryQuery>,
+) -> HttpReply {
+    HttpReply(service::message_summaries(&state.backend, id, query).await)
+}
+
+async fn message_window(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<service::MessageWindowQuery>,
+) -> HttpReply {
+    HttpReply(service::message_window(&state.backend, id, query).await)
 }
 
 async fn snapshot(

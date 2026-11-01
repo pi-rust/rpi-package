@@ -56,7 +56,7 @@
   height: 25px;
   min-width: 25px;
   border-radius: 7px;
-  background: var(--text);
+  background: transparent;
   color: var(--bg);
   box-shadow: none;
 }
