@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/pi-rust/rpi-package/compare/rpi-subagents-v0.1.11...rpi-subagents-v0.1.12) - 2026-11-01
+
+### Fixed
+
+- *(subagents)* emit cumulative tool progress snapshots
+
 ### Fixed
 
 - Send cumulative `delegate_task` text progress snapshots instead of individual
