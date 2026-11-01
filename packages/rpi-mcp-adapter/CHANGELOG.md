@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.5...rpi-mcp-adapter-v0.2.6) - 2026-11-01
+
+### Added
+
+- *(acp)* bridge per-session stdio MCP tools through extcore
+
+### Other
+
+- *(mcp)* recognize unreaped Unix child exit
+- *(mcp)* derive wire identity expectations from adapter version
+- Merge remote-tracking branch 'origin/main' into codex/acp-stage4-mcp-foundation
+- *(mcp)* extract caller-owned ABI-free runtime
+
 ## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.4...rpi-mcp-adapter-v0.2.5) - 2026-10-31
 
 ### Fixed

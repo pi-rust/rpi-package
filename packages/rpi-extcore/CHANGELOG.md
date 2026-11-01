@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.5...rpi-extcore-v0.2.6) - 2026-11-01
+
+### Added
+
+- *(web)* add paged history, file previews and execution traces
+- *(acp)* bridge native message IDs, inline images and client file IO
+- *(acp)* report native context usage at session and run boundaries
+- *(acp)* synchronize live native model and thinking configuration
+- *(acp)* discover saved native sessions with bounded pagination
+- *(acp)* bridge session-scoped Streamable HTTP MCP tools
+- *(acp)* bridge per-session stdio MCP tools through extcore
+
+### Fixed
+
+- *(extcore)* await catalog worker exit before returning page results
+
+### Other
+
+- Merge remote-tracking branch 'origin/main' into feat/web-workspace-history-traces
+- *(web)* make branding checks portable across clean checkouts
+- *(extcore)* validate raw filename recognition without APFS byte names
+
 ## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.4...rpi-extcore-v0.2.5) - 2026-10-31
 
 ### Added

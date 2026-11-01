@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [0.1.28](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.27...rpi-web-v0.1.28) - 2026-11-01
+
+### Added
+
+- *(web)* add paged history, file previews and execution traces
+- *(web)* offer icon-only continuation after failed or stopped runs
+
+### Fixed
+
+- *(web)* navigate timeline questions inline without a popup
+- *(web)* keep historical reader mounted during summary refresh
+- *(web)* collapse the right sidebar by default
+- *(web)* keep timeline visible and page earlier history at its edge
+- *(web)* move conversation timeline to the left
+- *(web)* distinguish todo summaries from empty task lists
+- *(web)* render readable delegated task reports
+- *(web)* collapse consecutive todo updates into the latest card
+
+### Other
+
+- *(web)* make branding checks portable across clean checkouts
+- Merge pull request #144 from pi-rust/fix/web-composer-continue
+- Merge pull request #142 from pi-rust/fix/web-right-sidebar-collapsed
+- Merge pull request #139 from pi-rust/fix/web-timeline-visible-history
+- Merge pull request #137 from pi-rust/fix/web-timeline-left
+- Merge pull request #136 from pi-rust/perf/web-session-snapshot-first
+- *(web)* prioritize session snapshots before runtime hydration
+
 ### Added
 
 - Fetch user-only timeline summaries in ten-question pages through capability-gated, leaf-pinned core/HTTP APIs. Open unloaded questions in a read-only 48-message historical context window with both paging directions, cancellation, explicit errors and a bounded old-host fallback.

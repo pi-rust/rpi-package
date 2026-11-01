@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.13...rpi-http-v0.1.14) - 2026-11-01
+
+### Added
+
+- *(web)* add paged history, file previews and execution traces
+
+### Other
+
+- *(web)* make branding checks portable across clean checkouts
+
 ## [0.1.13](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.12...rpi-http-v0.1.13) - 2026-10-31
 
 ### Other
