@@ -48,10 +48,16 @@ class SessionErrorTests(unittest.TestCase):
                 message = self.assert_session_error(method, sessionId=session_id)
                 self.assertIn("invalid saved session header", message)
 
-    def test_missing_working_directory_does_not_trigger_login(self):
-        response, _ = self.client.request("session/new", dict(cwd=str(self.root / "missing"), mcpServers=[]))
-        self.assertEqual(response["error"]["code"], -32603, response)
-        self.assertIn("cwd", response["error"]["message"])
+    def test_invalid_working_directories_do_not_trigger_login(self):
+        regular_file = self.root / "not-a-directory"
+        regular_file.write_text("fixture", encoding="utf-8")
+        for cwd in [str(self.root / "missing"), "relative-directory", str(regular_file)]:
+            with self.subTest(cwd=cwd):
+                response, _ = self.client.request("session/new", dict(cwd=cwd, mcpServers=[]))
+                # Explicit MCP parameters validate cwd before session creation:
+                # invalid parameters are -32602, never an authentication error.
+                self.assertEqual(response["error"]["code"], -32602, response)
+                self.assertIn("cwd", response["error"]["message"])
 
 
 if __name__ == "__main__":
