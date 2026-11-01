@@ -2279,7 +2279,6 @@ export default function App() {
         if (current()) {
           scope.pending--;
           setUploading(scope.pending > 0);
-          if (fileInputRef.current) fileInputRef.current.value = "";
         }
       }
     });
@@ -4107,7 +4106,13 @@ export default function App() {
                   type="file"
                   multiple
                   hidden
-                  onChange={(event) => void uploadFiles(event.target.files)}
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    // Reset before uploading so cancellation and selecting the
+                    // identical file again always produce a fresh change event.
+                    event.currentTarget.value = "";
+                    void uploadFiles(files);
+                  }}
                 />
                 {attachments.length > 0 && (
                   <div
