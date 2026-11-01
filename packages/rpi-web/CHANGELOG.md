@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.30](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.29...rpi-web-v0.1.30) - 2026-11-01
+
+### Added
+
+- *(web)* upload pasted clipboard images and files
+
+### Fixed
+
+- *(web)* reset file chooser before asynchronous uploads
+
 ### Added
 
 - Paste clipboard images and files into the composer using the existing project-scoped upload endpoint. Preserve native text paste, queue repeated/multi-file pastes, block premature sending, cancel uploads on session/project changes, and retain successful files and newer attachments across failures or delayed prompt acknowledgements.
