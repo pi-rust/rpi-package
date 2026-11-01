@@ -3,6 +3,12 @@
 Registers `delegate_task`, a bounded subagent runner. It uses the host's
 `ChildAgent` runtime action (24), streams text via the normal tool-progress
 callback, and returns a final JSON report with `kind: "rpi-delegation"`.
+Progress callbacks carry the **cumulative text snapshot**, not an individual
+child delta: consumers replace the displayed tool result on each update. The
+extension coalesces available deltas into at most one snapshot per plugin poll,
+preserving text across polls without retaining cumulative copies in the worker
+queue. Idle polls and empty deltas do not emit duplicate progress. The final
+structured report remains separate and unchanged.
 
 ## Choosing and specifying a delegation
 
