@@ -258,9 +258,6 @@
 .execution-trace .trace-observation--slowest .trace-step-name {
   font-weight: 600;
 }
-.execution-trace .trace-observation--slowest .trace-time-bar {
-  box-shadow: 0 0 0 1px var(--trace-color);
-}
 .execution-trace .trace-observation--error .trace-step-name {
   color: var(--danger);
 }
@@ -272,17 +269,14 @@
   gap: 2px;
   padding: 5px 10px;
   border-left: 1px solid var(--line);
-  background-image: linear-gradient(
-    to right,
-    transparent calc(50% - 1px),
-    var(--line) 50%,
-    transparent calc(50% + 1px)
-  );
 }
 .execution-trace .trace-time-track {
   position: relative;
   display: block;
   height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
 }
 .execution-trace .trace-time-bar {
   display: block;
@@ -290,15 +284,7 @@
   top: 0;
   height: 6px;
   background: var(--trace-color);
-  border-radius: 1px;
-}
-.execution-trace .trace-time-bar[data-timing-mode="duration"] {
-  background: repeating-linear-gradient(
-    110deg,
-    transparent 0 3px,
-    var(--trace-color) 3px 5px
-  );
-  border: 1px dashed var(--trace-color);
+  border-radius: 999px;
 }
 .execution-trace .trace-time-bar[data-timing-mode="unknown"] {
   display: none;
@@ -473,10 +459,13 @@
   height: 4px;
   margin: 5px 0;
   background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
 }
 .execution-trace .trace-duration-bar > span {
   display: block;
   height: 100%;
+  border-radius: inherit;
   background: var(--muted);
 }
 .execution-trace .trace-duration-step--slowest .trace-duration-bar > span {
