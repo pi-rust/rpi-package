@@ -498,6 +498,15 @@ prompts and history remain unchanged, and no document preview/download API is
 implied. The composer shows known sizes and image previews; historical cards do
 not invent sizes. Code examples, ordinary paths and malformed lists stay as text.
 
+Paste clipboard images or files into the composer with Ctrl/Cmd+V to upload them
+through the same project-scoped endpoint as the attachment button. Browsers must
+expose actual clipboard files; copied path strings and HTML image URLs are not
+read as local files or fetched. Plain-text paste and selection replacement stay
+native. Multiple/rapid pastes queue in order; sending waits until uploads finish.
+Switching session/project cancels pending batches and clears previews. A failed
+file leaves the draft and already uploaded attachments intact. Files pasted after
+a message is sent are retained when that message's acknowledgement arrives.
+
 Sessions also keep the last 512 projected events in memory with a monotonic
 `seq`; SSE frames carry `id: <seq>`. That buffer is what makes `?after=` work, and
 it is the fallback path for a host that does not advertise `get_messages`.

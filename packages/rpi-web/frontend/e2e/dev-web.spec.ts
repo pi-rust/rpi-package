@@ -1,4 +1,5 @@
 import { chooseMenuOption } from "./controls";
+import { writeFile } from "node:fs/promises";
 import { test, expect, type Page, type Route } from "@playwright/test";
 
 const sessionId = "session-1";
@@ -1393,6 +1394,239 @@ test("previews image attachments when the browser omits the MIME type", async ({
       preview.evaluate((image: HTMLImageElement) => image.naturalWidth),
     )
     .toBeGreaterThan(0);
+});
+
+test.describe("clipboard attachment upload", () => {
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  type PastedFile = { name: string; type: string; base64: string };
+  const document = (name = "notes.txt"): PastedFile => ({
+    name, type: "text/plain", base64: Buffer.from("hello").toString("base64"),
+  });
+  async function pasteFiles(page: Page, files: PastedFile[], itemsOnly = false) {
+    return page.locator(".composer textarea").evaluate((input, data) => {
+      const clipboard = new DataTransfer();
+      for (const file of data.files) {
+        const bytes = Uint8Array.from(atob(file.base64), char => char.charCodeAt(0));
+        clipboard.items.add(new File([bytes], file.name, { type: file.type }));
+      }
+      if (data.itemsOnly)
+        Object.defineProperty(clipboard, "files", { value: new DataTransfer().files });
+      const event = new ClipboardEvent("paste", { clipboardData: clipboard, bubbles: true, cancelable: true });
+      input.dispatchEvent(event);
+      return event.defaultPrevented;
+    }, { files, itemsOnly });
+  }
+  async function ready(page: Page) {
+    await page.goto("/");
+    await page.locator(".composer textarea").fill("Please inspect");
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+  }
+  async function uploadMock(page: Page, handler?: (route: Route, name: string, count: number) => Promise<void>) {
+    const names: string[] = [];
+    await page.route("**/api/v1/projects/*/upload", async route => {
+      const body = route.request().postDataBuffer()!.toString();
+      const name = /filename="([^"]+)"/.exec(body)![1];
+      expect(body).toContain('name="file"');
+      names.push(name);
+      if (handler) return handler(route, name, names.length);
+      await route.fulfill({ json: { name, path: `.rpi/uploads/${name}`, size: 5 } });
+    });
+    return names;
+  }
+
+  test("pastes a document exactly once and sends its uploaded path with the existing draft", async ({ page }) => {
+    await mockHost(page);
+    const names = await uploadMock(page);
+    await ready(page);
+    expect(await pasteFiles(page, [document("report.pdf")])).toBe(true);
+    await expect(page.locator(".composer-attachment")).toContainText("report.pdf");
+    await expect(page.locator(".composer textarea")).toHaveValue("Please inspect");
+    const request = page.waitForRequest(request => request.url().endsWith(`/sessions/${sessionId}/commands`) && request.postDataJSON()?.type === "prompt");
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    const message = (await request).postDataJSON().message;
+    expect(message).toContain("Please inspect");
+    expect(message.match(/\.rpi\/uploads\/report\.pdf/g)).toHaveLength(1);
+    expect(names).toEqual(["report.pdf"]);
+  });
+
+  test("pastes a real clipboard screenshot with a removable local preview", async ({ page }) => {
+    await mockHost(page);
+    const names = await uploadMock(page);
+    await ready(page);
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.evaluate(async base64 => {
+      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([bytes], { type: "image/png" }) })]);
+    }, png);
+    await page.locator(".composer textarea").focus();
+    await page.keyboard.press("ControlOrMeta+V");
+    const card = page.locator(".composer-attachment");
+    await expect(card).toHaveCount(1);
+    await expect.poll(() => card.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    expect(names).toHaveLength(1);
+    await card.getByRole("button").click();
+    await expect(card).toHaveCount(0);
+    await expect(page.locator(".composer textarea")).toHaveValue("Please inspect");
+  });
+
+  test("keeps native text paste and selection replacement without any upload", async ({ page }) => {
+    await mockHost(page);
+    const names = await uploadMock(page);
+    await ready(page);
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.evaluate(() => navigator.clipboard.writeText("pasted text"));
+    const input = page.locator(".composer textarea");
+    await input.focus();
+    await input.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(7, 14));
+    await page.keyboard.press("ControlOrMeta+V");
+    await expect(input).toHaveValue("Please pasted text");
+    expect(names).toEqual([]);
+  });
+
+  test("accepts file-only clipboard items when the files list is empty", async ({ page }) => {
+    await mockHost(page);
+    const names = await uploadMock(page);
+    await ready(page);
+    expect(await pasteFiles(page, [document()], true)).toBe(true);
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    expect(names).toEqual(["notes.txt"]);
+  });
+
+  test("queues repeated pastes and blocks both button and Enter until every file is uploaded", async ({ page }) => {
+    await mockHost(page);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const names = await uploadMock(page, async (route, name, count) => {
+      if (count === 1) await gate;
+      await route.fulfill({ json: { name, path: `.rpi/uploads/${name}`, size: 5 } });
+    });
+    const prompts: unknown[] = [];
+    page.on("request", request => {
+      if (request.url().endsWith("/commands") && request.method() === "POST" && request.postDataJSON()?.type === "prompt") prompts.push(request.postDataJSON());
+    });
+    await ready(page);
+    await pasteFiles(page, [document("first.txt")]);
+    await expect.poll(() => names).toEqual(["first.txt"]);
+    await pasteFiles(page, [document("second.txt"), document("third.txt")]);
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+    await page.locator(".composer textarea").press("Enter");
+    expect(prompts).toEqual([]);
+    release();
+    await expect(page.locator(".composer-attachment")).toHaveCount(3);
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    expect(names).toEqual(["first.txt", "second.txt", "third.txt"]);
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect.poll(() => prompts.length).toBe(1);
+    const message = (prompts[0] as { message: string }).message;
+    for (const name of names) expect(message.split(`.rpi/uploads/${name}`)).toHaveLength(2);
+  });
+
+  test("a delayed prompt acknowledgement preserves files pasted for the next message", async ({ page }) => {
+    await mockHost(page);
+    await uploadMock(page);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    await page.route("**/api/v1/sessions/*/commands", async route => {
+      if (route.request().postDataJSON()?.type !== "prompt") return route.fallback();
+      await gate;
+      await route.fulfill({ json: response({}, "prompt") });
+    });
+    await ready(page);
+    await pasteFiles(page, [document("submitted.txt")]);
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    const started = page.waitForRequest(request => request.url().endsWith("/commands") && request.postDataJSON()?.type === "prompt");
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    const request = await started;
+    await page.locator(".composer textarea").fill("Next message");
+    await pasteFiles(page, [document("next.txt")]);
+    await expect(page.locator(".composer-attachment")).toHaveCount(2);
+    const finished = page.waitForEvent("requestfinished", { predicate: candidate => candidate === request });
+    release();
+    await finished;
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    await expect(page.locator(".composer-attachment")).toContainText("next.txt");
+    await expect(page.locator(".composer textarea")).toHaveValue("Next message");
+  });
+
+  test("keeps successful files and draft when a later pasted file fails", async ({ page }) => {
+    await mockHost(page);
+    await uploadMock(page, async (route, name, count) => {
+      await route.fulfill(count === 2
+        ? { status: 413, json: { error: "File too large" } }
+        : { json: { name, path: `.rpi/uploads/${name}`, size: 5 } });
+    });
+    await ready(page);
+    await pasteFiles(page, [document("ok.txt"), document("too-large.txt")]);
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    await expect(page.locator(".composer-attachment")).toContainText("ok.txt");
+    await expect(page.getByText(/Upload failed.*File too large/)).toBeVisible();
+    await expect(page.locator(".composer textarea")).toHaveValue("Please inspect");
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+  });
+
+  test("attachment chooser can reselect the identical file after its upload is cancelled by navigation", async ({ page }, testInfo) => {
+    await mockHost(page);
+    const name = "rpi-review159-file.txt";
+    const filePath = testInfo.outputPath(name);
+    await writeFile(filePath, "hello");
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const names = await uploadMock(page, async (route, file, count) => {
+      if (count === 1) await gate;
+      await route.fulfill({ json: { name: file, path: `.rpi/uploads/${file}`, size: 5 } }).catch(() => {});
+    });
+    const chooseFile = async () => {
+      const chooser = page.waitForEvent("filechooser");
+      await page.getByRole("button", { name: "Attach files", exact: true }).click();
+      // Use a real disk file, not a payload or a synthetic change event: the
+      // browser must decide whether selecting the identical file fires change.
+      await (await chooser).setFiles(filePath);
+    };
+    await ready(page);
+    await chooseFile();
+    await expect.poll(() => names).toEqual([name]);
+    const cancelled = page.waitForEvent("requestfailed", {
+      predicate: request => request.url().endsWith("/projects/project-a/upload"),
+    });
+    await page.getByRole("button", { name: "New session", exact: false }).first().click();
+    await expect(page.getByRole("heading", { name: "New session", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Attach files", exact: true })).toBeEnabled();
+    // The old response is still held when the same chooser file is selected.
+    await chooseFile();
+    await expect.poll(() => names).toEqual([name, name]);
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    release();
+    await cancelled;
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    await expect(page.locator(".composer-attachment")).toContainText(name);
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    expect(await page.locator('input[type="file"]').inputValue()).toBe("");
+  });
+
+  test("cancels pending and queued uploads on session change without leaking an attachment", async ({ page }) => {
+    await mockHost(page);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const names = await uploadMock(page, async (route, name) => {
+      await gate;
+      await route.fulfill({ json: { name, path: `.rpi/uploads/${name}`, size: 5 } }).catch(() => {});
+    });
+    await ready(page);
+    await pasteFiles(page, [document("old-session.txt"), document("never-upload.txt")]);
+    await expect.poll(() => names).toEqual(["old-session.txt"]);
+    const cancelled = page.waitForEvent("requestfailed", {
+      predicate: request => request.url().endsWith("/projects/project-a/upload"),
+    });
+    await page.getByRole("button", { name: "New session", exact: false }).first().click();
+    await expect(page.getByRole("heading", { name: "New session", exact: true })).toBeVisible();
+    release();
+    await cancelled;
+    await page.locator(".composer textarea").fill("New draft");
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(page.locator(".composer-attachment")).toHaveCount(0);
+    expect(names).toEqual(["old-session.txt"]);
+    await expect(page.getByRole("button", { name: "Attach files", exact: true })).toBeEnabled();
+  });
 });
 
 test("renders image blocks returned in the transcript", async ({ page }) => {

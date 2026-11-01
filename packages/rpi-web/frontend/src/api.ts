@@ -396,12 +396,12 @@ export const api = {
       `/projects/${projectId}/file?${new URLSearchParams({ path })}`,
       { signal },
     ),
-  upload: (projectId: string, file: File) => {
+  upload: (projectId: string, file: File, signal?: AbortSignal) => {
     const body = new FormData();
     body.append("file", file, file.name);
     return request<{ name: string; path: string; size: number }>(
       `/projects/${projectId}/upload`,
-      { method: "POST", body },
+      { method: "POST", body, signal },
     );
   },
   gitStatus: (projectId: string) => gitStatus(projectId),
