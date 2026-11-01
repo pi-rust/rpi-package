@@ -111,7 +111,9 @@ def package(variant: str, output: Path, sdk: Path, expected: str | None) -> Path
     target = output / f"rpi-web-android-{name}-{variant}.apk"
     shutil.copyfile(apk, target)
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    target.with_suffix(".apk.sha256").write_text(f"{digest}  {target.name}\n", encoding="ascii")
+    # Write bytes so Windows cannot translate LF into a filename-breaking CRLF
+    # when a Linux user runs sha256sum -c on the downloaded checksum.
+    target.with_suffix(".apk.sha256").write_bytes(f"{digest}  {target.name}\n".encode("ascii"))
     report = {"applicationId": APPLICATION_ID, "versionName": name, "versionCode": code,
               "variant": variant, "installable": cert is not None, "debuggable": variant == "debug",
               "minSdk": 26, "targetSdk": 35, "permissions": ["android.permission.INTERNET"],

@@ -45,6 +45,32 @@ class PackageContract(unittest.TestCase):
     def test_fixed_certificate(self):
         self.assertEqual(apk.check_signature(0, SIGNATURE, "release", CERT.upper()), CERT)
 
+    def test_packaged_checksum_uses_lf_even_on_windows(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        import hashlib
+        import json
+        import zipfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / "app/build/outputs/apk/release"
+            build.mkdir(parents=True)
+            with zipfile.ZipFile(build / "app-release.apk", "w") as archive:
+                archive.writestr("fixture", "unit test only; not an installable APK")
+            (build / "output-metadata.json").write_text(json.dumps({
+                "applicationId": apk.APPLICATION_ID, "variantName": "release",
+                "elements": [{"outputFile": "app-release.apk", "versionName": "0.1.1", "versionCode": 2}]}))
+            with patch.object(apk, "ROOT", root), patch.object(apk, "version", return_value=("0.1.1", 2)), \
+                 patch.object(apk, "tool", return_value=Path("mocked-android-tool")), \
+                 patch.object(apk, "source_info", return_value={"commit": "a" * 40, "dirty": False}), \
+                 patch.object(apk, "run", side_effect=[SimpleNamespace(returncode=0, stdout=BADGING), SimpleNamespace(returncode=0, stdout=SIGNATURE)]):
+                target = apk.package("release", root / "dist", root / "sdk", CERT)
+            expected = f"{hashlib.sha256(target.read_bytes()).hexdigest()}  {target.name}\n".encode("ascii")
+            self.assertEqual(target.with_suffix(".apk.sha256").read_bytes(), expected)
+            report = json.loads(target.with_suffix(".json").read_text())
+            self.assertFalse(report["debuggable"])
+            self.assertEqual(report["certificateSha256"], CERT)
+
     def test_missing_wrong_debug_or_multiple_certificate_rejected(self):
         cases = [(1, "DOES NOT VERIFY", CERT), (0, SIGNATURE, None),
                  (0, SIGNATURE, "cd" * 32), (0, SIGNATURE, "invalid"),
