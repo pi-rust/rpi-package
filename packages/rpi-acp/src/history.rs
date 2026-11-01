@@ -98,7 +98,13 @@ impl Replay {
         } else {
             Some(saved_session(id)?)
         };
-        let spool = read.prepare(saved.as_deref()).await?;
+        let mut spool = read.prepare(saved.as_deref()).await?;
+        // Validate the complete disk spool before any client-visible chunk.
+        // The neutral walk is page bounded and leaves the replay cursor intact.
+        spool.validate(|message| {
+            read.ensure_active()?;
+            validate_message_images(message)
+        })?;
         Ok(Self { _read: read, spool })
     }
     pub(crate) async fn emit(
@@ -142,6 +148,27 @@ fn branch_updates(
     )
 }
 
+fn validate_message_images(message: &Value) -> Result<(), String> {
+    use rpi_extcore::prompt::{PromptBlock, PromptContent};
+    if message["role"] == "user" {
+        if let Some(blocks) = message["content"].as_array() {
+            for block in blocks {
+                if block["type"] == "image" {
+                    let data = block["data"].as_str().ok_or("invalid history image data")?;
+                    let mime_type = block["mimeType"]
+                        .as_str()
+                        .ok_or("invalid history image MIME")?;
+                    PromptContent::new(vec![PromptBlock::Image {
+                        data: data.to_owned(),
+                        mime_type: mime_type.to_owned(),
+                    }])?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn message_updates(message: &Value) -> Vec<Value> {
     let role = message["role"].as_str().unwrap_or("");
     if role == "toolResult" {
@@ -173,11 +200,27 @@ fn message_updates(message: &Value) -> Vec<Value> {
             match block["type"].as_str() {
                 Some("text") => updates.push(json!({"sessionUpdate":kind,"content":{"type":"text","text":block["text"]}})),
                 Some("thinking") if role == "assistant" => updates.push(json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":block["thinking"]}})),
+                Some("image") if role == "user" => {
+                    let mut content = json!({"type":"image", "data":block["data"], "mimeType":block["mimeType"]});
+                    if let Some(uri) = block.get("uri") { content["uri"] = uri.clone(); }
+                    updates.push(json!({"sessionUpdate":kind,"content":content}));
+                }
                 Some("toolCall") if role == "assistant" => {
                     if let Some(update) = translate_event(&json!({"type":"tool_execution_start", "toolCallId":block["id"],
                         "toolName":block["name"],"args":block["arguments"]})) { updates.push(update); }
                 }
                 _ => {}
+            }
+        }
+    }
+    // Durable native entry identity, never provider response IDs or generated IDs.
+    if let Some(id) = message.get("entryId").and_then(Value::as_str) {
+        for update in &mut updates {
+            if matches!(
+                update["sessionUpdate"].as_str(),
+                Some("user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk")
+            ) {
+                update["messageId"] = json!(id);
             }
         }
     }
@@ -189,6 +232,50 @@ mod tests {
     use super::*;
 
     include!("history_tool_name_tests.rs");
+
+    #[test]
+    fn replay_images_and_thoughts_use_durable_entry_identity_in_order() {
+        let updates = message_updates(
+            &json!({"entryId":"durable-user", "id":"provider-wrong", "role":"user", "content":[
+                {"type":"text","text":"before"},
+                {"type":"image","data":"/9j/AA==","mimeType":"image/jpeg"},
+                {"type":"text","text":"after"}
+            ]}),
+        );
+        assert_eq!(updates.len(), 3);
+        assert_eq!(updates[0]["content"]["text"], "before");
+        assert_eq!(
+            updates[1]["content"],
+            json!({"type":"image","data":"/9j/AA==","mimeType":"image/jpeg"})
+        );
+        assert_eq!(updates[2]["content"]["text"], "after");
+        assert!(updates.iter().all(|u| u["messageId"] == "durable-user"));
+        let updates = message_updates(
+            &json!({"entryId":"durable-assistant","role":"assistant","content":[{"type":"thinking","thinking":"think"},{"type":"text","text":"say"}]}),
+        );
+        assert!(updates
+            .iter()
+            .all(|u| u["messageId"] == "durable-assistant"));
+        assert!(validate_message_images(
+            &json!({"role":"user","content":[{"type":"image","data":"bad","mimeType":"image/png"}]})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn replay_preflight_rejects_invalid_later_image_before_output() {
+        let mut spool = rpi_extcore::history::page::HistorySpool::create().unwrap();
+        spool.push(&[json!({"role":"user","content":[{"type":"image","data":"bad","mimeType":"image/png"}]})]).unwrap();
+        spool
+            .push(&[json!({"role":"user","content":"valid first page"})])
+            .unwrap();
+        assert!(spool.validate(validate_message_images).is_err());
+        // Failed preflight does not consume or mutate the first replay page.
+        assert_eq!(
+            spool.pop().unwrap().unwrap()[0]["content"],
+            "valid first page"
+        );
+    }
 
     #[test]
     fn replay_follows_active_branch_and_preserves_tool_results() {

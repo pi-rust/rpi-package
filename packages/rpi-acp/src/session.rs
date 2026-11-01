@@ -82,6 +82,7 @@ fn forwarded_model_provider_from(args: &[String]) -> (Option<String>, Option<Str
 /// A live ACP session backed by one `rpi --mode rpc` child process.
 pub struct Session {
     rpc: Arc<HostSession>,
+    file_io: tokio::sync::OnceCell<Arc<crate::file_io::ClientFileIO>>,
     context_presentation: tokio::sync::Mutex<crate::protocol::context_usage::Presentation>,
     durable: Option<Arc<DurableRuntime>>,
     configuration:
@@ -127,6 +128,7 @@ impl Session {
         };
         Ok(Arc::new(Self {
             rpc,
+            file_io: tokio::sync::OnceCell::new(),
             context_presentation: tokio::sync::Mutex::default(),
             durable,
             configuration: tokio::sync::OnceCell::new(),
@@ -167,6 +169,33 @@ impl Session {
         scope: String,
     ) -> Result<(), String> {
         self.rpc.configure_stdio_tools(servers, cwd, scope).await
+    }
+
+    /// Configure client authority before publication or history replay.
+    pub(crate) async fn configure_file_io(
+        &self,
+        writer: &Arc<Writer>,
+        id: &str,
+    ) -> Result<(), String> {
+        let caps = writer.file_io_capabilities();
+        if caps == rpi_extcore::file_io::FileIOCapabilities::default()
+            && self.file_io.get().is_none()
+        {
+            return Ok(());
+        }
+        let handler = self
+            .file_io
+            .get_or_init(|| async {
+                Arc::new(crate::file_io::ClientFileIO::new(
+                    writer.clone(),
+                    id.to_owned(),
+                ))
+            })
+            .await;
+        if handler.capabilities != caps {
+            return Err("client filesystem authority changed; reopen the session".into());
+        }
+        self.rpc.configure_file_io(caps, handler.clone()).await
     }
 
     pub async fn history_read(&self) -> Result<rpi_extcore::history::page::HistoryRead, String> {
@@ -256,7 +285,10 @@ impl Session {
     ) -> Result<&'static str, String> {
         let mut run = match compact_instructions(blocks) {
             Some(instructions) => self.rpc.begin_compaction(instructions).await?,
-            None => self.rpc.begin_prompt(prompt_text(blocks)).await?,
+            None => match prompt_content(blocks)? {
+                Some(content) => self.rpc.begin_prompt_content(content).await?,
+                None => self.rpc.begin_prompt(prompt_text(blocks)).await?,
+            },
         };
         let mut cancelled = false;
         let mut settled = false;
@@ -482,7 +514,11 @@ fn text_update(delta: Value) -> Value {
     } else {
         "agent_message_chunk"
     };
-    json!({"sessionUpdate":kind,"content":{"type":"text","text":delta["text"]}})
+    let mut update = json!({"sessionUpdate":kind,"content":{"type":"text","text":delta["text"]}});
+    if let Some(id) = delta.get("messageId").and_then(Value::as_str) {
+        update["messageId"] = json!(id);
+    }
+    update
 }
 
 #[cfg(test)]
@@ -707,10 +743,39 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
                     parts.push(format!("@{}", resource_display_name(None, &resource.uri)));
                 }
             }
-            ContentBlock::Other => {}
+            ContentBlock::Image { .. } | ContentBlock::Other => {}
         }
     }
     parts.join("\n")
+}
+
+/// Only mixed/image input uses new native budgets; legacy text stays byte-for-byte.
+fn prompt_content(
+    blocks: &[ContentBlock],
+) -> Result<Option<rpi_extcore::prompt::PromptContent>, String> {
+    use rpi_extcore::prompt::{PromptBlock, PromptContent};
+    if !blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }))
+    {
+        return Ok(None);
+    }
+    let content = blocks
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Image {
+                data, mime_type, ..
+            } => PromptBlock::Image {
+                data: data.clone(),
+                mime_type: mime_type.clone(),
+            },
+            // Existing resources retain their exact conversion at this position.
+            _ => PromptBlock::Text {
+                text: prompt_text(std::slice::from_ref(block)),
+            },
+        })
+        .collect();
+    PromptContent::new(content).map(Some)
 }
 
 fn resource_display_name(name: Option<&str>, uri: &str) -> String {
@@ -1030,6 +1095,7 @@ mod tests {
     use super::*;
 
     include!("session_compact_tests.rs");
+    include!("session_three_capability_tests.rs");
     include!("session_compact_lifecycle_tests.rs");
     include!("tool_name_tests.rs");
 
@@ -1104,6 +1170,7 @@ mod tests {
         let (rpc, events) = HostSession::test_connection(stdin, 64);
         let session = Arc::new(Session {
             rpc: rpc.clone(),
+            file_io: tokio::sync::OnceCell::new(),
             context_presentation: tokio::sync::Mutex::default(),
             durable: Some(DurableRuntime::empty(rpc)),
             configuration: tokio::sync::OnceCell::new(),
@@ -1227,6 +1294,7 @@ mod tests {
         let (session, _commands) = test_session();
         let unavailable = Session {
             rpc: session.rpc.clone(),
+            file_io: tokio::sync::OnceCell::new(),
             context_presentation: tokio::sync::Mutex::default(),
             durable: None,
             configuration: tokio::sync::OnceCell::new(),

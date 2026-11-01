@@ -80,6 +80,12 @@ impl RunTracker {
         }
     }
 
+    /// Require native session-entry identities for prompt message frames.
+    /// Compact summaries intentionally have no durable message identity.
+    pub fn require_message_ids(&mut self, required: bool) {
+        self.messages.require_message_ids(required);
+    }
+
     pub fn observe(&mut self, event: &Value, cancelled: bool) -> RunProgress {
         let mut progress = RunProgress::default();
         if self.compact_settled {
@@ -172,7 +178,9 @@ impl RunTracker {
             });
         } else if matches!(event["type"].as_str(), Some("session_end" | "host_closed")) {
             progress.outcome = Some(Err("rpi session ended before the prompt completed".into()));
-        } else {
+        } else if self.stream_error.is_none() {
+            // Retain the lease and drain native events after a projection
+            // failure, but never emit further chunks from the poisoned stream.
             match self.messages.event(event) {
                 Ok(deltas) => progress.deltas = deltas,
                 Err(error) => {
@@ -190,6 +198,7 @@ mod tests {
     use serde_json::json;
 
     include!("run_compact_tests.rs");
+    include!("run_identity_tests.rs");
 
     #[test]
     fn acceptance_is_correlated_and_settlement_repairs_the_tail() {

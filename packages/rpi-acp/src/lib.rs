@@ -31,6 +31,7 @@
 // server the extension embeds.
 pub mod auth;
 pub mod diag;
+mod file_io;
 mod history;
 mod mcp;
 pub mod protocol;

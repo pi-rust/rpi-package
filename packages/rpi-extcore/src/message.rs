@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 #[derive(Debug, Default)]
 pub(crate) struct LiveMessageProjection {
     message: Option<Value>,
+    message_id: Option<String>,
     tool_json: std::collections::HashMap<usize, String>,
 }
 
@@ -24,6 +25,22 @@ impl LiveMessageProjection {
                     .unwrap_or("");
                 if event["type"] == "message_start" {
                     *self = Self::default();
+                }
+                if let Some(raw_id) = event.get("messageId") {
+                    let Ok(id) = validated_message_id(raw_id) else {
+                        return;
+                    };
+                    if self
+                        .message_id
+                        .as_deref()
+                        .is_some_and(|current| current != id)
+                        || (self.message.is_some() && self.message_id.is_none())
+                    {
+                        // A delayed frame must not overwrite a newer message's
+                        // snapshot or append its compact delta to that message.
+                        return;
+                    }
+                    self.message_id = Some(id.to_owned());
                 }
                 if let Some(index) = index {
                     if kind == "toolcall_start" || kind == "toolcall_end" {
@@ -124,19 +141,67 @@ pub struct MessageProjection {
     pub stop_reason: Option<String>,
     pub error: Option<String>,
     pub repaired: usize,
+    /// Validated native session entry ID for the current assistant message.
+    /// Public to retain construction with `..Default::default()` outside core.
+    pub message_id: Option<String>,
+    /// Configure before observing a stream; legacy hosts leave this false.
+    pub message_ids_required: bool,
 }
 
 impl MessageProjection {
+    pub fn require_message_ids(&mut self, required: bool) {
+        self.message_ids_required = required;
+    }
+
+    fn identify(&mut self, event: &Value, start: bool) -> Result<(), String> {
+        let incoming = event
+            .get("messageId")
+            .map(validated_message_id)
+            .transpose()?;
+        if self.message_ids_required && incoming.is_none() {
+            return Err("rpi assistant message is missing its native messageId".into());
+        }
+        if !start {
+            if let Some(id) = incoming {
+                if self
+                    .message_id
+                    .as_deref()
+                    .is_some_and(|current| current != id)
+                    || (self.message_id.is_none()
+                        && (!self.text.is_empty() || !self.thinking.is_empty()))
+                {
+                    return Err("rpi assistant messageId changed within a message".into());
+                }
+            }
+        }
+        if start {
+            *self = Self {
+                repaired: self.repaired,
+                message_ids_required: self.message_ids_required,
+                ..Self::default()
+            };
+        }
+        if let Some(id) = incoming {
+            self.message_id = Some(id.to_owned());
+        }
+        Ok(())
+    }
+
+    fn with_identity(&self, mut update: Value) -> Value {
+        if let Some(id) = &self.message_id {
+            update["messageId"] = json!(id);
+        }
+        update
+    }
+
     pub fn event(&mut self, event: &Value) -> Result<Vec<Value>, String> {
         let kind = event["type"].as_str().unwrap_or("");
         let message = &event["message"];
-        if kind == "message_start" && message["role"] == "assistant" {
-            *self = Self {
-                repaired: self.repaired,
-                ..Self::default()
-            };
-            // Initial content is part of the stream too. Reset the previous
-            // message, then reconcile this snapshot instead of discarding it.
+        if matches!(kind, "message_start" | "message_update" | "message_end")
+            && (message["role"] == "assistant" || kind == "message_update")
+        {
+            // Validate before mutating text/thinking or producing any output.
+            self.identify(event, kind == "message_start")?;
         }
         if matches!(kind, "message_start" | "message_update" | "message_end")
             && message["role"] == "assistant"
@@ -180,7 +245,10 @@ impl MessageProjection {
                         updates.push(update);
                     }
                 }
-                return Ok(updates);
+                return Ok(updates
+                    .into_iter()
+                    .map(|update| self.with_identity(update))
+                    .collect());
             }
         }
         Ok(self.delta(event).into_iter().collect())
@@ -208,16 +276,37 @@ impl MessageProjection {
                 sent.push_str(update["text"].as_str().unwrap_or(""));
             }
         }
-        update
+        update.map(|update| self.with_identity(update))
     }
 
     pub fn complete(&mut self, final_text: &str) -> Result<Option<Value>, String> {
+        // Aborted/failed runs before their first token legitimately have no
+        // assistant state and an empty finalText. Never invent an ID for them.
+        if self.message_ids_required && !final_text.is_empty() && self.message_id.is_none() {
+            return Err("rpi finalText has no validated assistant messageId".into());
+        }
         let update = append_snapshot(&mut self.text, final_text, "text")?;
         if let Some(update) = &update {
             self.repaired += update["text"].as_str().unwrap_or("").len();
         }
-        Ok(update)
+        Ok(update.map(|update| self.with_identity(update)))
     }
+}
+
+fn validated_message_id(value: &Value) -> Result<&str, String> {
+    value
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+        .ok_or_else(|| {
+            "rpi assistant messageId must be nonempty, at most 256 bytes and contain no controls"
+                .into()
+        })
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    include!("message_identity_tests.rs");
 }
 
 #[cfg(test)]

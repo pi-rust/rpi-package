@@ -392,20 +392,61 @@ impl HistorySpool {
         self.end += bytes.len() as u64 + 8;
         Ok(())
     }
-    pub fn pop(&mut self) -> Result<Option<Vec<Value>>, String> {
-        if self.end == 0 {
-            return Ok(None);
+    /// Walk in replay order, retaining only one bounded page at a time. The
+    /// logical cursor, file length and physical cursor survive callback errors.
+    /// Adapter validation remains outside core; this is not a second transcript.
+    pub fn validate(
+        &mut self,
+        mut check: impl FnMut(&Value) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let position = self
+            .file
+            .as_mut()
+            .unwrap()
+            .stream_position()
+            .map_err(|e| e.to_string())?;
+        let deadline = std::time::Instant::now() + PREPARATION_BUDGET;
+        let result = (|| {
+            let mut end = self.end;
+            while end != 0 {
+                if std::time::Instant::now() >= deadline {
+                    return Err("history validation deadline exceeded".into());
+                }
+                let (start, messages) = self.read_page_at(end)?;
+                for message in &messages {
+                    if std::time::Instant::now() >= deadline {
+                        return Err("history validation deadline exceeded".into());
+                    }
+                    check(message)?;
+                }
+                end = start;
+            }
+            Ok(())
+        })();
+        let restore = self
+            .file
+            .as_mut()
+            .unwrap()
+            .seek(SeekFrom::Start(position))
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        result.and(restore)
+    }
+
+    fn read_page_at(&mut self, end: u64) -> Result<(u64, Vec<Value>), String> {
+        if !(8..=MAX_SPOOL_BYTES).contains(&end) {
+            return Err("invalid history spool".into());
         }
         let file = self.file.as_mut().unwrap();
-        file.seek(SeekFrom::Start(self.end - 8))
+        file.seek(SeekFrom::Start(end - 8))
             .map_err(|e| e.to_string())?;
         let mut length = [0; 8];
         file.read_exact(&mut length).map_err(|e| e.to_string())?;
         let len = u64::from_le_bytes(length);
-        if len > MAX_PAGE_BYTES as u64 || len + 8 > self.end {
+        if len > MAX_PAGE_BYTES as u64 || len + 8 > end {
             return Err("invalid history spool".into());
         }
-        let start = self.end - len - 8;
+        let start = end - len - 8;
         file.seek(SeekFrom::Start(start))
             .map_err(|e| e.to_string())?;
         let mut bytes = vec![0; len as usize];
@@ -414,7 +455,19 @@ impl HistorySpool {
         if messages.len() > MAX_PAGE_MESSAGES {
             return Err("invalid history spool".into());
         }
-        file.set_len(start).map_err(|e| e.to_string())?;
+        Ok((start, messages))
+    }
+
+    pub fn pop(&mut self) -> Result<Option<Vec<Value>>, String> {
+        if self.end == 0 {
+            return Ok(None);
+        }
+        let (start, messages) = self.read_page_at(self.end)?;
+        self.file
+            .as_mut()
+            .unwrap()
+            .set_len(start)
+            .map_err(|e| e.to_string())?;
         self.end = start;
         Ok(Some(messages))
     }
@@ -423,3 +476,7 @@ impl HistorySpool {
 #[cfg(test)]
 #[path = "page_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "spool_validation_tests.rs"]
+mod validation_tests;

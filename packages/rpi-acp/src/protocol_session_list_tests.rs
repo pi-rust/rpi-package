@@ -94,14 +94,15 @@ async fn list_dispatcher_works_without_initialization_or_native_and_never_create
 
 #[tokio::test]
 async fn list_dispatcher_cross_method_duplicates_typed_ids_cancel_and_eof() {
-    use rpi_plugin_sdk::stdio::InputLine;
     let root = std::env::temp_dir().join(format!("acp-list-eof-{}", uuid::Uuid::new_v4()));
     let (output, peer) = tokio::io::duplex(16_384);
     let writer = Arc::new(Writer::with_output(output));
     let mut lines = BufReader::new(peer).lines();
-    // A burst is consumed without yielding, so both accepted list jobs remain
-    // pending until the dispatcher reaches EOF and owns their cancellation/join.
-    let mut messages = std::collections::VecDeque::from([
+    // Preload the serialized dispatch FIFO. Independent ingress now yields to
+    // other tasks, so a raw stdin burst no longer guarantees that list jobs
+    // remain pending. This fixture isolates duplicate admission and EOF cleanup;
+    // protocol_response_progress_tests covers ingress/dispatcher integration.
+    let messages = [
         json!({"jsonrpc":"2.0","id":1,"method":"session/list"}),
         json!({"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{}}),
         json!({"jsonrpc":"2.0","id":1,"method":"session/list"}),
@@ -111,20 +112,26 @@ async fn list_dispatcher_cross_method_duplicates_typed_ids_cancel_and_eof() {
         // Only numeric 1 is explicitly cancelled. String "1" must be
         // cancelled and joined by EOF cleanup, independently of that request.
         json!({"jsonrpc":"2.0","id":"cancel","method":"$/cancel_request","params":{"requestId":1}}),
-    ]);
+    ];
+    let (tx, rx) = tokio::sync::mpsc::channel(INPUT_QUEUE_CAPACITY);
+    for message in messages {
+        tx.try_send(parse_rpc_message(message)).unwrap();
+    }
+    drop(tx);
+    let (outcome_tx, outcome_rx) = oneshot::channel();
+    outcome_tx.send(Ok(())).unwrap();
     let (_stop_tx, stop) = watch::channel(false);
     assert_eq!(
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            run_connection(
+            dispatch_connection(
                 stop,
-                || Ok(messages
-                    .pop_front()
-                    .map(|message| InputLine::Line(message.to_string()))
-                    .unwrap_or(InputLine::Eof)),
-                None,
+                rx,
+                outcome_rx,
                 writer,
-                Ok(root.clone())
+                Ok(root.clone()),
+                Arc::new(Mutex::new(HashMap::new())),
+                |_, _, _| async { Err("no session opening in this fixture".to_owned()) },
             )
         )
         .await

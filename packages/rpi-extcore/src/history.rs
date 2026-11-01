@@ -1,6 +1,6 @@
 //! Read native transcript branches without projecting a client protocol.
 pub mod page;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Read},
@@ -110,13 +110,20 @@ pub fn branch_messages_from_entries<'a>(
         let entry = entries
             .get(id)
             .ok_or("saved session history is missing a branch entry")?;
-        path.push(entry);
+        path.push((id, entry));
         leaf = entry["parentId"].as_str();
     }
     let mut updates = Vec::new();
-    for entry in path.into_iter().rev() {
+    for (id, entry) in path.into_iter().rev() {
         if entry["type"] == "message" {
-            updates.push(entry["message"].clone());
+            let mut message = entry["message"].clone();
+            let fields = message
+                .as_object_mut()
+                .ok_or("invalid saved session message")?;
+            // Identity belongs to the native entry, never to a provider field
+            // or a value embedded inside message content.
+            fields.insert("entryId".into(), json!(id));
+            updates.push(message);
         }
     }
     Ok(updates)

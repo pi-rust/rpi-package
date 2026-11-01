@@ -79,7 +79,10 @@ jobs:
         run: |
           rustfmt --edition 2021 --check packages/rpi-acp/src/tool_name_tests.rs packages/rpi-acp/src/history_tool_name_tests.rs
           python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/tool_names_native.py').read_text(encoding='utf-8'))"
+          python -B -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/message_image_fs_native.py').read_text(encoding='utf-8'))"
       - name: Test default package compatibility and runtime ownership
+        # Includes identity, ordered prompt/image and client text-I/O fixtures;
+        # syntax checking the Windows native harness above is not executing it.
         run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
       - name: Test configured core HTTP transport with loopback fixtures
         run: cargo test --locked -p rpi-mcp-core configured_http_tests

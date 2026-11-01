@@ -10,6 +10,7 @@ async fn compact_reuses_dialog_and_tool_updates_then_settles() {
         rpc,
         context_presentation: tokio::sync::Mutex::default(),
         durable: None,
+        file_io: tokio::sync::OnceCell::new(),
         configuration: tokio::sync::OnceCell::new(),
         events: Some(events),
     });
@@ -71,6 +72,7 @@ async fn compact_stream_lag_and_host_closure_are_errors() {
             rpc,
             context_presentation: tokio::sync::Mutex::default(),
             durable: None,
+            file_io: tokio::sync::OnceCell::new(),
             configuration: tokio::sync::OnceCell::new(),
             events: Some(events),
         });
