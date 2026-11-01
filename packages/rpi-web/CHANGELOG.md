@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.31](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.30...rpi-web-v0.1.31) - 2026-11-01
+
+### Fixed
+
+- *(web)* simplify execution trace duration bars
+
 ## [0.1.30](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.29...rpi-web-v0.1.30) - 2026-11-01
 
 ### Added
