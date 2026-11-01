@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.1.29](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.28...rpi-web-v0.1.29) - 2026-11-01
+
+### Other
+
+- *(web)* use the exact accessible send control name
+- *(web)* synchronize release fixtures with session readiness
+
 ## [0.1.28](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.27...rpi-web-v0.1.28) - 2026-11-01
 
 ### Added
