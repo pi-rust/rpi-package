@@ -20,6 +20,8 @@
 
 ### Added
 
+- Add System / 随系统 appearance mode (the new default), following live OS light/dark changes without reloading chat or clearing drafts. Preserve existing explicit light/dark preferences and allow returning to System in Settings.
+
 - Paste clipboard images and files into the composer using the existing project-scoped upload endpoint. Preserve native text paste, queue repeated/multi-file pastes, block premature sending, cancel uploads on session/project changes, and retain successful files and newer attachments across failures or delayed prompt acknowledgements.
 
 ## [0.1.29](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.28...rpi-web-v0.1.29) - 2026-11-01

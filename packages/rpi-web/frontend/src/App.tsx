@@ -51,6 +51,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
 import { SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
+import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
 import { AskCard } from "./AskCard";
 import { askInfo, isAskTool } from "./ask";
@@ -613,13 +614,7 @@ export default function App() {
   const [mobileSessionQuery, setMobileSessionQuery] = useState("");
   const [creatingSession, setCreatingSession] = useState(false);
   const creatingSessionRef = useRef(false);
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    try {
-      return localStorage.getItem("rpi-theme") === "dark" ? "dark" : "light";
-    } catch {
-      return "light";
-    }
-  });
+  const { theme, themePreference, setThemePreference } = useTheme();
   const [projectId, setProjectId] = useState("");
   const projectRef = useRef("");
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
@@ -1389,14 +1384,6 @@ export default function App() {
     [refreshSessions],
   );
 
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    try {
-      localStorage.setItem("rpi-theme", theme);
-    } catch {
-      /* optional preference */
-    }
-  }, [theme]);
   useEffect(() => {
     try {
       localStorage.setItem(TOOL_NAME_MODE_KEY, toolNameMode);
@@ -3153,7 +3140,7 @@ export default function App() {
         language={language}
         theme={theme}
         onLanguage={setLanguage}
-        onTheme={setTheme}
+        onTheme={setThemePreference}
         password={passwordDraft}
         onPassword={(value) => {
           setPasswordDraft(value);
@@ -3288,17 +3275,23 @@ export default function App() {
         >
           <div className="project-form workspace-preferences">
             <label>{language === "zh" ? "外观" : "Appearance"}</label>
-            <div className="project-mode">
+            <div className="project-mode" role="group" aria-label={language === "zh" ? "外观" : "Appearance"}>
               <button
-                aria-pressed={theme === "light"}
-                onClick={() => setTheme("light")}
+                aria-pressed={themePreference === "system"}
+                onClick={() => setThemePreference("system")}
+              >
+                {language === "zh" ? "随系统" : "System"}
+              </button>
+              <button
+                aria-pressed={themePreference === "light"}
+                onClick={() => setThemePreference("light")}
               >
                 <Sun size={16} />
                 {language === "zh" ? "浅色" : "Light"}
               </button>
               <button
-                aria-pressed={theme === "dark"}
-                onClick={() => setTheme("dark")}
+                aria-pressed={themePreference === "dark"}
+                onClick={() => setThemePreference("dark")}
               >
                 <Moon size={16} />
                 {language === "zh" ? "深色" : "Dark"}
@@ -3411,7 +3404,7 @@ export default function App() {
                   aria-label={
                     language === "zh" ? "切换外观" : "Toggle appearance"
                   }
-                  onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+                  onClick={() => setThemePreference(theme === "light" ? "dark" : "light")}
                   title={t(
                     theme === "light" ? "switchToDark" : "switchToLight",
                   )}
