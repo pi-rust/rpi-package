@@ -48,7 +48,7 @@ class MainActivity : Activity() {
     private lateinit var errorPanel: LinearLayout
     private lateinit var errorText: TextView
     private var web: WebView? = null
-    private var origin = OriginPolicy.PRODUCTION
+    private var origin = ConfiguredOrigins.default
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var chooserLaunched = false
     private val popups = mutableSetOf<WebView>()
@@ -60,7 +60,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
-        origin = OriginPolicy.normalize(preferences.getString("origin", null) ?: "") ?: OriginPolicy.PRODUCTION
+        origin = OriginPolicy.normalize(preferences.getString("origin", null) ?: "") ?: ConfiguredOrigins.default
         buildLayout()
         applySystemTheme()
         createWebView(state?.takeIf { it.getString("origin") == origin }?.getBundle("web"))
@@ -427,15 +427,16 @@ class MainActivity : Activity() {
     }
 
     private fun showSites() {
+        val choices = mutableListOf("正式站" to { confirmSite(ConfiguredOrigins.default) })
+        ConfiguredOrigins.development?.let { target ->
+            choices.add("开发站（测试界面）" to { confirmSite(target) })
+        }
+        choices.add("自定义 HTTPS 站点" to { customSite() })
+        choices.add("取消" to { })
         AlertDialog.Builder(this)
             .setTitle("站点设置")
-            .setItems(arrayOf("正式站", "开发站（测试界面）", "自定义 HTTPS 站点", "取消")) { _, index ->
-                when (index) {
-                    0 -> confirmSite(OriginPolicy.PRODUCTION)
-                    1 -> confirmSite(OriginPolicy.DEVELOPMENT)
-                    2 -> customSite()
-                }
-            }.create().let(::showDialog)
+            .setItems(choices.map { it.first }.toTypedArray()) { _, index -> choices[index].second() }
+            .create().let(::showDialog)
     }
 
     private fun customSite() {
@@ -452,7 +453,7 @@ class MainActivity : Activity() {
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val selected = OriginPolicy.normalize(input.text.toString())
-                if (selected == null) input.error = "请输入有效的 HTTPS 根地址，例如 https://work.bigfisharc.cn"
+                if (selected == null) input.error = "请输入有效的 HTTPS 根地址，不含路径、账号密码或参数。"
                 else { dialog.dismiss(); confirmSite(selected) }
             }
         }

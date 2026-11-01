@@ -84,7 +84,7 @@ async function mode(night, page) {
   await mode(false,page); shot('theme-error-day');
   ok('Native error/retry panel switches day/night without reload');
   fs.writeFileSync(path.join(out,'theme-emulator-report.json'),JSON.stringify({status:'passed',serial,checks,realModelCalls:0,fixture:'CDP intercepted on emulator only',authentication:'not attempted'},null,2));
-})().catch(error=>{console.error(error);shot('theme-failure');process.exitCode=1;}).finally(async()=>{
+})().catch(()=>{console.error('Theme smoke failed; inspect ignored local artifacts (not for publication).');shot('theme-failure');process.exitCode=1;}).finally(async()=>{
   if(browser) await browser.close().catch(()=>{});
   if(port) try{adb('forward','--remove',`tcp:${port}`);}catch{}
   try{adb('shell','cmd','uimode','night','no');}catch{}
