@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="AppThemeBase">
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:navigationBarColor">#F4F1E9</item>
+    </style>
+</resources>

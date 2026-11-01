@@ -1,0 +1,180 @@
+name: Build Android Web client
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-web/android/**'
+      - '.github/workflows/build-android.yml'
+      - '.github/scripts/resolve-android-source.py'
+  push:
+    branches: [main]
+    tags: ['rpi-web-android-v*']
+    paths:
+      - 'packages/rpi-web/android/**'
+      - '.github/workflows/build-android.yml'
+      - '.github/scripts/resolve-android-source.py'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional existing rpi-web-android-vX.Y.Z tag on main ancestry; publishes a non-latest Android Release. Empty = signed artifact only.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: packages/rpi-web/android
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select reviewed source for manual signed builds
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          ANDROID_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 ../../../.github/scripts/resolve-android-source.py --tag "$ANDROID_RELEASE_TAG"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/wrapper-validation@v4
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Install pinned Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Test and build debug and explicitly unsigned release
+        run: |
+          python -m unittest discover -s tools -p 'test_*.py' -v
+          ./gradlew --no-daemon -PallowUnsignedRelease=true testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease
+          python tools/package_apk.py package --variant debug --output dist/check
+          python tools/package_apk.py package --variant unsigned-release --output dist/check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpi-web-android-checks
+          path: packages/rpi-web/android/dist/check/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rpi-web-android-test-reports
+          path: |
+            packages/rpi-web/android/app/build/reports/
+            packages/rpi-web/android/app/build/test-results/
+          if-no-files-found: ignore
+
+  signed-release:
+    needs: check
+    # Secrets live ONLY in this environment. Its server-side deployment policy
+    # allows branch main, not PR refs or tags; a tag cannot rewrite this gate.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    environment: rpi-web-android-release
+    outputs:
+      source_commit: ${{ steps.source.outputs.source_commit }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: packages/rpi-web/android
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate trusted source and Android tag before receiving keys
+        id: source
+        env:
+          ANDROID_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 ../../../.github/scripts/resolve-android-source.py --tag "$ANDROID_RELEASE_TAG"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-disabled: true
+      - name: Install pinned Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build and verify fixed-signature release
+        env:
+          RPI_WEB_ANDROID_KEYSTORE_BASE64: ${{ secrets.RPI_WEB_ANDROID_KEYSTORE_BASE64 }}
+          RPI_WEB_ANDROID_STORE_PASSWORD: ${{ secrets.RPI_WEB_ANDROID_STORE_PASSWORD }}
+          RPI_WEB_ANDROID_KEY_ALIAS: ${{ secrets.RPI_WEB_ANDROID_KEY_ALIAS }}
+          RPI_WEB_ANDROID_KEY_PASSWORD: ${{ secrets.RPI_WEB_ANDROID_KEY_PASSWORD }}
+          RPI_WEB_ANDROID_CERT_SHA256: ${{ secrets.RPI_WEB_ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          export RPI_WEB_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/rpi-web-android-signing.p12"
+          trap 'rm -f "$RPI_WEB_ANDROID_KEYSTORE_PATH"' EXIT
+          python - <<'PY'
+          import base64, os
+          from pathlib import Path
+          for suffix in ('KEYSTORE_BASE64', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD', 'CERT_SHA256'):
+              if not os.environ.get('RPI_WEB_ANDROID_' + suffix):
+                  raise SystemExit('Missing required Android signing secret: ' + suffix)
+          Path(os.environ['RPI_WEB_ANDROID_KEYSTORE_PATH']).write_bytes(
+              base64.b64decode(os.environ['RPI_WEB_ANDROID_KEYSTORE_BASE64'], validate=True))
+          PY
+          python -m unittest discover -s tools -p 'test_*.py' -v
+          ./gradlew --no-daemon testReleaseUnitTest lintRelease assembleRelease
+          python tools/package_apk.py package --variant release --output dist/release
+      - name: Remove temporary keystore even on cancellation
+        if: always()
+        run: rm -f "$RUNNER_TEMP/rpi-web-android-signing.p12"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpi-web-android-release
+          path: packages/rpi-web/android/dist/release/
+          if-no-files-found: error
+
+  publish:
+    needs: signed-release
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rpi-web-android-release
+          path: dist/android/
+      - name: Verify checksums and publish a new Android-only release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ANDROID_RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SOURCE_COMMIT: ${{ needs.signed-release.outputs.source_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist/android
+          sha256sum -c *.apk.sha256
+          # Fail rather than publish mismatched assets if someone moved the tag.
+          test "$(gh api "repos/$GH_REPO/commits/$ANDROID_RELEASE_TAG" --jq .sha)" = "$EXPECTED_SOURCE_COMMIT"
+          gh release create "$ANDROID_RELEASE_TAG" ./* --verify-tag --latest=false \
+            --title "rpi Web Android ${ANDROID_RELEASE_TAG#rpi-web-android-v}" \
+            --notes 'Fixed-signature online WebView client. Requires Android 8+. First migration from the earlier debug APK requires uninstalling that debug app; remote projects/sessions are not deleted. Frontend and backend are served by the selected HTTPS node, not bundled. See packages/rpi-web/android/README.md at the release commit.'

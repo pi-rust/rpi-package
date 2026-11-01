@@ -1,0 +1,16 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.idea/
+*.iml
+dist/
+artifacts/
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+credentials.json
+node_modules/
+*.log
