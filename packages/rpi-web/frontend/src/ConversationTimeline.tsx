@@ -8,14 +8,13 @@ import {
   type KeyboardEvent,
   type PointerEvent,
   type RefObject,
-  type ReactNode,
 } from "react";
 import type { Row } from "./transcript";
 import { userMessageParts } from "./attachments";
 import { translate, type Language } from "./i18n";
 
 import { useTimelineSummaries } from "./useTimelineSummaries";
-import { HistoricalMessageReader } from "./HistoricalMessageReader";
+import type { HistoryTarget } from "./useHistoricalMessages";
 
 const previews = new WeakMap<Row, string>();
 
@@ -65,12 +64,12 @@ export function ConversationTimeline({
   sessionId = "",
   nativeQueries = false,
   snapshotLeafId = "",
-  renderHistoricalRow,
+  onHistoryNavigate,
 }: {
   sessionId?: string;
   nativeQueries?: boolean;
   snapshotLeafId?: string;
-  renderHistoricalRow?: (row: Row) => ReactNode;
+  onHistoryNavigate?: (target: HistoryTarget) => void;
   rows: Row[];
   transcript: RefObject<HTMLDivElement | null>;
   language: Language;
@@ -81,7 +80,6 @@ export function ConversationTimeline({
   onNavigate: (target: HTMLElement) => void;
 }) {
   const native = useTimelineSummaries(sessionId, nativeQueries, snapshotLeafId);
-  const [historicalAnchor, setHistoricalAnchor] = useState<{ entryId: string; leafId: string } | null>(null);
   const loadedEntries = useMemo(() => timelineEntries(rows, language), [rows, language]);
   const entries = useMemo(() => {
     if (!native.enabled || !native.page) return loadedEntries;
@@ -391,12 +389,12 @@ export function ConversationTimeline({
       previous?.id === id && previous.top === top ? previous : { id, top },
     );
   };
-  const navigate = (rowId: string, openReader = true) => {
+  const navigate = (rowId: string, loadWindow = true) => {
     const target = targets.current.get(rowId);
     if (!target || !transcript.current?.contains(target)) {
       const entry = entries.find((entry) => entry.rowId === rowId);
-      if (openReader && native.enabled && native.page?.leafId && entry && renderHistoricalRow) {
-        setHistoricalAnchor({ entryId: entry.id, leafId: native.page.leafId });
+      if (loadWindow && native.enabled && native.page?.leafId && entry && onHistoryNavigate) {
+        onHistoryNavigate({ entryId: entry.id, leafId: native.page.leafId });
         setPreview(null);
       }
       return;
@@ -711,9 +709,6 @@ export function ConversationTimeline({
         </div>
       )}
     </aside>}
-      {native.enabled && historicalAnchor && renderHistoricalRow && (
-        <HistoricalMessageReader key={`${historicalAnchor.entryId}:${historicalAnchor.leafId}`} sessionId={sessionId} anchorId={historicalAnchor.entryId} leafId={historicalAnchor.leafId} language={language} renderRow={renderHistoricalRow} onClose={() => setHistoricalAnchor(null)} />
-      )}
     </>
   );
 }

@@ -1,0 +1,24 @@
+.history-window-status {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.history-window-status nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.history-window-status button {
+  padding: 6px 10px;
+  min-height: 32px;
+}
+.history-window-status p {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .history-window-status button { min-height: 44px; }
+  .history-window-status nav { gap: 4px; }
+}
