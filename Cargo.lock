@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "rpi-extcore",
  "rpi-plugin-sdk 0.3.20",
@@ -2519,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-extcore"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "axum",
  "futures-util",
@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-adapter"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "rpi-mcp-core",
  "rpi-plugin-sdk 0.3.20",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "axum",
  "rpi-extcore",
