@@ -51,6 +51,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
 import { SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
+import { useHistoricalMessages } from "./useHistoricalMessages";
 import { AskCard } from "./AskCard";
 import { askInfo, isAskTool } from "./ask";
 import { DelegationCard } from "./DelegationCard";
@@ -671,7 +672,7 @@ export default function App() {
     (inputTokenCount(runtime?.stats) ?? 0) <= 0 &&
     (outputTokenCount(runtime?.stats) ?? 0) <= 0 &&
     messageStats?.sessionId === sessionId &&
-    !!messageStats.stats;
+    !!messageStats?.stats;
   const displayStats = usingMessageStats
     ? { ...runtime?.stats, ...messageStats!.stats! }
     : runtime?.stats;
@@ -743,12 +744,19 @@ export default function App() {
   } | null>(null);
   const autoEarlierCursor = useRef<string | null>(null);
   const continueEarlier = useRef<number | null>(null);
+  const traceBinding = `${sessionId}:${connectionRevision}:${navigationRevision.current}`;
+  const historical = useHistoricalMessages(sessionId, traceBinding);
+  const displayedRows = historical.active ? historical.rows : rows;
   const runTimings = useRunTimings(
     sessionId, rows, `${connectionRevision}:${navigationRevision.current}`,
     !loadingSession && Boolean(capabilities), settleTick,
   );
-  const runFooters = useMemo(() => timingByRow(rows, runTimings), [rows, runTimings]);
-  const traceBinding = `${sessionId}:${connectionRevision}:${navigationRevision.current}`;
+  const historicalRunTimings = useRunTimings(
+    sessionId, historical.rows, `${connectionRevision}:${navigationRevision.current}`,
+    historical.active && !loadingSession && Boolean(capabilities), settleTick,
+  );
+  const displayedTimings = historical.active ? historicalRunTimings : runTimings;
+  const runFooters = useMemo(() => timingByRow(displayedRows, displayedTimings), [displayedRows, displayedTimings]);
   const { state: traceState, snapshot: traceSnapshot, event: traceEvent, clear: clearTrace } =
     useExecutionTrace(traceBinding);
   const executionTrace = useMemo(() => traceView(traceState, runTimings), [traceState, runTimings]);
@@ -759,13 +767,13 @@ export default function App() {
   const todoGroups = useMemo(
     () =>
       groupTodoUpdates(
-        rows,
+        displayedRows,
         runFooters,
         todoOwners.current?.sessionId === sessionId
           ? todoOwners.current.ids
           : undefined,
       ),
-    [rows, runFooters, sessionId],
+    [displayedRows, runFooters, sessionId],
   );
   // Commit display ownership, not task state. A prepend keeps an existing
   // card's React instance/reading anchor; removed groups retain no cache.
@@ -782,9 +790,23 @@ export default function App() {
     followingRef,
     `${sessionId}:${connectionRevision}`,
     Boolean(capabilities),
-    rows,
+    displayedRows,
     status,
   );
+  useLayoutEffect(() => {
+    const node = transcriptRef.current;
+    if (!node || !historical.page) return;
+    const anchorId = historical.cursor && "anchorId" in historical.cursor ? historical.cursor.anchorId : null;
+    const row = historical.rows.find(row => row.entryId === anchorId);
+    const target = row && Array.from(node.querySelectorAll<HTMLElement>("[data-transcript-row]"))
+      .find(element => element.dataset.transcriptRow === row.id);
+    followingRef.current = false;
+    setFollowing(false);
+    node.scrollTop = target
+      ? node.scrollTop + target.getBoundingClientRect().top - node.getBoundingClientRect().top - 12
+      : historical.cursor && "beforeId" in historical.cursor ? node.scrollHeight : 0;
+    rememberTranscriptPosition();
+  }, [historical.page, historical.rows, rememberTranscriptPosition]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
@@ -2423,6 +2445,7 @@ export default function App() {
         !sessionId ||
         !firstId ||
         !hasMore ||
+        historical.active ||
         loadingSession ||
         mutationPending ||
         earlierRequest.current?.navigation === navigation ||
@@ -2485,6 +2508,7 @@ export default function App() {
       sessionId,
       firstId,
       hasMore,
+      historical.active,
       loadingSession,
       mutationPending,
       supported,
@@ -3656,12 +3680,14 @@ export default function App() {
 
         <main className="main-content chat-layout">
           <div
-            className={`conversation-column ${rows.length === 0 && !loadingSession && !creatingSession ? "empty-conversation" : ""}`}
+            className={`conversation-column ${!historical.active && rows.length === 0 && !loadingSession && !creatingSession ? "empty-conversation" : ""}`}
           >
             <div className="transcript-frame">
             <div
               className="transcript"
               ref={transcriptRef}
+              data-history-window={historical.active ? "true" : undefined}
+              aria-busy={historical.active && historical.loading}
               onClickCapture={(event) => {
                 if (
                   !(event.target instanceof Element) ||
@@ -3678,6 +3704,12 @@ export default function App() {
               }}
               onScroll={(event) => {
                 const node = event.currentTarget;
+                if (historical.active) {
+                  followingRef.current = false;
+                  setFollowing(false);
+                  rememberTranscriptPosition();
+                  return;
+                }
                 const nearBottom =
                   node.scrollHeight - node.scrollTop - node.clientHeight < 80;
                 followingRef.current = nearBottom;
@@ -3693,7 +3725,36 @@ export default function App() {
               }}
             >
               <div className="message-list">
-                {hasMore && (
+                {historical.active && (
+                  <div className="history-window-status">
+                    <nav aria-label={t("historyContextPagination")}>
+                      <button
+                        type="button"
+                        onClick={historical.earlier}
+                        disabled={historical.loading || !historical.page?.hasMoreBefore || !historical.page.nextBeforeId}
+                      >
+                        {t("historyContextEarlier")}
+                      </button>
+                      <span>{t("historyContextTitle")}</span>
+                      <button
+                        type="button"
+                        onClick={historical.later}
+                        disabled={historical.loading || !historical.page?.hasMoreAfter || !historical.page.nextAfterId}
+                      >
+                        {t("historyContextLater")}
+                      </button>
+                    </nav>
+                    {historical.loading && <p role="status">{t("loadingEarlierMessages")}</p>}
+                    {historical.error && (
+                      <p role="alert">
+                        {historical.error}{" "}
+                        <button type="button" onClick={historical.retry}>{t("historyContextRetry")}</button>
+                      </p>
+                    )}
+                    {historical.page && !historical.rows.length && <p>{t("historyContextEmpty")}</p>}
+                  </div>
+                )}
+                {!historical.active && hasMore && (
                   <div className="load-earlier" aria-busy={loadingEarlier}>
                     <button
                       type="button"
@@ -3758,7 +3819,7 @@ export default function App() {
                   </div>
                 )}
 
-                {rows.length === 0 && !loadingSession && !creatingSession && (
+                {!historical.active && rows.length === 0 && !loadingSession && !creatingSession && (
                   <div className="welcome">
                     <div className="welcome-symbol">
                       <Mark large />
@@ -3808,8 +3869,11 @@ export default function App() {
 
                 <ProjectImageContext.Provider value={project}>
                   <ToolNameModeContext.Provider value={toolNameMode}>
-                    {rows.map((row) => {
-                      const group = todoGroups.get(row.id);
+                    {displayedRows.map((row) => {
+                      // A historical window may begin mid-run, without all run
+                      // boundaries. Keep every update visible instead of folding
+                      // separate executions into an apparently current todo card.
+                      const group = historical.active ? undefined : todoGroups.get(row.id);
                       return (
                         <div
                           className="transcript-row"
@@ -3832,7 +3896,7 @@ export default function App() {
                   </ToolNameModeContext.Provider>
                 </ProjectImageContext.Provider>
 
-                {busy && rows.length > 0 && (
+                {!historical.active && busy && rows.length > 0 && (
                   <div className="working-indicator">
                     <Loader2 size={14} className="spin" />{" "}
                     {dialog ? t("waitingForAnswer") : t("waiting")}
@@ -3846,14 +3910,13 @@ export default function App() {
                 sessionId={sessionId}
                 nativeQueries={nativeMessageQueries}
                 snapshotLeafId={leafId}
-                renderHistoricalRow={(row) => (
-                  <ProjectImageContext.Provider value={project}>
-                    <ToolNameModeContext.Provider value={toolNameMode}>
-                      <RowView row={row} language={language} />
-                    </ToolNameModeContext.Provider>
-                  </ProjectImageContext.Provider>
-                )}
-                rows={rows}
+                onHistoryNavigate={(target) => {
+                  followingRef.current = false;
+                  setFollowing(false);
+                  continueEarlier.current = null;
+                  historical.open(target);
+                }}
+                rows={displayedRows}
                 transcript={transcriptRef}
                 language={language}
                 hasMore={hasMore}
@@ -3863,6 +3926,7 @@ export default function App() {
                 onNavigate={(target) => {
                   const node = transcriptRef.current;
                   if (!node || !node.contains(target)) return;
+                  if (historical.active && historical.loading) historical.cancelPending();
                   followingRef.current = false;
                   setFollowing(false);
                   // Scrubbing to the first tick is navigation, not a transcript
@@ -3875,18 +3939,21 @@ export default function App() {
               />
             )}
             </div>
-            {!following && rows.length > 0 && (
+            {(historical.active || (!following && rows.length > 0)) && (
               <button
                 type="button"
                 className="jump-to-bottom"
                 aria-label={t("jumpToBottom")}
                 onClick={() => {
+                  historical.close();
                   followingRef.current = true;
                   setFollowing(true);
-                  transcriptRef.current?.scrollTo({
+                  if (!historical.active) transcriptRef.current?.scrollTo({
                     top: transcriptRef.current.scrollHeight,
                     behavior: "smooth",
                   });
+                  // History and live are different bounded windows, not adjacent
+                  // rows. The viewport hook aligns the committed live DOM below.
                 }}
               >
                 <ArrowDown size={14} aria-hidden="true" />

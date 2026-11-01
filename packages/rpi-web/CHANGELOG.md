@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Navigate unloaded timeline questions inline in the main transcript instead of opening a historical popup. Replace one bounded 48-message page at a time with Earlier/Later controls and inline loading/error/Retry; return through Back to latest, without a modal focus trap. Keep live SSE/snapshots updating separately while live rows are hidden, preserve the selected page through summary refreshes, and cancel/ignore obsolete reads on a newer click, return to latest or session navigation. Reuse the existing native queries and pinned leaf/cursors; no runtime, backend, model, transcript-storage or deployment change.
 - Fill the initial ten-question rail through bounded legacy history pages when native summaries are unsupported, preserving reading anchors and stopping on errors, exhausted/nonadvancing cursors or the ten-page budget.
 - Preserve local model/thinking/command notices in their original message gaps through snapshot refresh and history pagination.
 - Display original skill directory names for explicit SKILL.md reads and place successful-tool checks after elapsed time, before the disclosure chevron.
