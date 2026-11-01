@@ -1,4 +1,5 @@
 import { chooseMenuOption } from "./controls";
+import { writeFile } from "node:fs/promises";
 import { test, expect, type Page, type Route } from "@playwright/test";
 
 const sessionId = "session-1";
@@ -1561,6 +1562,45 @@ test.describe("clipboard attachment upload", () => {
     await expect(page.getByText(/Upload failed.*File too large/)).toBeVisible();
     await expect(page.locator(".composer textarea")).toHaveValue("Please inspect");
     await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+  });
+
+  test("attachment chooser can reselect the identical file after its upload is cancelled by navigation", async ({ page }, testInfo) => {
+    await mockHost(page);
+    const name = "rpi-review159-file.txt";
+    const filePath = testInfo.outputPath(name);
+    await writeFile(filePath, "hello");
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const names = await uploadMock(page, async (route, file, count) => {
+      if (count === 1) await gate;
+      await route.fulfill({ json: { name: file, path: `.rpi/uploads/${file}`, size: 5 } }).catch(() => {});
+    });
+    const chooseFile = async () => {
+      const chooser = page.waitForEvent("filechooser");
+      await page.getByRole("button", { name: "Attach files", exact: true }).click();
+      // Use a real disk file, not a payload or a synthetic change event: the
+      // browser must decide whether selecting the identical file fires change.
+      await (await chooser).setFiles(filePath);
+    };
+    await ready(page);
+    await chooseFile();
+    await expect.poll(() => names).toEqual([name]);
+    const cancelled = page.waitForEvent("requestfailed", {
+      predicate: request => request.url().endsWith("/projects/project-a/upload"),
+    });
+    await page.getByRole("button", { name: "New session", exact: false }).first().click();
+    await expect(page.getByRole("heading", { name: "New session", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Attach files", exact: true })).toBeEnabled();
+    // The old response is still held when the same chooser file is selected.
+    await chooseFile();
+    await expect.poll(() => names).toEqual([name, name]);
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    release();
+    await cancelled;
+    await expect(page.locator(".composer-attachment")).toHaveCount(1);
+    await expect(page.locator(".composer-attachment")).toContainText(name);
+    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    expect(await page.locator('input[type="file"]').inputValue()).toBe("");
   });
 
   test("cancels pending and queued uploads on session change without leaking an attachment", async ({ page }) => {
