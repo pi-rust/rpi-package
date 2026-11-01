@@ -5,9 +5,6 @@ import java.util.Locale
 
 /** No browser/Android dependency: all trust comparisons use scheme/host/port, not prefixes. */
 object OriginPolicy {
-    const val PRODUCTION = "https://work.bigfisharc.cn"
-    const val DEVELOPMENT = "https://work-dev.bigfisharc.cn"
-
     private fun uri(raw: String): URI? = try {
         if (raw.isBlank() || raw.any { it <= ' ' || it == '\\' || it.code > 127 }) null
         else URI(raw).takeIf {

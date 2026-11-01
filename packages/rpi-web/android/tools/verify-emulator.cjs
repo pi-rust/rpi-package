@@ -5,6 +5,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const serial = process.env.ANDROID_SERIAL || 'emulator-5584';
+const productionOrigin = process.env.RPI_WEB_ANDROID_DEFAULT_ORIGIN;
+const developmentOrigin = process.env.RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN;
+assert.ok(productionOrigin && developmentOrigin, 'This full smoke requires both endpoint env variables (run through env_config.py).');
 if (!serial.startsWith('emulator-')) throw new Error('This test is restricted to emulators, not user phones.');
 const app = 'cn.bigfisharc.rpiweb.local';
 const out = path.resolve(__dirname, '../artifacts');
@@ -60,7 +63,7 @@ async function site(name, origin) {
   await sleep(5000);
   let page = await connect();
   // Reset to production if a previous interrupted run left a different preference.
-  if (new URL(page.url()).origin !== 'https://work.bigfisharc.cn') page = await site('正式站', 'https://work.bigfisharc.cn');
+  if (new URL(page.url()).origin !== productionOrigin) page = await site('正式站', productionOrigin);
   await page.locator('input[type=password]').waitFor({ state: 'visible' });
   screenshot('production-login.png');
   ok('Real production HTTPS login loads without credentials');
@@ -74,19 +77,19 @@ async function site(name, origin) {
   assert.match(adb('shell', 'dumpsys', 'activity', 'activities'), /cn\.bigfisharc\.rpiweb\.local\/\.MainActivity/);
   ok('Native soft keyboard opens; Back dismisses IME without leaving app');
 
-  page = await site('开发站（测试界面）', 'https://work-dev.bigfisharc.cn');
+  page = await site('开发站（测试界面）', developmentOrigin);
   await page.locator('input[type=password]').waitFor({ state: 'visible' });
   screenshot('development-login.png');
   ok('Explicit native site switch loads real development HTTPS login');
   adb('shell', 'am', 'force-stop', app);
   adb('shell', 'am', 'start', '-n', `${app}/.MainActivity`);
   await sleep(2500); page = await connect();
-  assert.equal(new URL(page.url()).origin, 'https://work-dev.bigfisharc.cn');
+  assert.equal(new URL(page.url()).origin, developmentOrigin);
   ok('Selected site persists across app process restart');
 
   // All following HTML is intercepted only in this emulator WebView. No fixture
   // endpoint or command is sent to the shared service or persisted transcript.
-  const fixture = 'https://work-dev.bigfisharc.cn/__local_android_shell_test__';
+  const fixture = `${developmentOrigin}/__local_android_shell_test__`;
   const html = `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Local shell fixture</title>
 <style>body{font:16px sans-serif;padding:16px}button,input,textarea{display:block;margin:16px 0;min-height:44px}textarea{width:90%}</style>
 <h1>Local shell fixture</h1><input id="files" type="file" multiple><output id="selected"></output>
@@ -108,7 +111,7 @@ async function site(name, origin) {
   const popupXml = dump();
   assert.ok(popupXml.includes('example.com'));
   assert.ok(popupXml.includes('在系统浏览器中打开'));
-  assert.equal(new URL(page.url()).origin, 'https://work-dev.bigfisharc.cn');
+  assert.equal(new URL(page.url()).origin, developmentOrigin);
   tapText('取消');
   ok('Actual script popup URL is confirmed externally, never loaded into trusted view');
 
@@ -146,11 +149,11 @@ async function site(name, origin) {
   adb('shell', 'input', 'keyevent', '4');
   ok('Cancelling the system picker permits reopening it');
 
-  page = await site('正式站', 'https://work.bigfisharc.cn');
+  page = await site('正式站', productionOrigin);
   await page.locator('input[type=password]').waitFor({ state: 'visible' });
   ok('Site switch discards fixture history and restores the default production connection');
   fs.writeFileSync(path.join(out, 'emulator-report.json'), JSON.stringify({ status: 'passed', serial, android: adb('shell', 'getprop', 'ro.build.version.release').trim(), checks, authentication: 'not attempted; no server credentials read', realModelCalls: 0, fixture: 'CDP intercepted HTML only; no fixture backend or persisted session' }, null, 2));
-})().catch(error => { console.error(error); screenshot('test-failure.png'); process.exitCode = 1; }).finally(async () => {
+})().catch(() => { console.error('Emulator smoke failed; inspect ignored local artifacts (not for publication).'); screenshot('test-failure.png'); process.exitCode = 1; }).finally(async () => {
   if (browser) await browser.close().catch(() => {});
   if (port) { try { adb('forward', '--remove', `tcp:${port}`); } catch {} }
 });

@@ -70,6 +70,8 @@ class PackageContract(unittest.TestCase):
             report = json.loads(target.with_suffix(".json").read_text())
             self.assertFalse(report["debuggable"])
             self.assertEqual(report["certificateSha256"], CERT)
+            self.assertNotIn("defaultOrigin", report)
+            self.assertEqual(report["originConfiguration"], "build-environment")
 
     def test_missing_wrong_debug_or_multiple_certificate_rejected(self):
         cases = [(1, "DOES NOT VERIFY", CERT), (0, SIGNATURE, None),

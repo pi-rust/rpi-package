@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from package_apk import ROOT, package
+from env_config import load_environment
 
 
 def main():
@@ -18,7 +19,7 @@ def main():
     sdk = args.sdk or Path(os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME") or Path.home() / "Android/Sdk")
     if not (sdk / "platforms/android-35/android.jar").is_file():
         raise SystemExit("Set ANDROID_SDK_ROOT or --sdk to an SDK with Android platform 35 and build-tools 35.0.0")
-    env = os.environ | {"ANDROID_HOME": str(sdk.resolve())}
+    env = load_environment() | {"ANDROID_HOME": str(sdk.resolve())}
     if args.variant == "release":
         for suffix in ("KEYSTORE_PATH", "STORE_PASSWORD", "KEY_ALIAS", "KEY_PASSWORD", "CERT_SHA256"):
             if not env.get("RPI_WEB_ANDROID_" + suffix):

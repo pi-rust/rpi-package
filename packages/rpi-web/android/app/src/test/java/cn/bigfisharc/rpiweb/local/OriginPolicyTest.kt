@@ -4,8 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class OriginPolicyTest {
+    private val trusted = "https://workspace.example"
+
     @Test fun normalizesHttpsOrigins() {
-        assertEquals(OriginPolicy.PRODUCTION, OriginPolicy.normalize(" HTTPS://WORK.BIGFISHARC.CN:443/ "))
+        assertEquals(trusted, OriginPolicy.normalize(" HTTPS://WORKSPACE.EXAMPLE:443/ "))
         assertEquals("https://example.com:8443", OriginPolicy.normalize("https://example.com:8443/"))
         assertEquals("https://192.168.1.5:8443", OriginPolicy.normalize("https://192.168.1.5:8443"))
         assertEquals("https://[2001:db8::1]:8443", OriginPolicy.normalize("https://[2001:db8::1]:8443"))
@@ -22,12 +24,12 @@ class OriginPolicyTest {
     }
 
     @Test fun trustsOnlyMatchingSchemeHostAndPort() {
-        assertTrue(OriginPolicy.isInternal("https://work.bigfisharc.cn/sessions/123?a=1#entry", OriginPolicy.PRODUCTION))
-        assertTrue(OriginPolicy.isInternal("https://WORK.bigfisharc.cn:443/", OriginPolicy.PRODUCTION))
-        listOf("https://work.bigfisharc.cn.evil.com/", "https://evil.com/?next=https://work.bigfisharc.cn",
-            "https://work.bigfisharc.cn@evil.com/", "http://work.bigfisharc.cn/", "https://work.bigfisharc.cn:444/",
-            "https://work-dev.bigfisharc.cn/", "javascript:alert(1)", "about:blank", "https://work.bigfisharc.cn./")
-            .forEach { assertFalse(it, OriginPolicy.isInternal(it, OriginPolicy.PRODUCTION)) }
+        assertTrue(OriginPolicy.isInternal("https://workspace.example/sessions/123?a=1#entry", trusted))
+        assertTrue(OriginPolicy.isInternal("https://WORKSPACE.EXAMPLE:443/", trusted))
+        listOf("https://workspace.example.evil.com/", "https://evil.com/?next=https://workspace.example",
+            "https://workspace.example@evil.com/", "http://workspace.example/", "https://workspace.example:444/",
+            "https://development.example/", "javascript:alert(1)", "about:blank", "https://workspace.example./")
+            .forEach { assertFalse(it, OriginPolicy.isInternal(it, trusted)) }
     }
 
     @Test fun permitsOnlyHttpsExternalLinks() {

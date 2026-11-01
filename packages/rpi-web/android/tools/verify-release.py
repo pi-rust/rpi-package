@@ -11,6 +11,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from package_apk import APPLICATION_ID, ROOT, version
+from env_config import load_environment, DEFAULT, DEVELOPMENT
 
 
 def main():
@@ -19,6 +20,11 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"emulator-\d+", args.serial):
         raise SystemExit("This test is restricted to disposable emulators, not user phones")
+    environment = load_environment()
+    production = environment[DEFAULT]
+    development = environment[DEVELOPMENT]
+    if not development:
+        raise SystemExit("Full release smoke requires the optional development origin")
     out = ROOT / "artifacts"
     out.mkdir(exist_ok=True)
     checks = []
@@ -76,7 +82,7 @@ def main():
     assert run_as.returncode != 0 and "not debuggable" in (run_as.stdout + run_as.stderr)
     ok("Installed release has expected version and is not debuggable (run-as denied)")
     start()
-    wait(lambda ui: node(ui, "当前站点：https://work.bigfisharc.cn") is not None)
+    wait(lambda ui: node(ui, "当前站点：" + production) is not None)
     ui = wait(lambda ui: any(n.get("password") == "true" for n in ui.iter("node")))
     ok("Release loads real production HTTPS login without authentication")
     # The app requests debugging=false. WebView 113 on ro.debuggable=1 system
@@ -98,13 +104,13 @@ def main():
     adb("shell", "input", "keyevent", "4")
     wait(lambda ui: node(ui, "站点设置") is not None)
     ok("Native keyboard opens on login; Back dismisses it without leaving release app")
-    site("开发站（测试界面）", "https://work-dev.bigfisharc.cn")
+    site("开发站（测试界面）", development)
     ok("Native site picker loads real development HTTPS login")
     start()
-    wait(lambda ui: node(ui, "当前站点：https://work-dev.bigfisharc.cn") is not None)
+    wait(lambda ui: node(ui, "当前站点：" + development) is not None)
     wait(lambda ui: any(n.get("password") == "true" for n in ui.iter("node")))
     ok("Selected HTTPS site persists across release process restart")
-    site("正式站", "https://work.bigfisharc.cn")
+    site("正式站", production)
     ok("Native site picker restores production default")
     pid_before = adb("shell", "pidof", APPLICATION_ID).stdout.strip()
     try:
@@ -123,7 +129,7 @@ def main():
         ok("Release handles live OS night changes with open dialog and cold-starts in night mode")
     finally:
         adb("shell", "cmd", "uimode", "night", "no")
-    wait(lambda ui: node(ui, "当前站点：https://work.bigfisharc.cn") is not None)
+    wait(lambda ui: node(ui, "当前站点：" + production) is not None)
     (out / "release-ui.xml").write_text(ET.tostring(dump(), encoding="unicode"), encoding="utf-8")
     image = subprocess.run(["adb", "-s", args.serial, "exec-out", "screencap", "-p"], capture_output=True, timeout=30, check=True)
     (out / "release-production.png").write_bytes(image.stdout)

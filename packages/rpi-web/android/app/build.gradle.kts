@@ -1,4 +1,6 @@
 import java.util.Properties
+import java.util.Locale
+import java.net.URI
 
 plugins {
     id("com.android.application")
@@ -23,6 +25,27 @@ require(!allowUnsignedRelease || !signingPresent) {
     "Unsigned verification must not receive release signing credentials"
 }
 
+val defaultOrigin = providers.environmentVariable("RPI_WEB_ANDROID_DEFAULT_ORIGIN").orNull?.trim().orEmpty()
+val developmentOrigin = providers.environmentVariable("RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN").orNull?.trim().orEmpty()
+require(defaultOrigin.isNotBlank()) { "RPI_WEB_ANDROID_DEFAULT_ORIGIN is required; inject it through the build environment" }
+// Do not include raw input in errors: operator addresses should not enter CI logs.
+fun originLiteral(raw: String, name: String): String {
+    if (raw.isEmpty()) return "\"\""
+    val uri = runCatching { URI(raw) }.getOrNull()
+    require(uri != null && raw.none { it <= ' ' || it == '\\' || it.code > 127 } &&
+        uri.scheme.equals("https", ignoreCase = true) && uri.host != null &&
+        uri.rawUserInfo == null && !uri.host.endsWith('.') && !uri.host.contains('%') &&
+        (uri.port == -1 || uri.port in 1..65535) && !uri.rawAuthority.endsWith(':') &&
+        uri.rawPath in listOf("", "/") && uri.rawQuery == null && uri.rawFragment == null) {
+        "$name must be an HTTPS origin without credentials, path, query or fragment"
+    }
+    val host = uri.host.lowercase(Locale.ROOT)
+    val port = if (uri.port == -1 || uri.port == 443) "" else ":${uri.port}"
+    return "\"https://$host$port\""
+}
+val defaultOriginLiteral = originLiteral(defaultOrigin, "RPI_WEB_ANDROID_DEFAULT_ORIGIN")
+val developmentOriginLiteral = originLiteral(developmentOrigin, "RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN")
+
 android {
     namespace = "cn.bigfisharc.rpiweb.local"
     compileSdk = 35
@@ -32,6 +55,8 @@ android {
         targetSdk = 35
         versionCode = appVersion.getProperty("versionCode").toInt()
         versionName = appVersion.getProperty("versionName")
+        buildConfigField("String", "DEFAULT_ORIGIN", defaultOriginLiteral)
+        buildConfigField("String", "DEVELOPMENT_ORIGIN", developmentOriginLiteral)
     }
     buildFeatures { buildConfig = true }
     compileOptions {

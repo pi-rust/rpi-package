@@ -32,6 +32,10 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      # Public test fixtures only. Actual nodes are environment Secrets below.
+      RPI_WEB_ANDROID_DEFAULT_ORIGIN: https://workspace.example
+      RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN: https://development.example
     defaults:
       run:
         working-directory: packages/rpi-web/android
@@ -131,6 +135,8 @@ jobs:
           RPI_WEB_ANDROID_KEY_ALIAS: ${{ secrets.RPI_WEB_ANDROID_KEY_ALIAS }}
           RPI_WEB_ANDROID_KEY_PASSWORD: ${{ secrets.RPI_WEB_ANDROID_KEY_PASSWORD }}
           RPI_WEB_ANDROID_CERT_SHA256: ${{ secrets.RPI_WEB_ANDROID_CERT_SHA256 }}
+          RPI_WEB_ANDROID_DEFAULT_ORIGIN: ${{ secrets.RPI_WEB_ANDROID_DEFAULT_ORIGIN }}
+          RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN: ${{ secrets.RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN }}
         run: |
           set -euo pipefail
           umask 077
@@ -139,7 +145,7 @@ jobs:
           python - <<'PY'
           import base64, os
           from pathlib import Path
-          for suffix in ('KEYSTORE_BASE64', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD', 'CERT_SHA256'):
+          for suffix in ('KEYSTORE_BASE64', 'STORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD', 'CERT_SHA256', 'DEFAULT_ORIGIN'):
               if not os.environ.get('RPI_WEB_ANDROID_' + suffix):
                   raise SystemExit('Missing required Android signing secret: ' + suffix)
           Path(os.environ['RPI_WEB_ANDROID_KEYSTORE_PATH']).write_bytes(

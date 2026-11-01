@@ -118,7 +118,7 @@ def package(variant: str, output: Path, sdk: Path, expected: str | None) -> Path
               "variant": variant, "installable": cert is not None, "debuggable": variant == "debug",
               "minSdk": 26, "targetSdk": 35, "permissions": ["android.permission.INTERNET"],
               "source": source, "certificateSha256": cert, "sha256": digest, "bytes": target.stat().st_size,
-              "defaultOrigin": "https://work.bigfisharc.cn", "client": "online-system-webview"}
+              "originConfiguration": "build-environment", "client": "online-system-webview"}
     target.with_suffix(".json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"Packaged {target.name}: {digest}")
     return target
