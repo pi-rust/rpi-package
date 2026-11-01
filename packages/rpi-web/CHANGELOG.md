@@ -4,6 +4,8 @@
 
 ### Added
 
+- Add System / 随系统 appearance mode (the new default), following live OS light/dark changes without reloading chat or clearing drafts. Preserve existing explicit light/dark preferences and allow returning to System in Settings.
+
 - Paste clipboard images and files into the composer using the existing project-scoped upload endpoint. Preserve native text paste, queue repeated/multi-file pastes, block premature sending, cancel uploads on session/project changes, and retain successful files and newer attachments across failures or delayed prompt acknowledgements.
 
 - Open project-contained file links and explicit inline-code paths in an on-demand read-only code preview with line/range highlighting, copy controls, cancellation, retry and project isolation. Keep fenced code inert; open HTTP(S) links safely in a new tab and reject unsafe or out-of-project destinations.

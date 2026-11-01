@@ -868,6 +868,67 @@ test("project navigation collapses and remembers appearance", async ({
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
 
+test("system appearance follows live OS changes without losing the draft", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await mockHost(page);
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  const draft = page.locator(".composer textarea");
+  await draft.fill("Unsent system theme draft");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(draft).toHaveValue("Unsent system theme draft");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("rpi-theme"))).toBe("system");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(draft).toHaveValue("Unsent system theme draft");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+test("appearance preserves explicit legacy choices and can return to system", async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("rpi-theme")) localStorage.setItem("rpi-theme", "light");
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await mockHost(page);
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "Settings Ctrl ," }).click();
+  const appearance = page.getByRole("group", { name: "Appearance", exact: true });
+  await expect(appearance.getByRole("button", { name: "Light", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await appearance.getByRole("button", { name: "Dark", exact: true }).click();
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await appearance.getByRole("button", { name: "System", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(appearance.getByRole("button", { name: "System", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("rpi-theme"))).toBe("system");
+  await page.screenshot({ path: testInfo.outputPath("system-theme-dark.png") });
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+});
+
+test("system appearance works without localStorage and on mobile", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    Storage.prototype.getItem = () => { throw new Error("Storage disabled"); };
+    Storage.prototype.setItem = () => { throw new Error("Storage disabled"); };
+  });
+  await mockHost(page);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe("light");
+  await page.screenshot({ path: testInfo.outputPath("system-theme-mobile-light.png") });
+});
+
 test("split widths persist and separators support the keyboard", async ({
   page,
 }) => {
