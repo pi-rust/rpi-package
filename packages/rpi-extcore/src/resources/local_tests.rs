@@ -60,6 +60,133 @@ fn help_is_the_only_probe_for_old_cli_and_profiles_fail_closed() {
     }
 }
 #[test]
+fn legacy_package_inspect_preserves_safe_names_and_fixed_argv() {
+    for scope in [ResourceScope::Project, ResourceScope::Global] {
+        for name in [
+            ".tools".into(),
+            "_legacy".into(),
+            format!(".{}", "x".repeat(95)),
+        ] {
+            let request = LocalResourceRequest {
+                scope,
+                operation: LocalResourceOperation::Inspect {
+                    kind: ResourceKind::Package,
+                    name: name.clone(),
+                },
+                ..list()
+            };
+            assert_eq!(
+                arguments(&request).unwrap(),
+                [
+                    "resource",
+                    "inspect",
+                    "package",
+                    &name,
+                    "--scope",
+                    scope.argument()
+                ]
+                .map(OsString::from)
+            );
+        }
+    }
+}
+#[test]
+fn legacy_package_inspect_rejects_unsafe_or_unbounded_names() {
+    for name in [
+        "",
+        ".",
+        "..",
+        "...",
+        ".tools.",
+        "../escape",
+        "..\\escape",
+        ".tools/nested",
+        ".tools\\nested",
+        "-tools",
+        "--help",
+        ".bad:name",
+        ".bad name",
+        ".bad\0name",
+        ".bad\nname",
+        ".bad\tname",
+        ".caf\u{e9}",
+    ] {
+        let request = LocalResourceRequest {
+            operation: LocalResourceOperation::Inspect {
+                kind: ResourceKind::Package,
+                name: name.into(),
+            },
+            ..list()
+        };
+        assert_eq!(
+            arguments(&request).unwrap_err().kind,
+            ResourceErrorKind::InvalidInput,
+            "{name:?}"
+        );
+    }
+    let request = LocalResourceRequest {
+        operation: LocalResourceOperation::Inspect {
+            kind: ResourceKind::Package,
+            name: format!(".{}", "x".repeat(96)),
+        },
+        ..list()
+    };
+    assert_eq!(
+        arguments(&request).unwrap_err().kind,
+        ResourceErrorKind::InvalidInput
+    );
+}
+#[test]
+fn legacy_dot_names_do_not_widen_other_inspection_or_managed_mutations() {
+    for kind in [
+        ResourceKind::Package,
+        ResourceKind::Skill,
+        ResourceKind::Extension,
+    ] {
+        let name = ".tools".to_owned();
+        let source = std::env::temp_dir();
+        let mut operations = vec![
+            LocalResourceOperation::Install {
+                kind,
+                name: name.clone(),
+                source: source.clone(),
+                version: None,
+            },
+            LocalResourceOperation::Update {
+                kind,
+                name: name.clone(),
+                source: source.clone(),
+                version: None,
+            },
+            LocalResourceOperation::Reinstall {
+                kind,
+                name: name.clone(),
+                source,
+                version: None,
+            },
+            LocalResourceOperation::Remove {
+                kind,
+                name: name.clone(),
+            },
+        ];
+        if !matches!(kind, ResourceKind::Package) {
+            operations.push(LocalResourceOperation::Inspect { kind, name });
+        }
+        for operation in operations {
+            let request = LocalResourceRequest {
+                operation,
+                ..list()
+            };
+            assert_eq!(
+                arguments(&request).unwrap_err().kind,
+                ResourceErrorKind::InvalidInput,
+                "{:?}",
+                request.operation
+            );
+        }
+    }
+}
+#[test]
 fn management_requires_kind_scope_operation_and_native_v1_input_bounds() {
     let request = list();
     let args = arguments(&request).unwrap();

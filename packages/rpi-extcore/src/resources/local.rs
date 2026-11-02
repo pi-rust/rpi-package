@@ -344,9 +344,18 @@ fn arguments(request: &LocalResourceRequest) -> ResourceResult<Vec<OsString>> {
     };
     let mut args: Vec<OsString> = vec!["resource".into(), op.into()];
     if let Some((kind, name)) = identity {
+        let legacy_package_inspect = matches!(
+            &request.operation,
+            Inspect {
+                kind: ResourceKind::Package,
+                ..
+            }
+        );
         if name.is_empty()
             || name.len() > 96
-            || name.starts_with('.')
+            // Listed legacy Packages may start with '.', but not '.'/'..' or
+            // trailing-dot aliases. Managed and other resource names stay strict.
+            || (name.starts_with('.') && (!legacy_package_inspect || name.ends_with('.')))
             || !name
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))

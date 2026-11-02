@@ -118,7 +118,10 @@ resource CLI flags. Never probe unknown subcommands, infer ABI compatibility,
 execute a provider or widen mode as fallback. Actual ready/state remains authoritative.
 Local management stdout/stderr and JSON are bounded, with deadlines and owned
 process cleanup. Installation receipts remain native facts; catalog is not loaded
-state. Source compilation requires separate explicit native authorization.
+state. Safe leading-dot legacy Package names (for example `.tools`) are accepted
+only by typed Package inspect; managed mutations and Skill/Extension inspection
+retain their existing identity grammar. Native remains authoritative for registry
+and on-disk validity. Source compilation requires separate explicit native authorization.
 
 ## Canonical saved reader and offline admission
 

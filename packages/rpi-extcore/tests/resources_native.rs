@@ -147,6 +147,19 @@ async fn native_resource_scenario(check_fork: bool) {
             ),
         );
     }
+    // Resource-only legacy Packages are catalog fixtures, never selected ABI
+    // resources. Prepare their registry before any host takes resource leases.
+    for name in [".tools", "_legacy"] {
+        std::fs::create_dir_all(project.join(".rpi/packages").join(name)).unwrap();
+    }
+    put(
+        project.join(".rpi/packages.json"),
+        json!({"packages":[
+            {"name":".tools","version":"1","source":"fixture-only","cargo_package":"none","artifacts":[]},
+            {"name":"_legacy","version":"1","source":"fixture-only","cargo_package":"none","artifacts":[]}
+        ]})
+        .to_string(),
+    );
     let config = BackendConfig {
         project: project.clone(),
         rpi_bin: bin,
@@ -302,6 +315,34 @@ async fn native_resource_scenario(check_fork: bool) {
         .await
         .unwrap();
     assert!(catalog.success, "{catalog:?}");
+    for name in [".tools", "_legacy"] {
+        assert!(catalog.observation["data"]["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["kind"] == "package"
+                && r["name"] == name
+                && r["ownership"] == "legacy-native"
+                && r["installed"] == true));
+        let inspected = service
+            .manage_resources(LocalResourceRequest {
+                project_id: project_id.clone(),
+                scope: ResourceScope::Project,
+                operation: LocalResourceOperation::Inspect {
+                    kind: ResourceKind::Package,
+                    name: name.into(),
+                },
+            })
+            .await
+            .unwrap();
+        assert!(inspected.success, "{inspected:?}");
+        let resources = inspected.observation["data"]["resources"]
+            .as_array()
+            .unwrap();
+        assert_eq!(resources.len(), 1, "{inspected:?}");
+        assert_eq!(resources[0]["name"], name);
+        assert_eq!(resources[0]["ownership"], "legacy-native");
+    }
     let released = service
         .release_idle_resources(project_id.clone(), ResourceScope::Project)
         .await
