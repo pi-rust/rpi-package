@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.1.35](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.34...rpi-web-v0.1.35) - 2026-11-02
+
+### Added
+
+- *(web)* expose provider management in runtime settings
+- *(web)* toggle the existing conversation timeline from the toolbar
+
+### Fixed
+
+- *(web)* remove intrusive mobile provider suggestions
+
 ## [0.1.34](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.33...rpi-web-v0.1.34) - 2026-11-02
 
 ### Fixed
