@@ -497,11 +497,12 @@ export const api = {
       status: string;
       display?: Record<string, unknown>;
     }>(id, "oauth", { provider, action, input }),
-  setApiKey: (id: string, provider: string, apiKey: string) =>
+  setApiKey: (id: string, provider: string, apiKey: string, signal?: AbortSignal) =>
     commandData<{ provider: string; ready: boolean; requiresRestart: boolean }>(
       id,
       "set_api_key",
       { provider, apiKey },
+      signal,
     ),
 
   queue: (id: string, includeCompleted = false, signal?: AbortSignal) =>
