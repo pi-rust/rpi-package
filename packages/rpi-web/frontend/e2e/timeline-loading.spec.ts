@@ -11,6 +11,16 @@ const historyPages = (page: Page) =>
 const latestMessages = (page: Page) =>
   page.getByRole("button", { name: translate("en", "jumpToBottom"), exact: true });
 
+const timelineToggle = (page: Page) =>
+  page.getByRole("button", { name: /^(Conversation timeline|对话时间线)$/ });
+async function openTimeline(page: Page) {
+  const button = timelineToggle(page);
+  await expect(button).toBeVisible();
+  await expect(button).toHaveAttribute("aria-controls", "conversation-timeline-navigation");
+  if (await button.getAttribute("aria-expanded") === "false") await button.click();
+  await expect(button).toHaveAttribute("aria-expanded", "true");
+}
+
 // Deliberately independent of dev-web.spec.ts: every API request is intercepted,
 // including read-shaped POSTs; an accidental prompt/mutation fails the fixture.
 const sessionId = "timeline-session";
@@ -302,6 +312,7 @@ const test = base.extend<{ host: Host }>({
 async function open(page: Page, count = 11) {
   // Public HMR websocket connections must not hold navigation open.
   await page.goto("/", { waitUntil: "domcontentloaded" });
+  await openTimeline(page);
   await expect(nodes(page)).toHaveCount(count);
   await expect(page.locator(".conversation-timeline")).toBeVisible();
 }
@@ -370,7 +381,7 @@ const older = (prefix = "older", count = 48, hasMore = true): MessagePage => ({
 });
 
 for (const count of [1, 10, 11]) {
-  test(`${count} user nodes: default-visible left rail and ten-node geometry at desktop and 390px`, async ({
+  test(`${count} user nodes: opt-in left rail and ten-node geometry at desktop and 390px`, async ({
     page,
     host,
   }) => {
@@ -820,6 +831,7 @@ test("a held old-session page cannot prepend into a newly selected session", asy
   await expect(page.locator(".toolbar h1")).toHaveText(
     "Other timeline session",
   );
+  await openTimeline(page);
   await expect(nodes(page)).toHaveCount(2);
   const targets = await nodes(page).evaluateAll((elements) =>
     elements.map((node) => node.getAttribute("data-timeline-target")),
@@ -1228,6 +1240,7 @@ test("navigation stops the old initial-fill chain and ignores its held response"
   await expect(page.locator(".toolbar h1")).toHaveText(
     "Other timeline session",
   );
+  await openTimeline(page);
   await expect(nodes(page)).toHaveCount(2);
   pending.release();
   await settle(page, 700);
@@ -1246,6 +1259,41 @@ function nativeWindowPage(start = 9, count = 3, hasMoreAfter = true) {
   const messages = Array.from({ length: count }, (_, i) => ({ role: "user", entryId: `native-${start + i}`, content: `Historical native body ${start + i}` }));
   return { messages, firstId: messages[0]?.entryId ?? null, lastId: messages.at(-1)?.entryId ?? null, nextBeforeId: start > 0 ? messages[0]?.entryId ?? null : null, nextAfterId: hasMoreAfter ? messages.at(-1)?.entryId ?? null : null, hasMoreBefore: start > 0, hasMoreAfter, leafId: "native-pinned-leaf" };
 }
+test("hidden native timeline performs no summary reads until explicitly opened", async ({ page, host }) => {
+  enableNative(host);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(transcript(page).locator("[data-transcript-row]")).toHaveCount(49);
+  const frames = () => page.evaluate(async () => {
+    for (let frame = 0; frame < 4; frame++)
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+  });
+  await frames();
+  const toggle = timelineToggle(page);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+  expect(host.queryReads).toEqual([]);
+  expect(host.reads).toEqual([]);
+  const composer = page.locator(".composer textarea");
+  await composer.fill("Keep this native timeline draft");
+  await openTimeline(page);
+  await expect.poll(() => host.queryReads.length).toBe(1);
+  await expect(nodes(page)).toHaveCount(10);
+  await expect(page.locator(".conversation-timeline")).toBeVisible();
+  expect((await page.locator(".conversation-timeline").boundingBox())!.width).toBeLessThanOrEqual(28);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+  await frames();
+  await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(composer).toHaveValue("Keep this native timeline draft");
+  expect(host.queryReads).toEqual([{
+    session: sessionId, type: "message-summaries",
+    params: { limit: "10", role: "user", leafId: "native-pinned-leaf" },
+  }]);
+  expect(host.reads).toEqual([]);
+});
+
 function enableNative(host: Host) {
   host.nativeQueries = true;
   host.initial = { messages: [...tools("dense-native"), ...users("native", 20).slice(-1)], firstId: currentCursor, hasMore: true };
@@ -1441,6 +1489,8 @@ test("native summary pagination aborts stale pages when switching sessions", asy
   await open(page, 10); await earlier(page).click();
   await expect.poll(() => host.queryReads.length).toBe(2);
   await page.locator(".project-session-link").filter({ hasText: "Other timeline session" }).click();
+  await expect(page.locator(".toolbar h1")).toHaveText("Other timeline session");
+  await openTimeline(page);
   await expect(nodes(page)).toHaveCount(2);
   held.release(); await settle(page);
   await expect(nodes(page)).toHaveCount(2);
@@ -1454,6 +1504,8 @@ test("native inline history aborts when switching sessions", async ({ page, host
   await expect.poll(() => host.queryReads.length).toBe(2);
   await expect(transcript(page)).toHaveAttribute("data-history-window", "true");
   await page.locator(".project-session-link").filter({ hasText: "Other timeline session" }).click();
+  await expect(page.locator(".toolbar h1")).toHaveText("Other timeline session");
+  await openTimeline(page);
   await expect(nodes(page)).toHaveCount(2);
   held.release(); await settle(page);
   await expect(transcript(page)).not.toHaveAttribute("data-history-window", "true");

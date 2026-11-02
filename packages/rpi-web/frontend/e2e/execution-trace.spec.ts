@@ -1135,6 +1135,7 @@ test("explicit older pagination merges stable identities; opening the pane never
   expect(host.count(A, "get_messages")).toBe(0);
   // Scrub to a loaded question first: scrolling the paging button into view
   // otherwise starts automatic paging and can remove it before pointer-down.
+  await page.locator('.toolbar button[aria-controls="conversation-timeline-navigation"]').click();
   await page.getByRole("button", {
     name: `Go to message 1: Loaded question ${A}`, exact: true,
   }).click();
@@ -2181,6 +2182,7 @@ test("overlapping older pagination and boundary refresh retain the model notice 
     firstId: "older-user",
   };
   expect(host.count(A, "get_messages")).toBe(0);
+  await page.locator('.toolbar button[aria-controls="conversation-timeline-navigation"]').click();
   await page.getByRole("button", {
     name: "Go to message 1: Loaded question page", exact: true,
   }).click();
