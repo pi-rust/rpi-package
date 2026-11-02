@@ -10,6 +10,20 @@ host uses the normal message/context path; there is no goal-specific logic in
 automatically in the background; a goal tool call made during an existing
 turn does not nest a second run.
 
+## Runtime reload
+
+A native reload can register the same loaded library again without clearing its
+statics. The plugin refreshes its API template on registration, binds command
+and event calls to the owner supplied by the host, and retains API snapshots
+for in-flight tools and background starts. No API lock is held during host calls.
+
+Registering a candidate does not prove that the host committed the reload:
+callbacks from a surviving previous registry still use their original owner.
+Expired owners remain errors; they are not redirected to the latest session.
+Native invocation context remains authoritative for tool runtime actions.
+Legacy commands with null owner data use the latest registered API as a fallback.
+This fixes runtime-handle binding without changing goal storage or notice queues.
+
 ## Slash command
 
 ```
