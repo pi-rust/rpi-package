@@ -541,6 +541,7 @@ export function ConversationTimeline({
   return (
     <>
     {(entries.length > 0 || hasMore || native.error) && <aside
+      id="conversation-timeline-navigation"
       className="conversation-timeline"
       ref={root}
       onPointerEnter={(event) => {
