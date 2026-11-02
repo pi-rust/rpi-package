@@ -1,6 +1,6 @@
 use super::*;
 mod intent;
-use intent::{planned_record, require_result_headroom};
+use intent::{planned_record, require_retry_headroom};
 #[cfg(test)]
 #[path = "resource_tests.rs"]
 mod tests;
@@ -88,6 +88,7 @@ pub(super) async fn host_options(
     id: &str,
     project: &Project,
 ) -> ResourceResult<SessionOptions> {
+    state.check_resource_storage(id)?;
     let record = state
         .registry
         .read()
@@ -127,31 +128,57 @@ async fn save_record(
     id: &str,
     record: ResourceConfiguration,
 ) -> ResourceResult<()> {
-    let mut registry = state.registry.write().await;
-    let entry = registry
+    let entry = state
+        .registry
+        .read()
+        .await
         .get(id)
         .cloned()
         .ok_or_else(|| ResourceError::conflict("unknown session"))?;
-    let result = registry.set_resource_configuration(entry, record);
+    publish_record(state, entry, Some(record)).await
+}
+/// The final publication transaction. Resource failures latch even if rename
+/// may already have committed; no live candidate may become reachable on error.
+pub(super) async fn publish_record(
+    state: &Service,
+    mut entry: RegistryEntry,
+    record: Option<ResourceConfiguration>,
+) -> ResourceResult<()> {
+    let id = entry.session_id.clone();
+    let configured = record.is_some();
+    let mut registry = state.registry.write().await;
+    if let Some(latest) = registry.get(&id) {
+        let updated_at = latest.updated_at.max(entry.updated_at);
+        let project_id = latest.project_id.clone().or(entry.project_id);
+        entry = latest.clone();
+        entry.updated_at = updated_at;
+        entry.project_id = project_id;
+    }
+    let result = match record {
+        Some(record) => registry.set_resource_configuration(entry, record),
+        None => registry.upsert(entry),
+    };
     drop(registry);
     if let Err(error) = result {
-        state
-            .resource_storage_failed
-            .lock()
-            .expect("resource storage latch")
-            .insert(id.into());
-        if let Some(host) = state.live_session(id).await {
-            host.block_resource_storage();
+        if configured {
+            state
+                .resource_storage_failed
+                .lock()
+                .expect("resource storage latch")
+                .insert(id.clone());
+            if let Some(host) = state.live_session(&id).await {
+                host.block_resource_storage();
+            }
         }
         return Err(storage(format!("resource registry write failed or uncertain; admission blocked until owner restart/inspection: {error}")));
     }
     Ok(())
 }
-pub(super) async fn persist_open_observation(
+pub(super) async fn prepare_open_observation(
     state: &Service,
     id: &str,
     host: &HostSession,
-) -> ResourceResult<()> {
+) -> ResourceResult<Option<ResourceConfiguration>> {
     let record = state
         .registry
         .read()
@@ -174,16 +201,17 @@ pub(super) async fn persist_open_observation(
         record.current_settings = None;
         observation.verify(id, &record.selection)?;
         record.observation = Some(observation);
-        save_record(state, id, record).await?;
+        return Ok(Some(record));
     }
-    Ok(())
+    Ok(None)
 }
-pub(super) async fn persist_fork_selection(
+pub(super) async fn prepare_fork_selection(
     state: &Service,
     source: &str,
     id: &str,
     host: &HostSession,
-) -> ResourceResult<()> {
+    settings: Option<&ResourceSessionSettings>,
+) -> ResourceResult<Option<ResourceConfiguration>> {
     let record = state
         .registry
         .read()
@@ -192,16 +220,17 @@ pub(super) async fn persist_fork_selection(
         .cloned();
     if let Some(mut record) = record {
         record.revision = 1;
-        record.operations.clear();
-        if let Some(level) = record
-            .current_settings
-            .as_ref()
-            .and_then(|c| c.settings.thinking.as_ref())
-        {
+        if let Some(level) = settings.and_then(|s| s.thinking.as_ref()).or_else(|| {
+            record
+                .current_settings
+                .as_ref()
+                .and_then(|c| c.settings.thinking.as_ref())
+        }) {
             host.set_thinking_level(level)
                 .await
                 .map_err(ResourceError::unavailable)?;
         }
+        record.operations.clear();
         record.current_settings = None;
         record.observation = Some(host.resource_state().await?);
         record
@@ -209,11 +238,11 @@ pub(super) async fn persist_fork_selection(
             .as_ref()
             .unwrap()
             .verify(id, &record.selection)?;
-        save_record(state, id, record).await?;
+        return Ok(Some(record));
     }
-    Ok(())
+    Ok(None)
 }
-fn capture_settings(
+pub(super) fn capture_settings(
     options: &SessionOptions,
     state: &Value,
 ) -> ResourceResult<ResourceSessionSettings> {
@@ -433,7 +462,7 @@ impl Service {
             ) {
                 return Ok(op.clone());
             }
-            require_result_headroom(record.as_ref().unwrap())?;
+            require_retry_headroom(record.as_ref().unwrap())?;
         } else {
             if record.as_ref().map_or(0, |r| r.revision) != request.expected_revision {
                 return Err(ResourceError::conflict(

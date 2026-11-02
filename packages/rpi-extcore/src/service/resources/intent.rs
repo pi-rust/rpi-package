@@ -68,6 +68,22 @@ pub(super) fn planned_record(
     require_result_headroom(&next)?;
     Ok(next)
 }
+pub(super) fn require_retry_headroom(record: &ResourceConfiguration) -> ResourceResult<()> {
+    // Keep the full final cap/validation, including diagnostics. Only the latest
+    // nonterminal operation reuses its already admitted Pending reservation.
+    record.validate()?;
+    let mut reserved = record.clone();
+    if let Some(current) = reserved.operations.last_mut() {
+        if matches!(
+            current.status,
+            ResourceOperationStatus::Pending | ResourceOperationStatus::Blocked
+        ) {
+            current.status = ResourceOperationStatus::Pending;
+            current.error = None;
+        }
+    }
+    require_result_headroom(&reserved)
+}
 pub(super) fn require_result_headroom(record: &ResourceConfiguration) -> ResourceResult<()> {
     if serde_json::to_vec(record)
         .map_err(ResourceError::unavailable)?

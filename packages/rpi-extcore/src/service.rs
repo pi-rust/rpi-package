@@ -626,33 +626,35 @@ async fn create_session_owned(
         }
     }
     match spawn_host(state, &id, &project).await {
-        Ok(session) => {
+        Ok((session, record)) => {
             if let Err(error) = attach_durable(state, &id, session.clone()).await {
-                session.stop().await;
+                session.shutdown().await;
                 return (
                     ReplyKind::HostUnavailable,
-                    json!({
-                        "error": error,
-                        "code": "durable_projection_unavailable"
-                    }),
+                    json!({"error": error, "code": "durable_projection_unavailable"}),
                 );
             }
             let ready = session.ready();
             let snapshot = session.snapshot().await;
-            let saved = state.registry.write().await.upsert(RegistryEntry {
-                session_id: id.clone(),
-                project_id: Some(project.id.clone()),
-                title: None,
-                parent_session_id: None,
-                fork_entry_id: None,
-                relation: None,
-                created_at: snapshot.created_at,
-                updated_at: snapshot.updated_at,
-            });
+            let saved = resources::publish_record(
+                state,
+                RegistryEntry {
+                    session_id: id.clone(),
+                    project_id: Some(project.id.clone()),
+                    title: None,
+                    parent_session_id: None,
+                    fork_entry_id: None,
+                    relation: None,
+                    created_at: snapshot.created_at,
+                    updated_at: snapshot.updated_at,
+                },
+                record,
+            )
+            .await;
             if let Err(error) = saved {
                 detach_durable(state, &id).await;
-                session.stop().await;
-                return (ReplyKind::Internal, json!({"error": error}));
+                session.shutdown().await;
+                return resources::reply_error(error);
             }
             state.sessions.write().await.insert(id.clone(), session);
             (
@@ -671,16 +673,24 @@ async fn spawn_host(
     state: &Service,
     id: &str,
     project: &Project,
-) -> Result<Arc<HostSession>, String> {
+) -> Result<
+    (
+        Arc<HostSession>,
+        Option<crate::resources::ResourceConfiguration>,
+    ),
+    String,
+> {
     let options = resources::host_options(state, id, project)
         .await
         .map_err(|e| e.to_string())?;
     let session = HostSession::spawn_options(options).await?;
-    if let Err(error) = resources::persist_open_observation(state, id, &session).await {
-        session.shutdown().await;
-        return Err(error.to_string());
+    match resources::prepare_open_observation(state, id, &session).await {
+        Ok(record) => Ok((session, record)),
+        Err(error) => {
+            session.shutdown().await;
+            Err(error.to_string())
+        }
     }
-    Ok(session)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -783,7 +793,42 @@ async fn fork_session_impl(
     entry_id: Option<String>,
     requested_title: Option<String>,
 ) -> ServiceReply {
+    let permit = match state.resource_workers.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                ReplyKind::Conflict,
+                json!({"error":"fork operation at capacity"}),
+            )
+                .into_reply()
+        }
+    };
+    let owner = state.clone();
+    let source_id = source_id.to_owned();
+    tokio::spawn(async move {
+        let _permit = permit;
+        fork_session_owned(&owner, &source_id, entry_id, requested_title).await
+    })
+    .await
+    .unwrap_or_else(|_| (ReplyKind::Internal, json!({"error":"fork owner failed"})).into_reply())
+}
+async fn fork_session_owned(
+    state: &Service,
+    source_id: &str,
+    entry_id: Option<String>,
+    requested_title: Option<String>,
+) -> ServiceReply {
     let _lifecycle = state.session_lifecycle.lock().await;
+    if state.closing.load(std::sync::atomic::Ordering::Acquire) {
+        return (
+            ReplyKind::Unavailable,
+            json!({"error":"service shutting down"}),
+        )
+            .into_reply();
+    }
+    if let Err(error) = state.check_resource_storage(source_id) {
+        return resources::reply_error(error).into_reply();
+    }
     if state.registry.read().await.get(source_id).is_none()
         && state.sessions.read().await.get(source_id).is_none()
     {
@@ -813,6 +858,40 @@ async fn fork_session_impl(
         Ok(options) => options,
         Err(error) => return resources::reply_error(error).into_reply(),
     };
+    // Retain source admission through destination completion. Runtime setters
+    // are not native transcript settings and must be captured from the live host.
+    let source = state.live_session(source_id).await;
+    let mut _source_fence = None;
+    let mut live_settings = None;
+    if let Some(source) = source.as_ref().filter(|_| fork_options.resources.is_some()) {
+        let fence = match source.resource_fence() {
+            Ok(fence) => fence,
+            Err(error) => return resources::reply_error(error).into_reply(),
+        };
+        if source.snapshot().await.status != "closed" {
+            let captured = async {
+                let native = source.verify_resource_idle(&fence).await?;
+                let observation = source.fenced_resource_state(&fence).await?;
+                if let Some(crate::resources::ResourceStartup::Exact(selection)) =
+                    &fork_options.resources
+                {
+                    observation.verify(source_id, selection)?;
+                }
+                resources::capture_settings(&source.launch_options()?, &native)
+            }
+            .await;
+            let settings = match captured {
+                Ok(settings) => settings,
+                Err(error) => return resources::reply_error(error).into_reply(),
+            };
+            fork_options.model = settings.model.clone();
+            fork_options.provider = settings.provider.clone();
+            fork_options.permission_gate = settings.permission_gate;
+            fork_options.bypass = settings.bypass;
+            live_settings = Some(settings);
+        }
+        _source_fence = Some(fence);
+    }
     fork_options.session_id = requested_id.clone();
     fork_options.fork_source = Some(source_id.to_owned());
     let session = match HostSession::spawn_options(fork_options).await {
@@ -835,7 +914,7 @@ async fn fork_session_impl(
         _ => None,
     };
     let Some(actual_id) = actual_id else {
-        session.stop().await;
+        session.shutdown().await;
         return (
             ReplyKind::HostUnavailable,
             json!({"error":"forked host did not return its session id"}),
@@ -846,7 +925,7 @@ async fn fork_session_impl(
         || state.registry.read().await.get(&actual_id).is_some()
         || state.sessions.read().await.contains_key(&actual_id)
     {
-        session.stop().await;
+        session.shutdown().await;
         return (
             ReplyKind::HostUnavailable,
             json!({"error":"forked host returned an existing or invalid session id"}),
@@ -863,7 +942,7 @@ async fn fork_session_impl(
             .await;
         match navigation {
             Err(error) => {
-                session.stop().await;
+                session.shutdown().await;
                 return (ReplyKind::HostUnavailable, json!({"error":error})).into_reply();
             }
             Ok(response) => {
@@ -874,9 +953,7 @@ async fn fork_session_impl(
                         .and_then(Value::as_str)
                         == Some("failed");
                 if failed {
-                    let _ = session
-                        .send(json!({"type": "stop", "id": uuid::Uuid::new_v4().to_string()}))
-                        .await;
+                    session.shutdown().await;
                     return (
                         ReplyKind::InvalidInput,
                         json!({
@@ -898,24 +975,58 @@ async fn fork_session_impl(
             }
         }
     }
-    let snapshot = session.snapshot().await;
-    let saved = state.registry.write().await.upsert(RegistryEntry {
-        session_id: actual_id.clone(),
-        project_id: Some(project.id.clone()),
-        title: Some(title.clone()),
-        parent_session_id: Some(source_id.to_string()),
-        fork_entry_id: entry_id.clone(),
-        relation: Some(if entry_id.is_some() { "fork" } else { "clone" }.into()),
-        created_at: snapshot.created_at,
-        updated_at: snapshot.updated_at,
-    });
-    if let Err(error) = saved {
-        session.stop().await;
-        return (ReplyKind::Internal, json!({"error": error})).into_reply();
+    let prepared = resources::prepare_fork_selection(
+        state,
+        source_id,
+        &actual_id,
+        &session,
+        live_settings.as_ref(),
+    )
+    .await;
+    let record = match prepared {
+        Ok(record) => record,
+        Err(error) => {
+            session.shutdown().await;
+            return resources::reply_error(error).into_reply();
+        }
+    };
+    if let Err(error) = attach_durable(state, &actual_id, session.clone()).await {
+        session.shutdown().await;
+        return (
+            ReplyKind::HostUnavailable,
+            json!({"error":error,"code":"durable_projection_unavailable"}),
+        )
+            .into_reply();
     }
-    if let Err(error) =
-        resources::persist_fork_selection(state, source_id, &actual_id, &session).await
-    {
+    // Shutdown sets closing before waiting for this lifecycle owner. Caller
+    // cancellation alone never discards completion; shutdown may refuse it.
+    if state.closing.load(std::sync::atomic::Ordering::Acquire) {
+        detach_durable(state, &actual_id).await;
+        session.shutdown().await;
+        return (
+            ReplyKind::Unavailable,
+            json!({"error":"service shutting down"}),
+        )
+            .into_reply();
+    }
+    let snapshot = session.snapshot().await;
+    let saved = resources::publish_record(
+        state,
+        RegistryEntry {
+            session_id: actual_id.clone(),
+            project_id: Some(project.id.clone()),
+            title: Some(title.clone()),
+            parent_session_id: Some(source_id.to_string()),
+            fork_entry_id: entry_id.clone(),
+            relation: Some(if entry_id.is_some() { "fork" } else { "clone" }.into()),
+            created_at: snapshot.created_at,
+            updated_at: snapshot.updated_at,
+        },
+        record,
+    )
+    .await;
+    if let Err(error) = saved {
+        detach_durable(state, &actual_id).await;
         session.shutdown().await;
         return resources::reply_error(error).into_reply();
     }
@@ -923,19 +1034,7 @@ async fn fork_session_impl(
         .sessions
         .write()
         .await
-        .insert(actual_id.clone(), session.clone());
-    if let Err(error) = attach_durable(state, &actual_id, session.clone()).await {
-        state.sessions.write().await.remove(&actual_id);
-        session.stop().await;
-        return (
-            ReplyKind::HostUnavailable,
-            json!({
-                "error": error,
-                "code": "durable_projection_unavailable"
-            }),
-        )
-            .into_reply();
-    }
+        .insert(actual_id.clone(), session);
     (
         ReplyKind::Created,
         json!({
@@ -1019,26 +1118,23 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
         Err(error) => return (ReplyKind::InvalidInput, json!({"error":error})),
     };
     match spawn_host(state, &id, &project).await {
-        Ok(session) => {
+        Ok((session, record)) => {
             if let Err(error) = attach_durable(state, &id, session.clone()).await {
-                session.stop().await;
+                session.shutdown().await;
                 return (
                     ReplyKind::HostUnavailable,
-                    json!({
-                        "error": error,
-                        "code": "durable_projection_unavailable"
-                    }),
+                    json!({"error": error, "code": "durable_projection_unavailable"}),
                 );
             }
             let snapshot = session.snapshot().await;
-            let saved = {
-                let mut registry = state.registry.write().await;
-                // A rename can finish while the native process is starting.
-                // Merge against the current entry, never the pre-spawn copy.
-                if let Some(latest) = registry.get(&id) {
-                    entry = latest.clone();
-                }
-                registry.upsert(RegistryEntry {
+            // Configuration publication preserves the latest stored metadata,
+            // even if a rename completed while the native candidate started.
+            if let Some(latest) = state.registry.read().await.get(&id) {
+                entry = latest.clone();
+            }
+            let saved = resources::publish_record(
+                state,
+                RegistryEntry {
                     session_id: id.clone(),
                     project_id: Some(project.id.clone()),
                     title: entry.title.clone(),
@@ -1047,12 +1143,14 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
                     relation: entry.relation.clone(),
                     created_at: entry.created_at,
                     updated_at: snapshot.updated_at,
-                })
-            };
+                },
+                record,
+            )
+            .await;
             if let Err(error) = saved {
                 detach_durable(state, &id).await;
-                session.stop().await;
-                return (ReplyKind::Internal, json!({"error": error}));
+                session.shutdown().await;
+                return resources::reply_error(error);
             }
             state.sessions.write().await.insert(id.clone(), session);
             (

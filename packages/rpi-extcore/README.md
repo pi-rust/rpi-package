@@ -25,7 +25,23 @@ See [native resource ownership and limits](../../docs/architecture/native-resour
 for project/external-owner scope, settings-capture limits, request/response budgets,
 recovery semantics, and native-owned current/historical fork and clone initialization.
 Configured destinations start at revision 1 without source retry authority; source
-history and binding remain untouched. The opt-in integration tests require an
+history and binding remain untouched. Fork/clone completion is bounded and
+Service-owned across caller cancellation. Configured live sources are fenced for
+current settings capture through destination completion; storage-uncertain sources
+refuse before native launch. Exact destination metadata/configuration publish in
+one Registry transaction only after verification, settings restoration and durable
+attachment. Ordinary reopen consumes owned-stop settings at that same final
+publication boundary, never on pure resource readback. Failure retains the capture;
+uncertain persistence latches the owner. Legacy resource-less forks keep their
+existing behavior. Identical apply retries reuse only the latest replaceable
+failure diagnostic's reserved headroom, without relaxing ledger/result limits.
+
+`tests/resource_recovery.rs` compiles a local std-only mock native with `rustc`
+and exercises these public Service/Registry failure and cancellation boundaries,
+including bare-filename directory-sync persistence on Unix. It uses no credentials
+or model service and is not real-native acceptance evidence.
+
+The opt-in integration tests require an
 explicit absolute trusted native executable and fixture library, never PATH.
 These APIs do not grant installed-reference or project authorization to callers.
 

@@ -110,11 +110,16 @@ impl Registry {
             .map_err(|e| e.to_string())?;
         let previous_entries = self.entries.clone();
         let previous_resources = self.resources.clone();
-        if !self
+        if let Some(existing) = self
             .entries
-            .iter()
-            .any(|e| e.session_id == entry.session_id)
+            .iter_mut()
+            .find(|e| e.session_id == entry.session_id)
         {
+            // Configuration writes must not replace a concurrent rename or
+            // project/relation metadata with a resource helper's placeholder.
+            // A fully prepared publication may only refresh activity time.
+            existing.updated_at = existing.updated_at.max(entry.updated_at);
+        } else {
             self.entries.push(entry.clone());
         }
         self.resources.insert(entry.session_id, record);
@@ -315,7 +320,12 @@ fn atomic_write_registry(
     std::fs::rename(&temp, path)?;
     checkpoint(RegistryWriteStage::AfterRename)?;
     #[cfg(unix)]
-    std::fs::File::open(path.parent().unwrap_or(std::path::Path::new(".")))?.sync_all()?;
+    std::fs::File::open(
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new(".")),
+    )?
+    .sync_all()?;
     // Windows std has no portable directory sync. File contents are flushed
     // before rename; acknowledged process-crash persistence is not a claim of
     // power-loss durability for the parent directory/rename on that platform.

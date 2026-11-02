@@ -153,7 +153,8 @@ pub struct ResourceConfiguration {
     pub revision: u64,
     #[serde(default)]
     pub settings: ResourceSessionSettings,
-    /// Newest owned-idle-stop capture; consumed/cleared before a host is exposed.
+    /// Newest owned-idle-stop capture; consumed atomically with final metadata
+    /// only after resource verification and durable attachment succeed.
     /// Never substitute the historical operation settings above for this field.
     #[serde(default)]
     pub current_settings: Option<ResourceSettingsCapture>,

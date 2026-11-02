@@ -64,7 +64,11 @@ transcripts and sidebar metadata. They include complete selection, monotonic
 application revision, last verified observation and at most 64 stable operation
 identities (maximum 2 MiB per session); overflow refuses admission, never evicts.
 Corrupt records fail Service construction; write failure cannot authorize execution.
-Intent/blocked records prevent ordinary reopen. Candidate failure is blocked,
+Intent/blocked records prevent ordinary reopen. Identical retries reuse their
+admitted Pending result reservation by normalizing ONLY the latest replaceable
+failure diagnostic/status for sizing; historical diagnostics/observations remain
+charged. Full final record validation and worst-case double-observation/target/
+metadata headroom still apply. Candidate failure is blocked,
 not automatic rollback. Ordinary retry is only the identical operation, expected
 binding and target. An explicit new operation may supersede ONLY the latest
 pending/blocked intent, after fresh canonical native/durable idle AND original
@@ -80,6 +84,17 @@ original commit and publish application completion without another native commit
 Torn native history requires explicit native inspection/recovery;
 core never repairs it or tries alternate selection automatically.
 
+Configured fork/clone completion also runs in a bounded Service-owned lifecycle
+worker: caller loss does not discard completion, and shutdown waits for candidate
+cleanup under the same lifecycle exclusion. Closing is checked before destination
+publication; shutdown may refuse the candidate rather than publish it. Metadata
+and verified exact authority are committed in one existing Registry transaction,
+only after settings restoration and durable attachment. A failed candidate never
+leaves an ordinary resource-less destination entry. Live configured sources keep
+their admission/run fence through completion and supply current model/provider/
+thinking; a latched source storage failure refuses before capture or native launch.
+Legacy resource-less forks retain their existing live-run behavior.
+
 Apply runs in a Service-owned task retaining the Service and lifecycle exclusion
 if the requesting future disappears. Shutdown waits for lifecycle ownership.
 Native startup/readback have finite deadlines; uncertain startup/readback/persistence
@@ -93,7 +108,10 @@ client-file-I/O owners are rejected before stop. Model/provider/thinking choices
 are read before replacement and restored before publication; permission launch
 choices remain host-owned. Native runtime model/thinking changes are NOT native
 transcript persistence. Successful owned idle release/shutdown records a separate
-`current_settings` stop capture (time/host identity) which ordinary restore consumes.
+`current_settings` stop capture (time/host identity) which ordinary restore consumes
+atomically with final metadata publication AFTER resource verification and durable
+attachment. Readback success alone does not consume it; failed candidates retain
+it, and uncertain writes latch admission until owner inspection/restart.
 Immutable operation `restore_settings` survives retries; historical apply `settings`
 are never used to overwrite newer runtime choices. Live apply/fork clears only its
 own consumed stop capture; forking leaves an offline source capture intact. Crash,
