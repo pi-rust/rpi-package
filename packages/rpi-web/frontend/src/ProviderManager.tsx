@@ -47,6 +47,7 @@ const copy = {
     clear: "Clear local draft",
     cleared: "Local draft cleared.",
     close: "Close",
+    help: "Usage notes",
     saved:
       "The node saved the API Key. Refresh providers to read credential metadata.",
     saveError:
@@ -106,6 +107,7 @@ const copy = {
     clear: "清除本地草稿",
     cleared: "已清除本地草稿。",
     close: "关闭",
+    help: "使用说明",
     saved: "节点已保存 API Key。请刷新供应商以读取凭据元数据。",
     saveError: "API Key 提交失败，请检查节点连接与配置权限后重新输入。",
     restart:
@@ -646,11 +648,12 @@ export function ProviderManager({
       {configOpen && (
         <Modal title={t.settings} language={language} onClose={closeConfig}>
           <div className="provider-manager-dialog" ref={dialogBody}>
-            <p className="provider-manager-note">{t.keyNote}</p>
             <label htmlFor={`${id}-provider`}>{t.provider}</label>
             <input
               id={`${id}-provider`}
-              list={`${id}-providers`}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
               value={provider}
               onChange={(event) => {
                 invalidateDraft();
@@ -658,11 +661,6 @@ export function ProviderManager({
                 setSecret("");
               }}
             />
-            <datalist id={`${id}-providers`}>
-              {providers.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
             <label htmlFor={`${id}-key`}>{t.key}</label>
             <input
               id={`${id}-key`}
@@ -723,7 +721,11 @@ export function ProviderManager({
             >
               {t.clear}
             </button>
-            <p className="provider-manager-note">{t.cancelNote}</p>
+            <details className="provider-manager-help">
+              <summary>{t.help}</summary>
+              <p className="provider-manager-note">{t.keyNote}</p>
+              <p className="provider-manager-note">{t.cancelNote}</p>
+            </details>
             <div className="provider-manager-actions">
               <button type="button" onClick={closeConfig}>
                 {t.close}
