@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.1...rpi-goal-v0.2.2) - 2026-11-02
+
+### Fixed
+
+- *(goal)* bind runtime actions to callback owners across reloads
+
 ## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.0...rpi-goal-v0.2.1) - 2026-10-31
 
 ### Fixed
