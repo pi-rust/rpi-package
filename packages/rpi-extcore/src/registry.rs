@@ -42,6 +42,8 @@ struct RegistryFile {
     sessions: Vec<RegistryEntry>,
     #[serde(default)]
     preferences: HashMap<String, SessionPreferences>,
+    #[serde(default, deserialize_with = "resource_records")]
+    resources: HashMap<String, crate::resources::ResourceConfiguration>,
 }
 
 #[derive(Debug)]
@@ -49,6 +51,7 @@ pub struct Registry {
     path: PathBuf,
     entries: Vec<RegistryEntry>,
     preferences: HashMap<String, SessionPreferences>,
+    resources: HashMap<String, crate::resources::ResourceConfiguration>,
 }
 
 /// Default registry location, outside the project tree.
@@ -62,7 +65,7 @@ pub fn default_path() -> PathBuf {
 
 impl Registry {
     pub fn load(path: PathBuf) -> Result<Self, String> {
-        let data = match std::fs::read(&path) {
+        let data = match read_registry(&path) {
             Ok(raw) => serde_json::from_slice::<RegistryFile>(&raw)
                 .map_err(|e| format!("cannot read session registry: {e}"))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => RegistryFile::default(),
@@ -74,11 +77,58 @@ impl Registry {
         }) {
             return Err("session registry contains empty or duplicate session ids".into());
         }
+        for (id, record) in &data.resources {
+            if !ids.contains(id.as_str()) {
+                return Err("resource record references unknown session".into());
+            }
+            record.validate_session(id).map_err(|e| e.to_string())?;
+        }
         Ok(Self {
             path,
             entries: data.sessions,
             preferences: data.preferences,
+            resources: data.resources,
         })
+    }
+
+    pub fn resource_configuration(
+        &self,
+        id: &str,
+    ) -> Option<&crate::resources::ResourceConfiguration> {
+        self.resources.get(id)
+    }
+
+    /// Persist configuration under the existing registry owner. Creation can
+    /// register metadata and selection together, before the first native launch.
+    pub fn set_resource_configuration(
+        &mut self,
+        entry: RegistryEntry,
+        record: crate::resources::ResourceConfiguration,
+    ) -> Result<(), String> {
+        record
+            .validate_session(&entry.session_id)
+            .map_err(|e| e.to_string())?;
+        let previous_entries = self.entries.clone();
+        let previous_resources = self.resources.clone();
+        if let Some(existing) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.session_id == entry.session_id)
+        {
+            // Configuration writes must not replace a concurrent rename or
+            // project/relation metadata with a resource helper's placeholder.
+            // A fully prepared publication may only refresh activity time.
+            existing.updated_at = existing.updated_at.max(entry.updated_at);
+        } else {
+            self.entries.push(entry.clone());
+        }
+        self.resources.insert(entry.session_id, record);
+        if let Err(error) = self.save_result() {
+            self.entries = previous_entries;
+            self.resources = previous_resources;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn entries(&self) -> &[RegistryEntry] {
@@ -161,13 +211,16 @@ impl Registry {
 
     pub fn remove(&mut self, session_id: &str) -> Result<bool, String> {
         let previous = self.entries.clone();
+        let resources = self.resources.clone();
         let preferences = self.preferences.clone();
         let before = self.entries.len();
         self.entries.retain(|entry| entry.session_id != session_id);
         let removed = self.entries.len() != before;
         if removed {
             self.preferences.remove(session_id);
+            self.resources.remove(session_id);
             if let Err(error) = self.save_result() {
+                self.resources = resources;
                 self.entries = previous;
                 self.preferences = preferences;
                 return Err(error);
@@ -201,12 +254,126 @@ impl Registry {
         let file = RegistryFile {
             sessions: self.entries.clone(),
             preferences: self.preferences.clone(),
+            resources: self.resources.clone(),
         };
         let raw = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
-        let temp = self.path.with_extension("json.tmp");
-        std::fs::write(&temp, raw).map_err(|e| e.to_string())?;
-        std::fs::rename(&temp, &self.path).map_err(|e| e.to_string())
+        if raw.len() > MAX_REGISTRY_BYTES {
+            return Err("session registry exceeds byte budget".into());
+        }
+        atomic_write_registry(&self.path, raw.as_bytes(), |_| Ok(())).map_err(|e| e.to_string())
     }
+}
+
+#[cfg(test)]
+pub(crate) fn atomic_write_resource_test(
+    path: &std::path::Path,
+    raw: &[u8],
+    stage: u8,
+) -> std::io::Result<()> {
+    atomic_write_registry(path, raw, |at| {
+        let matches = matches!(
+            (stage, at),
+            (0, RegistryWriteStage::BeforeWrite)
+                | (1, RegistryWriteStage::BeforeRename)
+                | (2, RegistryWriteStage::AfterRename)
+        );
+        if matches {
+            Err(std::io::Error::other(
+                "injected resource decision persistence failure",
+            ))
+        } else {
+            Ok(())
+        }
+    })
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegistryWriteStage {
+    BeforeWrite,
+    BeforeRename,
+    AfterRename,
+}
+fn atomic_write_registry(
+    path: &std::path::Path,
+    raw: &[u8],
+    mut checkpoint: impl FnMut(RegistryWriteStage) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    struct Temp(PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let temp = path.with_extension("json.tmp");
+    // Never truncate a stale/foreign temp, follow its link or infer success from
+    // it. A crash-left temp needs deliberate owner inspection/removal.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    let _cleanup = Temp(temp.clone());
+    checkpoint(RegistryWriteStage::BeforeWrite)?;
+    file.write_all(raw)?;
+    file.sync_all()?;
+    drop(file);
+    checkpoint(RegistryWriteStage::BeforeRename)?;
+    std::fs::rename(&temp, path)?;
+    checkpoint(RegistryWriteStage::AfterRename)?;
+    #[cfg(unix)]
+    std::fs::File::open(
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new(".")),
+    )?
+    .sync_all()?;
+    // Windows std has no portable directory sync. File contents are flushed
+    // before rename; acknowledged process-crash persistence is not a claim of
+    // power-loss durability for the parent directory/rename on that platform.
+    Ok(())
+}
+
+const MAX_REGISTRY_BYTES: usize = 128 * 1024 * 1024;
+fn read_registry(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut raw = Vec::new();
+    file.take(MAX_REGISTRY_BYTES as u64 + 1)
+        .read_to_end(&mut raw)?;
+    if raw.len() > MAX_REGISTRY_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "session registry exceeds byte budget",
+        ));
+    }
+    Ok(raw)
+}
+fn resource_records<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HashMap<String, crate::resources::ResourceConfiguration>, D::Error> {
+    struct Records;
+    impl<'de> serde::de::Visitor<'de> for Records {
+        type Value = HashMap<String, crate::resources::ResourceConfiguration>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("unique resource session records")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            mut map: M,
+        ) -> Result<Self::Value, M::Error> {
+            let mut records = HashMap::new();
+            while let Some((id, record)) =
+                map.next_entry::<String, crate::resources::ResourceConfiguration>()?
+            {
+                if records.insert(id, record).is_some() {
+                    return Err(serde::de::Error::custom(
+                        "duplicate resource session record",
+                    ));
+                }
+            }
+            Ok(records)
+        }
+    }
+    deserializer.deserialize_map(Records)
 }
 
 const MAX_TAGS: usize = 12;
@@ -241,6 +408,42 @@ fn unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synced_atomic_registry_faults_preserve_prior_bytes_or_report_commit_uncertainty() {
+        let root =
+            std::env::temp_dir().join(format!("registry-sync-fault-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("registry.json");
+        for stage in [
+            RegistryWriteStage::BeforeWrite,
+            RegistryWriteStage::BeforeRename,
+            RegistryWriteStage::AfterRename,
+        ] {
+            std::fs::write(&path, b"prior durable record").unwrap();
+            let result = atomic_write_registry(&path, b"next durable record", |at| {
+                if at == stage {
+                    Err(std::io::Error::other("injected registry I/O failure"))
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(result.is_err());
+            let expected: &[u8] = if stage == RegistryWriteStage::AfterRename {
+                b"next durable record"
+            } else {
+                b"prior durable record"
+            };
+            assert_eq!(std::fs::read(&path).unwrap(), expected);
+            assert!(!path.with_extension("json.tmp").exists());
+        }
+        atomic_write_registry(&path, b"acknowledged durable record", |_| Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"acknowledged durable record"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn structurally_invalid_registries_are_rejected_without_being_rewritten() {

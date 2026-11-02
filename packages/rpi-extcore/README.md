@@ -4,6 +4,47 @@ Shared native-agent services for protocol adapters. This is a normal Rust librar
 
 The Web and ACP adapters use the same native RPC driver, request correlation, bounded command writer, child cleanup and run tracker. Native transcripts remain owned by the rpi host. Existing Web and ACP storage locations are preserved by their entrypoints.
 
+## Transport-neutral native resources
+
+`resources::ResourceSelection`, `Service::apply_resources`,
+`resource_configuration` / `resource_operation` / `resource_operations`,
+`manage_resources`, `release_idle_resources` and `resource_project_fence` expose
+exact native selection, bounded persistent operation identities and owned idle
+coordination without changing Web/ACP contracts. Capability negotiation uses a
+bounded advertised pure native profile; unsupported backends fail closed.
+
+`Service::resource_saved_history` is a nonexecuting, bounded canonical native
+reader for closed/blocked sessions, including pending history. It never opens an
+executable host, loads configured resources, repairs a transcript, or falls back
+to another selection. Offline apply requires its fresh native **and** durable
+idle proof. Explicit `supersedes_operation_id` preserves old terminal identities
+and is allowed only after fresh original-binding noncommit proof; committed or
+uncertain intents must recover with the original ID/payload instead.
+
+See [native resource ownership and limits](../../docs/architecture/native-resources.md)
+for project/external-owner scope, settings-capture limits, request/response budgets,
+recovery semantics, and native-owned current/historical fork and clone initialization.
+Configured destinations start at revision 1 without source retry authority; source
+history and binding remain untouched. Fork/clone completion is bounded and
+Service-owned across caller cancellation. Configured live sources are fenced for
+current settings capture through destination completion; storage-uncertain sources
+refuse before native launch. Exact destination metadata/configuration publish in
+one Registry transaction only after verification, settings restoration and durable
+attachment. Ordinary reopen consumes owned-stop settings at that same final
+publication boundary, never on pure resource readback. Failure retains the capture;
+uncertain persistence latches the owner. Legacy resource-less forks keep their
+existing behavior. Identical apply retries reuse only the latest replaceable
+failure diagnostic's reserved headroom, without relaxing ledger/result limits.
+
+`tests/resource_recovery.rs` compiles a local std-only mock native with `rustc`
+and exercises these public Service/Registry failure and cancellation boundaries,
+including bare-filename directory-sync persistence on Unix. It uses no credentials
+or model service and is not real-native acceptance evidence.
+
+The opt-in integration tests require an
+explicit absolute trusted native executable and fixture library, never PATH.
+These APIs do not grant installed-reference or project authorization to callers.
+
 ## Use as a crates.io dependency
 
 `rpi-extcore` is published as an ordinary Rust library. Depend on the `0.1`

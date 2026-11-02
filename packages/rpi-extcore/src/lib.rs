@@ -39,6 +39,7 @@ pub mod prompt;
 pub mod protocol;
 pub mod registry;
 pub mod reply;
+pub mod resources;
 pub mod run;
 pub mod run_timing;
 pub mod service;
