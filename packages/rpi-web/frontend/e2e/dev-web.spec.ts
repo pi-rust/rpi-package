@@ -7724,13 +7724,22 @@ test.describe("run timing regressions", () => {
     page,
   }) => {
     await mockHost(page);
-    await history(page, [finalMessage()], {
-      firstId: "elapsed-final",
+    // Ten loaded questions prevent the timeline's unrelated initial fill from
+    // replacing rows and aborting the timing probe before its 404 is observed.
+    const questions = Array.from({ length: 10 }, (_, index) => ({
+      role: "user",
+      entryId: `elapsed-question-${index}`,
+      content: `Loaded timing question ${index + 1}`,
+    }));
+    await history(page, [...questions, finalMessage()], {
+      firstId: questions[0].entryId,
       hasMore: true,
     });
+    const pages: Array<{ beforeId: string; limit: number }> = [];
     await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
-      if (route.request().postDataJSON().type !== "get_messages")
-        return route.fallback();
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_messages") return route.fallback();
+      pages.push(body);
       return route.fulfill({
         json: response(
           {
@@ -7752,11 +7761,27 @@ test.describe("run timing regressions", () => {
         json: { error: "Unknown endpoint" },
       });
     });
+    const unsupported = page.waitForResponse(
+      (response) => timingRoute.test(response.url()) && response.status() === 404,
+    );
     await page.goto("/");
-    await expect.poll(() => requests).toBe(1);
+    expect(await (await unsupported).finished()).toBeNull();
+    expect(requests).toBe(1);
+    expect(pages).toEqual([]);
+    // Loaded-tick navigation positions the reader without triggering automatic
+    // paging. Only the subsequent ordinary button click should load a page.
+    await page.getByRole("button", {
+      name: "Go to message 1: Loaded timing question 1", exact: true,
+    }).click();
+    expect(pages).toEqual([]);
+    await page.getByRole("button", {
+      name: "Load earlier messages", exact: true,
+    }).click();
     await expect(page.locator(".message.assistant").first()).toContainText(
       "Older native answer",
     );
+    expect(pages).toMatchObject([{ beforeId: questions[0].entryId, limit: 48 }]);
+    expect(pages).toHaveLength(1);
     await chooseMenuOption(page, "Language", "zh");
     await expect(page.locator(".run-elapsed")).toHaveCount(0);
     await expect(page.locator(".error-banner")).toHaveCount(0);
