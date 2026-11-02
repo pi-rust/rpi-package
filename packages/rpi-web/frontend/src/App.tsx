@@ -52,6 +52,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
 import { SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
+import { ProviderManager } from "./ProviderManager";
 import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
 import { AskCard } from "./AskCard";
@@ -1922,7 +1923,7 @@ export default function App() {
           setHistoryHasMore(value.hasMore);
         });
       }
-      if (supported.has("get_auth_status")) {
+      if (actions.has("provider_auth") && supported.has("get_auth_status")) {
         jobs.push(async () => {
           const value = await api.authStatus(id, controller.signal);
           if (!current()) return;
@@ -1950,7 +1951,7 @@ export default function App() {
         if (diagnosticsAbort.current === controller) diagnosticsAbort.current = null;
       }
     },
-    [supported, showQueueHistory, clearAccess],
+    [supported, actions, showQueueHistory, clearAccess],
   );
 
   useEffect(() => {
@@ -3396,6 +3397,7 @@ export default function App() {
                     setTraceOpen(false);
                     setPanel(true);
                     setInspector(false);
+                    if (window.matchMedia("(max-width: 767px)").matches) setSidebar(false);
                   }}
                 >
                   <Settings2 size={14} /> {t("runtimeSettings")}
@@ -4422,9 +4424,11 @@ export default function App() {
             )}
           {panel && sessionId && (
             <RuntimePanel
+              key={`${sessionId}:${navigationRevision.current}`}
               language={language}
               sessionId={sessionId}
               supported={supported}
+              canAuth={actions.has("provider_auth")}
               runtime={runtime}
               onChange={setRuntime}
               onError={setError}
@@ -6019,6 +6023,7 @@ function RuntimePanel({
   language,
   sessionId,
   supported,
+  canAuth,
   runtime,
   onChange,
   onError,
@@ -6027,6 +6032,7 @@ function RuntimePanel({
   language: Language;
   sessionId: string;
   supported: Set<string>;
+  canAuth: boolean;
   runtime: RuntimeState | null;
   onChange: (value: RuntimeState) => void;
   onError: (message: string) => void;
@@ -6039,6 +6045,7 @@ function RuntimePanel({
   const [levels, setLevels] = useState<string[]>([]);
   const context = runtime?.context ?? null;
   const [catalog, setCatalog] = useState<ToolCatalog | null>(null);
+  const [providersOpen, setProvidersOpen] = useState(false);
   const [pending, setPending] = useState("");
   const mounted = useRef(true);
   const settingsRevision = useRef(0);
@@ -6122,21 +6129,46 @@ function RuntimePanel({
   );
   const level = normalizeLevel(runtime?.thinkingLevel);
   const active = new Set(catalog?.activeTools ?? runtime?.activeTools ?? []);
+  const heading = (
+    <div className="panel-heading">
+      <h2>{zh ? "运行时设置" : "Runtime settings"}</h2>
+      <button
+        className="icon-button"
+        onClick={onClose}
+        aria-label={t("closePanel")}
+        title={t("closePanel")}
+      >
+        <X size={15} />
+      </button>
+    </div>
+  );
+
+  if (providersOpen) return (
+    <aside className="inspector">
+      {heading}
+      <ProviderManager
+        sessionId={sessionId}
+        language={language}
+        supported={supported}
+        canAuth={canAuth}
+        runtime={runtime}
+        onChange={onChange}
+        onBack={() => setProvidersOpen(false)}
+      />
+    </aside>
+  );
 
   return (
     <aside className="inspector">
-      <div className="panel-heading">
-        <h2>{zh ? "运行时设置" : "Runtime settings"}</h2>
-        <button
-          className="icon-button"
-          onClick={onClose}
-          aria-label={t("closePanel")}
-          title={t("closePanel")}
-        >
-          <X size={15} />
-        </button>
-      </div>
-
+      {heading}
+      <button
+        type="button"
+        className="provider-manager-entry"
+        disabled={pending !== ""}
+        onClick={() => setProvidersOpen(true)}
+      >
+        <ShieldCheck size={14} aria-hidden="true" /> {zh ? "管理供应商" : "Manage providers"}
+      </button>
       <label htmlFor="model">{zh ? "模型" : "Model"}</label>
       <MenuSelect
         label={zh ? "模型" : "Model"}
