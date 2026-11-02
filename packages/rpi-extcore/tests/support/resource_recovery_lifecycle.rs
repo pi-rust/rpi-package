@@ -17,12 +17,11 @@ async fn caller_cancellation_alone_retains_fork_owner_source_fence_and_capacity(
         source.try_run_lease().is_err(),
         "retained fork owns the source fence after caller loss"
     );
-    // A second bounded owner waits for lifecycle; a third must refuse admission.
-    let owner = f.owner.clone();
-    let waiting = tokio::spawn(async move {
-        service::clone_session(&owner, "source".into(), ForkRequest::default()).await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Poll the public future through permit admission before checking capacity;
+    // spawning it alone would leave admission dependent on scheduler timing.
+    let waiting = service::clone_session(&f.owner, "source".into(), ForkRequest::default());
+    tokio::pin!(waiting);
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
     let capacity = service::clone_session(&f.owner, "source".into(), ForkRequest::default()).await;
     assert_eq!(capacity.kind, ReplyKind::Conflict);
     assert!(capacity.value.to_string().contains("capacity"));
@@ -34,7 +33,7 @@ async fn caller_cancellation_alone_retains_fork_owner_source_fence_and_capacity(
     })
     .await
     .unwrap();
-    assert_eq!(waiting.await.unwrap().kind, ReplyKind::Created);
+    assert_eq!(waiting.await.kind, ReplyKind::Created);
     let disk = f.disk();
     let record = disk.resource_configuration(&id).unwrap();
     assert_eq!(record.selection, selection());
