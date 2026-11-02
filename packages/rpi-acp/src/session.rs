@@ -111,6 +111,7 @@ impl Session {
             provider,
             permission_gate: !env_flag("RPI_ACP_NO_PERMISSION_GATE"),
             bypass: PERMISSION_BYPASS.load(Ordering::Acquire),
+            resources: None,
         })
         .await?;
         Self::attach(rpc).await

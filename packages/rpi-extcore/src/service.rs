@@ -1,6 +1,7 @@
 //! Session and workspace operations shared by protocol adapters.
 pub use crate::run_timing::RunTimingsQuery;
 mod message_queries;
+mod resources;
 use crate::{
     durable::{DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE},
     host::HostSession,
@@ -14,6 +15,7 @@ pub use message_queries::{
     message_summaries, message_window, MessageSummary, MessageSummaryPage, MessageSummaryQuery,
     MessageWindowPage, MessageWindowQuery,
 };
+pub use resources::ResourceProjectFence;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -100,6 +102,7 @@ impl Default for BackendConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct Service {
     pub config: BackendConfig,
     projects: Arc<RwLock<Projects>>,
@@ -111,6 +114,9 @@ pub struct Service {
     registry: Arc<RwLock<Registry>>,
     run_timing_cache: Arc<std::sync::Mutex<crate::run_timing::RunTimingCache>>,
     run_timing_workers: Arc<tokio::sync::Semaphore>,
+    resource_workers: Arc<tokio::sync::Semaphore>,
+    closing: Arc<std::sync::atomic::AtomicBool>,
+    resource_storage_failed: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 impl Service {
     pub fn new(
@@ -148,6 +154,11 @@ impl Service {
             registry: Arc::new(RwLock::new(registry)),
             run_timing_cache: Arc::new(std::sync::Mutex::new(Default::default())),
             run_timing_workers: Arc::new(tokio::sync::Semaphore::new(2)),
+            resource_workers: Arc::new(tokio::sync::Semaphore::new(2)),
+            closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            resource_storage_failed: Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
         }))
     }
     pub async fn live_session(&self, id: &str) -> Option<Arc<HostSession>> {
@@ -162,9 +173,26 @@ impl Service {
         Some(crate::events::Subscription::new(&session, after).await)
     }
     pub async fn shutdown(&self) {
+        self.closing
+            .store(true, std::sync::atomic::Ordering::Release);
         let _lifecycle = self.session_lifecycle.lock().await;
-        let sessions: Vec<_> = self.sessions.read().await.values().cloned().collect();
-        futures_util::future::join_all(sessions.iter().map(|session| session.shutdown())).await;
+        let sessions: Vec<_> = self
+            .sessions
+            .read()
+            .await
+            .iter()
+            .map(|(id, session)| (id.clone(), session.clone()))
+            .collect();
+        futures_util::future::join_all(sessions.iter().map(|(id, session)| async move {
+            if let Ok(fence) = session.resource_fence() {
+                // Native runtime setters are not persisted. Only a fresh idle
+                // owned-stop capture may be replayed on a later ordinary open.
+                let _ = resources::capture_idle_settings_for_stop(self, id, session, &fence).await;
+                session.retire_resources(&fence);
+            }
+            session.shutdown().await;
+        }))
+        .await;
         let event_watchers: Vec<_> = self
             .durable_event_watchers
             .lock()
@@ -548,12 +576,37 @@ pub async fn refresh_auth(state: &Service, request: AuthRefreshRequest) -> Servi
 pub struct CreateSessionRequest {
     #[serde(rename = "projectId")]
     pub project_id: Option<String>,
+    /// Omitted is legacy; an empty exact declaration is not a fallback.
+    #[serde(default)]
+    pub resources: Option<crate::resources::ResourceSelection>,
 }
 
 pub async fn create_session(
     state: &Service,
     requested: CreateSessionRequest,
 ) -> (ReplyKind, Value) {
+    let owner = state.clone();
+    tokio::spawn(async move { create_session_owned(&owner, requested).await })
+        .await
+        .unwrap_or_else(|_| {
+            (
+                ReplyKind::Internal,
+                json!({"error":"session creation owner failed"}),
+            )
+        })
+}
+
+async fn create_session_owned(
+    state: &Service,
+    requested: CreateSessionRequest,
+) -> (ReplyKind, Value) {
+    let _lifecycle = state.session_lifecycle.lock().await;
+    if state.closing.load(std::sync::atomic::Ordering::Acquire) {
+        return (
+            ReplyKind::Unavailable,
+            json!({"error":"service shutting down"}),
+        );
+    }
     let project = match project_by_id(
         state,
         requested
@@ -567,6 +620,11 @@ pub async fn create_session(
         Err(error) => return error,
     };
     let id = uuid::Uuid::new_v4().to_string();
+    if let Some(selection) = requested.resources {
+        if let Err(error) = resources::prepare_create(state, &id, &project, selection).await {
+            return resources::reply_error(error);
+        }
+    }
     match spawn_host(state, &id, &project).await {
         Ok(session) => {
             if let Err(error) = attach_durable(state, &id, session.clone()).await {
@@ -614,14 +672,15 @@ async fn spawn_host(
     id: &str,
     project: &Project,
 ) -> Result<Arc<HostSession>, String> {
-    HostSession::spawn(
-        state.config.rpi_bin.clone(),
-        project.root.clone(),
-        state.config.session_dir.clone(),
-        id,
-        state.config.registry.with_extension("tool-timings"),
-    )
-    .await
+    let options = resources::host_options(state, id, project)
+        .await
+        .map_err(|e| e.to_string())?;
+    let session = HostSession::spawn_options(options).await?;
+    if let Err(error) = resources::persist_open_observation(state, id, &session).await {
+        session.shutdown().await;
+        return Err(error.to_string());
+    }
+    Ok(session)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -750,16 +809,13 @@ async fn fork_session_impl(
         Ok(project) => project,
         Err(error) => return (ReplyKind::InvalidInput, json!({"error":error})).into_reply(),
     };
-    let session = match HostSession::spawn_fork(
-        state.config.rpi_bin.clone(),
-        project.root.clone(),
-        state.config.session_dir.clone(),
-        &requested_id,
-        source_id,
-        state.config.registry.with_extension("tool-timings"),
-    )
-    .await
-    {
+    let mut fork_options = match resources::host_options(state, source_id, &project).await {
+        Ok(options) => options,
+        Err(error) => return resources::reply_error(error).into_reply(),
+    };
+    fork_options.session_id = requested_id.clone();
+    fork_options.fork_source = Some(source_id.to_owned());
+    let session = match HostSession::spawn_options(fork_options).await {
         Ok(session) => session,
         Err(error) => {
             return (
@@ -857,6 +913,12 @@ async fn fork_session_impl(
         session.stop().await;
         return (ReplyKind::Internal, json!({"error": error})).into_reply();
     }
+    if let Err(error) =
+        resources::persist_fork_selection(state, source_id, &actual_id, &session).await
+    {
+        session.shutdown().await;
+        return resources::reply_error(error).into_reply();
+    }
     state
         .sessions
         .write()
@@ -889,8 +951,36 @@ async fn fork_session_impl(
 
 /// Reopen a remembered session whose native host is not running.
 pub async fn open_session(state: &Service, id: String) -> (ReplyKind, Value) {
+    let owner = state.clone();
+    tokio::spawn(async move { open_session_owned(&owner, id).await })
+        .await
+        .unwrap_or_else(|_| {
+            (
+                ReplyKind::Internal,
+                json!({"error":"session restoration owner failed"}),
+            )
+        })
+}
+async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
     // Concurrent tabs must not spawn two native writers for the same transcript.
     let _lifecycle = state.session_lifecycle.lock().await;
+    if state.closing.load(std::sync::atomic::Ordering::Acquire) {
+        return (
+            ReplyKind::Unavailable,
+            json!({"error":"service shutting down"}),
+        );
+    }
+    if let Err(error) = state.check_resource_storage(&id) {
+        return resources::reply_error(error);
+    }
+    if let Some(record) = state.registry.read().await.resource_configuration(&id) {
+        if record.blocked() {
+            return (
+                ReplyKind::Conflict,
+                json!({"error":"resource operation pending or blocked; retry the same operation explicitly"}),
+            );
+        }
+    }
     let existing = state.sessions.read().await.get(&id).cloned();
     if let Some(session) = existing {
         let snapshot = session.snapshot().await;
@@ -911,6 +1001,9 @@ pub async fn open_session(state: &Service, id: String) -> (ReplyKind, Value) {
         }
         // The native child exited (crash, kill, or `stop`); drop the corpse so
         // the branch can be reopened from its persisted session file.
+        if let Err(error) = session.await_resource_exit().await {
+            return resources::reply_error(error);
+        }
         detach_durable(state, &id).await;
         state.sessions.write().await.remove(&id);
     }

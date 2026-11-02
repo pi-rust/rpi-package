@@ -346,7 +346,7 @@ mod file_io_runtime_tests {
     async fn ordered_prompt_keeps_image_order_and_checks_final_uuid_type_and_lf() {
         use crate::prompt::{PromptBlock, PromptContent, MAX_PROMPT_BYTES};
         let (writer, reader) = tokio::io::duplex(2 * 1024 * 1024);
-        let (host, _) = HostSession::test_connection_with_ready(
+        let (host, events) = HostSession::test_connection_with_ready(
             writer,
             8,
             json!({"promptContent":prompt_profile()}),
@@ -370,6 +370,8 @@ mod file_io_runtime_tests {
         assert_eq!(frame["contentBlocks"], json!(content));
         assert!(frame.get("message").is_none());
         assert!(uuid::Uuid::parse_str(frame["id"].as_str().unwrap()).is_ok());
+        events.send(json!({"type":"response","id":frame["id"],"success":true,"data":{"accepted":true}})).unwrap();
+        events.send(json!({"type":"agent_settled","outcome":"completed"})).unwrap();
         drop(run);
         let mut command = json!({"contentBlocks":content,"extensionPadding":""});
         let mut envelope = command.clone();

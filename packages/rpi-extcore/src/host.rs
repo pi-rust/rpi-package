@@ -1,4 +1,9 @@
 use serde_json::{json, Value};
+mod admission;
+mod child;
+mod resources;
+use admission::{ExecutionAdmission, ExecutionTicket};
+pub(crate) use resources::ResourceFence;
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
@@ -47,12 +52,16 @@ type Worker = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
 enum CommandControl {
     Tools(rpi_mcp_core::Control),
     FileIO(crate::file_io::FileIOCancellation),
+    Execution(ExecutionTicket),
 }
 impl CommandControl {
     fn cancelled(&self) -> bool {
         match self {
             Self::Tools(c) => c.check().is_err(),
             Self::FileIO(c) => c.is_cancelled(),
+            // Atomic publication vs an unsent caller rollback, immediately
+            // before writing. A cancelled queued intent must never be written.
+            Self::Execution(ticket) => !ticket.published(),
         }
     }
 }
@@ -113,7 +122,7 @@ impl FileIOCommands {
             biased;
             _ = closed.wait_for(|v| *v) => return,
             _ = cancel.cancelled() => return,
-            result = dispatch_inner(&self.commands, &self.pending, value, Duration::from_secs(5), None, Some(cancel.clone())) => result,
+            result = dispatch_inner(&self.commands, &self.pending, value, Duration::from_secs(5), None, Some(cancel.clone()), None) => result,
         };
         if !cancel.is_cancelled()
             && !result.is_ok_and(|r| r["success"] == true && r["data"]["accepted"].is_boolean())
@@ -138,6 +147,7 @@ impl Drop for PendingRequest {
     }
 }
 
+#[cfg(test)]
 async fn dispatch(
     commands: &mpsc::Sender<Outbound>,
     pending: &Pending,
@@ -154,7 +164,7 @@ async fn dispatch_control(
     timeout: Duration,
     control: Option<rpi_mcp_core::Control>,
 ) -> Result<Value, String> {
-    dispatch_inner(commands, pending, value, timeout, control, None).await
+    dispatch_inner(commands, pending, value, timeout, control, None, None).await
 }
 
 async fn dispatch_inner(
@@ -164,6 +174,7 @@ async fn dispatch_inner(
     timeout: Duration,
     control: Option<rpi_mcp_core::Control>,
     file_cancel: Option<crate::file_io::FileIOCancellation>,
+    execution_state: Option<Arc<StdMutex<ExecutionAdmission>>>,
 ) -> Result<Value, String> {
     let original_id = value.get("id").cloned();
     let id = uuid::Uuid::new_v4().to_string();
@@ -176,6 +187,10 @@ async fn dispatch_inner(
         value["error"] =
             json!({"code":"too_large", "message":"client file I/O exceeds payload limit"});
     }
+    let execution = match execution_state {
+        Some(state) => ExecutionTicket::register(&state, &value)?,
+        None => None,
+    };
     let (reply, receive) = oneshot::channel();
     pending
         .lock()
@@ -192,7 +207,8 @@ async fn dispatch_inner(
                 pending_id: Some(id),
                 control: control
                     .map(CommandControl::Tools)
-                    .or_else(|| file_cancel.map(CommandControl::FileIO)),
+                    .or_else(|| file_cancel.map(CommandControl::FileIO))
+                    .or_else(|| execution.clone().map(CommandControl::Execution)),
             })
             .await
             .map_err(|_| "native rpi host command channel closed".to_string())?;
@@ -279,14 +295,20 @@ pub struct SessionOptions {
     pub provider: Option<String>,
     pub permission_gate: bool,
     pub bypass: bool,
+    /// None preserves legacy discovery; Some is an exact native startup.
+    pub resources: Option<crate::resources::ResourceStartup>,
 }
 
 pub struct HostSession {
+    child_owner: Option<child::NativeChild>,
     worker: Worker,
     shutdown_gate: Mutex<()>,
     ready: Value,
     runtime: Arc<HostRuntime>,
     run_gate: Arc<Mutex<()>>,
+    admission_gate: Arc<RwLock<()>>,
+    retired: std::sync::atomic::AtomicBool,
+    launch_options: Option<SessionOptions>,
     cancellation: tokio::sync::watch::Sender<u64>,
     writer_abort: StdMutex<Option<tokio::task::AbortHandle>>,
     commands: mpsc::Sender<Outbound>,
@@ -300,6 +322,7 @@ pub struct HostSession {
 
 // Shared with the reader and finalizer, without retaining the owning session.
 struct HostRuntime {
+    execution: Arc<StdMutex<ExecutionAdmission>>,
     raw_events: broadcast::Sender<Value>,
     events: broadcast::Sender<BufferedEvent>,
     pending: Pending,
@@ -438,6 +461,7 @@ struct HostState {
     last_error: Option<String>,
     latest_settlement: Option<Value>,
     pending_dialogs: Vec<Value>,
+    resource_unsettled: bool,
     title: Option<String>,
     created_at: u64,
     updated_at: u64,
@@ -692,11 +716,14 @@ impl HostSession {
             provider: None,
             permission_gate: false,
             bypass: false,
+            resources: None,
         })
         .await
     }
 
     pub async fn spawn_options(options: SessionOptions) -> Result<Arc<Self>, String> {
+        let launch_options = options.clone();
+        let resource_file = resources::StartupFile::prepare(&options).await?;
         let session_id = &options.session_id;
         let mut timings = crate::timing::ToolTimings::load(options.timings_dir.join(format!(
             "{}.json",
@@ -705,6 +732,9 @@ impl HostSession {
         timings.set_session(session_id);
         let mut command = crate::process::background_command(&options.executable);
         command.arg("--mode").arg("rpc");
+        if let Some(file) = &resource_file {
+            command.arg(file.flag).arg(&file.path);
+        }
         if let Some(path) = &options.saved_session {
             command.arg("--session").arg(path);
         } else if let Some(source) = &options.fork_source {
@@ -728,17 +758,38 @@ impl HostSession {
         );
         let project = options.project;
         let rpi_bin = options.executable;
-        let mut child = command
+        command
             .current_dir(project)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
+            .stderr(std::process::Stdio::inherit());
+        let mut child = rpi_mcp_core::ProcessTree::spawn(&mut command.into_std())
             .map_err(|error| format!("failed to start {}: {error}", rpi_bin.display()))?;
-        let stdin = child.stdin.take().ok_or("rpi host stdin unavailable")?;
-        let stdout = child.stdout.take().ok_or("rpi host stdout unavailable")?;
+        let stdin = tokio::process::ChildStdin::from_std(
+            child
+                .child_mut()
+                .stdin
+                .take()
+                .ok_or("rpi host stdin unavailable")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let stdout = tokio::process::ChildStdout::from_std(
+            child
+                .child_mut()
+                .stdout
+                .take()
+                .ok_or("rpi host stdout unavailable")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let child_owner = child::NativeChild::start(child);
         let mut reader = BufReader::new(stdout);
-        let ready = read_ready(&mut reader, Duration::from_secs(15)).await?;
+        let ready = match read_ready(&mut reader, Duration::from_secs(15)).await {
+            Ok(ready) => ready,
+            Err(error) => {
+                let _ = child_owner.stop_checked().await;
+                return Err(error);
+            }
+        };
 
         let (raw_events, _) = broadcast::channel(16_384);
         let (events, _) = broadcast::channel(512);
@@ -751,6 +802,7 @@ impl HostSession {
             last_error: None,
             latest_settlement: None,
             pending_dialogs: Vec::new(),
+            resource_unsettled: false,
             title: None,
             created_at,
             updated_at: created_at,
@@ -759,6 +811,7 @@ impl HostSession {
         let history: Arc<Mutex<VecDeque<BufferedEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
         let seq = Arc::new(AtomicU64::new(0));
         let runtime = Arc::new(HostRuntime {
+            execution: Arc::new(StdMutex::new(ExecutionAdmission::default())),
             raw_events: raw_events.clone(),
             events: events.clone(),
             pending: pending.clone(),
@@ -771,12 +824,18 @@ impl HostSession {
             external_bridge: StdMutex::new(std::sync::Weak::new()),
             file_io_bridge: StdMutex::new(std::sync::Weak::new()),
         });
+        let child_stop = child_owner.stop_signal();
+        let child_exit = child_owner.exit_signal();
         let session = Arc::new(Self {
+            child_owner: Some(child_owner),
             worker: Arc::new(Mutex::new(None)),
             shutdown_gate: Mutex::new(()),
             ready: ready.clone(),
             runtime: runtime.clone(),
             run_gate: Arc::new(Mutex::new(())),
+            admission_gate: Arc::new(RwLock::new(())),
+            retired: std::sync::atomic::AtomicBool::new(false),
+            launch_options: Some(launch_options.clone()),
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(None),
             commands,
@@ -834,6 +893,11 @@ impl HostSession {
                 {
                     break;
                 }
+                runtime
+                    .execution
+                    .lock()
+                    .expect("execution admission")
+                    .observe(&value);
                 if value["type"] == "response" {
                     runtime
                         .timings
@@ -889,14 +953,49 @@ impl HostSession {
             let _ = finish.await;
             writer.abort();
             let _ = writer.await;
-            let _ = child.kill().await;
+            child_stop.send_replace(true);
+            let _ = child::NativeChild::wait_checked(child_exit).await;
         });
 
         *session.worker.lock().await = Some(worker);
+        if let Some(startup) = &launch_options.resources {
+            let verified = async {
+                let observation = session.resource_state().await.map_err(|e| e.to_string())?;
+                let target = match startup {
+                    crate::resources::ResourceStartup::Exact(target) => target,
+                    crate::resources::ResourceStartup::Transition(request) => {
+                        if observation.binding.operation_id.as_deref()
+                            != Some(&request.operation_id)
+                        {
+                            return Err("native resource operation association differs".to_string());
+                        }
+                        &request.target
+                    }
+                };
+                let expected_id = if launch_options.fork_source.is_some() {
+                    observation.session_id.as_str()
+                } else {
+                    session_id
+                };
+                observation
+                    .verify(expected_id, target)
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+            if let Err(error) = verified {
+                session.shutdown().await;
+                return Err(error);
+            }
+        }
         Ok(session)
     }
 
     async fn ensure_running(&self) -> Result<(), String> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err(
+                "native host retired for resource configuration; reopen through Service".into(),
+            );
+        }
         if *self.runtime.closed_signal.borrow()
             || self.runtime.state.read().await.status == "closed"
         {
@@ -907,6 +1006,9 @@ impl HostSession {
     }
 
     pub fn try_run_lease(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err("native host retired".into());
+        }
         self.run_gate
             .clone()
             .try_lock_owned()
@@ -988,21 +1090,37 @@ impl HostSession {
         self.runtime.raw_events.subscribe()
     }
 
-    pub async fn notify(&self, value: Value) -> Result<(), String> {
+    pub async fn notify(&self, mut value: Value) -> Result<(), String> {
+        let _admission = self.admission_gate.read().await;
         self.ensure_running().await?;
+        if matches!(
+            value["type"].as_str(),
+            Some("prompt" | "compact" | "resume_pending")
+        ) && !value["id"].is_string()
+        {
+            value["id"] = json!(uuid::Uuid::new_v4().to_string());
+        }
+        let mut execution = ExecutionTicket::register(&self.runtime.execution, &value)?;
         self.commands
             .send(Outbound {
                 value,
                 pending_id: None,
-                control: None,
+                control: execution.clone().map(CommandControl::Execution),
             })
             .await
-            .map_err(|_| "native rpi host command channel closed".into())
+            .map_err(|_| "native rpi host command channel closed".to_string())?;
+        if let Some(ticket) = &mut execution {
+            ticket.retain_queued();
+        }
+        Ok(())
     }
 
     pub async fn terminate(&self) {
         let _guard = self.shutdown_gate.lock().await;
         self.terminate_worker().await;
+        if let Some(child) = &self.child_owner {
+            let _ = child.stop_checked().await;
+        }
     }
 
     async fn terminate_worker(&self) {
@@ -1048,10 +1166,14 @@ impl HostSession {
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (raw_events, _) = broadcast::channel(capacity);
         let session = Arc::new(Self {
+            child_owner: None,
             worker: Arc::new(Mutex::new(None)),
             shutdown_gate: Mutex::new(()),
             ready,
             run_gate: Arc::new(Mutex::new(())),
+            admission_gate: Arc::new(RwLock::new(())),
+            retired: std::sync::atomic::AtomicBool::new(false),
+            launch_options: None,
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(None),
             commands,
@@ -1061,6 +1183,7 @@ impl HostSession {
             usage_gate: Mutex::new(()),
             configuration_owner: Mutex::new(std::sync::Weak::new()),
             runtime: Arc::new(HostRuntime {
+                execution: Arc::new(StdMutex::new(ExecutionAdmission::default())),
                 raw_events,
                 events: broadcast::channel(capacity).0,
                 pending,
@@ -1070,6 +1193,7 @@ impl HostSession {
                     last_error: None,
                     latest_settlement: None,
                     pending_dialogs: vec![],
+                    resource_unsettled: false,
                     title: None,
                     created_at: 0,
                     updated_at: 0,
@@ -1192,6 +1316,9 @@ impl HostSession {
         worker.take();
         drop(worker);
         self.terminate_worker().await;
+        if let Some(child) = &self.child_owner {
+            let _ = child.stop_checked().await;
+        }
     }
 
     pub async fn snapshot(&self) -> HostSnapshot {
@@ -1322,12 +1449,17 @@ impl HostSession {
     }
 
     pub async fn send_timeout(&self, value: Value, timeout: Duration) -> Result<Value, String> {
+        let _admission = self.admission_gate.read().await;
+        self.send_unadmitted(value, timeout).await
+    }
+
+    async fn send_unadmitted(&self, value: Value, timeout: Duration) -> Result<Value, String> {
         let mut closed = self.runtime.closed_signal.subscribe();
         self.ensure_running().await?;
         tokio::select! {
             biased;
             _ = closed.wait_for(|closed| *closed) => Err("native rpi host closed".into()),
-            response = dispatch(&self.commands, &self.runtime.pending, value, timeout) => response,
+            response = dispatch_inner(&self.commands, &self.runtime.pending, value, timeout, None, None, Some(self.runtime.execution.clone())) => response,
         }
     }
 
@@ -1405,6 +1537,12 @@ impl TestEvents {
             self.0.runtime.fail_closed();
             return Err(broadcast::error::SendError(value));
         }
+        self.0
+            .runtime
+            .execution
+            .lock()
+            .expect("execution admission")
+            .observe(&value);
         let mut delivered = false;
         if value["type"] == "response" {
             if let Some(key) = value["id"].as_str() {
@@ -1437,7 +1575,10 @@ async fn publish(
         state.last_seq = next;
         state.updated_at = now_ms();
         match kind {
-            "agent_start" | "operation_accepted" => state.status = "running".into(),
+            "agent_start" | "operation_accepted" => {
+                state.status = "running".into();
+                state.resource_unsettled = true;
+            }
             "ui_dialog_request" => {
                 state.status = "awaiting_input".into();
                 if let Some(current) = state
@@ -1460,6 +1601,7 @@ async fn publish(
             }
             "agent_settled" => {
                 state.status = "ready".into();
+                state.resource_unsettled = false;
                 state.pending_dialogs.clear();
                 state.latest_settlement = Some(value.clone());
                 state.last_error = value
@@ -1836,6 +1978,7 @@ mod tests {
             last_error: None,
             latest_settlement: None,
             pending_dialogs: Vec::new(),
+            resource_unsettled: false,
             title: None,
             created_at: 0,
             updated_at: 0,
