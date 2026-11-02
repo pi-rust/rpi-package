@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.36](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.35...rpi-web-v0.1.36) - 2026-11-02
+
+### Fixed
+
+- *(android)* confirm HTTP download links in system browser
+
+### Other
+
+- Merge pull request #172 from pi-rust/fix/android-http-links
+
 ## [0.1.35](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.34...rpi-web-v0.1.35) - 2026-11-02
 
 ### Added
