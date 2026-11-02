@@ -44,6 +44,30 @@ custom-entry-only API. This matches Pi's extension model:
 
 ## Tool actions
 
+Use `todo` for actionable work tracking, not a project backlog, orchestration
+DAG, or design approval. Write tasks with concrete acceptance checks and mark
+`completed` only after those checks pass. Use `plan_mode_start` /
+`plan_mode_complete` for read-only design and review instead.
+
+| Parameter | Runtime contract |
+| --- | --- |
+| `action` | Optional; defaults to `list`. One of `list`, `add`, `update`, `toggle`, `clear`. |
+| `text` | Required for `add`; trimmed before storage and must not be blank. Ignored by other actions. |
+| `id` | Required for `update` / `toggle`; unsigned 64-bit integer, using an ID returned by `list` / `add`. |
+| `status` | Required for `update`: `pending`, `in_progress`, or `completed`. Ignored by other actions. |
+| `includeDone` | Optional boolean, default `false`; affects only `list` text. Result details always include all tasks. |
+
+The registered JSON Schema encodes conditional requirements without requiring
+`action` for the default listing. Prefer `update` when the desired status is
+known: `toggle` flips completion and clears `in_progress`. `clear` removes
+**all** tasks, including completed tasks, and resets the next ID to zero.
+List first, using `includeDone: true` if you need completed IDs; do not reuse
+stale IDs across a clear or branch switch. Missing/blank add text returns an
+error in result details; missing/invalid update or toggle parameters can fail
+the tool call. The schema describes well-typed model input; runtime also has
+legacy fallbacks (non-string action becomes `list`, non-boolean `includeDone`
+becomes `false`) that should not be relied on.
+
 ```json
 {"action":"add","text":"Run the tests"}
 {"action":"list","includeDone":true}
@@ -76,6 +100,12 @@ Pending tasks use `[ ]`, the active task uses `[•]`, and completed tasks use
 `[✓]` with dimmed, struck-through text. Each mutation returns the whole list;
 older session snapshots with only `done` remain supported. This presentation
 requires the matching updated RPI host; other clients receive a plain checklist.
+
+## Developer schema compatibility
+
+Top-level `additionalProperties: true` tolerates host-injected `__rpi` metadata
+of any shape and other extra fields. This reserved field is ignored by the tool
+and is not exposed as a model schema property.
 
 ## Build
 

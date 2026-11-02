@@ -1,6 +1,6 @@
 [package]
 name = "rpi-ask-user"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,3 +17,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rpi-plugin-sdk = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+jsonschema = { version = "0.18.3", default-features = false }

@@ -2,6 +2,7 @@
 members = [
     "packages/rpi-run-stats",
     "packages/rpi-mcp-adapter",
+    "packages/rpi-mcp-core",
     "packages/rpi-subagents",
     "packages/rpi-btw",
     "packages/rpi-lens",
@@ -34,7 +35,7 @@ exclude = ["tools/rpi-package-smoke"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.10"
+version = "0.1.12"
 edition = "2021"
 rust-version = "1.78"
 license = "MIT"

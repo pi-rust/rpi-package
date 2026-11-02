@@ -1,0 +1,149 @@
+# rpi Web Android
+
+Android client for rpi Web, alongside [`../frontend/`](../frontend/). **This is a Kotlin Activity + system WebView shell, not a native chat UI.** It loads the selected online HTTPS node; it contains no frontend bundle, backend, credentials or model runtime. Web changes appear from the selected node without rebuilding the APK. Backend upgrades remain a separate operation.
+
+- Android 8.0+ (API 26), target/compile API 35; Java 17.
+- Application ID: `cn.bigfisharc.rpiweb.local` (retained for compatibility with the original standalone test project).
+- Android version: [`version.properties`](version.properties), independent of Rust crates and Web release tags.
+- Default/development nodes are injected at build time through the documented environment variables, never hardcoded. Custom trusted **HTTPS origin only**, no path/query/credentials.
+- Native Back, refresh, error retry, explicit site switching, IME/system-bar insets and system document picker. Switching sites discards the local page/draft but does not cancel server tasks. Login cookies use the app's private WebView store.
+- Only `INTERNET` permission. No JavaScript bridge, broad storage permission, third-party cookies, mixed content, file URL access or TLS bypass. Main-frame TLS errors fail closed; off-origin HTTPS navigation requires confirmation and opens a system browser. App backup/transfer is excluded.
+- No offline chat, app-managed downloads, background service, notifications or camera capture. Use the system document picker for existing files. Foreground Web/SSE behavior is provided by the selected node, not a new Android protocol adapter.
+
+## Saved custom sites
+
+From **0.1.4 / code 5**, open **站点设置 → 自定义 HTTPS 站点**, enter a trusted HTTPS root origin, and tap **保存**. It appears as **已保存：…** in the site list and remains available after an app restart. Saving only adds a local bookmark: it does **not** open that node, switch the active connection, recreate the WebView or discard the page/draft.
+
+Select a saved row to review the address and existing trust/draft-loss warning, then tap **切换** to connect. The active connection remains independently persisted. A previously selected custom node is retained on upgrade, but is not automatically bookmarked; the editor prefills the current address so it can be saved explicitly.
+
+The local list normalizes HTTPS scheme/host/default port, deduplicates and sorts entries, and holds at most **20 sites / 2048 characters per entry**. Invalid/duplicate/full-list errors stay in the editor; a failed disk write leaves it open for retry. Select a saved row → **移除保存 → 移除** to remove only that bookmark. Removing even the active bookmark does not disconnect, clear cookies/login state or delete remote sessions; cancellation changes nothing.
+
+Bookmarks live only in app-private SharedPreferences, separate from `origin`; no server sync, dotenv/source writes or credentials are included. App data clearing/uninstall deletes them, and existing backup exclusions still apply. Native dialogs use the existing system day/night theme.
+
+## System day/night appearance
+
+From **0.1.2 / code 3**, the native toolbar, loading background, error/retry panel, open dialogs and system bars automatically follow Android's day/night mode. Native `uiMode` changes update the current theme and colors **without recreating the Activity or WebView**, retaining page history, form drafts and pending file callbacks. A fresh launch in night mode uses the dark platform theme. No theme JavaScript is injected.
+
+The online Web workspace separately offers **Settings → Appearance → System / 设置 → 外观 → 随系统** (default for new preferences), listening to `prefers-color-scheme` in real time. Existing explicit light/dark choices remain respected; select System to opt back in. The quick sun/moon button is an explicit manual override, not a three-state cycle. Android shell colors always follow the OS, so a deliberately manual page theme may differ.
+
+**Deployment boundary:** the APK cannot add this new Web setting to an old server frontend. The public development node has been verified via HMR, including the signed Release app's real login page in both OS modes. A production node must deploy the matching frontend separately; this change does not deploy/restart it. Until then, its older page may remain light even with a dark native shell. Third-party custom nodes must implement their own system theme support.
+
+0.1.2 retains the 0.1.1 fixed release certificate; a normal in-place upgrade from **0.1.1 Release** is supported and tested.
+
+## Install and signing migration
+
+Use a **signed `*-release.apk`**, verify its `.sha256`, and allow installation from the browser/file manager when Android asks. `*-unsigned-release.apk` is a CI verification output, **not installable**; `*-debug.apk` is for disposable testing and uses a different key.
+
+The earlier `0.1.0` debug APK and the fixed-signature release use the same application ID but **different certificates**. Android will reject an in-place update. Uninstall the old debug app first, then install release. This clears that app's local login, site preference and unsent draft; it does **not** delete remote projects/sessions. Subsequent releases must retain the same release certificate and increase `versionCode`. Never rotate or lose the key casually.
+
+Fixed release certificate SHA-256 (public; not the APK hash):
+
+```text
+e31eb4f7c12191496436f081d81eb51f8715c823c5a44c84b1d215cc1fc3cc80
+```
+
+## Build-time endpoint configuration
+
+From **0.1.3 / code 4**, actual node addresses must not be committed to source, fixtures, workflows or packaging metadata. Export these variables from a private environment, or copy [`.env.example`](.env.example) to **`.env.local`** beside this README and edit it locally:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `RPI_WEB_ANDROID_DEFAULT_ORIGIN` | Yes | Default trusted HTTPS root origin; missing/invalid values fail the build, with no baked-in fallback |
+| `RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN` | No | Optional development HTTPS origin; blank/unset omits its menu item |
+
+Only these two keys are allowed in `.env.local`; comments and simple quoted values are supported, not `export`, shell commands, escapes or variable interpolation. Existing process variables take precedence, including an explicitly empty development setting. Python build/smoke helpers load this ignored file automatically. **Direct `gradlew` invocations require exported variables**, and do not load dotenv files. Signing keys/passwords must never be placed in dotenv files. Keep `.env.local` access-controlled and out of logs; commit only the example template with reserved example domains. Debug/unsigned CI uses synthetic origins; protected signed CI reads the real values from environment Secrets, not repository Variables.
+
+An installed app retains a previously saved valid custom/site preference on upgrade; changing the build default does not silently switch existing users. Application ID and release signing remain unchanged. The optional full emulator smokes require both endpoint variables; builds and manual use support a missing development node.
+
+**This removes addresses from the current source, not from public Git history or previously released APKs. No history is rewritten. A configured endpoint necessarily remains extractable from a built APK and visible in its connection UI/network traffic; env is not binary encryption.** Packaging JSON records only `originConfiguration: build-environment`, not the actual addresses. This change does not deploy a server or publish/replace an APK.
+
+## Local builds
+
+Prerequisites: Java 17, Python 3.10+, Android SDK platform 35 and build-tools **35.0.0**, and network access for the first Gradle/dependency download. Set `ANDROID_SDK_ROOT` or `ANDROID_HOME`; the helper also recognizes `~/Android/Sdk`. The wrapper pins Gradle 8.14.3 and the official distribution SHA-256. Do not commit `local.properties` or machine SDK paths.
+
+From this directory:
+
+```sh
+python tools/build.py --variant debug
+python tools/build.py --variant unsigned-release
+# After injecting the release environment below from a secure secret store:
+python tools/build.py --variant release
+# Add --offline only after dependencies are cached.
+```
+
+Windows equivalent: `./build.ps1 -Variant release [-Offline]`.
+
+For **release only**, inject all five environment variables, not command-line passwords or `gradle.properties`:
+
+| Variable | Purpose |
+| --- | --- |
+| `RPI_WEB_ANDROID_KEYSTORE_PATH` | Absolute path to the private PKCS12 keystore, outside this repository |
+| `RPI_WEB_ANDROID_STORE_PASSWORD` | Keystore password |
+| `RPI_WEB_ANDROID_KEY_ALIAS` | Fixed signing alias |
+| `RPI_WEB_ANDROID_KEY_PASSWORD` | Key password (same as store password for PKCS12) |
+| `RPI_WEB_ANDROID_CERT_SHA256` | Trusted expected certificate SHA-256, 64 hexadecimal digits |
+
+Keep the keystore **and passwords** in access-controlled storage with a separate secure backup. Never publish either, copy them into the source tree, pass them on a command line or print the environment. Clear injected variables after the build. Debug/unsigned helper builds reject release signing variables. Gradle refuses release without signing unless `-PallowUnsignedRelease=true` is explicitly supplied; it never falls back to the debug key.
+
+The helper runs Python guard tests, Android URL-policy unit tests, Lint and assembly, then validates the **actual APK**, not merely its filename: package/version, API bounds, INTERNET-only permissions, debuggable flag, signature and expected release certificate. Outputs are under ignored `dist/<variant>/`, with APK SHA-256 and a JSON manifest (exact source commit, dirty flag, variant, version, size and public certificate fingerprint). Logs/reports stay under ignored `artifacts/` and `app/build/`. No signing material is included in these outputs. To reverify/package an already built APK:
+
+```sh
+python tools/package_apk.py package --variant release
+```
+
+## Independent GitHub Actions
+
+Workflow: [Build Android Web client](../../../.github/workflows/build-android.yml). It is **not** called by crates/Web release automation.
+
+- Android/workflow/source-selector PR and main changes run unsigned verification: Python tests, URL-policy tests, debug/release Lint, debug and explicitly unsigned release assembly. These jobs have read-only permissions and no signing environment. Their artifacts are clearly labeled; unsigned release is not presented as a downloadable installable release.
+- Android tag pushes run the same checks, **not signing**. A tag's mutable workflow must never be able to bypass main approval and obtain the release key.
+- To produce signed artifacts, manually dispatch this workflow **from branch `main`**, with `release_tag` empty. The signed job uses the `rpi-web-android-release` environment, whose **server-side deployment branch policy must allow only branch `main`, not tags/PR refs**. Keep signing Secrets exclusively in that environment, never duplicated at repository level. Signing has no Gradle cache; the temporary keystore is removed on exit and in an `always()` cleanup step.
+- To publish a GitHub Android release, increment the Android version/code in a reviewed PR, merge it, create/push the existing tag `rpi-web-android-vX.Y.Z`, then dispatch the workflow **from `main`** with that exact `release_tag`. Before any keys are read, the trusted main workflow checks that the tag resolves to a commit in main ancestry and exactly matches that commit's Android version; check and signing jobs select that source. The publish job rechecks the remote tag's commit against the built source and verifies artifact checksums.
+- Only the publish job gets `contents: write`. It creates a new Android-only release with `--verify-tag --latest=false`; it does not move the repository's Latest pointer or replace existing releases/assets. A tag move or an existing release causes failure instead of clobbering.
+
+Configure these **environment Secrets** once (via the GitHub UI or `gh secret set --env rpi-web-android-release`, stdin rather than command-line secret values):
+
+```text
+RPI_WEB_ANDROID_KEYSTORE_BASE64
+RPI_WEB_ANDROID_STORE_PASSWORD
+RPI_WEB_ANDROID_KEY_ALIAS
+RPI_WEB_ANDROID_KEY_PASSWORD
+RPI_WEB_ANDROID_CERT_SHA256
+RPI_WEB_ANDROID_DEFAULT_ORIGIN
+RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN
+```
+
+`DEFAULT_ORIGIN` is required; `DEVELOPMENT_ORIGIN` may be absent/empty to hide the menu item. Never add actual addresses to YAML or repository-level plaintext Variables. `KEYSTORE_BASE64` is a single-line base64 encoding of the fixed external keystore. Environment protection is a required security boundary, **not something a YAML `if` or ancestry check alone can replace**. Future maintainers must preserve this restriction and review main workflow/Gradle changes accordingly. A PR cannot verify the protected main-only signing job; first end-to-end Actions signing/publishing verification is a post-merge operator action, not an automatic PR merge or deployment.
+
+## Verification scope
+
+```sh
+python -m unittest discover -s tools -p 'test_*.py' -v
+# Install debug only on a disposable emulator, then:
+npm ci
+# ANDROID_SERIAL defaults to emulator-5584; physical phones are refused.
+npm run test:emulator
+npm run test:theme
+# Saved-site smoke: build/install debug with a portless reserved .example origin.
+# --reset clears ONLY that disposable debug app. Uses local CDP HTML, no login/model calls.
+# Bash example (export equivalent variables in other shells):
+# RPI_WEB_ANDROID_DEFAULT_ORIGIN=https://workspace.example RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN= npm run test:saved-sites -- --reset
+# The installed APK must use the same default origin.
+# Native endpoint checks: debug app on a disposable emulator, build env must match APK.
+# --reset explicitly clears only that test app; seeds a reserved example preference via run-as.
+python tools/verify-origins.py --serial emulator-5584 --reset
+# Rebuild/reinstall debug with changed endpoint env (without clearing app data), then:
+python tools/verify-origins.py --serial emulator-5584 --preserve
+# After replacing debug with signed release on that disposable emulator:
+python tools/verify-release.py --serial emulator-5584
+```
+
+The optional Playwright dependency is **test-only**, never part of the APK. Debug smoke uses emulator CDP to intercept a local HTML fixture (no shared fixture endpoint) for real content-URI file selection/cancel/reopen, external-popup confirmation, Back history and IME layout. It also opens the real production/development login pages without supplying credentials or starting model work. The release smoke uses only ADB/UIAutomator (no CDP), checks non-debuggable installation/run-as denial and exercises real login rendering, keyboard/Back, site switching and process-restart preference persistence.
+
+0.1.4 saved-site verification: Python **25/25**, Kotlin tests **11/11** in each variant (4 URL-policy + 7 bookmark rules), debug/unsigned/fixed-certificate signed builds, Lint **0 errors / 4 warnings** (3 baseline plus `ApplySharedPref` for the intentional synchronous rollback after a failed disk commit). Disposable Android 14 emulator fixture checks **11/11** cover actual native URL editing/save, save without page/draft loss, duplicate/empty rejection, cold-start retention, switch cancel/confirm, active/inactive removal and removal cancellation, and live day/night dialogs. A debug-only temporary directory permission fault verifies failed first-save retry and in-memory rollback; existing-set rollback/removal failure and native full-list/overlength feedback are not separately fault-injected. UIAutomator omits the platform error popup, so negative cases assert editor/storage state and feedback is visually checked in local screenshots. No physical-device, authenticated chat, real upload or model tests are claimed.
+
+0.1.3 endpoint verification: Python **25/25**, URL-policy **4/4** in both variants, debug/unsigned/signed builds and Lint **0 errors / 3 existing warnings**. Missing default, HTTP default, malformed authority and Java-literal injection inputs fail direct Gradle configuration without echoing input. A synthetic-origin unsigned APK contains neither previous node address; packaging JSON omits endpoints. Android 14 emulator native endpoint fixture checks **9/9** across no-development, changed-default upgrade/preserved preference, and development-present clean start. These tests use reserved example sites, ADB/UIAutomator and a debug-only `run-as` preference fixture, not authenticated chat or model calls. Debug smoke failures redact potentially endpoint-bearing error details; ignored screenshots/XML still contain UI addresses and must remain local.
+
+Previous 0.1.1/0.1.2 local migration verification (historical, not a substitute for verifying a new APK): Python **17/17**, URL-policy **4/4** in both variants, debug/release Lint **0 errors / 3 warnings** (`OldTargetApi`, `UnusedAttribute`, `DataExtractionRules`), debug/unsigned/signed packaging, actual missing-key/wrong-certificate rejection, debug-to-release Android signature rejection and same-signature reinstall. Android 14/API 34 x86_64 emulator with WebView 113: debug smoke **10/10**, additional live-system-theme fixture smoke **4/4**, release native smoke **7/7**. Theme checks retain the document marker/draft/history/PID through live mode changes, inspect open native dialogs/error panels, and capture both palettes. Frontend production and public-HMR tests cover system default, live changes, legacy manual preferences, returning to System, reload persistence, storage failures and 390px layout. These are not physical-device, authenticated chat, real attachment-upload or model-task tests.
+
+**Emulator limitation:** that system image has `ro.debuggable=1`. WebView 113's [`SharedStatics.setWebContentsDebuggingEnabled`](https://github.com/chromium/chromium/blob/113.0.5672.136/android_webview/glue/java/src/com/android/webview/chromium/SharedStatics.java#L48-L51) ignores the app's `false` setting on a debug Android build. The release APK is non-debuggable and calls the API with `BuildConfig.DEBUG=false`, but a devtools socket is still observed on this debug OS. Release smoke records this honestly and never connects to it; absence of CDP on a normal non-debug physical device is **not verified here**. Keep system WebView up to date.

@@ -101,7 +101,11 @@ pub fn optional_string(params: &Value, name: &str, default: &str) -> String {
 
 #[macro_export]
 macro_rules! export_single_tool_plugin {
-    ($builder:path, $name:literal, $description:literal, $parameters:literal) => {
+    ($builder:path, $name:literal, $description:expr, $parameters:expr) => {
+        fn registered_tool_schema() -> rpi_plugin_sdk::StableToolSchema {
+            $crate::kit::schema($name, $description, $parameters)
+        }
+
         extern "C" fn package_execute(
             _: rpi_plugin_sdk::StbStringRef,
             params: rpi_plugin_sdk::StbString,
@@ -129,7 +133,7 @@ macro_rules! export_single_tool_plugin {
             let Some(register) = api.register_tool else {
                 return 1;
             };
-            let schema = Box::new($crate::kit::schema($name, $description, $parameters));
+            let schema = Box::new(registered_tool_schema());
             let rc = register(
                 &*schema,
                 package_execute,

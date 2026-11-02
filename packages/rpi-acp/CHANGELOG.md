@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.5...rpi-acp-v0.2.6) - 2026-11-01
+
+### Added
+
+- *(acp)* bridge native message IDs, inline images and client file IO
+- *(acp)* report native context usage at session and run boundaries
+- *(acp)* synchronize live native model and thinking configuration
+- *(acp)* discover saved native sessions with bounded pagination
+- *(acp)* bridge session-scoped Streamable HTTP MCP tools
+- *(acp)* bridge per-session stdio MCP tools through extcore
+
+### Fixed
+
+- *(acp)* preserve supplied native tool names across updates and replay
+
+### Other
+
+- *(acp)* match invalid workspace parameter errors
+- *(acp)* give native context probe the explicit session root
+- *(acp)* set explicit model-dependent native thinking choices
+- *(acp)* fence every cold listing lifecycle before Job disposal
+
+## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.4...rpi-acp-v0.2.5) - 2026-10-31
+
+### Added
+
+- *(acp)* route compact through the shared native run lifecycle
+
+## [0.2.4](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.3...rpi-acp-v0.2.4) - 2026-10-31
+
+### Fixed
+
+- *(acp)* bound active-branch history replay preparation
+- *(acp)* preserve full resource URIs in prompt references
+
+### Other
+
+- Merge pull request #130 from pi-rust/codex/acp-stage1-bounded-history
+
+## [0.2.3](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.2...rpi-acp-v0.2.3) - 2026-10-30
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.2.2](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.1...rpi-acp-v0.2.2) - 2026-10-30
+
+### Fixed
+
+- *(rpc)* adapt server and shared projections to compact native deltas
+
+### Fixed
+
+- Cover compact native text/thinking updates with nonempty initial content and authoritative final suffixes, without duplicate ACP chunks. Shared reconciliation is provided by rpi-extcore; native prompt acceptance and settlement semantics are unchanged.
+
 ## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.0...rpi-acp-v0.2.1) - 2026-10-29
 
 ### Added

@@ -262,6 +262,17 @@ pub fn launch_args(params: &Value) -> Result<(PathBuf, Vec<String>), String> {
         std::env::current_exe().map_err(|e| format!("failed to locate rpi executable: {e}"))?;
     let mut args = vec!["--mode".into(), "rpc".into()];
 
+    // Omission must keep working with hosts that predate this flag. Explicit
+    // values, including null and non-strings, must never silently fall back.
+    if let Some(mode) = params.get("rpcMessageUpdates") {
+        match mode.as_str() {
+            Some(mode @ ("snapshot" | "compact-deltas")) => {
+                args.push(format!("--rpc-message-updates={mode}"));
+            }
+            _ => return Err("rpcMessageUpdates must be snapshot or compact-deltas".into()),
+        }
+    }
+
     push_option(&mut args, params, "provider", "--provider")?;
     push_option(&mut args, params, "model", "--model")?;
     push_option(&mut args, params, "baseUrl", "--base-url")?;

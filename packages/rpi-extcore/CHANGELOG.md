@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.5...rpi-extcore-v0.2.6) - 2026-11-01
+
+### Added
+
+- *(web)* add paged history, file previews and execution traces
+- *(acp)* bridge native message IDs, inline images and client file IO
+- *(acp)* report native context usage at session and run boundaries
+- *(acp)* synchronize live native model and thinking configuration
+- *(acp)* discover saved native sessions with bounded pagination
+- *(acp)* bridge session-scoped Streamable HTTP MCP tools
+- *(acp)* bridge per-session stdio MCP tools through extcore
+
+### Fixed
+
+- *(extcore)* await catalog worker exit before returning page results
+
+### Other
+
+- Merge remote-tracking branch 'origin/main' into feat/web-workspace-history-traces
+- *(web)* make branding checks portable across clean checkouts
+- *(extcore)* validate raw filename recognition without APFS byte names
+
+## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.4...rpi-extcore-v0.2.5) - 2026-10-31
+
+### Added
+
+- *(acp)* route compact through the shared native run lifecycle
+
+## [0.2.4](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.3...rpi-extcore-v0.2.4) - 2026-10-31
+
+### Fixed
+
+- *(acp)* bound active-branch history replay preparation
+
+## [0.2.3](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.2...rpi-extcore-v0.2.3) - 2026-10-30
+
+### Added
+
+- *(web)* show authoritative elapsed time for completed runs
+
+### Other
+
+- Merge pull request #119 from pi-rust/fix/web-image-rendering
+
+## [0.2.2](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.1...rpi-extcore-v0.2.2) - 2026-10-30
+
+### Fixed
+
+- *(web)* serve project raster image artifacts securely
+- *(rpc)* adapt server and shared projections to compact native deltas
+
+### Other
+
+- Merge pull request #116 from pi-rust/fix/rpc-compact-deltas
+
+### Fixed
+
+- Preserve native compact-delta streaming for snapshot-oriented Web consumers through a shared live message projection. Raw native frames stay compact, initial content is retained, late tool identities and complete argument JSON update without guessing, and structural/final snapshots remain authoritative. Text/thinking reconciliation no longer discards nonempty initial content.
+
 ## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.0...rpi-extcore-v0.2.1) - 2026-10-29
 
 ### Added

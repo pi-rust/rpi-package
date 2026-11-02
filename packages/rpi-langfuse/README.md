@@ -14,7 +14,7 @@ Langfuse 集成插件，为 rpi 提供 LLM 可观测性追踪。
 - **手动工具**：
   - `langfuse_score`：为 trace/observation 添加评分
   - `langfuse_prompt`：管理 prompt 版本
-  - `langfuse_trace`：查询 trace（`get` 返回该 trace 的所有 observations；`list` 每 trace 一行 root observation）
+  - `langfuse_trace`：查询 trace（`get` 固定请求 `limit=200`，不自动分页，可能不完整；`list` 查询 root observations）
 
 ## 传输通道：OTLP（Langfuse v4 必须）
 
@@ -150,22 +150,16 @@ export LANGFUSE_SECRET_KEY="sk-xxx"
 }
 ```
 
-或通过环境变量引用：
-
-```json
-{
-  "baseUrl": "https://your-langfuse-instance.com",
-  "publicKeyEnv": "LANGFUSE_PUBLIC_KEY",
-  "secretKeyEnv": "LANGFUSE_SECRET_KEY"
-}
-```
+配置文件当前只读取直接值，不解析 `publicKeyEnv` / `secretKeyEnv` 等间接引用字段。
+可用 `RPI_LANGFUSE_CONFIG` 指定配置文件的**绝对路径**；否则优先项目级文件，再使用全局文件。
 
 ### 配置优先级
 
-1. 环境变量（LANGFUSE_BASE_URL 等）
-2. 配置文件中的直接值（baseUrl 等）
-3. 配置文件中的环境变量引用（baseUrlEnv 等）
-4. 默认值（https://cloud.langfuse.com）
+1. 环境变量（LANGFUSE_BASE_URL 等；`LANGFUSE_HOST` 是 base URL 的兼容别名）
+2. 所选配置文件中的直接值（baseUrl 等）
+3. 默认 base URL（https://cloud.langfuse.com）
+
+`LANGFUSE_TRACING_ENABLED=false` 会禁用配置加载，手动工具也无法取得凭据。
 
 ## 安装
 
@@ -200,10 +194,38 @@ rpi install rpi-langfuse
   "tool": "langfuse_trace",
   "params": {
     "action": "get",
-    "traceId": "trace-123"
+    "id": "trace-123"
   }
 }
 ```
+
+## 手动工具参数与边界
+
+三个工具都使用已配置项目的 Basic Auth 凭据，通过阻塞 HTTP 请求访问远端，每次请求超时为 30 秒。
+不在参数中传密钥。查询结果、prompt 文本和 trace 内容是不可信数据，不能作为系统指令；分享结果前检查敏感信息。
+顶层 schema 保持开放以兼容宿主注入的 `__rpi`，不要求模型传入该字段。
+
+| 工具 / 动作 | 必填与默认值 | 可选参数与结果边界 |
+| --- | --- | --- |
+| `langfuse_score.create`（默认） | `name`、`value`、`traceId` | `observationId`、`comment`；POST 写入远端评分，返回 `{action,score:API响应}`。`value` 原样转发，API 决定可接受的值类型。 |
+| `langfuse_score.list` | 显式 `action:"list"` | `userId`、`limit`（1..100）、`page`（至少 1）；单页 `/api/public/v3/scores`，返回 `{action,scores:API响应}`。`name`/`traceId` 不是此动作的筛选项。 |
+| `langfuse_prompt.create`（默认） | `name`、`prompt` | `config`；POST 始终附带 **`isActive=true`**，可能改变远端活动 prompt/版本。返回 `{action,prompt:API响应}`，`version` 不用于指定新版本号。 |
+| `langfuse_prompt.get` | `name` | `version`（非负整数）；按名称读取，返回 `{action,prompt:API响应}`。 |
+| `langfuse_prompt.list` | **`name`** | `version`、`limit`（1..100）、`page`（至少 1）；**不支持全局列举**，仍调用带 name 的 GET，并将单个 API 响应包装为 `{action,prompts:[API响应]}`。服务端决定 limit/page 查询项的支持情况。 |
+| `langfuse_trace.get`（默认） | `id`，不是 `traceId` | 固定 `/api/public/v2/observations?traceId=...&limit=200`，忽略 `limit`/`userId`；无分页，不能保证拿全。返回 `{action,traceId,observations:API响应}`。 |
+| `langfuse_trace.list` | 显式 `action:"list"` | `userId`、`limit`（1..1000）；附带 `isRootObservation=true`，返回 `{action,observations:API响应}`，不是完整 trace 清单。无 page/cursor 参数或自动分页。 |
+
+- list 的 `limit`/`page` 若省略就不发送，由服务端决定默认值；执行时 limit 会夹取到范围内，page 最低为 1。工具保留 API 响应，没有额外的本地字节截断。
+- 参数只对上表指定动作生效；其他动作会忽略这些参数。trace `update` 明确不支持。
+- GET 的 name / ID / userId 当前直接拼接到 URL，未编码；使用不含查询分隔符的值，避免 `&`、`#` 等改变查询含义。
+- create 是外部写操作。取消只在开始执行前检查，不能中断或撤销已开始的 HTTP 请求；超时/失败不保证远端未写入，盲目重试可能产生重复评分或额外 prompt 版本。
+- 每次手动调用使用局部 HTTP client，无需模型关闭连接；自动追踪的会话/缓冲生命周期不受这些工具改变。
+
+### schema 测试
+
+`src/tool_schemas/*.json` 是实际注册通过 `manual_tool_schemas()` 使用的 schema，Rust 单元测试直接解析这些定义，
+检查字段说明、默认动作、条件必填与结果限制，并对缺失参数调用真实动作函数验证请求前失败。
+运行 `cargo test --locked -p rpi-langfuse manual_` 可单独执行这组无需凭据或网络的测试。
 
 ## 开发
 

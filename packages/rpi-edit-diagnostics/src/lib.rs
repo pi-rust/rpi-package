@@ -73,37 +73,41 @@ use edit_diff::{
 /// extension replaces `edit`.
 const TOOL: &str = "edit";
 
-/// Tool description, verbatim from `rpi`'s `edit` tool
-/// (`crates/rpi-tools/src/tools/edit.rs`).
-const DESCRIPTION: &str = "Edit a single file by exact text replacement. Copy each oldText from read output, preserving whitespace and excluding line numbers or truncation markers. All edits are matched against the same original file, not one after another; put changes to the same or nearby lines in one edit. A failed call changes nothing and reports every failing edit with the closest text in the file, what differs, and that text to copy. Fields are camelCase (oldText, newText).";
+/// Model-facing contract for this package's registered `edit` tool.
+const DESCRIPTION: &str = "Edit one existing UTF-8 file; read it first. Copy each oldText from read output, preserving whitespace and excluding line numbers or truncation markers. Matches exact text first, then only Pi normalization (NFKC, trailing whitespace, typographic quotes/dashes/spaces); different indentation, escapes or middle lines do not match. All edits use the same original snapshot, never earlier replacements: merge nearby changes and avoid overlapping regions. Ambiguous matches fail unless replaceAll is true; empty oldText and no-op edits fail. Matching/validation failures write nothing and report failing edits with copyable closest text; reread before retrying. Success writes the file and returns replacement count, normalization notes, bracket-balance warnings and diff/patch details, not syntax validation or a dry run. Symlinks follow their target; Unix hard links are written in place (non-atomic), while ordinary files use temporary-file rename, which may lose metadata other than permissions. Snapshot checks reduce but do not eliminate external-writer races; IO failures are not a rollback guarantee. Fields are camelCase (oldText, newText).";
 
 /// Parameter schema, the JSON form of the fork's `EditInput` / `ReplaceEditJson`
 /// (camelCase wire shape; `replaceAll` optional). Extra keys stay allowed
 /// because the host injects `__rpi`.
 const PARAMETERS: &str = r#"{
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path to the file to edit (relative or absolute)"
+      "minLength": 1,
+      "description": "Required non-empty path to one existing readable UTF-8 file, relative or absolute; no default and no file/directory creation. Relative paths use host __rpi.cwd, falling back to the plugin process directory. Symlinks resolve to the target; writing requires target/directory permissions and may replace file metadata. Read this file before preparing oldText."
     },
     "edits": {
       "type": "array",
-      "description": "One or more replacements, applied together.",
+      "minItems": 1,
+      "description": "Required non-empty array of replacements with no default. Every edit matches the same original snapshot and all must resolve without overlapping; merge changes to the same or nearby lines. Not sequential edits, regex, syntax-aware rewriting or a dry run. Validation/matching failures write nothing; success writes all replacements together. Prefer this canonical array shape over legacy input forms.",
       "items": {
         "type": "object",
         "properties": {
           "oldText": {
             "type": "string",
-            "description": "Text to replace. It must occur exactly once in the file unless replaceAll is set (add surrounding lines until it does; a repeated statement or bare identifier is not enough), and must not overlap another edit's oldText."
+            "minLength": 1,
+            "description": "Required non-empty text copied from a prior read, with whitespace intact and no display line numbers/truncation markers. It must occur exactly once in the file unless replaceAll is set (include distinguishing surrounding lines), and resolved spans must not overlap another edit. Exact matching precedes Pi normalization (NFKC, trailing whitespace, typographic quotes/dashes/spaces); indentation, escape and middle-line differences do not match. No regex or guessed location; no default."
           },
           "newText": {
             "type": "string",
-            "description": "Replacement text."
+            "description": "Required literal replacement text; no default. Empty string deletes matched text. Must change at least one resolved span for this edit or the entire call fails as a no-op. Newlines are normalized and restored to the file's detected LF/CRLF style (first newline, LF if none); no regex expansion, formatting or syntax validation. Bracket-balance changes only produce warnings, not rejection."
           },
           "replaceAll": {
             "type": "boolean",
-            "description": "Replace every occurrence of oldText. Default false."
+            "default": false,
+            "description": "Replace every occurrence of oldText in this edit's selected matching view, not just one. Optional; default false requires exactly one occurrence. Exact matches take precedence: normalized equivalents are considered only when no exact match exists. Occurrences are non-overlapping; does not relax matching, permit overlap with other edits, or allow a no-op."
           }
         },
         "required": ["oldText", "newText"]
@@ -504,15 +508,19 @@ extern "C" fn destroy(handle: StepHandle) {
 
 use rpi_plugin_sdk::callbacks::free_string;
 
+fn registered_tool_schema() -> StableToolSchema {
+    StableToolSchema {
+        name: StbString::from_string(TOOL.into()),
+        description: StbString::from_string(DESCRIPTION.into()),
+        parameters: StbString::from_string(PARAMETERS.into()),
+    }
+}
+
 rpi_plugin_sdk::export_plugin!(|api| {
     let Some(register) = api.register_tool else {
         return 1;
     };
-    let schema = Box::new(StableToolSchema {
-        name: StbString::from_string(TOOL.into()),
-        description: StbString::from_string(DESCRIPTION.into()),
-        parameters: StbString::from_string(PARAMETERS.into()),
-    });
+    let schema = Box::new(registered_tool_schema());
     let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
     drop(schema);
     rc

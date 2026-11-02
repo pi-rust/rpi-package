@@ -22,19 +22,26 @@
 //! otherwise. Consumers should depend on the minor line, for example
 //! `rpi-extcore = "0.1"`, rather than pinning an unpublished patch version.
 #![forbid(unsafe_code)]
+pub mod configuration;
+pub mod context_usage;
+pub use context_usage::{parse_context_usage, ContextUsage};
 pub mod dialogs;
 pub mod durable;
 pub mod events;
+pub mod external_tools;
+pub mod file_io;
 pub mod history;
 pub mod host;
 pub mod message;
 pub mod process;
 pub mod projects;
+pub mod prompt;
 pub mod protocol;
 pub mod registry;
 pub mod reply;
 pub mod run;
 pub mod run_timing;
 pub mod service;
+pub mod session_catalog;
 pub mod timing;
 pub mod workspace;

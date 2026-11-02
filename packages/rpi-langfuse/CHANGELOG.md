@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5](https://github.com/pi-rust/rpi-package/compare/rpi-langfuse-v0.4.4...rpi-langfuse-v0.4.5) - 2026-10-31
+
+### Fixed
+
+- *(tools)* clarify guidance and complete parameter schemas ([#135](https://github.com/pi-rust/rpi-package/pull/135))
+
 ## [0.4.4](https://github.com/pi-rust/rpi-package/compare/rpi-langfuse-v0.4.3...rpi-langfuse-v0.4.4) - 2026-10-17
 
 ### Added

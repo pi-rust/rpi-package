@@ -36,6 +36,9 @@ enum JobMessage {
 }
 struct Job {
     receiver: Receiver<JobMessage>,
+    // The worker queues bounded deltas; tool progress consumers replace the
+    // displayed result, so poll emits a cumulative snapshot instead.
+    progress: String,
     completed: bool,
     worker: Option<JoinHandle<()>>,
 }
@@ -266,7 +269,7 @@ rpi_plugin_sdk::execute_handler!(fn execute(tool_call_id, params, free_params) {
             }
             Err(error) => { let _ = sender.send(JobMessage::Error(error)); None }
         };
-        JOBS.insert_with_cancel(Job { receiver, completed: false, worker }, cancelled)
+        JOBS.insert_with_cancel(Job { receiver, progress: String::new(), completed: false, worker }, cancelled)
     }).unwrap_or(std::ptr::null_mut())
 });
 
@@ -282,18 +285,18 @@ extern "C" fn poll(
         if entry.cancelled.load(Ordering::Acquire) {
             return StepResult::err(StbString::from_string("subagent cancelled".into()));
         }
-        let mut partials = Vec::new();
-        let terminal = {
+        let (progress, terminal) = {
             let mut job = entry.lock();
             if job.completed {
                 return StepResult::err(StbString::from_string(
                     "subagent polled after completion".into(),
                 ));
             }
+            let previous_len = job.progress.len();
             let mut terminal = None;
             while let Ok(message) = job.receiver.try_recv() {
                 match message {
-                    JobMessage::Partial(text) => partials.push(text),
+                    JobMessage::Partial(text) => job.progress.push_str(&text),
                     JobMessage::Done(text) => {
                         job.completed = true;
                         terminal = Some(Ok(text));
@@ -306,12 +309,15 @@ extern "C" fn poll(
                     }
                 }
             }
-            terminal
+            // Coalesce this poll's deltas before cloning/encoding. Do not queue
+            // cumulative strings or emit one growing snapshot for every delta.
+            let progress = (partial_cb.is_some() && job.progress.len() != previous_len)
+                .then(|| job.progress.clone());
+            (progress, terminal)
         };
-        if let Some(callback) = partial_cb {
-            for text in partials {
-                callback(StbString::from_string(tool_result(&text)), user_data);
-            }
+        // Never call foreign code while holding the job lock.
+        if let (Some(callback), Some(text)) = (partial_cb, progress) {
+            callback(StbString::from_string(tool_result(&text)), user_data);
         }
         match terminal {
             Some(Ok(text)) => StepResult::done(StbString::from_string(tool_result(&text))),
@@ -334,6 +340,45 @@ extern "C" fn destroy(handle: StepHandle) {
     }
 }
 
+/// Keep registration and schema tests on the same metadata path.
+fn delegate_schema() -> rpi_plugin_sdk::StableToolSchema {
+    schema(
+        "delegate_task",
+        "Delegate one bounded, non-recursive task to a host-managed in-memory child session, not a subagent subprocess or isolated worktree. The child inherits the current model/provider, tools, cwd and approval hooks; it shares the workspace and extension state. Supply necessary context, exact scope/file ownership, constraints, acceptance checks and expected report in task; do not assume the child knows the parent conversation. Coordinate overlapping writes. role is a label, not a tool/permission profile. The child cannot delegate further. Streams progress and returns a JSON report; review the report and verify acceptance, including turnLimited. Requires host ChildAgent support.",
+        r#"{
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Required self-contained task: objective, relevant context/paths, allowed scope and write ownership, constraints, acceptance checks and expected report. Must contain non-whitespace text and be at most 20000 UTF-8 bytes (not characters); original text is forwarded unchanged. Shared workspace, not a sandbox or isolated checkout."
+                },
+                "role": {
+                    "type": "string",
+                    "default": "worker",
+                    "description": "Optional descriptive role label, not a permission/tool selector. Trimmed value must contain 1-200 UTF-8 bytes; default worker."
+                },
+                "maxTurns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 32,
+                    "default": 8,
+                    "description": "Per-child turn budget, 1-32; default 8. A completed report may be turnLimited; verify task acceptance."
+                },
+                "timeoutSeconds": {
+                    "type": "integer",
+                    "minimum": 10,
+                    "maximum": 1800,
+                    "default": 300,
+                    "description": "Child timeout in seconds, 10-1800; default 300. Timeout/cancellation triggers host-managed cleanup."
+                }
+            },
+            "required": ["task"],
+            "additionalProperties": true
+        }"#,
+    )
+}
+
 rpi_plugin_sdk::export_plugin!(|api| {
     if std::env::var("RPI_SUBAGENT_CHILD").ok().as_deref() == Some("1") {
         return 0;
@@ -345,11 +390,7 @@ rpi_plugin_sdk::export_plugin!(|api| {
         action: api.runtime_action,
         free: api.free_string,
     });
-    let schema = Box::new(schema(
-        "delegate_task",
-        "Run a bounded, non-recursive subagent using the host's current execution binding.",
-        r#"{"type":"object","properties":{"task":{"type":"string","maxLength":20000},"role":{"type":"string","maxLength":200},"maxTurns":{"type":"integer","minimum":1,"maximum":32},"timeoutSeconds":{"type":"integer","minimum":10,"maximum":1800}},"required":["task"]}"#,
-    ));
+    let schema = Box::new(delegate_schema());
     let result = register(&*schema, execute, poll, cancel, destroy, plugin_free_string);
     drop(schema);
     result

@@ -31,10 +31,13 @@
 // server the extension embeds.
 pub mod auth;
 pub mod diag;
+mod file_io;
 mod history;
+mod mcp;
 pub mod protocol;
 mod questions;
 pub mod session;
+mod session_list;
 pub mod zed;
 
 use rpi_plugin_sdk::{

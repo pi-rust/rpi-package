@@ -2,20 +2,48 @@
 
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
+
+// Ownership-test instrumentation is opt-in. Append-only records synchronize
+// tests with real requests (including blocked background reads), not sleeps.
+fn ownership_trace(modes: &[String], event: &str, details: Value) {
+    if let Some(path) = modes
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--ownership-log="))
+    {
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        // Serialize before appending: formatting Value directly into the file
+        // performs many writes that can interleave with the descendant's log.
+        let record = format!(
+            "{}\n",
+            json!({"pid":std::process::id(),"event":event,"details":details})
+        );
+        log.write_all(record.as_bytes()).unwrap();
+    }
+}
+
 fn main() {
     let modes: Vec<String> = std::env::args().collect();
     let mode = |name: &str| modes.iter().any(|arg| arg == name);
+    ownership_trace(&modes, "start", json!({"leaf":mode("--no-read")}));
     if mode("--no-read") {
         std::thread::sleep(std::time::Duration::from_secs(60));
         return;
     }
     let mut descendant = None;
-    if mode("--spawn-child") {
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--no-read")
-            .stdin(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
+    if mode("--spawn-child") || mode("--healthy-child") {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.arg("--no-read").stdin(std::process::Stdio::null());
+        for arg in &modes {
+            if arg.starts_with("--ownership-log=") {
+                command.arg(arg);
+            }
+        }
+        let child = command.spawn().unwrap();
+        ownership_trace(&modes, "descendant", json!({"pid":child.id()}));
         eprintln!("descendant-pid={}", child.id());
         descendant = Some(child);
     }
@@ -23,6 +51,7 @@ fn main() {
     let mut input = stdin.lock();
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     let mut calls = 0;
+    let mut delivery_value = "current content".to_string();
     let mut subscribed = std::collections::BTreeSet::new();
     loop {
         let mut line = String::new();
@@ -38,6 +67,7 @@ fn main() {
         let Some(method) = request.get("method").and_then(Value::as_str) else {
             continue;
         };
+        ownership_trace(&modes, "request", json!({"method":method}));
         if mode("--hang")
             || mode("--spawn-child")
             || (mode("--hang-call") && method == "tools/call")
@@ -49,6 +79,14 @@ fn main() {
             stdout.write_all(&vec![b'x'; 16 * 1024 * 1024 + 1]).unwrap();
             stdout.flush().unwrap();
             continue;
+        }
+        // Emit the valid response too: mixed request/response input must retire
+        // the connection, not merely be swallowed until a later valid reply.
+        if (mode("--mixed-list") && method == "tools/list")
+            || (mode("--mixed-call") && method == "tools/call")
+        {
+            writeln!(stdout, "{}", json!({"jsonrpc":"2.0","id":id,"method":"ping","result":{},"error":{"code":-1,"message":"mixed frame"}})).unwrap();
+            stdout.flush().unwrap();
         }
         if mode("--notify") {
             writeln!(
@@ -109,7 +147,7 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
                 let uri = request["params"]["uri"].as_str().unwrap_or("mem://alpha");
-                json!({"contents":[{"uri":uri,"text":format!("value-of-{uri}")}]})
+                json!({"contents":[{"uri":uri,"text":if mode("--delivery-values") { delivery_value.clone() } else { format!("value-of-{uri}") }}]})
             }
             "resources/subscribe" => {
                 if mode("--reject-duplicate-subscribe")
@@ -159,7 +197,15 @@ fn main() {
             }
             "tools/list" => {
                 let echo = json!({"name":"echo","description":"Echo one value","inputSchema":{"type":"object","properties":{"value":{"type":"string"}}}});
-                if mode("--paged") {
+                if mode("--duplicate-tools") {
+                    json!({"tools":[echo.clone(),echo]})
+                } else if mode("--invalid-schema") {
+                    json!({"tools":[{"name":"echo","inputSchema":{"type":"array"}}]})
+                } else if mode("--catalog-metadata") {
+                    let mut echo = echo;
+                    echo["unknownMetadata"] = json!("x".repeat(4096));
+                    json!({"tools":[echo]})
+                } else if mode("--paged") {
                     if request["params"]["cursor"] == "page2" {
                         json!({"tools":[{"name":"counter","inputSchema":{"type":"object"}},{"name":"fail","inputSchema":{"type":"object"}},{"name":"image","inputSchema":{"type":"object"}}]})
                     } else {
@@ -172,7 +218,13 @@ fn main() {
                 }
             }
             "tools/call" => {
-                if mode("--stateful-resources") {
+                if mode("--delivery-values") {
+                    delivery_value = request["params"]["arguments"]["value"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                }
+                if mode("--stateful-resources") && request["params"]["arguments"]["quiet"] != true {
                     if request["params"]["arguments"]["value"] == "disconnect" {
                         break;
                     }
@@ -183,6 +235,9 @@ fn main() {
                 }
                 calls += 1;
                 match request["params"]["name"].as_str().unwrap_or("") {
+                    "typed_raw" if mode("--typed-raw") => {
+                        json!({"isError":true,"content":[{"type":"text","text":"raw error","annotations":{"priority":0.5}}],"structuredContent":{"arguments":request["params"]["arguments"]},"opaqueMetadata":{"retained":true}})
+                    }
                     "counter" => {
                         json!({"content":[{"type":"text","text":format!("{}:{calls}", std::process::id())}]})
                     }
@@ -199,6 +254,17 @@ fn main() {
             }
             _ => json!({}),
         };
+        let result = if mode("--process-info") && method == "tools/call" {
+            let mut result = result;
+            result["structuredContent"] = json!({
+                "pid":std::process::id(),
+                "cwd":std::env::current_dir().unwrap(),
+                "profile":std::env::var("RPI_OWNERSHIP_PROFILE").ok()
+            });
+            result
+        } else {
+            result
+        };
         if writeln!(
             stdout,
             "{}",
@@ -208,6 +274,16 @@ fn main() {
         .is_err()
         {
             break;
+        }
+        // Deliberately bypass normal descendant cleanup only for this mode.
+        // The leaf retains inherited stdout/stderr for at most 60 seconds;
+        // runtime teardown must kill the tree even after its leader has exited.
+        if mode("--exit-leader")
+            && method == "tools/call"
+            && request["params"]["arguments"]["value"] == "exit-leader"
+        {
+            ownership_trace(&modes, "leader-exit", json!({}));
+            std::process::exit(0);
         }
     }
     if let Some(mut child) = descendant {

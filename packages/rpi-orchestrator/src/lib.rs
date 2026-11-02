@@ -28,6 +28,7 @@ mod kit;
 mod plan;
 mod spawn;
 mod subagent;
+mod tool_schema;
 
 use serde_json::Value;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -128,12 +129,6 @@ impl GraphState {
 crate::tool_entry!(subagent_tool, crate::subagent::subagent);
 crate::tool_entry!(plan_tool, crate::plan::plan);
 crate::tool_entry!(dispatch_tool, crate::dispatch::dispatch);
-
-const SUBAGENT_PARAMS: &str = r#"{"type":"object","properties":{"task":{"type":"string","maxLength":20000},"role":{"type":"string"},"provider":{"type":"string","description":"Leave empty to run on this session's provider (recommended). Only set it to a provider you know is authenticated for this machine; an unknown or unauthenticated provider fails the delegation with 'No API key'."},"model":{"type":"string","description":"Leave empty to run on this session's model. Only set it together with a `provider`, or when the model id is unique across providers."},"maxTurns":{"type":"integer","minimum":1,"maximum":32},"timeoutSeconds":{"type":"integer","minimum":10,"maximum":1800}},"required":["task"]}"#;
-
-const PLAN_PARAMS: &str = r#"{"type":"object","properties":{"action":{"type":"string","enum":["set","update","show"]},"nodes":{"type":"array","description":"action=set: full node list. Each node: {id, task, deps?, role?, provider?, model?, maxTurns?, timeoutSeconds?, expectFile?, verify?}"},"addNodes":{"type":"array","description":"action=update: nodes to add (same node shape)"},"removeIds":{"type":"array","items":{"type":"string"},"description":"action=update: ids to remove"},"setDeps":{"type":"array","description":"action=update: [{id, deps}]"},"reset":{"type":"array","items":{"type":"string"},"description":"action=update: re-arm these ids to pending for another attempt"}},"required":["action"]}"#;
-
-const DISPATCH_PARAMS: &str = r#"{"type":"object","properties":{"maxParallel":{"type":"integer","minimum":1,"maximum":16,"description":"max concurrent subagents for this wave (default 4)"}}}"#;
 
 /// Optional override for the orchestration guidance injected into the system
 /// prompt. Guidance is **on by default whenever a goal is active** — `/goal`
@@ -264,11 +259,7 @@ rpi_plugin_sdk::export_plugin!(|api| {
     };
 
     {
-        let schema = Box::new(crate::kit::schema(
-            "subagent",
-            "Delegate one bounded task to a fresh rpi subprocess and return its final answer.",
-            SUBAGENT_PARAMS,
-        ));
+        let schema = Box::new(crate::tool_schema::tool_schema("subagent"));
         let rc = register(
             &*schema,
             subagent_tool::execute,
@@ -284,11 +275,7 @@ rpi_plugin_sdk::export_plugin!(|api| {
     }
 
     {
-        let schema = Box::new(crate::kit::schema(
-            "plan",
-            "Author or edit the task DAG. action=set (replace with `nodes`), action=update (addNodes/removeIds/setDeps/reset), action=show. Edit only between dispatch waves; show is available during a wave. A node may declare `expectFile` (file that must exist after its child runs) and `verify` (shell command that must exit 0); `dispatch` enforces both. Completion is written only by `dispatch`, never by `plan`.",
-            PLAN_PARAMS,
-        ));
+        let schema = Box::new(crate::tool_schema::tool_schema("plan"));
         let rc = register(
             &*schema,
             plan_tool::execute,
@@ -304,11 +291,7 @@ rpi_plugin_sdk::export_plugin!(|api| {
     }
 
     {
-        let schema = Box::new(crate::kit::schema(
-            "dispatch",
-            "Run one wave of the plan: every pending node whose dependencies are done, up to `maxParallel` subagents at once. Returns each node's result summary and the updated graph.",
-            DISPATCH_PARAMS,
-        ));
+        let schema = Box::new(crate::tool_schema::tool_schema("dispatch"));
         let rc = register(
             &*schema,
             dispatch_tool::execute,

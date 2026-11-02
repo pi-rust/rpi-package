@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {"type":"string","enum":["get","list"],"default":"get","description":"get reads one trace's observations with fixed limit=200 and no pagination; requires id even when action is omitted. list reads one root-observation response page. update is unsupported."},
+    "id": {"type":"string","description":"Required for get: trace ID used as traceId query filter (not a field named traceId in these arguments). Ignored by list. Sent directly without URL encoding; use a query-safe ID."},
+    "userId": {"type":"string","description":"Optional list-only user filter, sent directly without URL encoding; use a query-safe value. Ignored by get."},
+    "limit": {"type":"integer","minimum":1,"maximum":1000,"description":"List-only page size, clamped to 1..1000; omitted sends no limit (server default). Ignored by get, which always uses limit=200. Neither action automatically paginates."}
+  },
+  "allOf": [
+    {"if":{"properties":{"action":{"const":"get"}}},"then":{"required":["id"]}}
+  ]
+}

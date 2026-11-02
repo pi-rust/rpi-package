@@ -40,7 +40,7 @@ Then record progress:
 | --- | --- | --- |
 | `status` | — | Show the current workflow; also the default action |
 | `start` | `name`, `steps[]` | Create or replace a workflow |
-| `checkpoint` | `step`, `status`, `note?` | Update one step (`in_progress` is the default) |
+| `checkpoint` | `step`, `status?`, `note?` | Update one step (`pending`, `in_progress`, or `completed`; default `in_progress`) |
 | `pause` | `reason?` | Pause a running workflow |
 | `resume` | — | Resume a paused workflow |
 | `complete` | — | Complete the workflow when every step is completed |
@@ -57,6 +57,43 @@ Then record progress:
 Invalid transitions are returned as structured tool details and are not
 persisted. A failed host persistence call is returned as a tool error; the
 in-memory state is not advanced in that case.
+
+## Choosing and calling the tool
+
+Use `durable` for explicit workflow steps, recovery metadata, and manually
+consumed work items. Use `goal` for a single context-injected objective across
+turns. Durable state belongs to the current **native session branch**, not the
+cwd or a shared workspace. Independent native sessions (including fresh
+`subagent` subprocesses) do not automatically share this queue or its claims.
+A host-managed child created by `delegate_task` instead uses the parent's
+extension tools and **shares the parent workflow, queue, and claims**. Its
+separate transcript/session ID does not provide isolated durable state. From
+such a child, do not `start`/`reset` the workflow without explicit authorization
+from the parent. Durable does not delegate work or run background workers.
+
+- Omit `action` to read `status`; actions are case-sensitive.
+- `start` requires both `name` and a nonempty `steps` array. It replaces the
+  workflow, but does not clear the run journal or queue. Each step requires
+  `id` and `title`; IDs must be unique after trimming.
+- `checkpoint` requires an existing step in a running workflow. `failed` is
+  **not** a step status: use `fail` for the workflow, or `finish` with `failed`
+  for a claimed queue item. `finish` requires both `item` and `status`.
+- `claim`, `finish`, and `cancel` require the exact queue ID returned by
+  `enqueue`/`queue`, not an array index. Only queued items can be claimed;
+  only claimed items can be finished; queued or claimed items can be cancelled.
+- Optional `note` and `reason` accept omission or `null`; a supplied string
+  must be nonblank. A missing/null cancellation note becomes `cancelled`;
+  a missing/null failure reason becomes `workflow marked as failed`.
+- Text is trimmed before validation; limits below count Unicode scalar values
+  **after trimming** (so the schema documents them rather than imposing raw
+  `maxLength`). Enqueued text is limited to 4,000, and queue IDs to 128.
+- The registered schema uses conditional requirements and nested step objects.
+  Fields unrelated to an action are ignored by the runtime.
+
+`reset` clears only the workflow; `forget_run` clears only the run journal.
+Inspect `status` and prior tool outcomes before `recover` or retrying side
+effects. Recovery creates a queued checkpoint, not a tool replay or a guarantee
+that previous external side effects did not happen.
 
 ## Run recovery journal
 
@@ -170,6 +207,11 @@ an unusable acknowledgement (missing ID or invalid JSON) cannot be retried
 against the old anchor; reload the branch explicitly before continuing. New
 tool records may also contain an optional `callKey` used to preserve long tool
 identity; older records without it remain readable.
+
+## Developer schema compatibility
+
+Top-level `additionalProperties: true` tolerates host-injected `__rpi` metadata
+and other unknown fields without exposing reserved metadata as model properties.
 
 ## Build and install
 

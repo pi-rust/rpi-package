@@ -81,6 +81,7 @@ class Client:
 
 
 def check(command, env, cwd, store):
+    from compact_protocol import controls
     first = Client(command, env)
     try:
         result, _ = first.request("initialize", {"protocolVersion": 1})
@@ -131,9 +132,10 @@ def check(command, env, cwd, store):
                 assert any(item.get("params", {}).get("update", {}).get("content", {}).get("text")
                            == "ACP_RESTART_HISTORY" for item in updates), updates
             else:
-                assert updates == [], updates
-            result, _ = client.request("session/load", {"sessionId": "rpi-old-1", "cwd": cwd})
-            assert "error" in result, result
+                history, _ = controls(updates, session_id)
+                assert history == [], updates
+            result, updates = client.request("session/load", {"sessionId": "rpi-old-1", "cwd": cwd})
+            assert "error" in result and not controls(updates, session_id)[0], (result, updates)
             result, _ = client.request("session/load", {"sessionId": str(uuid.uuid4()), "cwd": cwd})
             assert "error" in result, result
         finally:

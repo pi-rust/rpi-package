@@ -1,0 +1,111 @@
+name: MCP stdio and HTTP checks
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-mcp-core/**'
+      - 'packages/rpi-mcp-adapter/**'
+      - 'packages/rpi-extcore/**'
+      - 'packages/rpi-acp/**'
+      - 'packages/rpi-http/**'
+      - 'packages/rpi-web/**'
+      - 'docs/architecture/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/mcp-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp:
+    name: MCP (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      RPI_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Isolate fixture agent directories
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/mcp-agent"
+          echo "RPI_AGENT_DIR=$RUNNER_TEMP/mcp-agent" >> "$GITHUB_ENV"
+          echo "RPI_CODING_AGENT_DIR=$RUNNER_TEMP/mcp-agent" >> "$GITHUB_ENV"
+      - name: Check package and included-test formatting
+        run: |
+          cargo fmt --check -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp
+          rustfmt --edition 2021 --check packages/rpi-mcp-core/src/configured_http_tests.rs packages/rpi-mcp-adapter/src/http_tests.rs packages/rpi-extcore/src/external_tools.rs packages/rpi-extcore/src/external_tools_tests.rs packages/rpi-extcore/src/external_tools_host_tests.rs packages/rpi-acp/src/protocol_mcp_tests.rs packages/rpi-extcore/src/session_catalog_tests.rs packages/rpi-acp/src/protocol_session_list_tests.rs packages/rpi-acp/src/session_list_tests.rs packages/rpi-acp/src/session_list_fixture_tests.rs
+      - name: Test bounded native-header catalog completion and ACP discovery fixtures
+        # session_catalog includes deterministic post-result worker-exit gates;
+        # fixture qualification is not a real-native smoke or deployment.
+        run: |
+          cargo test --locked -p rpi-extcore session_catalog
+          cargo test --locked -p rpi-acp session_list
+          cargo test --locked -p rpi-acp list_dispatcher
+      - name: Check provenance-gated native harness syntax without running it
+        run: python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/session_list_native.py').read_text(encoding='utf-8'))"
+      - name: Test bounded live configuration and ACP dispatch fixtures
+        run: |
+          cargo test --locked -p rpi-extcore --lib configuration::tests
+          cargo test --locked -p rpi-acp --lib protocol::configuration::tests
+          cargo test --locked -p rpi-acp --lib protocol_configuration_tests
+          cargo test --locked -p rpi-acp --lib protocol_configuration_dispatch_tests
+      - name: Check included configuration-test formatting
+        run: rustfmt --edition 2021 --check packages/rpi-extcore/src/configuration_tests.rs packages/rpi-acp/src/configuration_tests.rs packages/rpi-acp/src/protocol_configuration_tests.rs packages/rpi-acp/src/protocol_configuration_dispatch_tests.rs
+      - name: Check configuration native harness syntax without running it
+        run: python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/configuration_native.py').read_text(encoding='utf-8'))"
+      - name: Test bounded context usage and ACP lifecycle fixtures
+        run: cargo test --locked -p rpi-extcore -p rpi-acp context_usage
+      - name: Check context usage tests and native harness syntax
+        run: |
+          rustfmt --edition 2021 --check packages/rpi-extcore/src/context_usage_tests.rs packages/rpi-acp/src/context_usage_tests.rs packages/rpi-acp/src/protocol_context_usage_tests.rs
+          python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/context_usage_native.py').read_text(encoding='utf-8'))"
+      - name: Test optional native tool-name fidelity fixtures
+        run: |
+          cargo test --locked -p rpi-acp tool_name
+          cargo test --locked -p rpi-acp names_do_not_create_empty_progress_or_change_tool_presentation
+          cargo test --locked -p rpi-acp replay_missing_result_name_does_not_guess_from_adjacent_call
+      - name: Check included tool-name tests and native harness syntax
+        run: |
+          rustfmt --edition 2021 --check packages/rpi-acp/src/tool_name_tests.rs packages/rpi-acp/src/history_tool_name_tests.rs
+          python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/tool_names_native.py').read_text(encoding='utf-8'))"
+          python -B -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/message_image_fs_native.py').read_text(encoding='utf-8'))"
+      - name: Test default package compatibility and runtime ownership
+        # Includes identity, ordered prompt/image and client text-I/O fixtures;
+        # syntax checking the Windows native harness above is not executing it.
+        run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
+      - name: Test configured core HTTP transport with loopback fixtures
+        run: cargo test --locked -p rpi-mcp-core configured_http_tests
+      - name: Test stdio bridge with real MCP children and a fixture native peer
+        run: cargo test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge
+      - name: Test HTTP bridge with loopback MCP and a fixture native peer
+        run: cargo test --locked -p rpi-extcore --features test-support --test mcp_http_bridge
+      - name: Check all targets
+        # Includes the test-only rpi-acp configuration_fixture example; checking
+        # it is not native execution, installation, or runtime qualification.
+        run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web --all-targets
+      # Only MCP core is a strict Clippy gate. Existing extcore warnings and
+      # the pinned SDK export_plugin! adapter not_unsafe_ptr_arg_deref baseline
+      # are not suppressed, run with relaxed lints, or labelled strict passes.
+      - name: Strict MCP core Clippy
+        run: cargo clippy --locked -p rpi-mcp-core --all-targets -- -D warnings
+      - name: Build the adapter library
+        run: cargo build --locked -p rpi-mcp-adapter --lib
+      - name: Verify the standalone core package
+        run: cargo package --locked -p rpi-mcp-core
+      - name: Verify the adapter against the unpublished workspace core
+        run: cargo package --locked -p rpi-mcp-adapter --config 'patch.crates-io.rpi-mcp-core.path="packages/rpi-mcp-core"'
+      # Real-native ACP/MCP, session/list, configuration, context usage and tool-name smokes require
+      # separately verified native/bridge binaries (plus the isolated test DLL
+      # for configuration) and prebuild provenance. This fixture-only job does
+      # not run them or qualify an installed extension.

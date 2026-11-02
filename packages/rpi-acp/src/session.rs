@@ -82,7 +82,11 @@ fn forwarded_model_provider_from(args: &[String]) -> (Option<String>, Option<Str
 /// A live ACP session backed by one `rpi --mode rpc` child process.
 pub struct Session {
     rpc: Arc<HostSession>,
+    file_io: tokio::sync::OnceCell<Arc<crate::file_io::ClientFileIO>>,
+    context_presentation: tokio::sync::Mutex<crate::protocol::context_usage::Presentation>,
     durable: Option<Arc<DurableRuntime>>,
+    configuration:
+        tokio::sync::OnceCell<Option<Arc<rpi_extcore::configuration::ConfigurationRuntime>>>,
     #[cfg(test)]
     events: Option<rpi_extcore::host::TestEvents>,
 }
@@ -124,10 +128,18 @@ impl Session {
         };
         Ok(Arc::new(Self {
             rpc,
+            file_io: tokio::sync::OnceCell::new(),
+            context_presentation: tokio::sync::Mutex::default(),
             durable,
+            configuration: tokio::sync::OnceCell::new(),
             #[cfg(test)]
             events: None,
         }))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn attach_for_test(rpc: Arc<HostSession>) -> Result<Arc<Self>, String> {
+        Self::attach(rpc).await
     }
 
     async fn send(&self, value: Value) -> Result<(), String> {
@@ -137,6 +149,57 @@ impl Session {
     /// Wait for backend startup and obtain the authoritative active branch.
     pub async fn state(&self) -> Result<Value, String> {
         self.rpc.state().await
+    }
+
+    /// Thin neutral-core mapping; extcore owns validation, discovery and cleanup.
+    pub async fn configure_tools(
+        &self,
+        servers: Vec<rpi_extcore::external_tools::ToolServer>,
+        cwd: PathBuf,
+        scope: String,
+    ) -> Result<(), String> {
+        self.rpc.configure_tools(servers, cwd, scope).await
+    }
+
+    /// Thin neutral-core mapping; extcore owns discovery, registration and cleanup.
+    pub async fn configure_stdio_tools(
+        &self,
+        servers: Vec<rpi_extcore::external_tools::StdioToolServer>,
+        cwd: PathBuf,
+        scope: String,
+    ) -> Result<(), String> {
+        self.rpc.configure_stdio_tools(servers, cwd, scope).await
+    }
+
+    /// Configure client authority before publication or history replay.
+    pub(crate) async fn configure_file_io(
+        &self,
+        writer: &Arc<Writer>,
+        id: &str,
+    ) -> Result<(), String> {
+        let caps = writer.file_io_capabilities();
+        if caps == rpi_extcore::file_io::FileIOCapabilities::default()
+            && self.file_io.get().is_none()
+        {
+            return Ok(());
+        }
+        let handler = self
+            .file_io
+            .get_or_init(|| async {
+                Arc::new(crate::file_io::ClientFileIO::new(
+                    writer.clone(),
+                    id.to_owned(),
+                ))
+            })
+            .await;
+        if handler.capabilities != caps {
+            return Err("client filesystem authority changed; reopen the session".into());
+        }
+        self.rpc.configure_file_io(caps, handler.clone()).await
+    }
+
+    pub async fn history_read(&self) -> Result<rpi_extcore::history::page::HistoryRead, String> {
+        rpi_extcore::history::page::HistoryRead::begin(self.rpc.clone()).await
     }
 
     pub async fn available_models(&self) -> Result<Value, String> {
@@ -181,6 +244,10 @@ impl Session {
         runtime.refresh_branch().await
     }
 
+    pub fn compact_available(&self) -> bool {
+        self.rpc.supports_command("compact")
+    }
+
     pub fn durable_available(&self) -> bool {
         self.durable.is_some()
     }
@@ -216,8 +283,15 @@ impl Session {
         acp_session_id: &str,
         blocks: &[ContentBlock],
     ) -> Result<&'static str, String> {
-        let mut run = self.rpc.begin_prompt(prompt_text(blocks)).await?;
+        let mut run = match compact_instructions(blocks) {
+            Some(instructions) => self.rpc.begin_compaction(instructions).await?,
+            None => match prompt_content(blocks)? {
+                Some(content) => self.rpc.begin_prompt_content(content).await?,
+                None => self.rpc.begin_prompt(prompt_text(blocks)).await?,
+            },
+        };
         let mut cancelled = false;
+        let mut settled = false;
         let mut dialogs = DialogTasks::default();
 
         let stop_reason = 'prompt: loop {
@@ -246,6 +320,9 @@ impl Session {
                             .await;
                     }
                     if let Some(outcome) = progress.outcome {
+                        // Tracker outcomes can also be rejection/invalid acceptance.
+                        // Only an authoritative settlement has new context to read.
+                        settled = value["type"] == "agent_settled";
                         break 'prompt outcome.map(|outcome| match outcome {
                             rpi_extcore::run::RunOutcome::Completed => "end_turn",
                             rpi_extcore::run::RunOutcome::Cancelled => "cancelled",
@@ -322,12 +399,81 @@ impl Session {
             }
         };
         dialogs.cancel_all(writer, acp_session_id).await;
+        if settled {
+            self.refresh_context_usage(writer, acp_session_id).await;
+        }
         stop_reason
+    }
+
+    /// A presentation gate spans the native read and completed frame write.
+    /// Contention skips this best-effort refresh instead of queuing readers.
+    async fn refresh_context_usage(&self, writer: &Writer, expected: &str) {
+        let Ok(mut presentation) = self.context_presentation.try_lock() else {
+            return;
+        };
+        tokio::select! {
+            biased;
+            _ = writer.terminal() => {},
+            usage = self.context_usage() => {
+                if let Ok(Some(usage)) = usage {
+                    presentation.deliver(writer, expected, &usage, false).await;
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn context_usage(
+        &self,
+    ) -> Result<Option<rpi_extcore::context_usage::ContextUsage>, String> {
+        self.rpc.context_usage().await
+    }
+
+    /// Startup already obtained state; never issue another native request here.
+    pub(crate) async fn initial_context_usage(
+        &self,
+        writer: &Writer,
+        expected: &str,
+        state: &Value,
+    ) {
+        let Ok(Some(usage)) = rpi_extcore::context_usage::parse_context_usage(state) else {
+            return;
+        };
+        // Lifecycle operations are serialized by the dispatcher. At most one
+        // initial waits behind a best-effort read (5s) and its frame (2s).
+        // A repeated successful load/resume must force delivery, even if equal.
+        let gate = tokio::time::timeout(
+            std::time::Duration::from_secs(7),
+            self.context_presentation.lock(),
+        );
+        let mut presentation = tokio::select! {
+            biased;
+            _ = writer.terminal() => return,
+            result = gate => match result { Ok(guard) => guard, Err(_) => return },
+        };
+        presentation.deliver(writer, expected, &usage, true).await;
+    }
+
+    pub(crate) fn configuration_lifecycle(&self) -> broadcast::Receiver<Value> {
+        self.rpc.subscribe_raw()
+    }
+
+    pub(crate) async fn configuration(
+        &self,
+    ) -> Result<Option<Arc<rpi_extcore::configuration::ConfigurationRuntime>>, String> {
+        self.configuration
+            .get_or_try_init(|| {
+                rpi_extcore::configuration::ConfigurationRuntime::try_attach(self.rpc.clone())
+            })
+            .await
+            .cloned()
     }
 
     /// Kill the child (session/close, process shutdown).
     pub async fn kill(&self) {
         self.rpc.terminate().await;
+        if let Some(Some(runtime)) = self.configuration.get() {
+            runtime.shutdown().await;
+        }
     }
 }
 
@@ -368,7 +514,11 @@ fn text_update(delta: Value) -> Value {
     } else {
         "agent_message_chunk"
     };
-    json!({"sessionUpdate":kind,"content":{"type":"text","text":delta["text"]}})
+    let mut update = json!({"sessionUpdate":kind,"content":{"type":"text","text":delta["text"]}});
+    if let Some(id) = delta.get("messageId").and_then(Value::as_str) {
+        update["messageId"] = json!(id);
+    }
+    update
 }
 
 #[cfg(test)]
@@ -550,11 +700,30 @@ async fn handle_ui_dialog(
     let _ = session.send(response).await;
 }
 
+/// Only pure text can invoke the adapter command, never resource contents.
+/// Keep the full (possibly multiline) instruction body, trimming its edges.
+fn compact_instructions(blocks: &[ContentBlock]) -> Option<Option<String>> {
+    if !blocks
+        .iter()
+        .all(|block| matches!(block, ContentBlock::Text { .. }))
+    {
+        return None;
+    }
+    let text = prompt_text(blocks);
+    let tail = text.trim().strip_prefix("/compact")?;
+    if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let instructions = tail.trim();
+    Some((!instructions.is_empty()).then(|| instructions.to_owned()))
+}
+
 /// Flatten ACP prompt content blocks into the text `rpi --mode rpc` accepts.
 ///
 /// Baseline ACP requires Text and ResourceLink support; we also accept embedded
 /// `resource` blocks (advertised via `promptCapabilities.embeddedContext`) and
 /// inline them as `<file>` blocks, mirroring rpi's `@file` expansion.
+/// Resource references retain their exact URI alongside any display name.
 pub fn prompt_text(blocks: &[ContentBlock]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for block in blocks {
@@ -574,19 +743,48 @@ pub fn prompt_text(blocks: &[ContentBlock]) -> String {
                     parts.push(format!("@{}", resource_display_name(None, &resource.uri)));
                 }
             }
-            ContentBlock::Other => {}
+            ContentBlock::Image { .. } | ContentBlock::Other => {}
         }
     }
     parts.join("\n")
 }
 
+/// Only mixed/image input uses new native budgets; legacy text stays byte-for-byte.
+fn prompt_content(
+    blocks: &[ContentBlock],
+) -> Result<Option<rpi_extcore::prompt::PromptContent>, String> {
+    use rpi_extcore::prompt::{PromptBlock, PromptContent};
+    if !blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }))
+    {
+        return Ok(None);
+    }
+    let content = blocks
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Image {
+                data, mime_type, ..
+            } => PromptBlock::Image {
+                data: data.clone(),
+                mime_type: mime_type.clone(),
+            },
+            // Existing resources retain their exact conversion at this position.
+            _ => PromptBlock::Text {
+                text: prompt_text(std::slice::from_ref(block)),
+            },
+        })
+        .collect();
+    PromptContent::new(content).map(Some)
+}
+
 fn resource_display_name(name: Option<&str>, uri: &str) -> String {
     if let Some(name) = name {
         if !name.is_empty() {
-            return name.to_string();
+            return format!("{name} ({uri})");
         }
     }
-    uri.strip_prefix("file://").unwrap_or(uri).to_string()
+    uri.to_string()
 }
 
 /// Translate one `rpi --mode rpc` event line into an ACP `session/update`
@@ -610,15 +808,12 @@ pub fn translate_event(event: &Value) -> Option<Value> {
             }))
         }
         "tool_execution_start" => {
-            let tool = event
-                .get("toolName")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
+            let name = event.get("toolName").and_then(Value::as_str);
+            let tool = name.unwrap_or("tool");
             let args = event.get("args").cloned().unwrap_or(Value::Null);
             let mut update = json!({
                 "sessionUpdate": "tool_call",
                 "toolCallId": tool_call_id(event),
-                "name": tool,
                 "title": title_for_tool(tool, &args),
                 "kind": kind_for_tool(tool),
                 "status": "in_progress",
@@ -632,25 +827,26 @@ pub fn translate_event(event: &Value) -> Option<Value> {
             if !diffs.is_empty() {
                 update["content"] = Value::Array(diffs);
             }
-            Some(update)
+            Some(with_native_tool_name(update, name))
         }
         "tool_execution_update" => {
             let text = tool_result_text(event.get("partialResult"));
             if text.is_empty() {
                 return None;
             }
-            Some(json!({
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": tool_call_id(event),
-                "status": "in_progress",
-                "content": [{"type": "content", "content": {"type": "text", "text": text}}],
-            }))
+            Some(with_native_tool_name(
+                json!({
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": tool_call_id(event),
+                    "status": "in_progress",
+                    "content": [{"type": "content", "content": {"type": "text", "text": text}}],
+                }),
+                event.get("toolName").and_then(Value::as_str),
+            ))
         }
         "tool_execution_end" => {
-            let tool = event
-                .get("toolName")
-                .and_then(Value::as_str)
-                .unwrap_or("tool");
+            let name = event.get("toolName").and_then(Value::as_str);
+            let tool = name.unwrap_or("tool");
             let is_error = event
                 .get("isError")
                 .and_then(Value::as_bool)
@@ -668,10 +864,18 @@ pub fn translate_event(event: &Value) -> Option<Value> {
                 update["content"] =
                     json!([{"type": "content", "content": {"type": "text", "text": text}}]);
             }
-            Some(update)
+            Some(with_native_tool_name(update, name))
         }
         _ => None,
     }
+}
+
+/// Add only a supplied native name; display fallbacks are not tool identities.
+pub(crate) fn with_native_tool_name(mut update: Value, name: Option<&str>) -> Value {
+    if let Some(name) = name {
+        update["name"] = json!(name);
+    }
+    update
 }
 
 fn tool_call_id(event: &Value) -> Value {
@@ -890,6 +1094,11 @@ fn tool_result_text(result: Option<&Value>) -> String {
 mod tests {
     use super::*;
 
+    include!("session_compact_tests.rs");
+    include!("session_three_capability_tests.rs");
+    include!("session_compact_lifecycle_tests.rs");
+    include!("tool_name_tests.rs");
+
     #[test]
     fn bypass_reaches_children_and_overrides_environment_activation() {
         for no_auto_gate in [false, true] {
@@ -961,7 +1170,10 @@ mod tests {
         let (rpc, events) = HostSession::test_connection(stdin, 64);
         let session = Arc::new(Session {
             rpc: rpc.clone(),
+            file_io: tokio::sync::OnceCell::new(),
+            context_presentation: tokio::sync::Mutex::default(),
             durable: Some(DurableRuntime::empty(rpc)),
+            configuration: tokio::sync::OnceCell::new(),
             events: Some(events),
         });
         (session, commands)
@@ -1082,7 +1294,10 @@ mod tests {
         let (session, _commands) = test_session();
         let unavailable = Session {
             rpc: session.rpc.clone(),
+            file_io: tokio::sync::OnceCell::new(),
+            context_presentation: tokio::sync::Mutex::default(),
             durable: None,
+            configuration: tokio::sync::OnceCell::new(),
             events: None,
         };
         let error = unavailable.durable_state().await.unwrap_err();
@@ -1384,6 +1599,32 @@ mod tests {
         }
         prompt.await.unwrap();
         assert_eq!(text, "前半段🌊，后半段。");
+    }
+
+    #[test]
+    fn compact_fixture_maps_initial_and_final_content_without_duplicate_acp_chunks() {
+        let frames = [
+            json!({"type":"message_start","message":{"role":"assistant","content":[{"type":"thinking","thinking":"初"},{"type":"text","text":"Hello"}]}}),
+            json!({"type":"message_update","eventType":"thinking_delta","contentIndex":0,"delta":"想🌊"}),
+            json!({"type":"message_update","eventType":"text_delta","contentIndex":1,"delta":" world!"}),
+            json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"初想🌊好了"},{"type":"text","text":"Hello world! Saved."}]}}),
+        ];
+        let mut stream = StreamText::default();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        for event in frames {
+            for update in stream.event(&event).unwrap() {
+                let target = match update["sessionUpdate"].as_str() {
+                    Some("agent_message_chunk") => &mut text,
+                    Some("agent_thought_chunk") => &mut thinking,
+                    other => panic!("unexpected update: {other:?}"),
+                };
+                target.push_str(update["content"]["text"].as_str().unwrap());
+            }
+        }
+        assert_eq!(text, "Hello world! Saved.");
+        assert_eq!(thinking, "初想🌊好了");
+        assert!(stream.complete(&text).unwrap().is_none());
     }
 
     #[test]
@@ -1988,10 +2229,116 @@ mod tests {
                 },
             },
         ];
-        let text = prompt_text(&blocks);
-        assert!(text.starts_with("explain"));
-        assert!(text.contains("@main.rs"));
-        assert!(text.contains("<file uri=\"file:///a/lib.rs\">\nfn main() {}\n</file>"));
+        assert_eq!(
+            prompt_text(&blocks),
+            "explain\n@main.rs (file:///a/main.rs)\n<file uri=\"file:///a/lib.rs\">\nfn main() {}\n</file>"
+        );
+    }
+
+    #[test]
+    fn prompt_text_distinguishes_same_name_resource_links() {
+        let blocks = vec![
+            ContentBlock::ResourceLink {
+                name: Some("src".into()),
+                uri: "file:///project-a/src/".into(),
+            },
+            ContentBlock::ResourceLink {
+                name: Some("src".into()),
+                uri: "file:///project-b/src/".into(),
+            },
+        ];
+        assert_eq!(
+            prompt_text(&blocks),
+            "@src (file:///project-a/src/)\n@src (file:///project-b/src/)"
+        );
+    }
+
+    #[test]
+    fn prompt_text_preserves_exact_resource_link_uris() {
+        for uri in [
+            "file:///project/my folder/a%20b.rs?revision=one%2Ftwo&view=raw#L10",
+            "file:///C:/Users/Big%20Fish/project/?filter=a%26b#directory",
+            "file://server/share/my folder/file.rs?version=2#L3",
+            "https://example.test/a%2Fb?q=hello%20world#section%201",
+            "custom://workspace/resource%23name?key=value#part",
+        ] {
+            for name in [None, Some(""), Some("my label")] {
+                let block = ContentBlock::ResourceLink {
+                    name: name.map(str::to_string),
+                    uri: uri.into(),
+                };
+                let expected = match name {
+                    Some("my label") => format!("@my label ({uri})"),
+                    _ => format!("@{uri}"),
+                };
+                assert_eq!(prompt_text(&[block]), expected, "name={name:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_text_preserves_uris_for_resources_without_text() {
+        for uri in [
+            "file:///C:/my%20project/src/?revision=one%2Ftwo#L5",
+            "custom://workspace/my folder?key=a%26b#part",
+        ] {
+            let block = ContentBlock::Resource {
+                resource: crate::protocol::EmbeddedResource {
+                    uri: uri.into(),
+                    text: None,
+                },
+            };
+            assert_eq!(prompt_text(&[block]), format!("@{uri}"));
+        }
+    }
+
+    #[test]
+    fn prompt_text_preserves_mixed_block_order_and_embedded_payloads() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "before".into(),
+            },
+            ContentBlock::ResourceLink {
+                name: Some("source".into()),
+                uri: "file:///a%20b.rs?revision=2#L4".into(),
+            },
+            ContentBlock::Resource {
+                resource: crate::protocol::EmbeddedResource {
+                    uri: "custom://context?key=a%2Fb#part".into(),
+                    text: Some("first line\nsecond line".into()),
+                },
+            },
+            ContentBlock::Text {
+                text: String::new(),
+            },
+            ContentBlock::Other,
+            ContentBlock::Resource {
+                resource: crate::protocol::EmbeddedResource {
+                    uri: "file:///C:/my%20project/?revision=2#directory".into(),
+                    text: None,
+                },
+            },
+            ContentBlock::Resource {
+                resource: crate::protocol::EmbeddedResource {
+                    uri: "custom://empty".into(),
+                    text: Some(String::new()),
+                },
+            },
+            ContentBlock::Text {
+                text: "after".into(),
+            },
+        ];
+        assert_eq!(
+            prompt_text(&blocks),
+            concat!(
+                "before\n",
+                "@source (file:///a%20b.rs?revision=2#L4)\n",
+                "<file uri=\"custom://context?key=a%2Fb#part\">\nfirst line\nsecond line\n</file>\n",
+                "@file:///C:/my%20project/?revision=2#directory\n",
+                "<file uri=\"custom://empty\">\n\n</file>\n",
+                "after"
+            )
+        );
     }
 
     #[test]

@@ -332,6 +332,35 @@ fn complete_plan(raw: &Value) -> Result<String, String> {
     .to_string())
 }
 
+fn complete_schema() -> StableToolSchema {
+    StableToolSchema {
+        name: StbString::from_string(PLAN_TOOL.into()),
+        description: StbString::from_string("Submit a decision-ready Markdown design for user review and leave active plan mode, restoring the previous tool set. Only valid while plan mode is active. Include scope, concrete implementation steps/files, important decisions, risks, and validation/acceptance checks. This saves a plan; it does not approve or execute changes, dispatch agents, or create an orchestrator plan DAG. Do not implement during planning; respect any required user approval after submission.".into()),
+        parameters: StbString::from_string(json!({
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["plan"],
+            "properties": {
+                "plan": {"type": "string", "pattern": "\\S", "description": format!("Complete implementation-ready Markdown plan, including validation and acceptance checks. Leading/trailing whitespace is removed; the trimmed plan must contain 1 to {MAX_PLAN_CHARS} Unicode characters.")}
+            }
+        }).to_string()),
+    }
+}
+
+fn start_schema() -> StableToolSchema {
+    StableToolSchema {
+        name: StbString::from_string(START_TOOL.into()),
+        description: StbString::from_string("Enter read-only design/review mode for a complex change requiring exploration and an implementation-ready plan, not for routine task tracking (use todo). While active, only read, bash, docs, and plan_mode_complete are enabled: use bash solely for non-mutating inspection, not edits or implementation. Finish with plan_mode_complete. This is a planning/approval workflow, not an orchestrator DAG or execution scheduler; entering it does not itself request or grant approval. Calling again while active keeps the current mode. Supply request here; submit the plan with plan_mode_complete.".into()),
+        parameters: StbString::from_string(json!({
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+                "request": {"type": "string", "description": "Optional planning context, trimmed; omitted, empty, or whitespace-only means no request. Included in the start response, not submitted as a separate user message. No plan field should be supplied to start."}
+            }
+        }).to_string()),
+    }
+}
+
 static HANDLES: ToolHandles<Drive> = ToolHandles::new();
 
 struct Drive {
@@ -475,29 +504,13 @@ rpi_plugin_sdk::export_plugin!(|api| {
         return 1;
     };
     let _ = RUNTIME.set(*api);
-    let schema = Box::new(StableToolSchema {
-        name: StbString::from_string(PLAN_TOOL.into()),
-        description: StbString::from_string(
-            "Submit a complete implementation-ready plan and leave plan mode. Only available while /plan mode is active.".into(),
-        ),
-        parameters: StbString::from_string(format!(
-            r#"{{"type":"object","required":["plan"],"properties":{{"plan":{{"type":"string","minLength":1,"maxLength":{MAX_PLAN_CHARS},"description":"The complete decision-ready implementation plan in Markdown."}}}}}}"#
-        )),
-    });
+    let schema = Box::new(complete_schema());
     let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
     drop(schema);
     if rc != 0 {
         return rc;
     }
-    let start_schema = Box::new(StableToolSchema {
-        name: StbString::from_string(START_TOOL.into()),
-        description: StbString::from_string(
-            "Enter Plan mode before making a complex change. Use this when the request needs repository exploration and an implementation plan.".into(),
-        ),
-        parameters: StbString::from_string(
-            r#"{"type":"object","properties":{"request":{"type":"string","description":"Optional user request to plan."}}}"#.into(),
-        ),
-    });
+    let start_schema = Box::new(start_schema());
     let start_rc = register(&*start_schema, execute, poll, cancel, destroy, free_string);
     drop(start_schema);
     if start_rc != 0 {
@@ -514,6 +527,59 @@ rpi_plugin_sdk::export_plugin!(|api| {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_schemas_are_json_objects_with_runtime_parameter_rules() {
+        for (tool, name) in [(start_schema(), START_TOOL), (complete_schema(), PLAN_TOOL)] {
+            // Exercise the constructors used for actual registration.
+            assert_eq!(tool.name.to_string_lossy(), name);
+            let schema: Value = serde_json::from_str(&tool.parameters.to_string_lossy()).unwrap();
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["additionalProperties"], true);
+            let props = schema["properties"].as_object().unwrap();
+            assert!(!props.contains_key("__rpi"));
+            if name == START_TOOL {
+                assert!(schema.get("required").is_none());
+                assert_eq!(props["request"]["type"], "string");
+                assert!(props["request"].get("minLength").is_none());
+                assert!(!props.contains_key("plan"));
+            } else {
+                assert_eq!(schema["required"], json!(["plan"]));
+                assert_eq!(props["plan"]["type"], "string");
+                assert_eq!(props["plan"]["pattern"], "\\S");
+                // Runtime bounds the trimmed text, not the raw JSON string.
+                assert!(props["plan"].get("maxLength").is_none());
+                assert!(props["plan"]["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&MAX_PLAN_CHARS.to_string()));
+            }
+            assert!(tool.description.to_string_lossy().contains("DAG"));
+        }
+    }
+
+    #[test]
+    fn completion_rejects_missing_wrong_type_blank_and_trimmed_oversize_plans() {
+        for input in [
+            json!({}),
+            json!({"plan":null}),
+            json!({"plan":42}),
+            json!({"plan": {"steps": []}}),
+            json!({"plan":" \n\t"}),
+        ] {
+            assert_eq!(
+                complete_plan(&input).unwrap_err(),
+                "plan must be a non-empty string"
+            );
+        }
+        // Multibyte characters count as characters rather than bytes. Validation
+        // precedes the active-mode check and does not access runtime/global state.
+        let long = format!("  {}  ", "界".repeat(MAX_PLAN_CHARS + 1));
+        assert_eq!(
+            complete_plan(&json!({"plan":long,"__rpi":{"trace":[{"id":1}]}})).unwrap_err(),
+            format!("plan must not exceed {MAX_PLAN_CHARS} characters")
+        );
+    }
 
     #[test]
     fn renders_empty_status() {

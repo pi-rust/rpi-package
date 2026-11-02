@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="shell_background">#F4F1E9</color>
+    <color name="page_background">#FFFFFF</color>
+    <color name="shell_text">#30302E</color>
+    <color name="shell_accent">#C55529</color>
+    <bool name="light_system_bars">true</bool>
+</resources>

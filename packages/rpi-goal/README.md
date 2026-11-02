@@ -44,7 +44,58 @@ Words `status`, `start`, `pause`, `resume`, `stop`, `done`, `complete`, `turns`,
 | `pause` / `resume` | Temporarily stop / restart autonomous advancing. |
 | `complete` | Mark done and archive it. |
 | `limit` | Set `maxTurns` and/or `maxMinutes` on the active goal. |
-| `show` / `list` | Render the current (or all) goal(s). |
+| `show` / `list` | Render the current (or all) goal(s) in this branch, not all projects or sessions. |
+
+Use `goal` for one objective and progress notes across turns; use `durable` for
+explicit workflow steps, recovery journals, or a manually consumed work queue.
+This tool does not spawn workers or start a nested agent run. State is scoped
+to the current **native session branch**, not the shared cwd/project. A
+subagent must not use it to manage its parent's objective; subagent `TurnEnd`
+events skip goal accounting and context injection.
+
+### Parameter contract
+
+- Omitted `action` defaults to `show`; action names are case-insensitive, and
+  `status` is a compatibility alias for `show`.
+- `start` requires a nonblank `title` (at most 500 Unicode scalar values after
+  trimming). It archives/replaces the old goal and resets used turns. Optional
+  `notes` default to empty; budgets default to unlimited.
+- `update` requires `notes` and/or `status` (`active` or `paused`, case-sensitive).
+  Notes replace existing notes, not append; `""` clears them. Notes are limited
+  to 20,000 Unicode scalar values after trimming. The schema documents trimmed
+  limits rather than rejecting padded input with a raw `maxLength`.
+- `limit` requires `maxTurns` and/or `maxMinutes`. Omitted fields preserve their
+  current values. `update`, `pause`, `resume`, `complete`, and `limit` require
+  an existing goal.
+- Budget schemas recommend safe integers `1..4294967295`; they intentionally
+  do not enumerate every input tolerated by the runtime. The current parser casts
+  start budgets and limit turns to `u32`, rather than checking that range;
+  larger values can wrap. Limit minutes use signed millisecond arithmetic, so
+  very large values are unsafe. Runtime parsing is unchanged.
+- Zero is accepted but differs by action: on `start`, zero means unlimited;
+  on `limit`, zero turns becomes **1**, and zero minutes sets the deadline to
+  **now**. The tool cannot clear an existing budget; use `/goal turns 0`,
+  `/goal time 0`, or `/goal clear` instead.
+- The schema advertises the eight canonical actions with conditional requirements.
+  The runtime ignores unrelated fields; `null` is not a substitute for a required
+  string or budget.
+
+### Developer compatibility notes
+
+Top-level `additionalProperties: true` permits host-injected `__rpi` metadata,
+including nested values, without exposing a reserved model property. The schema
+is recommended model input, not an exhaustive description of parser tolerance;
+case-insensitive actions and the `status` alias remain runtime compatibility
+behavior.
+
+Examples:
+
+```json
+{"action":"start","title":"Ship the release","maxTurns":20,"maxMinutes":30}
+{"action":"update","notes":"Implementation complete; validating"}
+{"action":"limit","maxTurns":40}
+{"action":"show"}
+```
 
 ## Budgets
 
@@ -55,7 +106,9 @@ A goal can carry a budget:
 
 When either budget is exhausted the goal **auto-pauses** and a short notice is
 injected into the context. `/goal resume` (or `goal resume`) continues; while
-paused, turns are not counted.
+paused, turns are not counted. Resume does not reset `turnsUsed` or extend the
+deadline: update the budget before resuming an exhausted goal. `maxTurns` is a
+total count from the goal start, not a count of additional turns.
 
 ## Storage
 

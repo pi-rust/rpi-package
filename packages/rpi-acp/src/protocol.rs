@@ -5,7 +5,7 @@
 //!
 //! * client → agent requests we implement: `initialize`, `session/new`,
 //!   `session/prompt`, `session/load`, `session/resume`, `session/close`,
-//!   `session/delete`, and the rpi extension `session/durable`; notifications
+//!   `session/delete`, `session/list`, and the rpi extension `session/durable`; notifications
 //!   `session/cancel` and `$/cancel_request`.
 //! * agent → client: `session/update` notifications (streamed text, thinking,
 //!   tool calls), optional `session/durable_update` notifications, and one
@@ -31,6 +31,23 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::{oneshot, watch, Mutex};
 
 use crate::session::Session;
+
+#[path = "configuration.rs"]
+mod configuration;
+#[path = "context_usage.rs"]
+pub(crate) mod context_usage;
+#[cfg(test)]
+#[path = "protocol_configuration_dispatch_tests.rs"]
+mod protocol_configuration_dispatch_tests;
+#[cfg(test)]
+#[path = "protocol_configuration_tests.rs"]
+mod protocol_configuration_tests;
+#[cfg(test)]
+#[path = "protocol_context_usage_tests.rs"]
+mod protocol_context_usage_tests;
+#[cfg(test)]
+#[path = "protocol_response_progress_tests.rs"]
+mod protocol_response_progress_tests;
 
 /// The pollable stdin reader, re-exported so the frontends can build one.
 pub use rpi_plugin_sdk::stdio::StdinLines;
@@ -115,12 +132,17 @@ fn durable_mutation(params: &Value) -> Result<DurableMutation, String> {
 /// ACP protocol major version we speak. Stable v1.
 pub const PROTOCOL_VERSION: u64 = 1;
 
-/// One block of a `session/prompt` message. Modeled types are the ones we act
-/// on; every other ACP block (`image`, `audio`, …) lands in [`ContentBlock::Other`]
-/// and is ignored, matching our advertised `promptCapabilities`.
+/// Ordered ACP input; URI metadata on inline images is inert and never fetched.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+        #[serde(default)]
+        uri: Option<String>,
+    },
     Text {
         text: String,
     },
@@ -152,7 +174,9 @@ pub struct Writer {
     /// In-flight agent → client requests (e.g. `session/request_permission`),
     /// keyed by the JSON-RPC id we sent. The client's response (an object with
     /// `id` and no `method`) resolves the matching oneshot.
-    pending: std::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>,
+    pending: std::sync::Mutex<HashMap<u64, ClientPending>>,
+    file_io: std::sync::Mutex<rpi_extcore::file_io::FileIOCapabilities>,
+    terminal: watch::Sender<bool>,
     closed: std::sync::atomic::AtomicBool,
     next_id: AtomicU64,
     questions: std::sync::atomic::AtomicBool,
@@ -160,10 +184,27 @@ pub struct Writer {
     elicitation: std::sync::atomic::AtomicBool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientRequestError {
+    Rpc { code: i64, message: String },
+    InvalidResponse,
+    TooLarge,
+    Capacity,
+    Cancelled,
+    Disconnected,
+}
+
+struct ClientPending {
+    tx: oneshot::Sender<Result<Value, ClientRequestError>>,
+    max_response_bytes: Option<usize>,
+}
+
 impl Writer {
     pub fn new() -> Self {
         Self {
             out: Mutex::new(Box::new(tokio::io::stdout())),
+            file_io: std::sync::Mutex::default(),
+            terminal: watch::channel(false).0,
             pending: std::sync::Mutex::new(HashMap::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(1),
@@ -172,12 +213,73 @@ impl Writer {
         }
     }
 
+    pub(crate) async fn terminal(&self) {
+        let mut rx = self.terminal.subscribe();
+        if !*rx.borrow_and_update() {
+            let _ = rx.changed().await;
+        }
+    }
+
     async fn write(&self, value: &Value) -> std::io::Result<()> {
         let mut line = value.to_string();
         line.push('\n');
-        let mut out = self.out.lock().await;
-        out.write_all(line.as_bytes()).await?;
-        out.flush().await
+        let write = async {
+            let mut out = self.out.lock().await;
+            // Declare AFTER the output guard so cancellation closes the stream
+            // before releasing the mutex to another waiting writer.
+            let mut frame = FrameWrite {
+                writer: self,
+                complete: false,
+            };
+            if self.closed.load(Ordering::Acquire) {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            out.write_all(line.as_bytes()).await?;
+            out.flush().await?;
+            frame.complete = true;
+            Ok(())
+        };
+        // Cancellation is terminal for the entire stream, never per session.
+        // Mark it terminal BEFORE dropping a potentially partial write future.
+        tokio::pin!(write);
+        tokio::select! {
+            biased;
+            _ = self.terminal() => Err(std::io::ErrorKind::BrokenPipe.into()),
+            result = &mut write => {
+                if result.is_err() { self.close(); }
+                result
+            },
+        }
+    }
+
+    /// Bound only live configuration delivery. Other ACP writes retain their
+    /// existing backpressure behavior. A timeout invalidates the whole stream
+    /// before the potentially partial frame is dropped.
+    async fn write_configuration(&self, value: &Value) -> std::io::Result<()> {
+        tokio::select! {
+            biased;
+            result = self.write(value) => result,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                self.close();
+                Err(std::io::ErrorKind::TimedOut.into())
+            }
+        }
+    }
+
+    /// Usage frames alone share the configuration transport's fail-closed deadline.
+    async fn write_context_usage(&self, value: &Value) -> std::io::Result<()> {
+        // Keep ownership outside select: timeout closes the connection before
+        // dropping a write that may already have emitted part of its frame.
+        let write = self.write(value);
+        tokio::pin!(write);
+        tokio::select! {
+            biased;
+            result = &mut write => result,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                self.close();
+                Err(std::io::ErrorKind::TimedOut.into())
+            }
+        }
     }
 
     /// Answer a JSON-RPC request.
@@ -185,6 +287,30 @@ impl Writer {
         let _ = self
             .write(&json!({"jsonrpc": "2.0", "id": id, "result": result}))
             .await;
+    }
+
+    /// Session commands must follow the successful new/load/resume response.
+    async fn respond_session(
+        &self,
+        id: &Value,
+        result: Value,
+        session_id: &str,
+        compact_available: bool,
+    ) {
+        self.respond(id, result).await;
+        if compact_available {
+            self.notify(
+                "session/update",
+                json!({
+                    "sessionId": session_id,
+                    "update": {"sessionUpdate":"available_commands_update", "availableCommands":[{
+                        "name":"compact", "description":"Compact the conversation context",
+                        "input":{"hint":"Optional instructions"}
+                    }]}
+                }),
+            )
+            .await;
+        }
     }
 
     /// Answer a JSON-RPC request with an error.
@@ -213,31 +339,61 @@ impl Writer {
     /// Send an agent → client request and await its response. Resolves to the
     /// `result` object, or `Null` if the connection closes first.
     pub async fn request(&self, method: &str, params: Value) -> Value {
+        self.request_checked(method, params, None)
+            .await
+            .unwrap_or(Value::Null)
+    }
+
+    /// Preserve errors versus successful null, with bounded shared admission.
+    pub async fn request_checked(
+        &self,
+        method: &str,
+        params: Value,
+        max_response_bytes: Option<usize>,
+    ) -> Result<Value, ClientRequestError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.pending.lock().unwrap();
             if self.closed.load(Ordering::Acquire) {
-                return Value::Null;
+                return Err(ClientRequestError::Disconnected);
             }
-            pending.insert(id, tx);
+            if pending.len() >= 64 {
+                return Err(ClientRequestError::Capacity);
+            }
+            pending.insert(
+                id,
+                ClientPending {
+                    tx,
+                    max_response_bytes,
+                },
+            );
         }
-        // A cancelled dialog drops its pending request even when the client never replies.
         let _request = PendingRequest { writer: self, id };
         if self
-            .write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await
             .is_err()
         {
             self.close();
-            return Value::Null;
+            return Err(ClientRequestError::Disconnected);
         }
-        rx.await.unwrap_or(Value::Null)
+        rx.await.unwrap_or(Err(ClientRequestError::Disconnected))
+    }
+
+    pub(crate) fn file_io_capabilities(&self) -> rpi_extcore::file_io::FileIOCapabilities {
+        *self.file_io.lock().unwrap()
+    }
+
+    fn negotiate_file_io(&self, params: &Value) -> Result<(), String> {
+        *self.file_io.lock().unwrap() = crate::file_io::capabilities(params)?;
+        Ok(())
     }
 
     pub fn close(&self) {
         let mut pending = self.pending.lock().unwrap();
         self.closed.store(true, Ordering::Release);
+        self.terminal.send_replace(true);
         pending.clear();
     }
 
@@ -270,6 +426,8 @@ impl Writer {
     pub(crate) fn with_output(out: impl AsyncWrite + Unpin + Send + 'static) -> Self {
         Self {
             out: Mutex::new(Box::new(out)),
+            file_io: std::sync::Mutex::default(),
+            terminal: watch::channel(false).0,
             pending: std::sync::Mutex::new(HashMap::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
             next_id: AtomicU64::new(1),
@@ -287,16 +445,39 @@ impl Writer {
     /// owning dialog task send the native cancellation frame and retire its
     /// transport resource without aborting the Rust task.
     pub(crate) async fn cancel_request(&self, id: u64) {
-        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
-            let _ = tx.send(Value::Null);
+        if let Some(pending) = self.pending.lock().unwrap().remove(&id) {
+            let _ = pending.tx.send(Err(ClientRequestError::Cancelled));
         }
     }
 
     /// Route a client response (an object with `id` and no `method`) to the
     /// request that produced it.
     pub(crate) async fn resolve(&self, id: u64, result: Value) {
-        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
-            let _ = tx.send(result);
+        self.resolve_checked(id, Ok(result));
+    }
+
+    pub(crate) fn resolve_checked(&self, id: u64, mut result: Result<Value, ClientRequestError>) {
+        if let Some(pending) = self.pending.lock().unwrap().remove(&id) {
+            if let (Some(limit), Ok(value)) = (pending.max_response_bytes, &result) {
+                if !crate::file_io::within_json_budget(value, limit) {
+                    result = Err(ClientRequestError::TooLarge);
+                }
+            }
+            let _ = pending.tx.send(result);
+        }
+    }
+}
+
+/// Cancelling any existing writer user (including legacy prompt/durable tasks)
+/// must fail closed, rather than release a partial frame onto a live stream.
+struct FrameWrite<'a> {
+    writer: &'a Writer,
+    complete: bool,
+}
+impl Drop for FrameWrite<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.writer.close();
         }
     }
 }
@@ -350,11 +531,13 @@ pub fn initialize_result() -> Value {
                 }
             },
             "loadSession": true,
+            // ACP supports implicit stdio and explicit Streamable HTTP, not SSE.
+            "mcpCapabilities": {"http": true, "sse": false},
             "auth": {"logout": {}},
-            "sessionCapabilities": {"resume": {}, "delete": {}, "close": {}},
+            "sessionCapabilities": {"resume": {}, "delete": {}, "close": {}, "list": {}},
             "promptCapabilities": {
-                // `--mode rpc` takes a single text prompt; no multimodal input.
-                "image": false,
+                // Adapter support; old native peers reject images before writing.
+                "image": true,
                 "audio": false,
                 // Editor context (open files / selections) arrives as `resource`
                 // blocks, which we inline into the prompt text.
@@ -450,7 +633,7 @@ enum RpcMessage {
     },
     Response {
         id: Value,
-        result: Value,
+        result: Result<Value, ClientRequestError>,
     },
 }
 
@@ -545,16 +728,29 @@ fn parse_rpc_message(message: Value) -> Result<RpcMessage, Value> {
     };
     let has_result = object.contains_key("result");
     let has_error = object.contains_key("error");
-    if !has_result && !has_error {
-        return Err(rpc_error(id, -32600, "invalid request"));
-    }
-    if has_result == has_error || (has_error && !object["error"].is_object()) {
-        return Err(Value::Null);
-    }
-    Ok(RpcMessage::Response {
-        id,
-        result: object.get("result").cloned().unwrap_or(Value::Null),
-    })
+    // A malformed response retires its matching request explicitly instead of
+    // responding to a response or silently waiting for the file deadline.
+    let result = if has_result == has_error {
+        Err(ClientRequestError::InvalidResponse)
+    } else if has_error {
+        let error = &object["error"];
+        match (error["code"].as_i64(), error["message"].as_str()) {
+            (Some(code), Some(message))
+                if message.len() <= rpi_extcore::file_io::MAX_ERROR_BYTES =>
+            {
+                Err(ClientRequestError::Rpc {
+                    code,
+                    message: message.to_owned(),
+                })
+            }
+            _ => Err(ClientRequestError::InvalidResponse),
+        }
+    } else {
+        // Move untrusted result; never clone its potentially huge text payload.
+        let mut message = message;
+        Ok(message.as_object_mut().unwrap().remove("result").unwrap())
+    };
+    Ok(RpcMessage::Response { id, result })
 }
 
 fn request_params<'a>(
@@ -677,76 +873,260 @@ async fn stop_all_prompt_tasks(prompt_tasks: &mut HashMap<String, PromptTask>) {
 /// The owner reports the returned code to the host's stdio lifecycle. The
 /// stop receiver also lets SessionShutdown end an idle server without input.
 pub async fn run(
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
     mut input: StdinLines,
-    mut pending: Option<String>,
+    pending: Option<String>,
 ) -> i32 {
-    let writer = Arc::new(Writer::new());
-    let sessions: Arc<Mutex<HashMap<String, Arc<Session>>>> = Arc::new(Mutex::new(HashMap::new()));
-    let mut durable_watchers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
-    let mut prompt_tasks: HashMap<String, PromptTask> = HashMap::new();
-    let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    run_connection(
+        stop,
+        || input.poll_line(),
+        pending,
+        Arc::new(Writer::new()),
+        crate::history::session_root(),
+    )
+    .await
+}
 
+// The same dispatcher is exercised by model-free transport fixtures.
+async fn run_connection(
+    stop: watch::Receiver<bool>,
+    poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+) -> i32 {
+    run_connection_with_sessions(
+        stop,
+        poll_line,
+        pending,
+        writer,
+        list_root,
+        Arc::new(Mutex::new(HashMap::new())),
+    )
+    .await
+}
+
+async fn run_connection_with_sessions(
+    stop: watch::Receiver<bool>,
+    poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+) -> i32 {
+    run_connection_with_opener(
+        stop,
+        poll_line,
+        pending,
+        writer,
+        list_root,
+        sessions,
+        |id, cwd, servers| async move { open_session_with_tools(&id, cwd, None, servers).await },
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn run_connection_with_test_opener<F, Fut>(
+    stop: watch::Receiver<bool>,
+    poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+    mut open: F,
+) -> i32
+where
+    F: FnMut(String, PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<(Arc<Session>, Value), String>>,
+{
+    run_connection_with_opener(
+        stop,
+        poll_line,
+        pending,
+        writer,
+        list_root,
+        sessions,
+        |id, cwd, servers| {
+            assert!(servers.is_empty());
+            open(id, cwd)
+        },
+    )
+    .await
+}
+
+// Only nonresponses consume ingress capacity. Never await a full queue: doing
+// so would strand responses behind requests while lifecycle dispatch is busy.
+// The 65th queued nonresponse fails the connection closed instead. This is a
+// queue bound, not a new input-frame byte limit; feature budgets still apply.
+const INPUT_QUEUE_CAPACITY: usize = 64;
+
+async fn route_connection_input(
+    mut stop: watch::Receiver<bool>,
+    mut poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    mut pending: Option<String>,
+    writer: Arc<Writer>,
+    input: tokio::sync::mpsc::Sender<Result<RpcMessage, Value>>,
+) -> std::io::Result<()> {
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(10));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut exit_code = 0;
+    loop {
+        if *stop.borrow() || writer.closed.load(Ordering::Acquire) {
+            writer.close();
+            return Ok(());
+        }
+        // The probe's first line precedes every subsequent stdin line.
+        let next = match pending.take() {
+            Some(line) => Ok(rpi_plugin_sdk::stdio::InputLine::Line(line)),
+            None => poll_line(),
+        };
+        let line = match next {
+            Ok(rpi_plugin_sdk::stdio::InputLine::Line(line)) => line,
+            // Do not close Writer on EOF: the dispatcher must first drain the
+            // queued requests and perform its existing prompt/list cleanup.
+            Ok(rpi_plugin_sdk::stdio::InputLine::Eof) => return Ok(()),
+            Ok(rpi_plugin_sdk::stdio::InputLine::Pending) => {
+                tokio::select! {
+                    biased;
+                    _ = writer.terminal() => return Ok(()),
+                    _ = stop.changed() => {
+                        writer.close();
+                        return Ok(());
+                    }
+                    _ = tick.tick() => {},
+                }
+                continue;
+            }
+            Err(error) => {
+                diagln!("[rpi-acp] stdin read error: {error}");
+                writer.close();
+                return Err(error);
+            }
+        };
+        let line = line.trim();
+        if !line.is_empty() {
+            let rpc = match serde_json::from_str(line) {
+                Ok(message) => parse_rpc_message(message),
+                Err(error) => Err(rpc_error(
+                    Value::Null,
+                    -32700,
+                    format!("parse error: {error}"),
+                )),
+            };
+            match rpc {
+                Ok(RpcMessage::Response { id, result }) => {
+                    if let Some(id) = id.as_u64() {
+                        writer.resolve_checked(id, result);
+                    }
+                }
+                Err(error) if error.is_null() => {}
+                other => match input.try_send(other) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        diagln!("[rpi-acp] stdin request queue overflow (limit 64)");
+                        writer.close();
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "ACP stdin request queue overflow (limit 64)",
+                        ));
+                    }
+                },
+            }
+        }
+        // Even an always-ready source must let serialized dispatch, stop and
+        // native file workers progress. No spawned/detached stdin task or Send
+        // bound on the original FnMut reader is needed.
+        tokio::task::yield_now().await;
+    }
+}
+
+async fn run_connection_with_opener<F, Fut>(
+    stop: watch::Receiver<bool>,
+    poll_line: impl FnMut() -> std::io::Result<rpi_plugin_sdk::stdio::InputLine>,
+    pending: Option<String>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+    open: F,
+) -> i32
+where
+    F: FnMut(String, PathBuf, Vec<rpi_extcore::external_tools::ToolServer>) -> Fut,
+    Fut: std::future::Future<Output = Result<(Arc<Session>, Value), String>>,
+{
+    let (tx, rx) = tokio::sync::mpsc::channel(INPUT_QUEUE_CAPACITY);
+    let (outcome_tx, outcome_rx) = oneshot::channel();
+    let ingress_stop = stop.clone();
+    let ingress_writer = writer.clone();
+    // Both futures are owned and polled here. Lifecycle requests remain in one
+    // ordered dispatcher; only checked client responses bypass that queue.
+    let ingress = async move {
+        let outcome =
+            route_connection_input(ingress_stop, poll_line, pending, ingress_writer, tx).await;
+        let _ = outcome_tx.send(outcome);
+    };
+    let ((), exit_code) = tokio::join!(
+        ingress,
+        dispatch_connection(stop, rx, outcome_rx, writer, list_root, sessions, open),
+    );
+    exit_code
+}
+
+async fn dispatch_connection<F, Fut>(
+    mut stop: watch::Receiver<bool>,
+    mut input: tokio::sync::mpsc::Receiver<Result<RpcMessage, Value>>,
+    input_outcome: oneshot::Receiver<std::io::Result<()>>,
+    writer: Arc<Writer>,
+    list_root: Result<PathBuf, String>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
+    mut open: F,
+) -> i32
+where
+    F: FnMut(String, PathBuf, Vec<rpi_extcore::external_tools::ToolServer>) -> Fut,
+    Fut: std::future::Future<Output = Result<(Arc<Session>, Value), String>>,
+{
+    let mut durable_watchers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    let mut configuration_watchers: HashMap<String, configuration::Forwarder> = HashMap::new();
+    let terminal_writer = writer.clone();
+    let mut terminal_stop = stop.clone();
+    let terminal_task = tokio::spawn(async move {
+        if !*terminal_stop.borrow_and_update() {
+            let _ = terminal_stop.changed().await;
+        }
+        terminal_writer.close();
+    });
+    let mut prompt_tasks: HashMap<String, PromptTask> = HashMap::new();
+    let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut list_tasks = crate::session_list::ListTasks::new(list_root);
+
     // Why the loop ended, reported once at the bottom. Zed forwards agent stderr
     // into its own log, so this is what turns "transport closed" into a cause.
     let mut reason = "stdin closed (client hung up)";
     'input: loop {
-        let line = loop {
-            if let Some(line) = pending.take() {
-                break line;
-            }
-            if *stop.borrow() {
-                reason = "stopped by the host (session shutdown)";
-                break 'input;
-            }
-            match input.poll_line() {
-                Ok(rpi_plugin_sdk::stdio::InputLine::Line(line)) => break line,
-                Ok(rpi_plugin_sdk::stdio::InputLine::Eof) => break 'input,
-                Ok(rpi_plugin_sdk::stdio::InputLine::Pending) => {
-                    tokio::select! {
-                        biased;
-                        _ = stop.changed() => {
-                            reason = "stopped by the host (session shutdown)";
-                            break 'input;
-                        }
-                        _ = tick.tick() => {},
-                    }
-                }
-                Err(error) => {
-                    diagln!("[rpi-acp] stdin read error: {error}");
-                    reason = "stdin read error";
-                    exit_code = 2;
-                    break 'input;
-                }
-            }
-        };
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+        if writer.closed.load(Ordering::Acquire) {
+            break;
         }
-        let message: Value = match serde_json::from_str(line) {
-            Ok(value) => value,
-            Err(error) => {
-                // Parse errors are the one JSON-RPC error that has no usable
-                // request id. They still get a response, unlike notifications.
-                writer
-                    .write(&rpc_error(
-                        Value::Null,
-                        -32700,
-                        format!("parse error: {error}"),
-                    ))
-                    .await
-                    .ok();
-                continue;
+        if *stop.borrow() {
+            reason = "stopped by the host (session shutdown)";
+            break;
+        }
+        let rpc = tokio::select! {
+            biased;
+            _ = stop.changed() => {
+                reason = "stopped by the host (session shutdown)";
+                break;
             }
+            _ = writer.terminal() => break,
+            next = input.recv() => match next {
+                Some(rpc) => rpc,
+                None => break,
+            },
         };
-        let rpc = match parse_rpc_message(message) {
+        let rpc = match rpc {
             Ok(message) => message,
-            Err(error) if error.is_null() => continue,
             Err(error) => {
+                // Preserve parse/request errors in input order. Malformed
+                // notifications and responses were filtered by the parser.
                 writer.write(&error).await.ok();
                 continue;
             }
@@ -755,7 +1135,7 @@ pub async fn run(
             RpcMessage::Request { id, method, params } => (id, method, params),
             RpcMessage::Response { id, result } => {
                 if let Some(numeric_id) = id.as_u64() {
-                    writer.resolve(numeric_id, result).await;
+                    writer.resolve_checked(numeric_id, result);
                 }
                 continue;
             }
@@ -774,8 +1154,24 @@ pub async fn run(
         // request. Keeping them briefly makes close/cancel races deterministic,
         // while avoiding an unbounded task map.
         prompt_tasks.retain(|_, task| !task.handle.is_finished());
+        list_tasks.reap().await;
+        // IDs retain their JSON type: 1 and "1" are separate requests. Check
+        // both task classes before parsing parameters.
+        if let Some(id) = &id {
+            let key = request_key(id);
+            if prompt_tasks.contains_key(&key) || list_tasks.contains(&key) {
+                writer
+                    .respond_error(id, -32600, "duplicate request id")
+                    .await;
+                continue;
+            }
+        }
 
         match (id, method.as_str()) {
+            (Some(id), "session/list") => {
+                let key = request_key(&id);
+                list_tasks.start(id, key, &params, writer.clone()).await;
+            }
             (Some(id), "initialize") => {
                 let params = match request_params(&params, "initialize") {
                     Ok(params) => params,
@@ -804,6 +1200,10 @@ pub async fn run(
                     }
                 }
                 let initialize_params = Value::Object(params.clone());
+                if let Err(error) = writer.negotiate_file_io(&initialize_params) {
+                    writer.respond_error(&id, -32602, &error).await;
+                    continue;
+                }
                 writer.negotiate_questions(&initialize_params);
                 let terminal_auth = client_supports_terminal_auth(&initialize_params);
                 writer
@@ -851,17 +1251,32 @@ pub async fn run(
                         continue;
                     }
                 };
-                if let Some(mcp_servers) = params.get("mcpServers") {
-                    if !mcp_servers.is_array() {
-                        writer
-                            .respond_error(&id, -32602, "mcpServers must be an array")
-                            .await;
+                let cwd = PathBuf::from(cwd);
+                let servers = match crate::mcp::parse(params, &cwd) {
+                    Ok(servers) => servers.unwrap_or_default(),
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
                         continue;
                     }
-                }
+                };
                 let session_id = uuid::Uuid::new_v4().to_string();
-                match open_session(&session_id, PathBuf::from(cwd), None).await {
+                match open(session_id.clone(), cwd, servers).await {
                     Ok((session, state)) => {
+                        if let Err(error) = session.configure_file_io(&writer, &session_id).await {
+                            session.kill().await;
+                            writer.session_error(&id, "session/new", &error).await;
+                            continue;
+                        }
+                        let lifecycle = session.configuration_lifecycle();
+                        let runtime = match session.configuration().await {
+                            Ok(runtime) => runtime,
+                            Err(error) => {
+                                session.kill().await;
+                                writer.session_error(&id, "session/new", &error).await;
+                                continue;
+                            }
+                        };
+                        let prepared = runtime.as_ref().map(configuration::Forwarder::prepare);
                         let mut result = json!({"sessionId": session_id});
                         match config_options_for(&session, &state).await {
                             Ok(config) => result["configOptions"] = config["configOptions"].clone(),
@@ -874,11 +1289,35 @@ pub async fn run(
                             writer.clone(),
                             session_id.clone(),
                         );
-                        sessions.lock().await.insert(session_id.clone(), session);
+                        let compact_available = session.compact_available();
+                        sessions
+                            .lock()
+                            .await
+                            .insert(session_id.clone(), session.clone());
                         if let Some(watcher) = watcher {
                             durable_watchers.insert(session_id.clone(), watcher);
                         }
-                        writer.respond(&id, result).await;
+                        if let Some((_, _, config)) = &prepared {
+                            result["configOptions"] = config["configOptions"].clone();
+                        }
+                        writer
+                            .respond_session(&id, result, &session_id, compact_available)
+                            .await;
+                        session
+                            .initial_context_usage(&writer, &session_id, &state)
+                            .await;
+                        if let Some((rx, gate, _)) = prepared {
+                            configuration_watchers.insert(
+                                session_id.clone(),
+                                configuration::Forwarder::start(
+                                    rx,
+                                    gate,
+                                    writer.clone(),
+                                    session_id,
+                                    lifecycle,
+                                ),
+                            );
+                        }
                     }
                     Err(error) => writer.session_error(&id, "session/new", &error).await,
                 }
@@ -1024,26 +1463,90 @@ pub async fn run(
                         continue;
                     }
                 };
+                let cwd = PathBuf::from(cwd);
+                let servers = match crate::mcp::parse(params, &cwd) {
+                    Ok(servers) => servers,
+                    Err(error) => {
+                        writer.respond_error(&id, -32602, &error).await;
+                        continue;
+                    }
+                };
                 let existing = sessions.lock().await.get(session_id).cloned();
                 let opened = if let Some(session) = existing {
-                    session.state().await.map(|state| (session, state))
+                    prepare_session_tools(&session, session_id, cwd, servers)
+                        .await
+                        .map(|state| (session, state))
                 } else {
                     match crate::history::saved_session(session_id) {
-                        Ok(path) => open_session(session_id, PathBuf::from(cwd), Some(&path)).await,
+                        Ok(path) => {
+                            open_session_with_tools(
+                                session_id,
+                                cwd,
+                                Some(&path),
+                                servers.unwrap_or_default(),
+                            )
+                            .await
+                        }
                         Err(error) => Err(error),
                     }
                 };
                 match opened {
                     Ok((session, state)) => {
+                        if let Err(error) = session.configure_file_io(&writer, session_id).await {
+                            if !sessions.lock().await.contains_key(session_id) {
+                                session.kill().await;
+                            }
+                            writer.session_error(&id, method, &error).await;
+                            continue;
+                        }
+                        let lifecycle = session.configuration_lifecycle();
+                        let runtime = match session.configuration().await {
+                            Ok(runtime) => runtime,
+                            Err(error) => {
+                                if !sessions.lock().await.contains_key(session_id) {
+                                    session.kill().await;
+                                }
+                                writer.session_error(&id, method, &error).await;
+                                continue;
+                            }
+                        };
                         let updates = if method == "session/load" {
-                            crate::history::saved_session(session_id).and_then(|path| {
-                                crate::history::replay(&path, state["leafId"].as_str())
-                            })
+                            crate::history::Replay::prepare(&session, session_id)
+                                .await
+                                .map(Some)
                         } else {
-                            Ok(Vec::new())
+                            Ok(None)
                         };
                         match updates {
-                            Ok(updates) => {
+                            Ok(mut replay) => {
+                                // Retain the old observer until replay has succeeded.
+                                // Its projection gate serializes replay/response with live
+                                // configuration delivery, including replay emission failure.
+                                let old_gate = configuration_watchers
+                                    .get(session_id)
+                                    .map(|watcher| watcher.gate.clone());
+                                let replay_guard = match &old_gate {
+                                    Some(gate) => Some(gate.lock().await),
+                                    None => None,
+                                };
+                                if let Some(replay) = replay.as_mut() {
+                                    if let Err(error) = replay.emit(&writer, session_id).await {
+                                        if !sessions.lock().await.contains_key(session_id) {
+                                            session.kill().await;
+                                        }
+                                        writer.session_error(&id, method, &error).await;
+                                        continue;
+                                    }
+                                }
+                                drop(replay_guard);
+                                if let Some(watcher) = configuration_watchers.remove(session_id) {
+                                    watcher.stop(&writer).await;
+                                    if writer.closed.load(Ordering::Acquire) {
+                                        break 'input;
+                                    }
+                                }
+                                let prepared =
+                                    runtime.as_ref().map(configuration::Forwarder::prepare);
                                 let mut result = json!({});
                                 match config_options_for(&session, &state).await {
                                     Ok(config) => {
@@ -1061,19 +1564,36 @@ pub async fn run(
                                     writer.clone(),
                                     session_id.to_owned(),
                                 );
-                                sessions.lock().await.insert(session_id.to_owned(), session);
+                                let compact_available = session.compact_available();
+                                sessions
+                                    .lock()
+                                    .await
+                                    .insert(session_id.to_owned(), session.clone());
                                 if let Some(watcher) = watcher {
                                     durable_watchers.insert(session_id.to_owned(), watcher);
                                 }
-                                for update in updates {
-                                    writer
-                                        .notify(
-                                            "session/update",
-                                            json!({"sessionId":session_id,"update":update}),
-                                        )
-                                        .await;
+                                if let Some((_, _, config)) = &prepared {
+                                    result["configOptions"] = config["configOptions"].clone();
                                 }
-                                writer.respond(&id, result).await;
+                                writer
+                                    .respond_session(&id, result, session_id, compact_available)
+                                    .await;
+                                session
+                                    .initial_context_usage(&writer, session_id, &state)
+                                    .await;
+                                if let Some((rx, gate, _)) = prepared {
+                                    configuration_watchers.insert(
+                                        session_id.to_owned(),
+                                        configuration::Forwarder::start(
+                                            rx,
+                                            gate,
+                                            writer.clone(),
+                                            session_id.to_owned(),
+                                            lifecycle,
+                                        ),
+                                    );
+                                }
+                                drop(replay);
                             }
                             Err(error) => {
                                 // Keep an already attached backend alive on a replay error.
@@ -1113,6 +1633,44 @@ pub async fn run(
                 let session = sessions.lock().await.get(&session_id).cloned();
                 match session {
                     Some(session) => {
+                        let lifecycle = session.configuration_lifecycle();
+                        match session.configuration().await {
+                            Ok(Some(runtime)) => {
+                                let prepared = if configuration_watchers.contains_key(&session_id) {
+                                    None
+                                } else {
+                                    Some(configuration::Forwarder::prepare(&runtime))
+                                };
+                                let gate = match &prepared {
+                                    Some((_, gate, _)) => gate.clone(),
+                                    None => configuration_watchers[&session_id].gate.clone(),
+                                };
+                                configuration::set(
+                                    &runtime, &gate, &writer, &id, &config_id, &value,
+                                )
+                                .await;
+                                if let Some((rx, gate, _)) = prepared {
+                                    configuration_watchers.insert(
+                                        session_id.clone(),
+                                        configuration::Forwarder::start(
+                                            rx,
+                                            gate,
+                                            writer.clone(),
+                                            session_id,
+                                            lifecycle,
+                                        ),
+                                    );
+                                }
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                writer
+                                    .session_error(&id, "session/set_config_option", &error)
+                                    .await;
+                                continue;
+                            }
+                        }
                         let applied: Result<(), String> = match config_id.as_str() {
                             "model" => match value.as_str() {
                                 Some(selected) => {
@@ -1181,6 +1739,14 @@ pub async fn run(
                     &mut prompt_tasks,
                 )
                 .await;
+                // Native cleanup precedes waiting for output to drain. If the
+                // frame cannot drain, stop() marks the WHOLE connection terminal.
+                if let Some(watcher) = configuration_watchers.remove(&session_id) {
+                    watcher.stop(&writer).await;
+                    if writer.closed.load(Ordering::Acquire) {
+                        break 'input;
+                    }
+                }
                 if method == "session/close" {
                     // Close deliberately preserves the native transcript so a
                     // later load/resume can reopen it. Repeating close is safe.
@@ -1233,7 +1799,8 @@ pub async fn run(
                 } else {
                     false
                 };
-                if !prompt_found {
+                let list_found = list_tasks.cancel(&key);
+                if !prompt_found && !list_found {
                     if let Some(numeric_id) = request_id.as_u64() {
                         writer.cancel_request(numeric_id).await;
                     }
@@ -1281,8 +1848,16 @@ pub async fn run(
         }
     }
 
+    // Retain existing best-effort list completions on EOF. ListTasks owns
+    // terminal cancellation of its writes; FrameWrite closes a partial stream.
+    list_tasks.shutdown().await;
     // Resolve pending client requests before tearing down every child.
     writer.close();
+    terminal_task.abort();
+    let _ = terminal_task.await;
+    for (_, watcher) in configuration_watchers.drain() {
+        watcher.stop(&writer).await;
+    }
     stop_all_prompt_tasks(&mut prompt_tasks).await;
     for task in logout_tasks {
         task.abort();
@@ -1295,6 +1870,16 @@ pub async fn run(
     for (_, session) in sessions.lock().await.drain() {
         session.kill().await;
     }
+    // The owned ingress sends its actual outcome, independently of queue
+    // capacity. A closed Writer must not turn a real read/overflow error into
+    // normal EOF (or log exit 0). Closing above also wakes an idle ingress.
+    let exit_code = match input_outcome.await {
+        Ok(Ok(())) => 0,
+        _ => {
+            reason = "stdin ingress failed";
+            2
+        }
+    };
     // One line, always: with Zed this lands in its log as `agent stderr`, and it
     // is what a client's "transport closed" actually corresponds to.
     diagln!("[rpi-acp] server stopping ({reason}, exit {exit_code})");
@@ -1346,6 +1931,25 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("medium");
 
+    config_options_with_identity(
+        models,
+        thinking,
+        current_provider,
+        current_model_id,
+        current_thinking,
+        true,
+    )
+}
+
+/// Presentation only: typed callers pass the already-resolved identity verbatim.
+fn config_options_with_identity(
+    models: &Value,
+    thinking: &Value,
+    current_provider: &str,
+    current_model_id: &str,
+    current_thinking: &str,
+    legacy_fallback: bool,
+) -> Value {
     // Keep the provider in the value so two providers may expose the same model
     // id without colliding. With multiple providers, use ACP's grouped select
     // form so Zed exposes the provider boundary.
@@ -1402,27 +2006,35 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
         groups.pop().map(|(_, options)| options).unwrap_or_default()
     };
 
-    let current_value = selections
-        .iter()
-        .find(|(provider, id, _)| provider == current_provider && id == current_model_id)
-        .map(|(_, _, value)| value.clone())
-        .or_else(|| {
-            selections
-                .iter()
-                .find(|(_, id, _)| id == current_model_id)
-                .map(|(_, _, value)| value.clone())
-        })
-        // ACP requires currentValue to identify an available option. Older
-        // hosts may not report modelId/provider yet, so use the first model
-        // instead of emitting the invalid "/" value.
-        .or_else(|| selections.first().map(|(_, _, value)| value.clone()))
-        .unwrap_or_else(|| {
-            if current_provider.is_empty() {
-                current_model_id.to_owned()
-            } else {
-                format!("{current_provider}/{current_model_id}")
-            }
-        });
+    let current_value = if !legacy_fallback {
+        if current_provider.is_empty() {
+            current_model_id.to_owned()
+        } else {
+            format!("{current_provider}/{current_model_id}")
+        }
+    } else {
+        selections
+            .iter()
+            .find(|(provider, id, _)| provider == current_provider && id == current_model_id)
+            .map(|(_, _, value)| value.clone())
+            .or_else(|| {
+                selections
+                    .iter()
+                    .find(|(_, id, _)| id == current_model_id)
+                    .map(|(_, _, value)| value.clone())
+            })
+            // ACP requires currentValue to identify an available option. Older
+            // hosts may not report modelId/provider yet, so use the first model
+            // instead of emitting the invalid "/" value.
+            .or_else(|| selections.first().map(|(_, _, value)| value.clone()))
+            .unwrap_or_else(|| {
+                if current_provider.is_empty() {
+                    current_model_id.to_owned()
+                } else {
+                    format!("{current_provider}/{current_model_id}")
+                }
+            })
+    };
 
     let thinking_options: Vec<Value> = thinking
         .as_array()
@@ -1477,6 +2089,9 @@ fn config_options(models: &Value, thinking: &Value, state: &Value) -> Value {
 /// `configOptions` object. `state` is the `get_state` result already held by
 /// the caller, so it is not re-read here.
 async fn config_options_for(session: &Arc<Session>, state: &Value) -> Result<Value, String> {
+    if let Some(runtime) = session.configuration().await? {
+        return Ok(configuration::present(&runtime.snapshot()));
+    }
     let models = session.available_models().await?;
     // Model switching must remain available if an older host lacks this optional query.
     let thinking = match session.available_thinking_levels().await {
@@ -1489,29 +2104,135 @@ async fn config_options_for(session: &Arc<Session>, state: &Value) -> Result<Val
     Ok(config_options(&models, &thinking, state))
 }
 
+#[cfg(test)]
 async fn open_session(
     id: &str,
     cwd: PathBuf,
     saved: Option<&std::path::Path>,
 ) -> Result<(Arc<Session>, Value), String> {
+    open_session_with_tools(id, cwd, saved, Vec::new()).await
+}
+
+async fn open_session_with_tools(
+    id: &str,
+    cwd: PathBuf,
+    saved: Option<&std::path::Path>,
+    servers: Vec<rpi_extcore::external_tools::ToolServer>,
+) -> Result<(Arc<Session>, Value), String> {
+    for server in &servers {
+        server
+            .validate()
+            .map_err(|_| "invalid MCP configuration".to_owned())?;
+    }
+    validate_session_workspace(id, &cwd, saved, !servers.is_empty())?;
+    let session = Session::spawn(id.to_owned(), cwd.clone(), saved).await?;
+    match prepare_session_tools(&session, id, cwd, Some(servers)).await {
+        Ok(state) => Ok((session, state)),
+        Err(error) => {
+            session.kill().await;
+            Err(error)
+        }
+    }
+}
+
+/// Both fresh load and resume enter this preflight before native/MCP spawn.
+fn validate_session_workspace(
+    id: &str,
+    cwd: &std::path::Path,
+    saved: Option<&std::path::Path>,
+    has_tools: bool,
+) -> Result<(), String> {
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err("cwd must be an existing absolute directory".into());
     }
-    let session = Session::spawn(id.to_owned(), cwd, saved).await?;
-    match session.state().await {
-        Ok(state) if state["sessionId"] == id => Ok((session, state)),
-        result => {
-            session.kill().await;
-            Err(result
-                .err()
-                .unwrap_or_else(|| "backend opened a different sessionId".into()))
+    // No-MCP restores retain historical behavior, including old headers.
+    if has_tools {
+        if let Some(saved) = saved {
+            crate::history::validate_restored_workspace(saved, id, cwd)?;
         }
     }
+    Ok(())
+}
+
+/// Check native identity before any MCP discovery, and configure before replay.
+/// Omission on a live session is deliberately not an explicit empty config.
+async fn prepare_session_tools(
+    session: &Session,
+    id: &str,
+    cwd: PathBuf,
+    servers: Option<Vec<rpi_extcore::external_tools::ToolServer>>,
+) -> Result<Value, String> {
+    let state = session.state().await?;
+    if state["sessionId"] != id {
+        return Err("backend opened a different sessionId".into());
+    }
+    if let Some(servers) = servers {
+        session
+            .configure_tools(servers, cwd, format!("acp:{id}"))
+            .await?;
+    }
+    Ok(state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("protocol_compact_tests.rs");
+
+    #[test]
+    fn checked_client_response_preserves_error_null_and_rejects_ambiguous_frames() {
+        let response = parse_rpc_message(json!({"jsonrpc":"2.0","id":1,"result":null})).unwrap();
+        assert!(matches!(
+            response,
+            RpcMessage::Response {
+                result: Ok(Value::Null),
+                ..
+            }
+        ));
+        let response =
+            parse_rpc_message(json!({"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":""}}))
+                .unwrap();
+        assert!(matches!(
+            response,
+            RpcMessage::Response {
+                result: Err(ClientRequestError::Rpc { code: -32002, .. }),
+                ..
+            }
+        ));
+        for frame in [
+            json!({"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-1,"message":"no"}}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":"bad","message":"no"}}),
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"x".repeat(4097)}}),
+        ] {
+            assert!(matches!(
+                parse_rpc_message(frame).unwrap(),
+                RpcMessage::Response {
+                    result: Err(ClientRequestError::InvalidResponse),
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn writer_negotiates_client_fs_without_claiming_terminal_methods() {
+        let writer = Writer::new();
+        writer
+            .negotiate_file_io(&json!({"clientCapabilities":{"fs":{"readTextFile":true}}}))
+            .unwrap();
+        assert!(writer.file_io_capabilities().read_text);
+        assert!(!writer.file_io_capabilities().write_text);
+        assert!(writer
+            .negotiate_file_io(&json!({"clientCapabilities":{"fs":{"writeTextFile":"true"}}}))
+            .is_err());
+        assert_eq!(
+            initialize_result()["agentCapabilities"]["promptCapabilities"]["image"],
+            true
+        );
+    }
+    include!("protocol_mcp_tests.rs");
+    include!("protocol_session_list_tests.rs");
 
     #[test]
     fn durable_extension_parses_queue_mutations() {
@@ -1688,8 +2409,7 @@ mod tests {
     #[test]
     fn unknown_content_block_is_ignored() {
         let image: ContentBlock =
-            serde_json::from_value(json!({"type":"image","data":"...","mimeType":"image/png"}))
-                .unwrap();
+            serde_json::from_value(json!({"type":"video","data":"..."})).unwrap();
         assert!(matches!(image, ContentBlock::Other));
     }
 

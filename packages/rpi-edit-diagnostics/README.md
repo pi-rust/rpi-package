@@ -14,6 +14,41 @@ replaces the matching behavior and the failure reports of `edit` while the tool
 name, the schema shape and the `oldText`/`newText`/`replaceAll` fields stay the
 same.
 
+## `edit` input and boundaries
+
+Read the existing UTF-8 file before calling; this tool writes immediately on
+success, with no preview/dry-run mode or syntax/type checking. It cannot create
+a missing file or directories and requires read/write access plus directory
+permissions for temporary-file replacement.
+
+| Parameter | Required/default | Contract |
+| --- | --- | --- |
+| `path` | Required, no default | Non-empty path to one existing UTF-8 file. Relative paths use host `__rpi.cwd`, or the plugin process directory when absent; absolute paths follow platform rules. |
+| `edits` | Required, no default | Non-empty array of replacements. All use one original snapshot; merge nearby changes and never overlap resolved spans. |
+| `edits[].oldText` | Required, no default | Non-empty text copied from a read, preserving whitespace but excluding display line numbers/truncation markers. Must resolve uniquely unless `replaceAll` is true. |
+| `edits[].newText` | Required, no default | Literal replacement; `""` deletes. Each edit must change at least one resolved span, otherwise the call fails as a no-op. No regex expansion or automatic formatting. |
+| `edits[].replaceAll` | Optional, `false` | Explicitly replace every non-overlapping occurrence in the selected matching view, rather than requiring uniqueness. Does not permit overlap with other edits or relax matching. |
+
+Exact matches take precedence. Normalized equivalents are considered only when
+there is **no exact match** for that edit, even with `replaceAll: true`; that flag
+is not a request to replace both exact and normalized-equivalent occurrences.
+Newlines in input are normalized and restored to the file's detected LF/CRLF
+style (first newline wins; LF when there is no newline, not majority counting).
+Normalization can rebuild a whole matched line when character mappings
+cannot be preserved (see below).
+
+The schema advertises the canonical array shape. For compatibility the parser
+also accepts a single edit object, a JSON-encoded array/object in `edits`, and
+legacy top-level `oldText`/`newText`/`replaceAll` (appended to any `edits`). Prefer
+the canonical form; these compatibility forms do not make its required fields
+optional. Unknown top-level keys remain allowed for host `__rpi` injection.
+
+Matching/validation failures do not write the file. This does **not** promise
+rollback for an IO failure during a non-atomic hard-link write; see the file
+and concurrency limits below. Cancellation is checked before execution, not
+inside the synchronous read/match/write pipeline. Bracket warnings are only
+net-character-balance observations, not a parser or proof that code is valid.
+
 ## Matching contract
 
 - Each `edits[].oldText` is matched against the **original** file snapshot, never
@@ -73,8 +108,9 @@ The tool result details also carry the display diff, the unified patch and
 
 ## Files
 
-A leading BOM and the file's dominant line ending (CRLF or LF) are preserved,
-and the new content is written to a temporary file in the same directory that is
+A leading BOM is preserved; line endings are normalized to the detected style
+(CRLF or LF according to the first newline, LF if none), and the new content is
+written to a temporary file in the same directory that is
 renamed over the target, so an interrupted write cannot truncate a file. Links
 behave as with the built-in edit: a symlink is followed and its target replaced,
 the link itself left in place; a file with other hard links is rewritten in

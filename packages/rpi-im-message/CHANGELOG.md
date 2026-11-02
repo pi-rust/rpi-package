@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/pi-rust/rpi-package/compare/rpi-im-message-v0.1.12...rpi-im-message-v0.1.13) - 2026-10-31
+
+### Fixed
+
+- *(tools)* clarify guidance and complete parameter schemas ([#135](https://github.com/pi-rust/rpi-package/pull/135))
+
 ## [0.1.12](https://github.com/pi-rust/rpi-package/compare/rpi-im-message-v0.1.11...rpi-im-message-v0.1.12) - 2026-10-14
 
 ### Other

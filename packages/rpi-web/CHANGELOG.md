@@ -2,6 +2,168 @@
 
 ## [Unreleased]
 
+## [0.1.33](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.32...rpi-web-v0.1.33) - 2026-11-02
+
+### Added
+
+- *(android)* save custom sites locally for reuse ([#169](https://github.com/pi-rust/rpi-package/pull/169))
+
+### Fixed
+
+- *(android)* inject node origins from build environment ([#168](https://github.com/pi-rust/rpi-package/pull/168))
+
+## [0.1.32](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.31...rpi-web-v0.1.32) - 2026-11-01
+
+### Added
+
+- *(web)* add Android client, protected releases and system appearance ([#166](https://github.com/pi-rust/rpi-package/pull/166))
+
+## [0.1.31](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.30...rpi-web-v0.1.31) - 2026-11-01
+
+### Fixed
+
+- *(web)* simplify execution trace duration bars
+
+## [0.1.30](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.29...rpi-web-v0.1.30) - 2026-11-01
+
+### Added
+
+- *(web)* upload pasted clipboard images and files
+
+### Fixed
+
+- *(web)* reset file chooser before asynchronous uploads
+
+### Added
+
+- Add System / 随系统 appearance mode (the new default), following live OS light/dark changes without reloading chat or clearing drafts. Preserve existing explicit light/dark preferences and allow returning to System in Settings.
+
+- Paste clipboard images and files into the composer using the existing project-scoped upload endpoint. Preserve native text paste, queue repeated/multi-file pastes, block premature sending, cancel uploads on session/project changes, and retain successful files and newer attachments across failures or delayed prompt acknowledgements.
+
+## [0.1.29](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.28...rpi-web-v0.1.29) - 2026-11-01
+
+### Other
+
+- *(web)* use the exact accessible send control name
+- *(web)* synchronize release fixtures with session readiness
+
+## [0.1.28](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.27...rpi-web-v0.1.28) - 2026-11-01
+
+### Added
+
+- *(web)* add paged history, file previews and execution traces
+- *(web)* offer icon-only continuation after failed or stopped runs
+
+### Fixed
+
+- *(web)* navigate timeline questions inline without a popup
+- *(web)* keep historical reader mounted during summary refresh
+- *(web)* collapse the right sidebar by default
+- *(web)* keep timeline visible and page earlier history at its edge
+- *(web)* move conversation timeline to the left
+- *(web)* distinguish todo summaries from empty task lists
+- *(web)* render readable delegated task reports
+- *(web)* collapse consecutive todo updates into the latest card
+
+### Other
+
+- *(web)* make branding checks portable across clean checkouts
+- Merge pull request #144 from pi-rust/fix/web-composer-continue
+- Merge pull request #142 from pi-rust/fix/web-right-sidebar-collapsed
+- Merge pull request #139 from pi-rust/fix/web-timeline-visible-history
+- Merge pull request #137 from pi-rust/fix/web-timeline-left
+- Merge pull request #136 from pi-rust/perf/web-session-snapshot-first
+- *(web)* prioritize session snapshots before runtime hydration
+
+### Added
+
+- Fetch user-only timeline summaries in ten-question pages through capability-gated, leaf-pinned core/HTTP APIs. Open unloaded questions in a read-only 48-message historical context window with both paging directions, cancellation, explicit errors and a bounded old-host fallback.
+- Add a default-closed execution trace with a correlated call tree, native-duration timeline, bounded inert details and an optional top-five duration ranking. Reuse already-observed messages, SSE and timings without extra trace requests, guessed execution schedules or external services.
+- Preview project-contained Markdown/inline-code file links on demand with read-only syntax highlighting, line/range positioning, copy, retry and isolated cancellation. Keep fenced code inert and open HTTP(S) links in a safe new tab.
+- Apply the locally bundled light rpi mark to workspace/login branding and browser icons; use 15px question-timeline spacing on desktop and phones.
+
+### Fixed
+
+- Navigate unloaded timeline questions inline in the main transcript instead of opening a historical popup. Replace one bounded 48-message page at a time with Earlier/Later controls and inline loading/error/Retry; return through Back to latest, without a modal focus trap. Keep live SSE/snapshots updating separately while live rows are hidden, preserve the selected page through summary refreshes, and cancel/ignore obsolete reads on a newer click, return to latest or session navigation. Reuse the existing native queries and pinned leaf/cursors; no runtime, backend, model, transcript-storage or deployment change.
+- Fill the initial ten-question rail through bounded legacy history pages when native summaries are unsupported, preserving reading anchors and stopping on errors, exhausted/nonadvancing cursors or the ten-page budget.
+- Preserve local model/thinking/command notices in their original message gaps through snapshot refresh and history pagination.
+- Display original skill directory names for explicit SKILL.md reads and place successful-tool checks after elapsed time, before the disclosure chevron.
+- End unfinished trace observations as unknown when the native host closes, without fabricating a settlement or duration; restore timeline keyboard focus after closing historical context, including development StrictMode.
+- Keep new browser-test screenshots in Playwright-managed output paths instead of developer-specific directories.
+
+## [0.1.27](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.26...rpi-web-v0.1.27) - 2026-10-31
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.26](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.25...rpi-web-v0.1.26) - 2026-10-31
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.25](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.24...rpi-web-v0.1.25) - 2026-10-30
+
+### Fixed
+
+- *(web)* render structured ask history cards
+- *(web)* preserve global todo progress for filtered results
+
+### Other
+
+- Merge pull request #124 from pi-rust/fix/web-todo-progress
+
+## [0.1.24](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.23...rpi-web-v0.1.24) - 2026-10-30
+
+### Added
+
+- *(web)* scrub conversation turns by dragging the timeline
+- *(web)* slim conversation timeline into a scrollable rail
+- *(web)* add conversation timeline and hide completed notes
+
+### Fixed
+
+- *(web)* keep timeline visible on tool-heavy initial pages
+
+### Other
+
+- Merge pull request #121 from pi-rust/feat/web-conversation-timeline
+
+## [0.1.23](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.22...rpi-web-v0.1.23) - 2026-10-30
+
+### Added
+
+- *(web)* default to native tool names with mapped toggle
+- *(web)* flag interrupted sessions in chat lists
+- *(web)* render Mermaid flowcharts in chat Markdown
+- *(web)* show authoritative elapsed time for completed runs
+- *(web)* show uploaded files as readable attachment cards
+- *(web)* present tools as compact Codex-style disclosures
+- *(web)* page older messages automatically on upward scroll
+
+### Fixed
+
+- *(web)* remove redundant composer queue heading
+- *(web)* align tool icons and trailing disclosure controls
+- *(web)* preview long commands before expanding full text
+- *(web)* unify user bubble corners and sender labels
+
+### Other
+
+- Merge pull request #119 from pi-rust/fix/web-image-rendering
+
+## [0.1.22](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.21...rpi-web-v0.1.22) - 2026-10-30
+
+### Added
+
+- *(web)* enlarge transcript and Markdown images in a viewer
+
+### Fixed
+
+- *(web)* serve project raster image artifacts securely
+- *(web)* render inline and user message images
+
 ### Added
 
 - Add System / 随系统 appearance mode (the new default), following live OS light/dark changes without reloading chat or clearing drafts. Preserve existing explicit light/dark preferences and allow returning to System in Settings.

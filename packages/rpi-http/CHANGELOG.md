@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.13...rpi-http-v0.1.14) - 2026-11-01
+
+### Added
+
+- *(web)* add paged history, file previews and execution traces
+
+### Other
+
+- *(web)* make branding checks portable across clean checkouts
+
+## [0.1.13](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.12...rpi-http-v0.1.13) - 2026-10-31
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.1.12](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.11...rpi-http-v0.1.12) - 2026-10-31
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.10...rpi-http-v0.1.11) - 2026-10-30
+
+### Added
+
+- *(web)* show authoritative elapsed time for completed runs
+
+### Other
+
+- Merge pull request #119 from pi-rust/fix/web-image-rendering
+
+## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.9...rpi-http-v0.1.10) - 2026-10-30
+
+### Fixed
+
+- *(web)* serve project raster image artifacts securely
+
 ## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.8...rpi-http-v0.1.9) - 2026-10-29
 
 ### Added

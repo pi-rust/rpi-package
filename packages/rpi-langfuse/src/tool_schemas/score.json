@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {"type":"string","enum":["create","list"],"default":"create","description":"create writes a score and requires name/value/traceId even when action is omitted; list reads one Scores API v3 response page."},
+    "name": {"type":"string","description":"Required for create: score metric name. Ignored by list (not a name filter)."},
+    "value": {"type":["number","string","object"],"description":"Required for create: score value forwarded unchanged; acceptable shape/type depends on the Langfuse API. Ignored by list."},
+    "traceId": {"type":"string","description":"Required for create: target trace ID. Ignored by list (not a trace filter)."},
+    "observationId": {"type":"string","description":"Optional create-only observation ID within the target trace; omitted when absent."},
+    "comment": {"type":"string","description":"Optional create-only score comment, persisted remotely. Do not include secrets."},
+    "userId": {"type":"string","description":"Optional list-only user filter; ignored by create. Sent directly in the query string without URL encoding; use a query-safe value."},
+    "limit": {"type":"integer","minimum":1,"maximum":100,"description":"List-only page size, clamped to 1..100 by execution. If omitted, no limit is sent (server default); does not auto-paginate."},
+    "page": {"type":"integer","minimum":1,"description":"List-only page number, floored at 1 by execution. If omitted, no page is sent (server default)."}
+  },
+  "allOf": [
+    {"if":{"properties":{"action":{"const":"create"}}},"then":{"required":["name","value","traceId"]}}
+  ]
+}

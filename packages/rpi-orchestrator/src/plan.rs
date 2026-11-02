@@ -176,6 +176,28 @@ mod tests {
     }
 
     #[test]
+    fn dependency_edits_require_nested_id_and_deps_array() {
+        for entry in [
+            json!({"deps": []}),
+            json!({"id": "b"}),
+            json!({"id": "b", "deps": "a"}),
+            json!({"id": "b", "deps": [null]}),
+            json!({"id": "b", "deps": ["  "]}),
+            json!({"id": " b ", "deps": []}), // exact id lookup, no trim
+        ] {
+            assert!(apply_update(&mut seeded(), &json!({"setDeps": [entry]})).is_err());
+        }
+        let mut graph = seeded();
+        apply_update(
+            &mut graph,
+            &json!({"addNodes": [], "setDeps": [{"id": "b", "deps": []}], "__rpi": {"trace": [1]}}),
+        )
+        .unwrap();
+        graph.validate().unwrap();
+        assert!(graph.get("b").unwrap().deps.is_empty());
+    }
+
+    #[test]
     fn update_cannot_mark_nodes_done() {
         // Completion is dispatch-only: there is no `status` action, so a stray
         // `status` field is ignored and cannot hand-mark a node done.

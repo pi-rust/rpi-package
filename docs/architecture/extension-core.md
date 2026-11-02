@@ -20,6 +20,155 @@ flowchart TD
 - **rpi-acp** owns ACP JSON-RPC, capabilities, content conversion, stopReason mapping, tool/diff/plan formatting, client request tasks and Zed/terminal-auth integration. Client request tasks belong here because they manage ACP transport resources; native run, text and answer semantics belong to the core.
 - **rpi-web** owns Vite/React resources, `build.rs` embedding, frontend routes, Web configuration and native-extension/standalone entrypoints. The extracted core and HTTP code link into its existing extension library; users do not install additional extension libraries.
 
+## Reusable MCP foundation
+
+`rpi-mcp-adapter -> rpi-mcp-core` remains the reusable-library boundary;
+`rpi-extcore -> rpi-mcp-core` also supports session-owned stdio and Streamable HTTP tools:
+
+- **rpi-mcp-core** owns caller-instanced MCP connections, request context,
+  subscriptions, delivery-batch lifetimes, transport bounds, cancellation and
+  process-tree cleanup. It does not depend on the plugin SDK, ACP, HTTP server
+  types or frontend code. MCP Streamable HTTP is an existing client transport,
+  not an Axum/service adapter.
+- **rpi-mcp-adapter** owns the existing plugin ABI/four tools, SDK context and
+  session-environment interpretation, compatibility default runtime, host tool
+  result projection, and custom TurnEnd messages. Core returns neutral resource
+  updates and retryable batches, not host-role messages.
+- Every core runtime owns its registry and queues. Sharing configuration files
+  or using identical scope strings does not share connections across instances.
+  Share an `Arc<McpRuntime>` deliberately when one service should own them.
+- Core denies unsafe code except for its private audited OS process module,
+  which owns Windows suspended/headless Job Object setup and Unix process groups.
+  ABI-free does not mean all platform FFI is unsafe-free.
+
+### Session-owned MCP tools integration
+
+`rpi-extcore::external_tools::ToolServer::{Stdio, Http}` wraps `StdioToolServer`
+and `HttpToolServer { name, url, headers }` without ACP types.
+`HostSession::configure_tools(servers, cwd, scope)` is protocol-neutral;
+`configure_stdio_tools` remains a compatibility wrapper.
+Extcore owns one caller-instanced MCP runtime per configured native session,
+discovery, atomic native catalog registration, request routing, deadlines,
+cancellation and child cleanup. ACP strictly parses `mcpServers` on
+`session/new`, `session/load` and `session/resume`, resolves relative command
+paths against the explicit session cwd, checks native session identity and maps
+the configuration into that API. It does not own a parallel tool engine.
+`mcpCapabilities.http` is true and `sse` false: Streamable HTTP tools use POST
+JSON or POST response-body SSE, not legacy SSE or background GET streams.
+Core owns `ConfiguredHttp` / `discover_http` / `call_http` and the matching stdio
+APIs, with frozen configuration and live-generation admission. ACP only maps
+explicit `type: "http"`, `name`, absolute HTTP(S) `url` and required `headers`
+array (`[]` allowed); stdio remains implicit. Headers support static
+Authorization/custom values, are lowercased, and reject case-insensitive
+duplicates, controls, reserved transport/framing and hop-by-hop names. URLs
+reject userinfo, fragments, surrounding whitespace and controls; query strings
+are opaque and potentially secret. See the
+[core HTTP policy](../../packages/rpi-mcp-core/README.md#in-memory-streamable-http-targets-tools-only).
+Typed HTTP disables ambient proxies and redirects; legacy MCP behavior remains
+unchanged. This trusted-client outbound authority permits local/private HTTP,
+not an SSRF sandbox; recommend HTTPS, particularly for credentials.
+
+Nonempty configuration requires native commands `configure_external_tools` and
+`external_tool_response`, and events `external_tool_request` and
+`external_tool_request_closed`. Extcore checks these capabilities before spawning
+MCP children or contacting HTTP endpoints. Empty configuration remains compatible with older hosts. Native
+rpi owns model-visible tool registration, schema validation, tool-call provenance,
+result validation/projection and persisted history. Extcore forwards raw MCP
+results as `externalToolResult` (including text/image metadata, `isError` and
+`structuredContent`) for native validation; unsupported content produces an
+explicit error, never silent removal. ACP separately projects ordinary native
+tool events/history into ACP updates; its presentation is not native result
+projection and does not create another transcript.
+
+Omission on a live session retains configuration; explicit identical configuration
+is allowed, but changed configuration is rejected before history replay. A fresh
+load/resume requires the client to reprovide configuration and credentials.
+Commands, arguments, environment secrets, HTTP URLs/opaque queries and headers
+are not persisted in transcripts, registry metadata or a parallel database.
+Live equality includes cwd/scope and lowercased headers after validation;
+identical config does not requery or revive failed admission. Session scope isolates runtime keys;
+export names are deterministic 64-character `mcp_` plus 60 SHA-256 hex digits of
+the length-delimited server/tool tuple, not secrets or ambient global identities.
+
+ACP configuration is bounded to 16 servers / 256 KiB encoded configuration.
+The session catalog is bounded to 128 tools / 256 KiB, discovery to 30 seconds,
+calls to 45 seconds, active requests and the reliable reader queue to 64, and
+native outcome frames to 1 MiB. Native request closure and cancellation suppress
+queued late responses; overflow fails closed. Cancelled calls are never replayed
+or automatically reconnected: the target requires explicit fresh discovery.
+Transport/RPC failure or HTTP 404 likewise retires the admitted connection;
+`call_http` never initializes, requeries tools or replays. `isError` remains a
+valid MCP result. HTTP cancellation notification (200 ms) and session DELETE
+(1 second) are best-effort per-connection request timeouts, not a global hard
+shutdown deadline, guaranteed server cleanup or undo of remote tool side effects.
+Shutdown/owner drop cancels the runtime, and a retained cleanup supervisor joins
+workers and terminates child trees within the documented OS/I/O limitations.
+
+This path requires a supporting native build, not merely a newer adapter. It
+adds no MCP resources, prompts, sampling, OAuth, legacy SSE/GET streams, plugin
+activation, remote attachment or shared multi-protocol service. Existing MCP
+adapter APIs retain their separate transport/resource behavior. Native transcript
+authority and the neutral core/adapter boundary are unchanged; this does not
+change the native host or Web implementation.
+
+### MCP verification boundary
+
+The three-OS MCP workflow runs default tests/checks for MCP core, adapter,
+extcore, ACP, HTTP and Web Rust packages, explicit core `configured_http_tests`,
+and the feature-gated `rpi-extcore/tests/{mcp_stdio_bridge,mcp_http_bridge}.rs`
+using `test-support`. The stdio fixture uses real MCP shell children; HTTP uses
+loopback peers. Both use an in-memory native peer, not a real-native smoke test.
+ACP parser/protocol and extcore host tests cover strict configuration, old-host
+compatibility, identity/capability gates, atomic registration, cancellation,
+result bounds and ownership. CI retains core/adapter packaging (with the local
+core path patch); only strict MCP core Clippy is a passing gate, not a claim
+that existing extcore/adapter strict baselines pass.
+
+Real-native ACP-to-MCP validation is a separate Windows Python harness,
+`packages/rpi-acp/tests/mcp_stdio_native.py --help`, with required binary/build
+provenance inputs and isolated local fixtures, not real credentials. Its retained
+`results.json`, provenance, wire logs, native JSONL and PID audit are execution
+evidence; neither source coverage nor CI configuration alone establishes a
+successful native smoke run.
+
+The new `packages/rpi-acp/tests/mcp_http_native.py --help` Windows proof requires
+explicit bridge/native paths, SHA hashes, build marker and native verification
+provenance; it uses a new evidence directory under the stage6 diagnostics root.
+It is deliberately excluded from fixture-only CI without those prerequisites.
+Inspect the recorded results and complete source manifest; a passing Windows
+run does not qualify an installed extension, Unix native execution, TLS or
+remote resource reclamation.
+
+Nonempty-MCP fresh restore preflight uses extcore's neutral, bounded native v4
+header metadata (64 KiB, exact ID, no messages). ACP rejects differing existing
+recorded/requested canonical workspaces before either child spawns; empty or
+missing recorded directories retain native launch-cwd fallback. Configuration
+is never silently rebased or persisted. No-MCP restores retain compatibility.
+As with other filesystem reads, metadata/canonicalization/open are separate
+operations, not a hostile concurrent-filesystem guarantee.
+
+## Bounded session discovery
+
+`rpi-extcore::session_catalog` is an independent, caller-instanced read-only
+service over an explicitly supplied native-transcript root. It owns validation,
+finite resumable filesystem scans, generation budgets, cancellation/worker
+cleanup, opaque cursor admission and globally sorted frozen summary pages.
+Native v4 headers remain authoritative; there is no new registry writer,
+transcript store, native spawn, model call or Web catalog change.
+
+ACP resolves its existing ACP store, supplies cwd/cursor/limit and maps neutral
+summaries/errors to v1 `session/list`. It owns capability negotiation,
+connection-scoped request IDs/tasks, cancellation notifications, transport-close
+output policy and RFC3339 formatting. It omits titles and treats optional mtime
+as observed filesystem metadata, not authoritative activity. Empty scan pages
+with a continuation are not completion. Cursor lifetime is bounded to the
+connection's retained generations; listing grants no new filesystem authority.
+See [core bounds and filesystem limits](../../packages/rpi-extcore/README.md#read-only-session-discovery)
+and [ACP wire semantics](../../packages/rpi-acp/README.md#discovering-saved-sessions).
+No fork/title/archive/mode/remote/v2 capability is implied. Fixture tests and
+three-platform CI do not substitute for provenance-gated Windows native smoke,
+installed-extension qualification, Unix native execution or deployment.
+
 ## Preserved behavior
 
 - Keep `--webserver`, `--web`, `--acp` and existing standalone entrypoints.
@@ -30,6 +179,43 @@ flowchart TD
 - Use validated native ready frames in both adapters. Offline peers now advertise the same handshake as the real host.
 - Acceptance acknowledges a command; `agent_end` does not complete a run. `agent_settled` determines the outcome. Reconcile cumulative/final text snapshots before responding to clients.
 - Subscribe before sending or taking a replay boundary. Preserve request-ID isolation, bounded queues, timeouts, cancellation cleanup and explicit overflow/resync handling.
+
+## Live model/thinking observation
+
+Extcore's `configuration::ConfigurationRuntime` owns one shared observer per
+native host, typed bounded snapshots/revisions and lease-free serialized
+setters/readback. It polls at 2-second intervals, skipping missed ticks. Refresh
+and setter/readback share a 10-second total budget including gate wait; initial
+read has 10 seconds after obtaining the attach-owner lock. Up to two
+state/catalog/state consistency attempts detect ordinary changes, not atomicity
+or ABA. Latest-state watch coalescing is not event history; poll errors retain
+the last good snapshot and mutation failure is not rollback. Missing required
+observation capabilities leaves the legacy adapter path; thinking choices are
+optional, while bad advertised replies remain errors. See the
+[core contract](../../packages/rpi-extcore/README.md#live-runtime-configuration).
+
+ACP owns full-list `config_option_update` projection, initial-response ordering,
+one forwarder per attached session and the setter/delivered-revision gate. Core
+retains native thinking current even outside choices; ACP omits an
+unrepresentable select instead of lying about current state. No boolean options,
+session modes, Web configuration changes or parallel persistence are added.
+Only live configuration delivery has an explicit 2-second write deadline; a
+possibly partial frame must make the whole connection terminal before being
+dropped. Other writes retain existing backpressure, with interrupted-frame
+fail-closed protection. Close/delete terminate native resources, cancel/join the
+poll worker and drain/stop the transport forwarder; a failed 2-second drain
+closes the connection, not just that session. Shutdown joins the owned poll
+worker, not caller-owned operation futures; cancellation is cooperative.
+
+The existing three-OS workflow adds explicit core/ACP configuration and dispatcher
+fixture filters, included-file rustfmt and AST-only native-harness validation.
+Its all-target check includes the native fixture example; no native harness is
+run in CI. The authored Windows harness and isolated test-only DLL use SDK
+`SetThinkingLevel` action 8 plus native readback for an independent change.
+Neither authored harnesses nor configured gates prove a native/CI pass or an
+installed DLL upgrade. Fresh source/binary/build provenance and retained execution
+results are required separately. Earlier local-validation records below do not
+qualify this Stage 8 configuration slice.
 
 ## Deployment boundary
 

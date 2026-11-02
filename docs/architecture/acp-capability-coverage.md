@@ -21,23 +21,27 @@
 | `session/close` | **已完成（第一批）** | 协商 `sessionCapabilities.close`；取消并等待活动 prompt/dialog，再关闭 child/watcher；保留 native history，之后可 load/resume；重复 close 对有效持久会话幂等。 |
 | `session/delete` | **已完成（第一批清理统一）** | 与 close 共用活动任务、dialog、watcher、child 的 graceful cleanup，之后删除持久目录；重复 delete 幂等。 |
 | `session/load` / `session/resume` | **已完成（现有 v1 + 第一批生命周期）** | native transcript 是 source of truth；load replay active branch，resume 不 replay；close 后可重新 attach。 |
-| `session/list`、cwd 过滤、稳定分页/cursor、metadata | **未完成** | 当前 ACP 仍不能发现持久会话目录；不能只列内存 session。中立发现/读取接口需要先落在 extcore。 |
+| `session/list`、cwd 过滤、稳定分页/cursor、metadata | **已完成（有界发现 slice）** | extcore 中立 `session_catalog` 只读验证 ACP store 内 native v4 header，固定深度、预算、取消/worker owner、全局 createdAt 降序/UUID 升序冻结分页；ACP 广告 `list: {}`，wire 固定50，扫描空页有 cursor 必须续取。游标绑定连接/规范 cwd，scan 单次、冻结页可重试，60s idle/admission 过期、最多2代可淘汰。只返回 ID/cwd/可选 observed mtime，省略 title，不读 message/tail、不建立 sidecar、不启动 native/MCP。详见 [ACP README](../../packages/rpi-acp/README.md#discovering-saved-sessions)。Rust/CI fixtures 不等于真实 native 或已安装扩展资格；Windows provenance-gated smoke 必须另看执行结果。 |
 | 有界、可续的历史/事件边界 | **部分完成** | extcore snapshot/history 已有 bounded read、seq boundary、replay-gap 检测；ACP load replay 尚未暴露分页 cursor。 |
-| 消息 ID | **未完成** | native transcript 内部有 ID，但 v1 `session/update` message-id RFD 的完整映射尚未实现。 |
+| 消息 ID | **已实现（源码，精确 native 语义门控）** | 稳定 v1 ContentChunk 的可选 `messageId` 来自 native entry，不是 provider/tool ID 或适配器计数。live 仅 assistant text/thinking（含最终快照补齐）在 `ready.semantics.messageIds == "sessionEntryId-v1"` 时携带；缺失/坏/中途换 ID fail closed，旧 host live 不造 ID。load replay 的 user text/image 与 assistant text/thinking 保留验证后的 `entryId`；无 live user echo，tool/plan/config/usage/compact summary 不附会消息身份。详见 [native identity](../../packages/rpi-acp/README.md#native-message-identity)。源码/fixtures 不代表已运行 native proof。 |
 | text / resource link / embedded text resource | **已完成（受限）** | 映射为 native text；绝对 URI/file 语义依赖 native cwd/工具。 |
-| image / audio / 其它多模态 | **未完成且明确不支持** | native `--mode rpc` 当前只接收单一文本 prompt；ACP capability 不会虚报 image/audio。 |
-| tool call / tool call update | **已完成（native 依赖）** | native event 映射到 ACP；native child 是实际执行者，ACP 只做 presentation mapping。 |
+| inline image | **已实现（源码，PNG/JPEG 有界 profile）** | ACP 广告 `image: true`；每个 image prompt 仍须通过精确 native `ready.promptContent` v1 门控，旧 host 在写 prompt 前拒绝，无剥图/转文本 fallback。顺序保留 text/resource/image；URI inert 不 fetch。canonical standard base64、MIME/signature、4图/单图256KiB decoded/合计512KiB、32KiB UTF-8 text/64 blocks、最终 correlated command 含 LF 768KiB；native pixel decode/model admission、2000边/4M pixels、32MiB best-effort decoder budget（不是 heap hard limit），inbound frame 1MiB。详见 [images](../../packages/rpi-acp/README.md#inline-image-prompts)。 |
+| audio / 其它多模态 | **未完成且明确不支持** | 不广告 audio；无 URI 下载、APNG/JPEG-XT、自动方向变换/缩放或其它媒体 fallback。 |
+| tool call / tool call update | **已完成（native 依赖）** | native event 映射到 ACP；native child 是实际执行者，ACP 只做 presentation mapping。稳定 v1 optional `name` 在 start/nonempty update/end/history result 中原样保留 supplied string；缺失/null/非字符串省略，不用显示 fallback `tool` 或相邻 call 猜名字，不反解 MCP export。只是字段保真，start 之前已有名字；不新增 core runtime/缓存/能力位。详见 [ACP README](../../packages/rpi-acp/README.md#tool-name-fidelity)。fixture progress 与真实 native read 的实际 observed phases 分别审查。 |
 | diff / plan | **已完成（native event 依赖）** | edit/write diff、todo/plan event 已映射；能力取决于 native event 是否提供。 |
-| 配置选项通知、boolean、mode | **部分完成** | model/thinking select 和 `set_config_option` 已实现；config update notification、boolean option 和 session mode 尚未实现。 |
-| slash commands | **未完成** | native RPC 不展开 prompt templates；不广告虚假的 `available_commands_update`。 |
-| usage / notice / compaction | **未完成** | native 尚未提供稳定 ACP usage/notice/compaction 语义，未做空操作映射。 |
+| model/thinking 配置选项通知 | **已实现（当前源码，native 依赖）** | `configuration.rs` 将 extcore 单 observer 的 latest-state revision 投影为完整 `configOptions`；new/load/resume 响应之后才发送 `config_option_update`，setter 与 forwarder 共用 revision gate。2s poll、10s refresh（含 gate wait）、最多2次一致性尝试；不是 atomic/ABA 或事件审计，poll 错误保留 last good。thinking query 可选；current 不在 choices 时省略 select，不伪造值；缺观察 capability 保留 legacy path，已广告的坏回复不 fallback。仅 live config 写入有2s deadline；partial/超时令整个连接 terminal，close 清理 poll worker/forwarder。详见 [ACP README](../../packages/rpi-acp/README.md#live-configuration-updates)。fixtures/CI 配置不等于已通过；native harness 仅已编写，独立 SDK action8 + readback proof 尚需新 provenance/执行证据，无 installed DLL 变更。 |
+| boolean 配置 / session mode | **未完成** | 本 slice 仅既有 model/thinking select，不新增 boolean option 或 mode。 |
+| slash commands | **部分完成（仅 `/compact`）** | `protocol.rs::respond_session` 仅在 native 广告 `compact` 时发送 `available_commands_update`；`session.rs` 仅识别纯文本精确 `/compact` token，可带多行 instructions；prompt templates 与其它 slash commands 不广告/不展开。 |
+| compaction | **已实现（native 依赖）** | `HostSession::begin_compaction` 共用 run lease/取消，等待 `agent_settled`；compacted/declined 正常结束，aborted 取消，failed/unknown 为错误（本地请求取消后的 failed 按 cancelled）；declined 无 summary 显示 `Nothing to compact yet.`。`session_compact_tests.rs` / `session_compact_lifecycle_tests.rs` 有 fixtures，不代表 native qualification。 |
+| context `usage_update` | **已实现（native 估计，有界调用 slice）** | 稳定 v1 [UsageUpdate schema](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/schema/v1/schema.json) 要求 `used`/`size`；[2026-06-05 稳定公告](https://agentclientprotocol.com/announcements/session-usage-stabilized)。extcore 验证 `get_state.context.tokens/window`，5s caller budget、每 host 一个在途/不排队、不占 run lease；ACP 在 new/load/resume 成功响应后投影已有 preflight state，prompt/compact authoritative settlement 后 best-effort 刷新并去重。没有新 poller，不保证独立 native 变化持续推送；未知/坏数据省略，不伪造零。只给新增 usage frame 2s deadline，partial-frame 失败整个连接 terminal。是 compaction-aware native 估计，不是累计 token/精确 tokenizer；native 内部仍可全 branch 扫描。详见 [ACP README](../../packages/rpi-acp/README.md#context-usage-updates)。fixtures 与 Windows provenance-gated native harness 的实际执行结果分别审查，不代表 installed/Unix native 资格。 |
+| cost / end-turn usage / notice | **未完成** | 不把 native `stats.totalTokens` 当 current context，不给无单位/币种来源的 `costTotal` 硬编码 USD；不增加成本账本。此 slice 不含 end-turn token 统计或 notice。 |
 | 权限 request | **已完成（受限）** | 明确 `purpose: permission` 的 native dialog 映射到 `session/request_permission`；取消/断连会关闭 pending dialog。 |
 | Elicitation form | **已完成（受限）** | 协商 `clientCapabilities.elicitation.form` 后使用 `elicitation/create`，返回值仍由 native dialog schema 校验。 |
 | Elicitation URL | **未完成** | 没有 native URL elicitation/完成回调接口，不广告支持。 |
 | authentication / terminal auth / logout | **部分完成** | terminal auth 是受 capability gating 的启动外流程；`logout` 子进程隔离 stdin/stdout 且 async dispatch，有 bridge fixture 回归；真实 credential revoke 依赖 native `rpi auth logout`。 |
-| client `fs/*` | **未完成且明确不支持** | agent 使用 native read/write/edit；没有声明 client fs capability。 |
+| client `fs/*` | **已实现（源码，协商 text-only）** | `clientCapabilities.fs.readTextFile/writeTextFile` 独立布尔协商；new/load/resume idle 配置精确 native fileIO v1，live 不改 authority，旧 host 对非空选择显式拒绝。无 flags=原 local；read-only=client read 且拒绝 write/edit；write-only=client write、read local、拒绝 edit；both=client read/write/edit 完整 read-modify-write。permission-before-execution 保留，selected 模式无 host source I/O/图片读取 fallback；shell/extensions 非 OS sandbox。64 pending、256KiB UTF-8/768KiB JSON/1MiB native inbound；native60s/core50s+单独5s response/ACP45s。关闭/取消退役 correlation，write ack 丢失不等于 rollback、不自动重试。详见 [client text files](../../packages/rpi-acp/README.md#client-text-files)。 |
 | client `terminal/*` | **未完成且明确不支持** | agent 使用 native bash；没有声明 client terminal capability。 |
-| client MCP | **未完成** | `session/new.mcpServers` 仅校验结构，不转发/承诺客户端 MCP transport；需要 native neutral MCP interface。 |
+| client MCP | **已完成（tools-only，native 依赖）** | `session/new/load/resume.mcpServers` 经 ACP 校验映射到 extcore 中立 `ToolServer` / `configure_tools`，支持 stdio 与 Streamable HTTP（POST JSON / response-body SSE），`http: true`、`sse: false`。HTTP 要求显式 `type: "http"`、绝对 HTTP(S) URL 和 `headers` 数组，支持静态 Authorization/custom headers；无 OAuth/resources/prompts/sampling/legacy SSE/GET。URL/header 安全策略、可信客户端出站权限（非 SSRF sandbox）、失败后不自动重连/重查/重放、restore/live equality/cwd、无 secret 持久化与逐连接 best-effort cleanup 详见 [ACP README](../../packages/rpi-acp/README.md#client-provided-mcp-tools-stdio-and-streamable-http)。native transcript 仍为权威；Windows native proof 必须绑定实际 binary/source hashes，不能由 fixture CI 推导，也不代表已安装扩展或 Unix native 资格。 |
 
 ## 保持 v1 兼容的 v2 / 实验 RFD
 
@@ -50,9 +54,25 @@
 | client-provided `systemPrompt` | [RFD client-system-prompt](https://agentclientprotocol.com/rfds/client-system-prompt)（Active） | **未完成** | native prompt API 没有中立 system prompt 参数。 |
 | subagent sessions | [RFD subagents](https://agentclientprotocol.com/rfds/subagents)（Active） | **未完成** | 没有 ACP session tree / permission boundary 的 native contract。 |
 | auth state query | [RFD get-auth-state](https://agentclientprotocol.com/rfds/get-auth-state)（Draft） | **未完成** | `auth check` 不是已映射的 ACP auth-state method。 |
-| MCP-over-ACP | [RFD mcp-over-acp](https://agentclientprotocol.com/rfds/mcp-over-acp)（Active） | **未完成** | 当前 `mcpServers` 不会伪造转发。 |
+| MCP-over-ACP | [RFD mcp-over-acp](https://agentclientprotocol.com/rfds/mcp-over-acp)（Active） | **未完成** | 已交付的 `mcpServers` stdio/Streamable HTTP tools 不是 MCP-over-ACP 隧道；未实现该 RFD。 |
 | HTTP/WebSocket transport | [RFD streamable HTTP & WebSocket](https://agentclientprotocol.com/rfds/streamable-http-websocket-transport)（Active） | **未完成** | 本包只实现 stdio；HTTP listener/session ownership 属于未来 ACP transport，不放入 extcore 的 ACP 类型。 |
 | fork/title/archive/systemPrompt/subagent/auth/MCP/remote 的 schema.unstable | 官方 `schema.unstable.json` / RFD 页面 | **未完成** | 实验项必须显式协商并按 RFD 生命周期升级；当前不在 `initialize` 稳定 capability 中。 |
+
+## 三能力验证边界
+
+消息 ID、inline PNG/JPEG 与 client text files 的状态描述的是当前源码 contract，
+不代表已经 build/test/CI/native pass 或已安装/发布/部署。既有
+`mcp-checks.yml` 六包默认 `cargo test` 已选择新增 package fixtures，并保留 direct
+MCP core、stdio/HTTP bridge checks；native workspace CI 选择其 CLI/tools/harness
+测试，无需另一套 CI 架构。
+
+`python -B packages/rpi-acp/tests/message_image_fs_native.py --help`（package 根目录）
+说明独立 Windows proof 的参数；要求 parent 在两次 build 前冻结完整 source inventory，
+再提供明确 native/bridge 路径、hash、成功 build 记录和新 evidence directory。
+该 harness 仅已编写，实际通过与否必须查看保留的 `results.json` / provenance /
+provider-wire / transcript / cleanup evidence；不证明 thought streaming、旧 native、
+permission denial、cancel/late reply、Unix、installed runtime 或 CI/PR 发布结果。
+完整命令及范围见 [validation scope](../../packages/rpi-acp/README.md#three-capability-validation-scope)。
 
 ## 第一批验证证据
 

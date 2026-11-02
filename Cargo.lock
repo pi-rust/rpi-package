@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.2.1"
+version = "0.2.6"
 dependencies = [
  "rpi-extcore",
  "rpi-plugin-sdk 0.3.20",
@@ -2464,8 +2464,9 @@ dependencies = [
 
 [[package]]
 name = "rpi-ask-user"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
+ "jsonschema",
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
 ]
@@ -2480,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-codegraph"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2488,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-durable"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rpi-durable-core",
  "rpi-plugin-sdk 0.3.20",
@@ -2507,7 +2508,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-edit-diagnostics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "getrandom 0.2.17",
  "rpi-plugin-sdk 0.3.20",
@@ -2518,10 +2519,12 @@ dependencies = [
 
 [[package]]
 name = "rpi-extcore"
-version = "0.2.1"
+version = "0.2.6"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "rpi-durable-core",
+ "rpi-mcp-core",
  "serde",
  "serde_json",
  "sha2",
@@ -2553,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde",
@@ -2562,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.1.9"
+version = "0.1.14"
 dependencies = [
  "axum",
  "futures-util",
@@ -2578,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-im-message"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "feishu-sdk",
  "regex",
@@ -2591,7 +2594,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-langfuse"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",
@@ -2601,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.10"
+version = "0.1.12"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2610,19 +2613,29 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-adapter"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
- "reqwest 0.12.28",
+ "rpi-mcp-core",
  "rpi-plugin-sdk 0.3.20",
+ "serde_json",
+]
+
+[[package]]
+name = "rpi-mcp-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "rpi-orchestrator"
-version = "0.1.10"
+version = "0.1.12"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2651,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-permissions"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2659,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-plan-mode"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2722,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-server"
-version = "0.3.6"
+version = "0.3.8"
 dependencies = [
  "async-trait",
  "rpi-plugin-sdk 0.3.20",
@@ -2733,7 +2746,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.10"
+version = "0.1.12"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2753,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-todo"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2798,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.21"
+version = "0.1.33"
 dependencies = [
  "axum",
  "rpi-extcore",
@@ -2813,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-webfetch"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",
@@ -2823,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-websearch"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",

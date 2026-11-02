@@ -272,12 +272,37 @@ extern "C" fn cancel(h: StepHandle) {
 extern "C" fn destroy(h: StepHandle) {
     drop(HANDLES.remove(h));
 }
+const TOOL_DESCRIPTION: &str = "Inspect tool-call permission rules with list/check before an operation. Only with explicit user authorization, use grant/revoke to persist project policy in <cwd>/.pi/permissions.json. grant effect=deny ADDS a deny rule; revoke DELETES the exact rule from both lists. Never self-authorize or remove a denial to bypass a rejected operation. Deny rules win; this tool reports policy and does not execute or enforce the target call. Returns JSON text: list includes full rules/path (no output cap); check includes allowed/reason and defaults to allow unless applicable allow rules exist. Mutation results describe the action, not effective permission: allowed=true means grant, EVEN for effect=deny; use check to evaluate the resulting policy.";
+const TOOL_PARAMETERS: &str = r#"{
+  "type": "object",
+  "description": "Inspect policy or explicitly authorized project-local rule changes. Unknown top-level host metadata (including __rpi) is accepted.",
+  "properties": {
+    "action": {"type":"string","enum":["check","grant","revoke","list"],"description":"Required action: list reads effective rules; check evaluates a target without running it; grant adds/moves an exact rule into effect's list; revoke removes that exact rule from BOTH lists regardless of effect. Mutations persist project-local policy."},
+    "tool": {"type":"string","default":"*","description":"For check: native tool name (for example Bash, Read, Write, Edit); case-insensitive match. Omitted means *. Ignored by list/grant/revoke."},
+    "value": {"type":"string","description":"Required for check unless capability is supplied: literal command or path to evaluate, not a rule expression. Takes precedence over capability; check never executes it."},
+    "rule": {"type":"string","description":"Required for grant/revoke unless capability is supplied. Exact rule text, trimmed, 1-200 UTF-8 bytes after trimming; for example Bash(git push *). Only * is a wildcard; a bare pattern matches any tool. Takes precedence over capability; revoke deletes exact text, not matching rules."},
+    "capability": {"type":"string","description":"Legacy fallback for check's value or grant/revoke's rule; ignored when the corresponding primary field is present. Uses that field's limits and meaning."},
+    "effect": {"type":"string","enum":["allow","deny"],"default":"allow","description":"For grant: allow adds an allow rule; deny ADDS a deny rule (not removal). Both remove the same exact rule from either list first. For revoke: validated but does not choose a list; both lists are cleared of the rule. Ignored by check/list."},
+    "cwd": {"type":"string","description":"Project directory for .pi/permissions.json; omitted or empty uses the plugin process working directory. Reads use the project file if present, otherwise RPI_AGENT_DIR/permissions.json or ~/.pi/agent/permissions.json. grant/revoke always write the project file (creating directories), seeding it from fallback rules if needed; never write global policy."}
+  },
+  "required": ["action"],
+  "additionalProperties": true
+}"#;
+
+fn tool_schema() -> StableToolSchema {
+    StableToolSchema {
+        name: StbString::from_string("permissions".into()),
+        description: StbString::from_string(TOOL_DESCRIPTION.into()),
+        parameters: StbString::from_string(TOOL_PARAMETERS.into()),
+    }
+}
+
 use rpi_plugin_sdk::callbacks::free_string;
 rpi_plugin_sdk::export_plugin!(|api| {
     let Some(register) = api.register_tool else {
         return 1;
     };
-    let schema=Box::new(StableToolSchema{name:StbString::from_string("permissions".into()),description:StbString::from_string("Check and manage native Pi allow/deny rules for tool calls.".into()),parameters:StbString::from_string(r#"{"type":"object","properties":{"action":{"type":"string","enum":["check","grant","revoke","list"]},"tool":{"type":"string","description":"Pi tool name, such as Bash, Read, Write, or Edit"},"value":{"type":"string","description":"Command or path to evaluate"},"rule":{"type":"string","description":"Rule such as Bash(git push *)"},"capability":{"type":"string","description":"Legacy alias for value/rule"},"effect":{"type":"string","enum":["allow","deny"]},"cwd":{"type":"string"}},"required":["action"]}"#.into())});
+    let schema = Box::new(tool_schema());
     let rc = register(&*schema, execute, poll, cancel, destroy, free_string);
     drop(schema);
     rc
@@ -285,6 +310,74 @@ rpi_plugin_sdk::export_plugin!(|api| {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_schema_documents_policy_without_requiring_optional_fields() {
+        // The registration uses this same constructor, not a test-only schema copy.
+        let schema = tool_schema();
+        assert_eq!(schema.name.to_string_lossy(), "permissions");
+        let description = schema.description.to_string_lossy();
+        assert!(description.contains("grant effect=deny ADDS"));
+        assert!(description.contains("revoke DELETES"));
+        assert!(description.contains("Never self-authorize"));
+        let params: Value = serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
+        assert_eq!(params["type"], "object");
+        assert_eq!(params["required"], json!(["action"]));
+        assert_eq!(params["additionalProperties"], true); // Includes host __rpi.
+        let properties = params["properties"].as_object().unwrap();
+        assert_eq!(properties.len(), 7);
+        for property in properties.values() {
+            assert!(!property["description"].as_str().unwrap().is_empty());
+        }
+        assert_eq!(
+            properties["action"]["enum"],
+            json!(["check", "grant", "revoke", "list"])
+        );
+        assert_eq!(properties["effect"]["default"], "allow");
+        assert_eq!(properties["tool"]["default"], "*");
+        assert!(properties["cwd"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("never write global"));
+        assert!(properties["rule"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("UTF-8 bytes"));
+        schema.name.free_with(Some(free_string));
+        schema.description.free_with(Some(free_string));
+        schema.parameters.free_with(Some(free_string));
+    }
+
+    #[test]
+    fn grant_deny_adds_and_revoke_removes_from_project_store() {
+        let dir =
+            std::env::temp_dir().join(format!("rpi-permissions-metadata-{}", std::process::id()));
+        let path = dir.join(".pi").join("permissions.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{"permissions":{"allow":[],"deny":[]}}"#).unwrap();
+        permissions(&json!({"action":"grant","cwd":dir,"rule":"Bash(git push *)","effect":"deny"}))
+            .unwrap();
+        let stored = load(&path).unwrap();
+        assert_eq!(stored.deny, vec!["Bash(git push *)"]);
+        assert!(stored.allow.is_empty());
+        let check: Value = serde_json::from_str(
+            &permissions(
+                &json!({"action":"check","cwd":dir,"tool":"Bash","value":"git push origin main"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(check["allowed"], false);
+        permissions(
+            &json!({"action":"revoke","cwd":dir,"rule":"Bash(git push *)","effect":"allow"}),
+        )
+        .unwrap();
+        let stored = load(&path).unwrap();
+        assert!(stored.deny.is_empty());
+        assert!(stored.allow.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn default_allows_without_allow_list() {
         let out = permissions(&json!({"action":"check","tool":"Bash","value":"rm -rf /"})).unwrap();
