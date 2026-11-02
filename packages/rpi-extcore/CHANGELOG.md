@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.6...rpi-extcore-v0.2.7) - 2026-11-02
+
+### Added
+
+- *(extcore)* own exact session resource lifecycle and recovery
+
+### Fixed
+
+- *(extcore)* retain resource authority across fork and recovery failures
+- *(extcore)* inspect safe legacy package names
+
+### Other
+
+- *(extcore)* synchronize fork capacity admission deterministically
+
 ## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.5...rpi-extcore-v0.2.6) - 2026-11-01
 
 ### Added
