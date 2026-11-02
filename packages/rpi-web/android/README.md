@@ -7,8 +7,14 @@ Android client for rpi Web, alongside [`../frontend/`](../frontend/). **This is 
 - Android version: [`version.properties`](version.properties), independent of Rust crates and Web release tags.
 - Default/development nodes are injected at build time through the documented environment variables, never hardcoded. Custom trusted **HTTPS origin only**, no path/query/credentials.
 - Native Back, refresh, error retry, explicit site switching, IME/system-bar insets and system document picker. Switching sites discards the local page/draft but does not cancel server tasks. Login cookies use the app's private WebView store.
-- Only `INTERNET` permission. No JavaScript bridge, broad storage permission, third-party cookies, mixed content, file URL access or TLS bypass. Main-frame TLS errors fail closed; off-origin HTTPS navigation requires confirmation and opens a system browser. App backup/transfer is excluded.
+- Only `INTERNET` permission. No JavaScript bridge, broad storage permission, third-party cookies, mixed content, file URL access or TLS bypass. Main-frame TLS errors fail closed; off-origin HTTP/HTTPS links require confirmation and open a system browser, never the application WebView. App backup/transfer is excluded.
 - No offline chat, app-managed downloads, background service, notifications or camera capture. Use the system document picker for existing files. Foreground Web/SSE behavior is provided by the selected node, not a new Android protocol adapter.
+
+## Browser links and downloads
+
+From **0.1.5 / code 6**, ordinary links, user-gesture new windows (including Markdown `target="_blank"`/`noopener` links), and the native download callback share an explicit system-browser confirmation. The dialog shows scheme, host and explicit port. HTTP adds an unencrypted-connection warning; a private-network address still requires a reachable LAN or VPN on the phone. Confirming opens `ACTION_VIEW` + `BROWSABLE` with the URI only, without copying WebView headers or cookies. Cancelling preserves the page and unsent draft. Browser cookies remain independently managed by that browser.
+
+This is **not** HTTP node support: selected connections, saved sites and internal navigation still require HTTPS, and TLS/cleartext/mixed-content restrictions are unchanged. Only validated HTTP/HTTPS URLs can be handed off; credentials in URLs, malformed authorities and non-web schemes are refused with feedback when received by the navigation handler. Popup capture remains JavaScript-disabled and network-blocked, routing its actual destination rather than guessing from the touched element. No application download manager or storage permission was added.
 
 ## Saved custom sites
 
@@ -129,6 +135,8 @@ npm run test:theme
 # Bash example (export equivalent variables in other shells):
 # RPI_WEB_ANDROID_DEFAULT_ORIGIN=https://workspace.example RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN= npm run test:saved-sites -- --reset
 # The installed APK must use the same default origin.
+# Link smoke: same reserved .example debug build, real adb taps and browser intent.
+# RPI_WEB_ANDROID_DEFAULT_ORIGIN=https://workspace.example RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN= npm run test:links -- --reset
 # Native endpoint checks: debug app on a disposable emulator, build env must match APK.
 # --reset explicitly clears only that test app; seeds a reserved example preference via run-as.
 python tools/verify-origins.py --serial emulator-5584 --reset
@@ -139,6 +147,8 @@ python tools/verify-release.py --serial emulator-5584
 ```
 
 The optional Playwright dependency is **test-only**, never part of the APK. Debug smoke uses emulator CDP to intercept a local HTML fixture (no shared fixture endpoint) for real content-URI file selection/cancel/reopen, external-popup confirmation, Back history and IME layout. It also opens the real production/development login pages without supplying credentials or starting model work. The release smoke uses only ADB/UIAutomator (no CDP), checks non-debuggable installation/run-as denial and exercises real login rendering, keyboard/Back, site switching and process-restart preference persistence.
+
+0.1.5 link verification: Python **25/25**, Kotlin **14/14** per variant (7 URL-policy + 7 saved-site rules), debug/unsigned/fixed-certificate signed builds and Lint **0 errors / 4 existing warnings**. Android 14 / WebView 113 real-touch fixture checks **10/10** cover HTTPS, plain HTTP, Markdown/nested links, actual script-popup targets and `noopener`, unsafe/credential URL refusal, correct HTTP warning, cancellation/draft retention, no HTTP requests from the authenticated main WebView, and explicit browser dispatch/return. The browser activity dump was also inspected for the HTTP URI, explicit port, `BROWSABLE` and the app-launched URI-only intent; the automated dump assertion is less strict than this manual inspection. A separate isolated public-static HTTPS attachment check verifies the real network `DownloadListener` callback, confirmation/cancel and document retention; CDP-fulfilled fake attachment responses do not exercise that Android callback. Physical-device behaviour, uppercase/IPv6 Android intent dispatch, private-LAN download reachability and authenticated browser-cookie behaviour are not claimed.
 
 0.1.4 saved-site verification: Python **25/25**, Kotlin tests **11/11** in each variant (4 URL-policy + 7 bookmark rules), debug/unsigned/fixed-certificate signed builds, Lint **0 errors / 4 warnings** (3 baseline plus `ApplySharedPref` for the intentional synchronous rollback after a failed disk commit). Disposable Android 14 emulator fixture checks **11/11** cover actual native URL editing/save, save without page/draft loss, duplicate/empty rejection, cold-start retention, switch cancel/confirm, active/inactive removal and removal cancellation, and live day/night dialogs. A debug-only temporary directory permission fault verifies failed first-save retry and in-memory rollback; existing-set rollback/removal failure and native full-list/overlength feedback are not separately fault-injected. UIAutomator omits the platform error popup, so negative cases assert editor/storage state and feedback is visually checked in local screenshots. No physical-device, authenticated chat, real upload or model tests are claimed.
 
