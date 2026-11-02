@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.33](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.32...rpi-web-v0.1.33) - 2026-11-02
+
+### Added
+
+- *(android)* save custom sites locally for reuse ([#169](https://github.com/pi-rust/rpi-package/pull/169))
+
+### Fixed
+
+- *(android)* inject node origins from build environment ([#168](https://github.com/pi-rust/rpi-package/pull/168))
+
 ## [0.1.32](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.31...rpi-web-v0.1.32) - 2026-11-01
 
 ### Added
