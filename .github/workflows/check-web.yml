@@ -1,0 +1,43 @@
+name: Web frontend checks
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-web/frontend/**'
+      - '.github/workflows/check-web.yml'
+      - '.github/workflows/release-web.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-frontend-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: packages/rpi-web/frontend/package-lock.json
+      # Keep the same production-bundle gate as release-web.yml, before merge
+      # rather than discovering browser regressions after a release tag exists.
+      - name: Build and verify the production frontend
+        working-directory: packages/rpi-web/frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run e2e:production
+      - name: Preserve failed browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-frontend-test-results
+          path: packages/rpi-web/frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 5

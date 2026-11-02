@@ -1132,6 +1132,13 @@ test("explicit older pagination merges stable identities; opening the pane never
   await pane(page)
     .getByRole("button", { name: "Compact trace", exact: true })
     .click();
+  expect(host.count(A, "get_messages")).toBe(0);
+  // Scrub to a loaded question first: scrolling the paging button into view
+  // otherwise starts automatic paging and can remove it before pointer-down.
+  await page.getByRole("button", {
+    name: `Go to message 1: Loaded question ${A}`, exact: true,
+  }).click();
+  expect(host.count(A, "get_messages")).toBe(0);
   await page
     .getByRole("button", { name: "Load earlier messages", exact: true })
     .click();
@@ -2173,6 +2180,11 @@ test("overlapping older pagination and boundary refresh retain the model notice 
     hasMore: false,
     firstId: "older-user",
   };
+  expect(host.count(A, "get_messages")).toBe(0);
+  await page.getByRole("button", {
+    name: "Go to message 1: Loaded question page", exact: true,
+  }).click();
+  expect(host.count(A, "get_messages")).toBe(0);
   await page
     .getByRole("button", { name: "Load earlier messages", exact: true })
     .click();
