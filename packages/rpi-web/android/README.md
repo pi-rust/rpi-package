@@ -10,6 +10,16 @@ Android client for rpi Web, alongside [`../frontend/`](../frontend/). **This is 
 - Only `INTERNET` permission. No JavaScript bridge, broad storage permission, third-party cookies, mixed content, file URL access or TLS bypass. Main-frame TLS errors fail closed; off-origin HTTPS navigation requires confirmation and opens a system browser. App backup/transfer is excluded.
 - No offline chat, app-managed downloads, background service, notifications or camera capture. Use the system document picker for existing files. Foreground Web/SSE behavior is provided by the selected node, not a new Android protocol adapter.
 
+## Saved custom sites
+
+From **0.1.4 / code 5**, open **站点设置 → 自定义 HTTPS 站点**, enter a trusted HTTPS root origin, and tap **保存**. It appears as **已保存：…** in the site list and remains available after an app restart. Saving only adds a local bookmark: it does **not** open that node, switch the active connection, recreate the WebView or discard the page/draft.
+
+Select a saved row to review the address and existing trust/draft-loss warning, then tap **切换** to connect. The active connection remains independently persisted. A previously selected custom node is retained on upgrade, but is not automatically bookmarked; the editor prefills the current address so it can be saved explicitly.
+
+The local list normalizes HTTPS scheme/host/default port, deduplicates and sorts entries, and holds at most **20 sites / 2048 characters per entry**. Invalid/duplicate/full-list errors stay in the editor; a failed disk write leaves it open for retry. Select a saved row → **移除保存 → 移除** to remove only that bookmark. Removing even the active bookmark does not disconnect, clear cookies/login state or delete remote sessions; cancellation changes nothing.
+
+Bookmarks live only in app-private SharedPreferences, separate from `origin`; no server sync, dotenv/source writes or credentials are included. App data clearing/uninstall deletes them, and existing backup exclusions still apply. Native dialogs use the existing system day/night theme.
+
 ## System day/night appearance
 
 From **0.1.2 / code 3**, the native toolbar, loading background, error/retry panel, open dialogs and system bars automatically follow Android's day/night mode. Native `uiMode` changes update the current theme and colors **without recreating the Activity or WebView**, retaining page history, form drafts and pending file callbacks. A fresh launch in night mode uses the dark platform theme. No theme JavaScript is injected.
@@ -114,6 +124,11 @@ npm ci
 # ANDROID_SERIAL defaults to emulator-5584; physical phones are refused.
 npm run test:emulator
 npm run test:theme
+# Saved-site smoke: build/install debug with a portless reserved .example origin.
+# --reset clears ONLY that disposable debug app. Uses local CDP HTML, no login/model calls.
+# Bash example (export equivalent variables in other shells):
+# RPI_WEB_ANDROID_DEFAULT_ORIGIN=https://workspace.example RPI_WEB_ANDROID_DEVELOPMENT_ORIGIN= npm run test:saved-sites -- --reset
+# The installed APK must use the same default origin.
 # Native endpoint checks: debug app on a disposable emulator, build env must match APK.
 # --reset explicitly clears only that test app; seeds a reserved example preference via run-as.
 python tools/verify-origins.py --serial emulator-5584 --reset
@@ -124,6 +139,8 @@ python tools/verify-release.py --serial emulator-5584
 ```
 
 The optional Playwright dependency is **test-only**, never part of the APK. Debug smoke uses emulator CDP to intercept a local HTML fixture (no shared fixture endpoint) for real content-URI file selection/cancel/reopen, external-popup confirmation, Back history and IME layout. It also opens the real production/development login pages without supplying credentials or starting model work. The release smoke uses only ADB/UIAutomator (no CDP), checks non-debuggable installation/run-as denial and exercises real login rendering, keyboard/Back, site switching and process-restart preference persistence.
+
+0.1.4 saved-site verification: Python **25/25**, Kotlin tests **11/11** in each variant (4 URL-policy + 7 bookmark rules), debug/unsigned/fixed-certificate signed builds, Lint **0 errors / 4 warnings** (3 baseline plus `ApplySharedPref` for the intentional synchronous rollback after a failed disk commit). Disposable Android 14 emulator fixture checks **11/11** cover actual native URL editing/save, save without page/draft loss, duplicate/empty rejection, cold-start retention, switch cancel/confirm, active/inactive removal and removal cancellation, and live day/night dialogs. A debug-only temporary directory permission fault verifies failed first-save retry and in-memory rollback; existing-set rollback/removal failure and native full-list/overlength feedback are not separately fault-injected. UIAutomator omits the platform error popup, so negative cases assert editor/storage state and feedback is visually checked in local screenshots. No physical-device, authenticated chat, real upload or model tests are claimed.
 
 0.1.3 endpoint verification: Python **25/25**, URL-policy **4/4** in both variants, debug/unsigned/signed builds and Lint **0 errors / 3 existing warnings**. Missing default, HTTP default, malformed authority and Java-literal injection inputs fail direct Gradle configuration without echoing input. A synthetic-origin unsigned APK contains neither previous node address; packaging JSON omits endpoints. Android 14 emulator native endpoint fixture checks **9/9** across no-development, changed-default upgrade/preserved preference, and development-present clean start. These tests use reserved example sites, ADB/UIAutomator and a debug-only `run-as` preference fixture, not authenticated chat or model calls. Debug smoke failures redact potentially endpoint-bearing error details; ignored screenshots/XML still contain UI addresses and must remain local.
 

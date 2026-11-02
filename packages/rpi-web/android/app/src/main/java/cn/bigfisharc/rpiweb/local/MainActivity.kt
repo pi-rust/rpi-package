@@ -426,10 +426,28 @@ class MainActivity : Activity() {
             }.create().let(::showDialog)
     }
 
+    private fun savedOrigins(): List<String> = SavedOrigins.normalize(
+        preferences.getStringSet("saved_origins", emptySet()) ?: emptySet()
+    )
+
+    private fun storeSavedOrigins(updated: List<String>): Boolean {
+        val previous = preferences.getStringSet("saved_origins", null)?.toSet()
+        if (preferences.edit().putStringSet("saved_origins", updated.toSet()).commit()) return true
+        // SharedPreferences changes memory even when its disk write fails. Restore
+        // the prior view so a failed save can be retried instead of looking duplicate.
+        val rollback = preferences.edit()
+        if (previous == null) rollback.remove("saved_origins") else rollback.putStringSet("saved_origins", previous)
+        rollback.commit()
+        return false
+    }
+
     private fun showSites() {
         val choices = mutableListOf("正式站" to { confirmSite(ConfiguredOrigins.default) })
         ConfiguredOrigins.development?.let { target ->
             choices.add("开发站（测试界面）" to { confirmSite(target) })
+        }
+        savedOrigins().forEach { target ->
+            choices.add("已保存：$target" to { confirmSite(target, saved = true) })
         }
         choices.add("自定义 HTTPS 站点" to { customSite() })
         choices.add("取消" to { })
@@ -448,29 +466,59 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(12), dp(20), dp(12))
         }
         val dialog = AlertDialog.Builder(this).setTitle("自定义 HTTPS 站点")
-            .setMessage("只填写你信任的站点根地址，不含路径、账号密码或参数。")
-            .setView(input).setNegativeButton("取消", null).setPositiveButton("继续", null).create()
+            .setMessage("只填写你信任的 HTTPS 根地址，不含路径、账号密码或参数。保存到本机列表，不会切换当前页面。")
+            .setView(input).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val selected = OriginPolicy.normalize(input.text.toString())
-                if (selected == null) input.error = "请输入有效的 HTTPS 根地址，不含路径、账号密码或参数。"
-                else { dialog.dismiss(); confirmSite(selected) }
+                val raw = input.text.toString()
+                val selected = OriginPolicy.normalize(raw)
+                val current = savedOrigins()
+                when {
+                    raw.length > SavedOrigins.MAX_LENGTH -> input.error = "地址过长，最多 ${SavedOrigins.MAX_LENGTH} 个字符。"
+                    selected == null -> input.error = "请输入有效的 HTTPS 根地址，不含路径、账号密码或参数。"
+                    selected in current -> input.error = "此站点已保存，可在站点设置中选择。"
+                    else -> {
+                        val updated = SavedOrigins.add(current, raw)
+                        if (updated == null) input.error = "最多保存 ${SavedOrigins.LIMIT} 个站点，请先移除旧条目。"
+                        else if (storeSavedOrigins(updated)) {
+                            dialog.dismiss()
+                            Toast.makeText(this, "站点已保存，选择列表条目可切换。", Toast.LENGTH_SHORT).show()
+                            showSites()
+                        } else input.error = "站点保存失败，请重试。"
+                    }
+                }
             }
         }
         showDialog(dialog)
     }
 
-    private fun confirmSite(selected: String) {
-        if (selected == origin) return
-        AlertDialog.Builder(this).setTitle("切换连接站点？")
-            .setMessage("$selected\n\n将离开当前页面并丢弃未发送草稿。已运行的服务端任务不会因此取消。仅向你信任的站点输入密码。")
+    private fun removeSavedOrigin(selected: String) {
+        AlertDialog.Builder(this).setTitle("移除已保存站点？")
+            .setMessage("$selected\n\n仅从本机列表移除，不会断开当前连接、清除登录状态或删除远端会话。")
             .setNegativeButton("取消", null)
-            .setPositiveButton("切换") { _, _ ->
-                if (preferences.edit().putString("origin", selected).commit()) {
-                    origin = selected
-                    createWebView()
-                } else Toast.makeText(this, "站点设置保存失败，未切换。", Toast.LENGTH_LONG).show()
+            .setPositiveButton("移除") { _, _ ->
+                val updated = savedOrigins().filterNot { it == selected }
+                val saved = storeSavedOrigins(updated)
+                Toast.makeText(this, if (saved) "已从本机列表移除。" else "移除失败，请重试。", Toast.LENGTH_SHORT).show()
+                showSites()
             }.create().let(::showDialog)
+    }
+
+    private fun confirmSite(selected: String, saved: Boolean = false) {
+        val active = selected == origin
+        if (active && !saved) return
+        val dialog = AlertDialog.Builder(this).setTitle(if (active) "当前连接站点" else "切换连接站点？")
+            .setMessage(if (active) "$selected\n\n此站点已保存。移除保存不会断开当前连接。"
+                else "$selected\n\n将离开当前页面并丢弃未发送草稿。已运行的服务端任务不会因此取消。仅向你信任的站点输入密码。")
+            .setNegativeButton("取消", null)
+        if (saved) dialog.setNeutralButton("移除保存") { _, _ -> removeSavedOrigin(selected) }
+        if (!active) dialog.setPositiveButton("切换") { _, _ ->
+            if (preferences.edit().putString("origin", selected).commit()) {
+                origin = selected
+                createWebView()
+            } else Toast.makeText(this, "站点设置保存失败，未切换。", Toast.LENGTH_LONG).show()
+        }
+        dialog.create().let(::showDialog)
     }
 
     private fun navigateBack() {
