@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.14...rpi-http-v0.1.15) - 2026-11-02
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
 ## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.13...rpi-http-v0.1.14) - 2026-11-01
 
 ### Added

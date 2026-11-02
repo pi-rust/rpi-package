@@ -12,14 +12,14 @@
   },
   {
     "name": "rpi-mcp-adapter",
-    "version": "0.2.6",
+    "version": "0.2.7",
     "type": "extension",
     "tool": "mcp_list + mcp_call + mcp_request",
     "inspiredBy": "pi-mcp-adapter",
     "sourceDownloadsPerMonth": 761442,
     "install": "rpi install rpi-mcp-adapter",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.6/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.7/rpi-extension.json"
   },
   {
     "name": "rpi-subagents",
@@ -199,14 +199,14 @@
   },
   {
     "name": "rpi-acp",
-    "version": "0.2.6",
+    "version": "0.2.7",
     "type": "extension",
     "tool": "--acp (Agent Client Protocol stdio server)",
     "inspiredBy": "Zed external agents / agent-client-protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-acp",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.6/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.7/rpi-extension.json"
   },
   {
     "name": "rpi-permission-gate",
@@ -243,14 +243,14 @@
   },
   {
     "name": "rpi-web",
-    "version": "0.1.36",
+    "version": "0.1.37",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Browser project and session workspace",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-web",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.36/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.37/rpi-extension.json"
   },
   {
     "name": "rpi-edit-diagnostics",
