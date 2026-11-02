@@ -1,0 +1,236 @@
+.provider-manager,
+.provider-manager-dialog {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.provider-manager-entry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  margin-bottom: 12px;
+}
+
+.provider-manager {
+  width: 100%;
+  padding: 0;
+}
+
+.provider-manager-header,
+.provider-manager-actions,
+.provider-manager-card-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.provider-manager-header {
+  margin-bottom: 16px;
+}
+
+.provider-manager-header h2 {
+  flex: 1 1 180px;
+  margin: 0;
+  font-size: 20px;
+}
+
+.provider-manager button,
+.provider-manager-dialog button,
+.workspace-dialog:has(.provider-manager-dialog) .dialog-heading button {
+  min-width: 44px;
+  min-height: 44px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.provider-manager-entry:focus-visible,
+.provider-manager button:focus-visible,
+.provider-manager-dialog button:focus-visible,
+.provider-manager-dialog input:focus-visible,
+.workspace-dialog:has(.provider-manager-dialog)
+  .dialog-heading
+  button:focus-visible {
+  outline: 2px solid var(--blue-text);
+  outline-offset: 2px;
+}
+
+.provider-manager-note {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.provider-manager-error {
+  color: var(--danger);
+}
+
+.provider-manager-list {
+  display: grid;
+  gap: 16px;
+}
+
+.provider-manager-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.provider-manager-card-heading {
+  justify-content: space-between;
+}
+
+.provider-manager-card h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.provider-manager-card h4 {
+  margin: 16px 0 8px;
+  font-size: 16px;
+}
+
+.provider-manager-card dl {
+  margin: 12px 0;
+}
+
+.provider-manager-card dl > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.provider-manager-card dt {
+  color: var(--muted);
+}
+
+.provider-manager-card dd {
+  margin: 0;
+}
+
+.provider-manager-models {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.provider-manager-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.provider-manager-model + .provider-manager-model {
+  margin-top: 8px;
+}
+
+.provider-manager-model.selected {
+  border-color: var(--blue-text);
+  background: var(--blue-soft);
+}
+
+.provider-manager-model > div {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.provider-manager-model strong,
+.provider-manager-model code {
+  display: block;
+}
+
+.provider-manager-model code {
+  font-family: var(--mono);
+  white-space: normal;
+}
+
+.provider-manager-model .provider-manager-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.provider-manager-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px 20px;
+}
+
+.provider-manager-dialog p {
+  margin: 0;
+}
+
+.provider-manager-dialog input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  font-size: 16px;
+}
+
+.provider-manager-dialog label {
+  font-weight: 600;
+}
+
+.provider-manager-dialog .provider-manager-actions {
+  justify-content: flex-end;
+}
+
+.workspace-dialog:has(.provider-manager-dialog) .workspace-dialog-surface {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .provider-manager {
+    padding: 0;
+  }
+
+  .provider-manager-header,
+  .provider-manager-header > .provider-manager-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .provider-manager-header h2 {
+    flex-basis: auto;
+  }
+
+  .provider-manager-card {
+    padding: 12px;
+  }
+
+  .provider-manager-model > button {
+    width: 100%;
+  }
+
+  .provider-manager-dialog {
+    padding: 16px;
+  }
+}
+
+.provider-manager-help summary {
+  display: list-item;
+  min-height: 44px;
+  padding: 10px 0;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.provider-manager-help[open] p + p {
+  margin-top: 8px;
+}
