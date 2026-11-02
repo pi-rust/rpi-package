@@ -2,6 +2,16 @@ import { chooseMenuOption } from "./controls";
 import { writeFile } from "node:fs/promises";
 import { test, expect, type Page, type Route } from "@playwright/test";
 
+const timelineToggle = (page: Page) =>
+  page.getByRole("button", { name: /^(Conversation timeline|对话时间线)$/ });
+async function openTimeline(page: Page) {
+  const button = timelineToggle(page);
+  await expect(button).toBeVisible();
+  await expect(button).toHaveAttribute("aria-controls", "conversation-timeline-navigation");
+  if (await button.getAttribute("aria-expanded") === "false") await button.click();
+  await expect(button).toHaveAttribute("aria-expanded", "true");
+}
+
 const sessionId = "session-1";
 // Match the endpoint independently of api.snapshot's optional query parameters.
 const snapshotRoute = (url: URL) =>
@@ -2804,7 +2814,8 @@ test("pagination from a previous chat does not prepend into the current chat", a
     },
   );
   await page.goto("/");
-  // The default timeline fill already owns the held earlier-page request.
+  await openTimeline(page);
+  // Opening the timeline starts the held earlier-page request.
   await expect.poll(() => pending).toBe(true);
   await page
     .getByRole("button", { name: "New session", exact: false })
@@ -3209,6 +3220,7 @@ test("compaction notes survive pagination and update when language changes", asy
     return route.fallback();
   });
   await page.goto("/");
+  await openTimeline(page);
   await expect(
     page
       .locator(".transcript-note")
@@ -4247,6 +4259,7 @@ test("run boundary refresh preserves loaded earlier messages and their paginatio
     },
   );
   await page.goto("/");
+  await openTimeline(page);
   await expect(page.locator(".message.user")).toContainText([
     "Earlier prompt",
     "Current prompt",
@@ -4742,6 +4755,7 @@ test("late message pagination from before rewind cannot enter the restored branc
     },
   );
   await page.goto("/");
+  await openTimeline(page);
   await expect.poll(() => pending).toBe(true);
   await page.getByRole("button", { name: "Toggle inspector" }).click();
   await page.locator(".history-timeline-item summary").click();
@@ -7546,7 +7560,8 @@ test.describe("run timing regressions", () => {
       });
     });
     await page.goto("/");
-    // Initial timeline fill pages the assistant-only snapshot automatically.
+    await openTimeline(page);
+    // Opening the timeline fills the assistant-only snapshot.
     await expect(page.locator(".run-elapsed")).toHaveCount(3);
     for (const [id, text] of [
       ["run-older-a", "Older answer A"],
@@ -7770,6 +7785,7 @@ test.describe("run timing regressions", () => {
     expect(pages).toEqual([]);
     // Loaded-tick navigation positions the reader without triggering automatic
     // paging. Only the subsequent ordinary button click should load a page.
+    await openTimeline(page);
     await page.getByRole("button", {
       name: "Go to message 1: Loaded timing question 1", exact: true,
     }).click();
@@ -7924,7 +7940,8 @@ test.describe("run timing regressions", () => {
         if (load) await page.reload();
         else await page.goto("/");
         await expect(footer).toBeVisible();
-        // A result-only snapshot is filled through to its missing earlier call.
+        // Opening fills the result-only snapshot through to its missing earlier call.
+        if (olderPage) await openTimeline(page);
         await expect(page.locator(".message.assistant")).toContainText(
           "Trailing visible assistant text",
         );
@@ -9282,6 +9299,7 @@ test.describe("conversation timeline", () => {
       });
       try {
         await page.goto("/");
+        await openTimeline(page);
         const rail = page.locator(".conversation-timeline");
         const load = rail.getByRole("button", { name: language === "en" ? "Show earlier messages in timeline" : "在时间线中显示更早的消息", exact: true });
         await expect(load).toBeVisible();
@@ -9311,6 +9329,7 @@ test.describe("conversation timeline", () => {
     await mockHost(page);
     await snapshot(page, turns("single", 1));
     await page.goto("/");
+    await openTimeline(page);
     await expect(nodes(page)).toHaveCount(1);
     await expect(page.locator(".timeline-load-earlier")).toHaveCount(0);
     await nodes(page).first().focus();
@@ -9320,6 +9339,37 @@ test.describe("conversation timeline", () => {
     await expect(nodes(page)).toHaveAttribute("aria-current", "location");
   });
 
+  test("top button toggles the original narrow rail, releases padding and preserves the draft", async ({ page }) => {
+    await mockHost(page);
+    await snapshot(page, turns());
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/");
+      await expect(page.locator(".message.user")).toHaveCount(3);
+      const toggle = timelineToggle(page);
+      await expect(toggle).toHaveCount(1);
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+      const composer = page.locator(".composer textarea");
+      await composer.fill("Keep this unsent timeline draft");
+      const padding = () => page.locator(".transcript").evaluate(element =>
+        Number.parseFloat(getComputedStyle(element).paddingLeft));
+      const closedPadding = await padding();
+      await openTimeline(page);
+      await expect(nodes(page)).toHaveCount(3);
+      const rail = page.locator(".conversation-timeline");
+      await expect(rail).toHaveAttribute("id", "conversation-timeline-navigation");
+      expect((await rail.boundingBox())!.width).toBeLessThanOrEqual(28);
+      expect(await padding()).toBeGreaterThan(closedPadding);
+      await expect(composer).toHaveValue("Keep this unsent timeline draft");
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(rail).toHaveCount(0);
+      expect(await padding()).toBe(closedPadding);
+      await expect(composer).toHaveValue("Keep this unsent timeline draft");
+    }
+  });
+
   test("desktop narrow rail previews user turns and roves focus without navigating until activation", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await mockHost(page);
@@ -9327,6 +9377,7 @@ test.describe("conversation timeline", () => {
       events: [{ seq: 5, event: { type: "agent_settled", summary: "A note is not a user turn" } }], lastSeq: 5,
     });
     await page.goto("/");
+    await openTimeline(page);
     await expect(nodes(page)).toHaveCount(3);
     await expect(page.locator(".transcript-frame > .transcript")).toHaveCount(1);
     await expect(page.locator(".transcript-frame > .conversation-timeline")).toHaveCount(1);
@@ -9335,7 +9386,8 @@ test.describe("conversation timeline", () => {
     const panel = page.getByRole("navigation", { name: "Conversation timeline", exact: true });
     await expect(panel).toBeVisible();
     await expect(rail.locator("button:not(.timeline-node)")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Conversation timeline", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Conversation timeline", exact: true })).toHaveCount(1);
+    await expect(timelineToggle(page)).toHaveAttribute("aria-expanded", "true");
     const frame = await page.locator(".transcript-frame").boundingBox();
     const box = await rail.boundingBox();
     expect(box!.width).toBeLessThanOrEqual(28);
@@ -9413,10 +9465,12 @@ test.describe("conversation timeline", () => {
     await mockHost(page);
     await snapshot(page, turns());
     await page.goto("/");
+    await openTimeline(page);
     const panel = page.getByRole("navigation", { name: "对话时间线", exact: true });
     await expect(panel).toBeVisible();
     await expect(nodes(page)).toHaveCount(3);
-    await expect(page.getByRole("button", { name: "对话时间线", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "对话时间线", exact: true })).toHaveCount(1);
+    await expect(timelineToggle(page)).toHaveAttribute("aria-expanded", "true");
     const before = await outsideRail(page);
     await nodes(page).first().focus();
     await expect(page.getByRole("tooltip")).toBeVisible();
@@ -9461,6 +9515,7 @@ test.describe("conversation timeline", () => {
       ...turns("tail", 1),
     ]);
     await page.goto("/");
+    await openTimeline(page);
     await expect(nodes(page)).toHaveCount(5);
     await expect(nodes(page).first()).toHaveAttribute("aria-label", /friendly\.docx/);
     await expect(nodes(page).nth(1)).toHaveAttribute("aria-label", "Go to message 2: Image message");
@@ -9501,6 +9556,7 @@ test.describe("conversation timeline", () => {
     });
     try {
       await page.goto("/");
+      await openTimeline(page);
       await expect(nodes(page)).toHaveCount(20);
       const description = page.locator(".timeline-description");
       await expect(page.locator("nav.timeline-panel")).toHaveAttribute("aria-describedby", (await description.getAttribute("id"))!);
@@ -9554,6 +9610,7 @@ test.describe("conversation timeline", () => {
     });
     try {
       await page.goto("/");
+      await openTimeline(page);
       await expect(nodes(page)).toHaveCount(2);
       const originalTargets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
       await nodes(page).first().hover();
@@ -9571,10 +9628,17 @@ test.describe("conversation timeline", () => {
       await page.keyboard.press("Enter");
       await expect(page.locator(".toolbar h1")).toHaveText("New session");
       await expect.poll(() => waiting).toBe(true);
+      await expect(page.locator(".conversation-timeline")).toHaveCount(0);
+      // Reopen by keyboard while the old session pointer remains held.
+      await timelineToggle(page).focus();
+      await page.keyboard.press("Enter");
+      await expect(timelineToggle(page)).toHaveAttribute("aria-expanded", "true");
       await expect(nodes(page)).toHaveCount(1);
       await expect(list).not.toHaveAttribute("data-scrubbing");
       await page.mouse.up();
       await expect(page.getByRole("tooltip")).toHaveCount(0);
+      // Move off the new rail before live rows can appear under the pointer.
+      await page.locator(".composer textarea").hover();
       release();
       await expect(nodes(page)).toHaveCount(2);
       await expect(page.locator(".message.assistant")).toHaveCount(2);
@@ -9588,6 +9652,8 @@ test.describe("conversation timeline", () => {
       await nodes(page).nth(1).hover();
       await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("2 / 2");
       await page.locator(".project-session-link").filter({ hasText: "Mock session" }).click();
+      await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+      await openTimeline(page);
       await expect(nodes(page)).toHaveCount(2);
       await expect(page.getByRole("tooltip")).toHaveCount(0);
       const restoredTargets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
@@ -9614,6 +9680,7 @@ test.describe("conversation timeline", () => {
       return route.fallback();
     });
     await page.goto("/");
+    await openTimeline(page);
     await expect(nodes(page)).toHaveCount(80);
     await page.locator(".composer textarea").hover();
     await scrollPagingTo(page, 0);
@@ -9679,6 +9746,7 @@ test.describe("conversation timeline", () => {
       return route.fallback();
     });
     await page.goto("/");
+    await openTimeline(page);
     await expect(nodes(page)).toHaveCount(8);
     await jump(page, 0);
     const composer = page.locator(".composer textarea");
@@ -9737,6 +9805,7 @@ test.describe("conversation timeline", () => {
     await mockHost(page);
     await snapshot(page, turns("cancel", 8));
     await page.goto("/");
+    await openTimeline(page);
     await expect(nodes(page)).toHaveCount(8);
     await jump(page, 0);
     const list = page.locator(".timeline-panel ol");
@@ -9774,6 +9843,7 @@ test.describe("conversation timeline", () => {
     await mockHost(page);
     await snapshot(page, turns("edge", 80));
     await page.goto("/");
+    await openTimeline(page);
     await expect(nodes(page)).toHaveCount(80);
     await jump(page, 0);
     const before = await outsideRail(page);
@@ -9826,6 +9896,7 @@ test.describe("conversation timeline", () => {
     await mockHost(page);
     await snapshot(page, turns("chord", 80));
     await page.goto("/");
+    await openTimeline(page);
     await expect(nodes(page)).toHaveCount(80);
     await jump(page, 0);
     const list = page.locator(".timeline-panel ol");
@@ -9864,6 +9935,7 @@ test.describe("conversation timeline", () => {
         return route.fallback();
       });
       await page.goto("/");
+      await openTimeline(page);
       expect(await page.evaluate(() => navigator.maxTouchPoints > 0 && "ontouchstart" in window && matchMedia("(pointer: coarse)").matches)).toBe(true);
       await expect(nodes(page)).toHaveCount(8);
       await scrollPagingTo(page, 0);

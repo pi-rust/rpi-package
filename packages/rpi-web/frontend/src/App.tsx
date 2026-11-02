@@ -29,6 +29,7 @@ import {
   Gauge,
   GitBranch,
   History,
+  ListOrdered,
   ListTodo,
   Loader2,
   LogOut,
@@ -594,6 +595,10 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState("");
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  useEffect(() => {
+    setTimelineOpen(false);
+  }, [sessionId]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsRoot, setProjectsRoot] = useState("");
   const [projectDialog, setProjectDialog] = useState(false);
@@ -3543,6 +3548,18 @@ export default function App() {
               </button>
             )}
             <button
+              type="button"
+              className={`icon-button ${timelineOpen ? "selected" : ""}`}
+              disabled={!sessionId}
+              aria-label={t("conversationTimeline")}
+              aria-expanded={timelineOpen}
+              aria-controls="conversation-timeline-navigation"
+              title={t(timelineOpen ? "timelineCollapse" : "timelineExpand")}
+              onClick={() => setTimelineOpen((open) => !open)}
+            >
+              <ListOrdered size={17} aria-hidden="true" />
+            </button>
+            <button
               ref={traceButtonRef}
               className={`icon-button ${traceOpen ? "selected" : ""}`}
               disabled={!sessionId}
@@ -3928,7 +3945,7 @@ export default function App() {
                 )}
               </div>
             </div>
-            {(!loadingSession || rows.length > 0) && (
+            {timelineOpen && (!loadingSession || rows.length > 0) && (
               <ConversationTimeline
                 key={`${sessionId}:${connectionRevision}:${navigationRevision.current}`}
                 sessionId={sessionId}
