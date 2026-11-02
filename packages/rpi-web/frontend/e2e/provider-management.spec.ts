@@ -1152,3 +1152,51 @@ test("an older model read-back cannot roll back a newer composer model selection
     ["gamma", "shared"],
   ]);
 });
+
+for (const language of ["en", "zh"] as const) {
+  test(`mobile provider editing never opens a native datalist and secondary notes start collapsed: ${language}`, async ({
+    page,
+    host,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 844 });
+    host.providers = [
+      "alicoding",
+      "anthropic",
+      "hualong",
+      "huoshan-copy",
+      "llama-cpp",
+      "openai",
+    ].map(auth);
+    await start(page, language);
+    await openManager(page, language);
+    await manager(page, language)
+      .getByRole("button", { name: labels[language].add, exact: true })
+      .click();
+    const modal = dialog(page, language);
+    const provider = modal.getByLabel(labels[language].provider, {
+      exact: true,
+    });
+    await expect(provider).not.toHaveAttribute("list");
+    await expect(modal.locator("datalist")).toHaveCount(0);
+    await provider.fill("a");
+    await expect(provider).toHaveValue("a");
+    await expect(modal.getByLabel("API Key", { exact: true })).toBeVisible();
+    const help = modal.locator("details.provider-manager-help");
+    await expect(help).not.toHaveAttribute("open");
+    await help.locator("summary").click();
+    await expect(help).toHaveAttribute("open", "");
+    await expect(help).toContainText(
+      language === "zh"
+        ? "仅提交你主动输入"
+        : "Only the key you explicitly enter",
+    );
+    await help.locator("summary").click();
+    await expect(help).not.toHaveAttribute("open");
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(375);
+    await provider.fill("openai");
+    await expect(modal.getByLabel("API Key", { exact: true })).toHaveValue("");
+    expect(host.writes).toEqual([]);
+  });
+}

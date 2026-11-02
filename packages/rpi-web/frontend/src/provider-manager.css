@@ -222,3 +222,15 @@
     padding: 16px;
   }
 }
+
+.provider-manager-help summary {
+  display: list-item;
+  min-height: 44px;
+  padding: 10px 0;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.provider-manager-help[open] p + p {
+  margin-top: 8px;
+}
