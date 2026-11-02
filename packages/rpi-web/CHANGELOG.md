@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.34](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.33...rpi-web-v0.1.34) - 2026-11-02
+
+### Fixed
+
+- *(ci)* stabilize Web production frontend release checks ([#173](https://github.com/pi-rust/rpi-package/pull/173))
+
 ## [0.1.33](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.32...rpi-web-v0.1.33) - 2026-11-02
 
 ### Added
