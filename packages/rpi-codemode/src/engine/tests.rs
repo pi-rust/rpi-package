@@ -509,3 +509,59 @@ fn catalog_filtering_is_explicitly_lossy_for_reserved_schema_properties() {
     );
     assert!(list_page(&action, 1024, 32).unwrap_err().contains("1024"));
 }
+
+#[test]
+fn native_regexp_paths_are_unavailable_including_dynamic_compilation() {
+    // Do not only remove globalThis.RegExp: literals, dynamic compilation and
+    // implicit string conversion must never enter the native backtracking VM.
+    for code in [
+        "return /^(a+)+$/.test('a'.repeat(25)+'!');",
+        "return new RegExp('^(a+)+$').test('a'.repeat(25)+'!');",
+        "return RegExp('^(a+)+$').test('a'.repeat(25)+'!');",
+        "return eval(\"/^(a+)+$/.test('a'.repeat(25)+'!')\");",
+        "return new Function(\"return /^(a+)+$/.test('a'.repeat(25)+'!');\")();",
+        "return ('a'.repeat(25)+'!').match('^(a+)+$');",
+        "return ('a'.repeat(25)+'!').search('^(a+)+$');",
+        "return [...('a'.repeat(25)+'!').matchAll('^(a+)+$')];",
+    ] {
+        let began = Instant::now();
+        let (r, h) = run_fake(code, "");
+        assert_eq!(r["status"], "error", "{code}: {r}");
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "regex path ran native backtracking: {code}: {r}"
+        );
+        cleaned(&h, 0);
+    }
+    let (r, h) = run_fake("return {regexp:typeof RegExp, division:8/2, replace:'abc'.replace('a','x'), split:'a,b'.split(','), map:new Map([['a',1]]).get('a')};", "");
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(
+        r["result"],
+        json!({"regexp":"undefined","division":4,"replace":"xbc","split":["a","b"],"map":1})
+    );
+    cleaned(&h, 0);
+}
+
+#[test]
+fn caught_oom_is_fatal_before_host_calls_and_during_serialization() {
+    let exhaust = "try { const a=[]; for(;;) a.push(new Array(10000).fill('x')); } catch(e) {}";
+    for (code, starts) in [
+        (format!("{exhaust} return 42;"), 0),
+        (
+            format!("{exhaust} await tools.echo({{afterOOM:true}}); return 42;"),
+            0,
+        ),
+        (
+            format!("tools.echo({{beforeOOM:true}}); {exhaust} return 42;"),
+            1,
+        ),
+        (format!("return {{toJSON(){{{exhaust} return 42;}}}};"), 0),
+    ] {
+        let (h, action) = host("");
+        let r = execute(&code, 5000, action, Arc::new(AtomicBool::new(false)));
+        assert_eq!(r["status"], "error", "{r}");
+        assert_eq!(r["result"], Value::Null, "{r}");
+        assert_eq!(r["error"], "codemode memory budget exceeded", "{r}");
+        cleaned(&h, starts);
+    }
+}

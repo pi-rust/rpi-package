@@ -148,7 +148,7 @@ state is retained. Limits:
 
 | Resource | Limit |
 | --- | --- |
-| Guest QuickJS heap | 32 MiB |
+| Guest QuickJS charged allocations (including conservative block overhead) | 32 MiB |
 | Guest QuickJS stack | 256 KiB |
 | Code | 64 KiB UTF-8 |
 | Arguments / host response frame / returned JSON value / encoded final tool output | 1 MiB each; reject, never silently truncate |
@@ -157,15 +157,33 @@ state is retained. Limits:
 | Host starts | 128 total / 8 active (disposed promptly) |
 | Error text | 4096 UTF-8 bytes |
 
-Memory limits cover the guest heap, not total process RSS. Rust bridge buffers,
-JSON encoding, and final summary framing have separately bounded sizes. QuickJS
-interrupts synchronous loops; a bounded manual Promise-job pump checks deadlines
+The custom allocator counts live allocations, rounded payloads and conservative
+per-block overhead, not total process RSS or allocator fragmentation. It latches
+allocation failure outside guest JS. Even a caught OOM makes the invocation fail
+and prevents later host starts; frees/recovery allocations remain possible for
+error handling and destruction. Only `heap.rs` is permitted unsafe Rust: it
+validates sizes and delegates allocation/layout/free to the pinned binding's
+`RustAllocator`, without doing pointer/header arithmetic. Rust bridge buffers,
+JSON encoding, and final summary framing have separately bounded sizes.
+
+**RegExp is unsupported.** Both its native compiler and runtime intrinsic are
+omitted, rather than merely deleting the global constructor. This rejects regex
+literals, `RegExp`, dynamic compilation of regex literals and implicit regex
+construction through `String.match/search/matchAll`. Plain string `replace` and
+`split` remain available. The pinned native backtracking engine does not poll
+interrupts and could otherwise block the worker long after cancellation.
+
+Execution deadlines are cooperative, not an OS-enforced hard wall clock. Other
+native builtins may finish work before yielding to an interrupt; this environment
+is not intended for adversarial CPU workloads. QuickJS interrupts ordinary
+synchronous loops; a bounded manual Promise-job pump checks deadlines
 and cancellation between microtasks, surfacing job exceptions rather than
 ignoring them. Serialization can run guest getters/`toJSON`; it remains subject
 to interrupts and budgets. A pending promise with no runnable jobs or
-host requests fails rather than hanging. Budget failures cannot be converted
-into success by catching their JavaScript exception, including during final
-serialization. Host lifecycle `failed` responses also abort execution rather
+host requests fails rather than hanging. Allocation and bridge budget failures
+cannot be converted into success by catching their JavaScript exception,
+including during final serialization. Native stack-overflow exceptions may be
+caught, but the stack cap remains enforced. Host lifecycle `failed` responses also abort execution rather
 than becoming catchable ordinary tool errors. Ordinary finalized `isError`
 results remain catchable; unawaited calls are cancelled on early return and need
 not be polled/finalized. Always await work whose outcome matters.
@@ -203,8 +221,10 @@ borrowed QuickJS context in an owning `JobException` without duplicating the
 native reference. The package compensates on that error path with one captured
 `Ctx` reference transferred to the wrapper; otherwise a job exception can crash
 context destruction. Recheck/remove this version-specific compensation when
-upgrading rquickjs. Regression tests exercise a throwing Promise species resolver
-and invocation cleanup; no SDK/host-wide workaround is applied.
+upgrading rquickjs. The allocator's rounded-size/header accounting also depends
+on this pinned binding; recheck `heap.rs` on upgrades. Regression tests exercise
+a throwing Promise species resolver and invocation cleanup; no SDK/host-wide
+workaround is applied.
 
 
 ```sh
@@ -217,4 +237,7 @@ Tests cover dependency chains, genuine concurrent starts, full result semantics,
 partial side effects, termination, fresh state, capability isolation, invalid
 arguments, old/missing hosts, pending promises, synchronous and microtask-loop
 cancellation/timeouts, memory/stack/code/result/log/call bounds, catalog paging,
-cleanup, schema consistency, and nonblocking ABI lifecycle behavior.
+cleanup, schema consistency, and nonblocking ABI lifecycle behavior. Additional
+regressions cover unavailable regex paths (including dynamic/implicit creation),
+caught OOM before host effects and during serialization, sticky allocator
+failure, overflow/layout validation, and realloc ownership/accounting.

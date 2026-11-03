@@ -17,4 +17,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rpi-plugin-sdk = { workspace = true }
 serde_json = { workspace = true }
-rquickjs = { version = "=0.8.1", default-features = false }
+rquickjs = { version = "=0.8.1", default-features = false, features = ["allocator"] }

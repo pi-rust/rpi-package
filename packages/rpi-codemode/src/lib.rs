@@ -1,7 +1,10 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod engine;
+// The only unsafe module: validated delegation to the pinned QuickJS allocator.
+#[allow(unsafe_code)]
+mod heap;
 use engine::{Action, Request};
 use rpi_plugin_sdk::handles::ToolHandles;
 use rpi_plugin_sdk::{StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb};
@@ -205,7 +208,7 @@ extern "C" fn destroy(handle: StepHandle) {
 fn schema() -> rpi_plugin_sdk::StableToolSchema {
     rpi_plugin_sdk::StableToolSchema {
         name: StbString::from_string("codemode".into()),
-        description: StbString::from_string("Execute a bounded JavaScript async body (with return) using the current invocation's tools, without another model turn or MCP. tools.name(args) / tools.call(name,args) return finalized tool results; Promise.all runs at most 8 active calls concurrently (128 total); batch larger sets yourself. print / console capture bounded logs. action=list pages the effective catalog. Fresh JS, no direct filesystem/network/process. Reserved host metadata names are filtered recursively in results/catalog schemas and forbidden in arguments; not lossless for arbitrary property names. Calls retain host approvals and may have irreversible side effects; errors/cancellation never roll back or retry. Failures return a JSON summary as error text; success includes structured details. Requires ToolProgram action 30 / protocol v1.".into()),
+        description: StbString::from_string("Execute a bounded JavaScript async body (with return) using the current invocation's tools, without another model turn or MCP. tools.name(args) / tools.call(name,args) return finalized tool results; Promise.all runs at most 8 active calls concurrently (128 total); batch larger sets yourself. print / console capture bounded logs. action=list pages the effective catalog. Fresh JS; RegExp literals/constructor and regex-backed string operations are unsupported (the pinned native regex engine cannot be interrupted). No direct filesystem/network/process. Reserved host metadata names are filtered recursively in results/catalog schemas and forbidden in arguments; not lossless for arbitrary property names. Calls retain host approvals and may have irreversible side effects; errors/cancellation never roll back or retry. Failures return a JSON summary as error text; success includes structured details. Requires ToolProgram action 30 / protocol v1.".into()),
         parameters: StbString::from_string(json!({
             "type":"object", "x-rpi-execution-mode":"sequential", "properties": {
                 "action":{"type":"string","enum":["list","execute"],"default":"execute","description":"execute (default) runs code; list pages the effective invocation catalog without running code. Follow nextOffset until null."},

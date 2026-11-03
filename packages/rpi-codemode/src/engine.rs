@@ -1,5 +1,8 @@
 //! Invocation-local engine. Host identities exist only in Rust-owned guards.
-use rquickjs::{Context, Ctx, Exception, Function, Persistent, Promise, Runtime};
+use crate::heap::Heap;
+use rquickjs::{
+    context::intrinsic, Context, Ctx, Exception, Function, Persistent, Promise, Runtime,
+};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -152,6 +155,7 @@ struct Bridge {
     started: usize,
     fatal: Option<String>,
     cancelled: Arc<AtomicBool>,
+    memory_failed: Arc<AtomicBool>,
     deadline: Instant,
     terminate: Option<Value>,
 }
@@ -162,6 +166,9 @@ impl Bridge {
         }
         if Instant::now() >= self.deadline {
             return Err("codemode deadline exceeded".into());
+        }
+        if self.memory_failed.load(Ordering::Acquire) {
+            return Err("codemode memory budget exceeded".into());
         }
         if let Some(e) = &self.fatal {
             return Err(e.clone());
@@ -306,6 +313,7 @@ pub(crate) fn execute(
         started: 0,
         fatal: None,
         cancelled: cancelled.clone(),
+        memory_failed: Arc::new(AtomicBool::new(false)),
         deadline,
         terminate: None,
     }));
@@ -321,6 +329,12 @@ pub(crate) fn execute(
             "timed_out",
             Value::Null,
             Some("codemode deadline exceeded".into()),
+        )
+    } else if state.memory_failed.load(Ordering::Acquire) {
+        (
+            "error",
+            Value::Null,
+            Some("codemode memory budget exceeded".into()),
         )
     } else if let Some(error) = state.fatal.take() {
         ("error", Value::Null, Some(error))
@@ -372,14 +386,34 @@ fn run(
         .iter()
         .filter_map(|t| t["name"].as_str().map(str::to_owned))
         .collect();
-    let rt = Runtime::new().map_err(|e| e.to_string())?;
-    rt.set_memory_limit(MEMORY);
+    let memory_failed = bridge.borrow().memory_failed.clone();
+    let rt = Runtime::new_with_alloc(Heap::new(MEMORY, memory_failed.clone()))
+        .map_err(|e| e.to_string())?;
+    // Do not set QuickJS's own memory limit: its pre-check would bypass the
+    // allocator's sticky OOM latch when a guest catches the exception.
     rt.set_max_stack_size(STACK);
     let token = cancelled.clone();
     rt.set_interrupt_handler(Some(Box::new(move || {
-        token.load(Ordering::Acquire) || Instant::now() >= deadline
+        token.load(Ordering::Acquire)
+            || memory_failed.load(Ordering::Acquire)
+            || Instant::now() >= deadline
     })));
-    let context = Context::full(&rt).map_err(|e| e.to_string())?;
+    // Deliberately omit BOTH RegExp and RegExpCompiler. Merely deleting the
+    // global constructor leaves literals and String.match/search paths usable.
+    // The pinned native backtracking engine does not poll JS interrupts.
+    let context = Context::custom::<(
+        intrinsic::Date,
+        intrinsic::Eval,
+        intrinsic::Json,
+        intrinsic::Proxy,
+        intrinsic::MapSet,
+        intrinsic::TypedArrays,
+        intrinsic::Promise,
+        intrinsic::BigInt,
+        intrinsic::Performance,
+        intrinsic::WeakRef,
+    )>(&rt)
+    .map_err(|e| e.to_string())?;
     let (settle, promise) = context
         .with(|ctx| -> rquickjs::Result<_> {
             let start_state = bridge.clone();
