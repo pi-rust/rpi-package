@@ -16,7 +16,7 @@ parameter schemas, and regression checks.
 | --- | --- |
 | [rpi-mcp-adapter](packages/rpi-mcp-adapter/README.md) | Discover/call tools and manage resources with `mcp_list`, `mcp_call`, `mcp_resource`; raw diagnostics with `mcp_request` |
 | [rpi-subagents](packages/rpi-subagents/README.md) | Delegate work with `delegate_task` |
-| [rpi-codemode](packages/rpi-codemode/README.md) | Compose native tools with bounded JavaScript, structured failures and explicit native image output; source-only, requires the companion ToolProgram parity host |
+| [rpi-codemode](packages/rpi-codemode/README.md) | Compose native tools with bounded JavaScript, lossless business JSON and explicit exact native-result selection within inline limits; source-only, requires all four companion ToolProgram v1 capabilities |
 | [rpi-orchestrator](packages/rpi-orchestrator/README.md) | Bounded child agents and task graphs with `subagent`, `plan` and `dispatch` |
 | [rpi-durable](packages/rpi-durable/README.md) | Persist and resume workflow checkpoints with `durable` |
 | [rpi-lens](packages/rpi-lens/README.md) | Inspect code with `code_lens` |
@@ -57,6 +57,19 @@ or `/stats` to toggle it, or press F8. The row uses compact monochrome symbols
 in three groups and retains measured timing between requests. USD accumulates model usage costs calculated by the host from
 model pricing. It uses the host's generic `UiComponent` text interface.
 See [rpi-run-stats](packages/rpi-run-stats/README.md) for measurement definitions.
+
+Code Mode's **first full-parity increment is implemented, not the full plan**.
+The extension requires exact version-1 `resultEnvelope`, `hostAccounting`,
+`parentProgress` and `losslessValues` capabilities and fails closed on older
+hosts. Local evidence: **72 package tests passed**, strict all-target package
+Clippy passed, **1109 host tests passed / 6 ignored / 0 failed**, host formatting
+passed, and **35 real Windows host + DLL + fixture + gate smoke cases passed**.
+Final results and binary hashes are at
+`pi-rust-codemode/target/codemode-full-parity-smoke-5/`; this is source-build
+qualification, not deployment or a new CI-green claim. Large values
+beyond 1 MiB, complete child history/progress/recovery and Web/ACP child
+cards/reload remain outstanding; self/ancestor tools remain excluded.
+See the [parity status matrix](docs/codemode-full-parity-matrix.md).
 
 ## Provider integrations
 

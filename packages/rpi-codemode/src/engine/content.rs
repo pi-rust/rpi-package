@@ -1,13 +1,12 @@
 //! Explicit native output selection; never infer images from arbitrary JSON.
-use super::{public_value, MAX_JSON};
+use super::MAX_JSON;
 use serde_json::{json, Value};
 
 pub(super) const MAX_BLOCKS: usize = 128;
 
-/// Validate the full selection before accepting any block. Remove reserved
-/// transport fields recursively, then reject fields the native host cannot retain.
+/// Validate the full selection before accepting any block. Reject unsupported
+/// block fields explicitly rather than silently dropping business data.
 pub(super) fn blocks(mut value: Value) -> Result<Vec<Value>, String> {
-    public_value(&mut value);
     let value = if value.is_array() {
         value
     } else {

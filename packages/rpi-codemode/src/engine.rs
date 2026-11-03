@@ -73,26 +73,6 @@ pub(crate) fn parse_request(v: &Value) -> Result<Request, String> {
     }
 }
 
-/// Remove transport metadata even if a tool accidentally returns it in details.
-pub(crate) fn public_value(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for key in ["__rpi", "__rpiRuntimeKey", "runtimeHandle", "runtimeKey"] {
-                map.remove(key);
-            }
-            for v in map.values_mut() {
-                public_value(v);
-            }
-        }
-        Value::Array(array) => {
-            for v in array {
-                public_value(v);
-            }
-        }
-        _ => {}
-    }
-}
-
 pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Value, String> {
     let mut page = action(json!({"op":"list", "offset":offset, "limit":limit}))
         .map_err(|e| format!("ToolProgram (action 30) unavailable: {e}. Upgrade to a host implementing protocol v1; no direct-call fallback."))?;
@@ -102,7 +82,12 @@ pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Valu
     if page.get("protocolVersion").and_then(Value::as_u64) != Some(1) {
         return Err("unsupported ToolProgram protocol; host must implement v1".into());
     }
-    for capability in ["resultEnvelope", "hostAccounting", "parentProgress"] {
+    for capability in [
+        "resultEnvelope",
+        "hostAccounting",
+        "parentProgress",
+        "losslessValues",
+    ] {
         if page["capabilities"][capability].as_u64() != Some(1) {
             return Err(format!(
                 "ToolProgram requires capability {capability}:1; upgrade the host (no fallback)"
@@ -143,10 +128,9 @@ pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Valu
     {
         *tool = json!({"name":tool["name"],"description":tool["description"],"parameters":tool["parameters"]});
     }
-    public_value(&mut page);
     // Return only the public contract, never arbitrary host envelope fields.
     Ok(
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":page["tools"],"nextOffset":page["nextOffset"]}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":page["tools"],"nextOffset":page["nextOffset"]}),
     )
 }
 
@@ -173,6 +157,7 @@ struct Bridge {
     emitted: Vec<Value>,
     emitted_bytes: usize,
     has_emission: bool,
+    selected_result: Option<Value>,
 }
 impl Bridge {
     fn check(&self) -> Result<(), String> {
@@ -201,10 +186,6 @@ impl Bridge {
         let args: Value = serde_json::from_str(&args).map_err(|_| "invalid tool argument JSON")?;
         if !args.is_object() {
             return Err("tool arguments must be an object".into());
-        }
-        // Reserved metadata is never supplied by the guest, even nested.
-        if has_reserved(&args) {
-            return Err("reserved host metadata is not a tool argument".into());
         }
         if self.started >= MAX_CALLS || self.pending.len() >= MAX_ACTIVE {
             return self.fail("tool call budget exceeded (128 total / 8 active)");
@@ -262,6 +243,9 @@ impl Bridge {
     }
     fn emit(&mut self, encoded: String) -> Result<(), String> {
         self.check()?;
+        if self.selected_result.is_some() {
+            return self.fail("tools.emit cannot be combined with tools.result");
+        }
         if encoded.len() > MAX_JSON {
             return self.fail("native emitted content exceeds 1 MiB");
         }
@@ -283,6 +267,35 @@ impl Bridge {
         self.emitted.extend(selected);
         Ok(())
     }
+    fn select_result(&mut self, encoded: String, is_error: bool) -> Result<(), String> {
+        self.check()?;
+        if self.selected_result.is_some() || self.has_emission {
+            return self.fail(
+                "tools.result requires exactly one selection and cannot combine with tools.emit",
+            );
+        }
+        if encoded.len() > MAX_JSON {
+            return self.fail("native result selection exceeds 1 MiB");
+        }
+        let selected = (|| {
+            let value: Value = serde_json::from_str(&encoded)
+                .map_err(|_| "tools.result requires a finalized native result".to_owned())?;
+            let blocks = content::blocks(value.get("content").cloned().unwrap_or(Value::Null))?;
+            // Inline only under the existing budget. Future large-value references
+            // must be host-backed; this bridge does not claim large-result support.
+            // AgentToolResult always has details; JS can delete it or make it
+            // undefined. Preserve the native default instead of emitting an
+            // envelope the host would reject after guest execution completes.
+            Ok::<_, String>(json!({"content":blocks,"details":value["details"],"isError":is_error}))
+        })();
+        match selected {
+            Ok(value) => {
+                self.selected_result = Some(value);
+                Ok(())
+            }
+            Err(error) => self.fail(&error),
+        }
+    }
     fn cleanup(&mut self) {
         for call in self.pending.drain(..) {
             let _ = (self.action)(json!({"op":"cancel","requestId":call.id}));
@@ -297,16 +310,6 @@ impl Drop for Bridge {
     }
 }
 
-fn has_reserved(value: &Value) -> bool {
-    match value {
-        Value::Object(m) => m.iter().any(|(k, v)| {
-            ["__rpi", "__rpiRuntimeKey", "runtimeKey", "runtimeHandle"].contains(&k.as_str())
-                || has_reserved(v)
-        }),
-        Value::Array(a) => a.iter().any(has_reserved),
-        _ => false,
-    }
-}
 pub(crate) fn bounded(s: &str, max: usize) -> String {
     let mut end = s.len().min(max);
     while !s.is_char_boundary(end) {
@@ -358,6 +361,7 @@ pub(crate) fn execute(
         emitted: Vec::new(),
         emitted_bytes: 0,
         has_emission: false,
+        selected_result: None,
     }));
     let result = run(code, &bridge, &cancelled, deadline);
     let mut state = bridge.borrow_mut();
@@ -387,9 +391,24 @@ pub(crate) fn execute(
         }
     };
     let terminate = status == "terminated";
+    // A later terminal child remains authoritative, including its native content.
+    // Prior explicit output cannot suppress termination or any failure path.
+    if status != "completed" {
+        state.selected_result = None;
+    }
     let mut selected = std::mem::take(&mut state.emitted);
     let mut has_selection = state.has_emission;
-    if matches!(status, "completed" | "terminated") {
+    if state.selected_result.is_some()
+        && status == "completed"
+        && result
+            .as_object()
+            .is_some_and(|v| v.contains_key("content"))
+    {
+        status = "error";
+        error = Some("returned native content conflicts with tools.result".into());
+        result = Value::Null;
+    }
+    if state.selected_result.is_none() && matches!(status, "completed" | "terminated") {
         match content::promote(&mut result) {
             Ok(Some(blocks)) => {
                 has_selection = true;
@@ -411,12 +430,23 @@ pub(crate) fn execute(
         selected.clear();
         has_selection = false;
     }
-    let is_error = state.terminal_error || !matches!(status, "completed" | "terminated");
+    // Selection never overrides a runtime failure, cancellation, OOM or termination.
+    let exact = if status == "completed" {
+        state.selected_result.take()
+    } else {
+        None
+    };
+    let is_error = state.terminal_error
+        || exact.as_ref().is_some_and(|v| v["isError"] == true)
+        || !matches!(status, "completed" | "terminated");
     if state.terminal_error && error.is_none() {
         error = Some("terminal tool returned isError".into());
     }
     let mut summary = json!({"status":status,"result":result,"error":error,"logs":state.logs,"calls":state.calls,
         "durationMs":started.elapsed().as_millis() as u64,"terminate":terminate,"isError":is_error});
+    if let Some(exact) = exact {
+        summary["nativeResult"] = exact;
+    }
     if has_selection {
         summary["nativeContent"] = Value::Array(selected);
     }
@@ -518,11 +548,22 @@ fn run(
                     .emit(encoded)
                     .map_err(|e| Exception::throw_message(&ctx, &e))
             })?;
+            let select_state = bridge.clone();
+            let select = Function::new(
+                ctx.clone(),
+                move |ctx: Ctx<'_>, encoded: String, is_error: bool| {
+                    select_state
+                        .borrow_mut()
+                        .select_result(encoded, is_error)
+                        .map_err(|e| Exception::throw_message(&ctx, &e))
+                },
+            )?;
             let factory: Function = ctx.eval(include_str!("guest.js"))?;
             let settle: Function = factory.call((
                 start,
                 log,
                 emit,
+                select,
                 serde_json::to_string(&catalog).unwrap_or_default(),
             ))?;
             let promise: Promise =
@@ -564,8 +605,7 @@ fn run(
                 let result = result?;
                 let json = ctx.json_stringify(result)?.map(|s|s.to_string()).transpose()?.unwrap_or_else(||"null".into());
                 if json.len() > MAX_JSON { return Err(Exception::throw_message(&ctx,"result exceeds 1 MiB")); }
-                let mut value: Value = serde_json::from_str(&json).map_err(|_|Exception::throw_message(&ctx,"result is not JSON"))?;
-                public_value(&mut value);
+                let value: Value = serde_json::from_str(&json).map_err(|_|Exception::throw_message(&ctx,"result is not JSON"))?;
                 return Ok(Some(value));
             }
             let mut ready = Vec::new();
@@ -584,9 +624,8 @@ fn run(
                     let failed = reply["status"] == "failed";
                     let is_error = failed || reply.get("isError").and_then(Value::as_bool) == Some(true)
                         || reply["result"]["isError"] == true;
-                    let mut result = reply.get("result").cloned().unwrap_or(Value::Null);
+                    let result = reply.get("result").cloned().unwrap_or(Value::Null);
                     if !failed && !result.is_object() { return Err(Exception::throw_message(&ctx,"host completed without finalized result")); }
-                    public_value(&mut result);
                     let call = state.pending.remove(i);
                     let disposal = (state.action)(json!({"op":"dispose","requestId":call.id}));
                     state.calls.push(json!({"name":call.name,"status":if is_error {"error"} else {"done"},"isError":is_error,"durationMs":call.started.elapsed().as_millis() as u64}));

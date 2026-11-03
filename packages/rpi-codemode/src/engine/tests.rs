@@ -24,7 +24,7 @@ fn host(mode: &str) -> (Arc<Mutex<Fake>>, Arc<Action>) {
                     return Err("unknown runtime action 30".into());
                 }
                 Ok(
-                    json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[{"name":"echo","description":"test","parameters":{"type":"object"}},{"name":"other","description":"test","parameters":{"type":"object"}}],"nextOffset":null}),
+                    json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"echo","description":"test","parameters":{"type":"object"}},{"name":"other","description":"test","parameters":{"type":"object"}}],"nextOffset":null}),
                 )
             }
             "start" => {
@@ -191,7 +191,7 @@ fn js_failure_and_unawaited_success_cancel_outstanding_calls() {
     }
 }
 #[test]
-fn no_privileged_globals_or_host_metadata_and_fresh_state() {
+fn no_privileged_globals_or_host_identities_and_fresh_state() {
     let code="const r=await tools.echo({}); return {globals:[typeof process,typeof require,typeof fetch,typeof fs,typeof __rpi],r,catalog:tools.list()};";
     let (r, h) = run_fake(code, "");
     assert_eq!(r["status"], "completed", "{r}");
@@ -206,15 +206,10 @@ fn no_privileged_globals_or_host_metadata_and_fresh_state() {
         ])
     );
     let text = r.to_string();
-    for forbidden in [
-        "runtimeKey",
-        "runtimeHandle",
-        "host-private-id",
-        "__rpi",
-        "secret",
-    ] {
-        assert!(!text.contains(forbidden), "{text}");
-    }
+    assert!(!text.contains("host-private-id"), "{text}");
+    // These fixture fields are ordinary business JSON, not actual credentials.
+    assert_eq!(r["result"]["r"]["__rpi"]["runtimeKey"], "secret");
+    assert_eq!(r["result"]["r"]["runtimeHandle"], 42);
     cleaned(&h, 1);
     assert_eq!(
         run_fake("globalThis.leak=1; return 1;", "").0["status"],
@@ -223,14 +218,12 @@ fn no_privileged_globals_or_host_metadata_and_fresh_state() {
     assert_eq!(run_fake("return typeof leak;", "").0["result"], "undefined");
 }
 #[test]
-fn invalid_arguments_and_reserved_metadata_never_reach_host() {
+fn invalid_arguments_never_reach_host() {
     for code in [
         "await tools.echo(null)",
         "await tools.echo([])",
         "await tools.call(3,{})",
         "await tools.call('absent',{})",
-        "await tools.echo({runtimeKey:'fake'})",
-        "await tools.echo({x:{__rpi:{a:1}}})",
     ] {
         let (r, h) = run_fake(code, "");
         assert_eq!(r["status"], "error", "{code}: {r}");
@@ -369,14 +362,14 @@ fn parser_is_strict_but_accepts_host_and_unknown_fields() {
 fn paginated_catalog_is_bounded_and_validated() {
     let action = |v: Value| {
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[],"nextOffset":if v["offset"]==0 {json!(32)} else {Value::Null}}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[],"nextOffset":if v["offset"]==0 {json!(32)} else {Value::Null}}),
         )
     };
     assert_eq!(list_page(&action, 0, 32).unwrap()["nextOffset"], 32);
     for page in [
         json!({"protocolVersion":0,"tools":[],"nextOffset":null}),
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[],"nextOffset":0}),
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[{}],"nextOffset":null}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[],"nextOffset":0}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{}],"nextOffset":null}),
     ] {
         assert!(list_page(&move |_| Ok(page.clone()), 0, 32).is_err());
     }
@@ -421,7 +414,7 @@ fn paginated_execute_discovers_only_bounded_contract_entries() {
             vec![json!({"name":"b","description":"second","parameters":{}})]
         };
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":entries,"nextOffset":if offset==0 {json!(1)} else {Value::Null}}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":entries,"nextOffset":if offset==0 {json!(1)} else {Value::Null}}),
         )
     });
     let r = execute(
@@ -493,16 +486,17 @@ fn promise_job_exception_aborts_even_if_main_function_returned() {
 }
 
 #[test]
-fn catalog_filtering_is_explicitly_lossy_for_reserved_schema_properties() {
+fn catalog_preserves_business_schema_properties() {
     let action = |_| {
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[{"name":"schema","description":"test","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"ordinary":{"type":"string"}}}}],"nextOffset":null}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"schema","description":"test","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"ordinary":{"type":"string"}}}}],"nextOffset":null}),
         )
     };
     let page = list_page(&action, 0, 32).unwrap();
-    assert!(page["tools"][0]["parameters"]["properties"]
-        .get("runtimeKey")
-        .is_none());
+    assert_eq!(
+        page["tools"][0]["parameters"]["properties"]["runtimeKey"],
+        json!({"type":"string"})
+    );
     assert_eq!(
         page["tools"][0]["parameters"]["properties"]["ordinary"]["type"],
         "string"
@@ -573,7 +567,7 @@ fn native_host(result: Value, is_error: bool) -> Arc<Action> {
     Arc::new(move |v| {
         Ok(match v["op"].as_str().unwrap() {
             "list" => {
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},
             "tools":[{"name":"read","description":"fixture","parameters":{}}],"nextOffset":null})
             }
             "start" => json!({"requestId":"private","status":"running"}),
@@ -599,8 +593,13 @@ fn image_result() -> Value {
 }
 
 #[test]
-fn capabilities_require_all_three_exact_integer_versions_before_guest_execution() {
-    for key in ["resultEnvelope", "hostAccounting", "parentProgress"] {
+fn capabilities_require_all_four_exact_integer_versions_before_guest_execution() {
+    for key in [
+        "resultEnvelope",
+        "hostAccounting",
+        "parentProgress",
+        "losslessValues",
+    ] {
         for invalid in [
             Value::Null,
             json!(0),
@@ -609,7 +608,7 @@ fn capabilities_require_all_three_exact_integer_versions_before_guest_execution(
             json!(true),
             json!(1.0),
         ] {
-            let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1});
+            let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1});
             caps[key] = invalid;
             let a: Arc<Action> = Arc::new(move |v| {
                 assert_eq!(v["op"], "list", "guest must never start");
@@ -633,12 +632,12 @@ fn capabilities_require_all_three_exact_integer_versions_before_guest_execution(
 fn list_preserves_only_public_capabilities() {
     let a = |_| {
         Ok(json!({"protocolVersion":1,"tools":[],"nextOffset":null,
-        "capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"private":"hidden"},"private":"hidden"}))
+        "capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"private":"hidden"},"private":"hidden"}))
     };
     let page = list_page(&a, 0, 32).unwrap();
     assert_eq!(
         page["capabilities"],
-        json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1})
+        json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1})
     );
     assert!(!page.to_string().contains("hidden"));
 }
@@ -752,27 +751,14 @@ fn invalid_text_signature_becomes_structured_done_error_with_logs() {
 }
 
 #[test]
-fn emitted_reserved_metadata_is_filtered_and_native_text_signature_retained() {
-    let r = native_run("tools.emit({runtimeHandle:42,content:[{type:'text',text:'ok',textSignature:'native-signature',runtimeKey:'secret',__rpi:{nested:[{runtimeHandle:42}]}}]}); return 1;",image_result(),false);
-    assert_eq!(r["status"], "completed", "{r}");
-    assert!(!r.to_string().contains("secret"));
-    assert_eq!(
-        r["nativeContent"],
-        json!([{"type":"text","text":"ok","textSignature":"native-signature"}])
+fn native_blocks_reject_unsupported_fields_instead_of_silently_dropping_them() {
+    let r = native_run(
+        "try {tools.emit([{type:'text',text:'ok',runtimeKey:'business'}]);} catch(e){} return 1;",
+        image_result(),
+        false,
     );
-    let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
-    assert_eq!(
-        output["result"]["content"][0]["textSignature"],
-        "native-signature"
-    );
-
-    let mut nested = json!({"content":[{"type":"text","text":"ok","meta":{"label":"public","nested":[{"runtimeKey":"secret","__rpiRuntimeKey":"secret","runtimeHandle":42,"__rpi":{}}]}}]});
-    public_value(&mut nested);
-    assert_eq!(
-        nested["content"][0]["meta"],
-        json!({"label":"public","nested":[{}]})
-    );
-    assert!(content::blocks(nested).unwrap_err().contains("unsupported"));
+    assert_eq!(r["status"], "error", "{r}");
+    assert_eq!(r["error"], "unsupported native content block metadata");
 }
 
 #[test]
@@ -951,4 +937,211 @@ fn native_content_supports_each_documented_mime_and_exact_count_boundary() {
     }
     let blocks = vec![json!({"type":"text","text":"ok"}); 128];
     assert_eq!(content::blocks(json!(blocks)).unwrap().len(), 128);
+}
+
+#[test]
+fn business_property_names_survive_schemas_arguments_results_and_guest_returns() {
+    let business = json!({"runtimeKey":"business","runtimeHandle":{"__rpiRuntimeKey":[{"__rpi":{"runtimeKey":"nested"}}]},"__rpi":true,"__rpiRuntimeKey":null});
+    let schema = json!({"type":"object","properties":business,"nested":[business]});
+    let expected_schema = schema.clone();
+    let expected_business = business.clone();
+    let action: Arc<Action> = Arc::new(move |v| {
+        Ok(match v["op"].as_str().unwrap() {
+            "list" => {
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"echo","description":"fixture","parameters":schema}],"nextOffset":null})
+            }
+            "start" => {
+                assert_eq!(v["arguments"], expected_business);
+                json!({"requestId":"private","status":"running"})
+            }
+            "poll" => {
+                json!({"requestId":"private","status":"done","result":{"content":[],"details":expected_business,"runtimeKey":"business","__rpi":{"runtimeHandle":3}}})
+            }
+            "dispose" | "cancel" => json!({}),
+            _ => panic!("unexpected action"),
+        })
+    });
+    let code = format!("const a={business}; const r=await tools.echo(a); return {{schema:tools.list()[0].parameters,args:a,raw:r,nested:[{{runtimeKey:'return',runtimeHandle:9,__rpi:{{__rpiRuntimeKey:'return'}}}}]}};");
+    let r = execute(&code, 2000, action, Arc::new(AtomicBool::new(false)));
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["result"]["schema"], expected_schema);
+    assert_eq!(r["result"]["args"], business);
+    assert_eq!(r["result"]["raw"]["details"], business);
+    assert_eq!(r["result"]["raw"]["__rpi"]["runtimeHandle"], 3);
+    assert_eq!(
+        r["result"]["nested"][0]["__rpi"]["__rpiRuntimeKey"],
+        "return"
+    );
+}
+
+#[test]
+fn explicit_native_result_selects_exact_content_details_and_trusted_error_without_accounting() {
+    for is_error in [false, true] {
+        for content in [
+            json!([]),
+            json!([{"type":"text","text":"","textSignature":null}]),
+            json!([{"type":"text","text":"exact","textSignature":"signature"},{"type":"image","mimeType":"image/png","data":PNG}]),
+        ] {
+            let details = json!({"runtimeKey":"business","runtimeHandle":42,"__rpi":{"__rpiRuntimeKey":"nested"},"usage":{"cost":7},"addedToolNames":["business"],"status":"business-status"});
+            let raw = json!({"content":content,"details":details,"usage":{"cost":1},"addedToolNames":["new"],"terminate":false});
+            let code = if is_error {
+                "let r; try {await tools.read({});} catch(e) {r=e.result;} r.isError=false; r.usage={cost:999}; r.addedToolNames=['forged']; tools.result(r); return {diagnostic:'kept internally'};"
+            } else {
+                "const r=await tools.read({}); r.isError=true; r.usage={cost:999}; r.addedToolNames=['forged']; tools.result(r); return {diagnostic:'kept internally'};"
+            };
+            let r = native_run(code, raw, is_error);
+            assert_eq!(r["status"], "completed", "{r}");
+            assert_eq!(r["calls"][0]["isError"], is_error);
+            assert_eq!(r["result"]["diagnostic"], "kept internally");
+            let encoded = crate::tool_result(r);
+            let output: Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(output["isError"], is_error);
+            assert_eq!(
+                output["result"]["content"], content,
+                "no synthetic error block"
+            );
+            assert_eq!(
+                output["result"]["details"], details,
+                "no CodeMode summary in exact details"
+            );
+            assert!(output["result"].get("usage").is_none());
+            assert!(output["result"].get("addedToolNames").is_none());
+            assert!(!encoded.contains("forged"));
+            assert!(!encoded.contains("diagnostic"));
+            assert!(encoded.matches(PNG).count() <= 1);
+        }
+    }
+    let output: Value = serde_json::from_str(&crate::tool_result(native_run(
+        "return tools.result(await tools.read({}));",
+        json!({"content":[]}),
+        false,
+    )))
+    .unwrap();
+    assert_eq!(output["result"]["content"], json!([]));
+    assert_eq!(output["result"].get("details"), Some(&Value::Null));
+    for mutation in ["delete r.details", "r.details=undefined"] {
+        for is_error in [false, true] {
+            let acquire = if is_error {
+                "let r; try {await tools.read({});} catch(e) {r=e.result;}"
+            } else {
+                "const r=await tools.read({});"
+            };
+            let output: Value = serde_json::from_str(&crate::tool_result(native_run(
+                &format!("{acquire} {mutation}; tools.result(r);"),
+                json!({"content":[],"details":{"original":true}}),
+                is_error,
+            )))
+            .unwrap();
+            assert_eq!(output["isError"], is_error, "{mutation}: {output}");
+            assert_eq!(output["result"]["content"], json!([]));
+            assert_eq!(output["result"].get("details"), Some(&Value::Null));
+        }
+    }
+}
+
+#[test]
+fn invalid_conflicting_and_multiple_native_result_selections_are_sticky() {
+    for code in [
+        "try {tools.result({content:[],details:{}});} catch(e) {} return 42;",
+        "try {tools.result(null);} catch(e) {} return 42;",
+        "const r=await tools.read({}); try {tools.result({...r});} catch(e) {} return 42;",
+        "const r=await tools.read({}); tools.result(r); try {tools.result(r);} catch(e) {} return 42;",
+        "const [r,s]=await Promise.all([tools.read({}),tools.read({})]); tools.result(r); try {tools.result(s);} catch(e) {} return 42;",
+        "const r=await tools.read({}); tools.emit([]); try {tools.result(r);} catch(e) {} return 42;",
+        "const r=await tools.read({}); tools.result(r); try {tools.emit([]);} catch(e) {} return 42;",
+        "const r=await tools.read({}); r.details={toJSON(){throw Error('bad serialization');}}; try {tools.result(r);} catch(e) {} return 42;",
+        "const r=await tools.read({}); r.content=[{type:'audio'}]; try {tools.result(r);} catch(e) {} return 42;",
+        "const r=await tools.read({}); r.details='x'.repeat(1048576); try {tools.result(r);} catch(e) {} return 42;",
+        "const r=await tools.read({}); tools.result(r); return r;",
+    ] {
+        let r = native_run(code, image_result(), false);
+        assert_eq!(r["status"], "error", "{code}: {r}");
+        assert!(r.get("nativeResult").is_none(), "{r}");
+        let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        assert_eq!(output["isError"], true);
+        assert_eq!(output["result"]["details"]["status"], "error");
+    }
+}
+
+#[test]
+fn result_association_and_error_flag_survive_guest_intrinsic_mutation() {
+    let r = native_run("WeakMap.prototype.get=()=>true; WeakMap.prototype.set=()=>{}; const r=await tools.read({}); r.isError=true; tools.result(r);", image_result(), false);
+    assert_eq!(r["status"], "completed", "{r}");
+    let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert_eq!(output["isError"], false);
+    assert_eq!(output["result"]["details"], json!({"ok":true}));
+}
+
+#[test]
+fn runtime_failure_timeout_and_oom_after_exact_selection_do_not_become_selected_success() {
+    for tail in [
+        "throw Error('after selection');",
+        "for(;;){}",
+        "try {const a=[]; for(;;) a.push(new Array(10000).fill('x'));} catch(e) {} return 42;",
+    ] {
+        let timeout = if tail == "for(;;){}" { 50 } else { 2000 };
+        let r = execute(
+            &format!("tools.result(await tools.read({{}})); {tail}"),
+            timeout,
+            native_host(image_result(), false),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(
+            matches!(r["status"].as_str(), Some("error" | "timed_out")),
+            "{r}"
+        );
+        assert!(r.get("nativeResult").is_none());
+        let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        assert_eq!(output["isError"], true);
+        assert!(!output.to_string().contains(PNG));
+    }
+}
+
+#[test]
+fn cancellation_after_exact_selection_retains_cancelled_failure() {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let token = cancelled.clone();
+    let base = native_host(image_result(), false);
+    let action: Arc<Action> = Arc::new(move |v| {
+        if v["op"] == "start" && v["arguments"]["cancel"] == true {
+            token.store(true, Ordering::Release);
+        }
+        base(v)
+    });
+    let r = execute(
+        "tools.result(await tools.read({})); await tools.read({cancel:true});",
+        2000,
+        action,
+        cancelled,
+    );
+    assert_eq!(r["status"], "cancelled", "{r}");
+    assert!(r.get("nativeResult").is_none());
+    let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert_eq!(output["isError"], true);
+    assert_eq!(output["result"]["details"]["status"], "cancelled");
+}
+
+#[test]
+fn later_terminal_child_overrides_exact_selection_without_losing_content_or_flags() {
+    for is_error in [false, true] {
+        let base = native_host(image_result(), false);
+        let polls = std::sync::atomic::AtomicUsize::new(0);
+        let action: Arc<Action> = Arc::new(move |v| {
+            if v["op"] == "poll" && polls.fetch_add(1, Ordering::AcqRel) != 0 {
+                return Ok(
+                    json!({"requestId":"private","status":"done","isError":is_error,
+                    "result":{"content":[{"type":"text","text":"terminal"}],"details":{"terminal":true},"terminate":true}}),
+                );
+            }
+            base(v)
+        });
+        let r = execute("tools.result(await tools.read({})); await tools.read({}); throw Error('must not resume');", 2000, action, Arc::new(AtomicBool::new(false)));
+        assert_eq!(r["status"], "terminated", "{r}");
+        assert!(r.get("nativeResult").is_none());
+        let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        assert_eq!(output["isError"], is_error);
+        assert_eq!(output["result"]["terminate"], true);
+        assert_eq!(output["result"]["content"][0]["text"], "terminal");
+        assert!(!output.to_string().contains(PNG));
+    }
 }

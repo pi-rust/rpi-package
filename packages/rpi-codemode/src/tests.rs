@@ -85,7 +85,7 @@ fn output_preserves_summary_error_and_terminate() {
     let mut value = json!({"text":"prefix secret suffix","__rpi":{"runtimeHandle":1},"nested":{"runtimeKey":"secret"}});
     redact(&mut value, "secret");
     assert!(!value.to_string().contains("secret"));
-    assert!(!value.to_string().contains("runtimeHandle"));
+    assert_eq!(value["__rpi"]["runtimeHandle"], 1);
 }
 #[test]
 fn abi_poll_is_nonblocking_cancel_is_signal_only_destroy_joins() {
@@ -95,7 +95,7 @@ fn abi_poll_is_nonblocking_cancel_is_signal_only_destroy_joins() {
     let worker = thread::spawn(move || {
         let action: Arc<Action> = Arc::new(|_| {
             Ok(
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[],"nextOffset":null}),
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[],"nextOffset":null}),
             )
         });
         let r = engine::execute("for(;;){}", 10000, action, token);
@@ -158,7 +158,7 @@ fn abi_failed_execution_is_done_error_with_partial_work() {
     rpi_plugin_sdk::string_handler!(fn fake_action(_action, input, out, _data) {
         let request: Value = serde_json::from_str(input).unwrap();
         assert_eq!(request["__rpiRuntimeKey"], "abi-test-key");
-        out.write(json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[],"nextOffset":null}).to_string());
+        out.write(json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[],"nextOffset":null}).to_string());
         0
     });
     let previous = HOST.lock().unwrap().replace(RuntimeFns {
@@ -195,7 +195,7 @@ fn abi_cancelled_worker_reports_done_error_and_disposes_active_calls() {
     let action: Arc<Action> = Arc::new(move |v| {
         Ok(match v["op"].as_str().unwrap() {
             "list" => {
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[{"name":"wait","description":"test","parameters":{}}],"nextOffset":null})
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"wait","description":"test","parameters":{}}],"nextOffset":null})
             }
             "start" => {
                 a.store(true, Ordering::Release);
@@ -255,14 +255,20 @@ fn abi_capability_negotiation_fails_closed_for_execute_and_list_and_missing_bind
     rpi_plugin_sdk::string_handler!(fn fake_action(_action, input, out, _data) {
         let request: Value = serde_json::from_str(input).unwrap();
         assert_eq!(request["op"],"list","legacy host must not execute guest calls");
-        let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1});
+        let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1});
         let key = request["__rpiRuntimeKey"].as_str().unwrap();
         if key != "good" { caps.as_object_mut().unwrap().remove(key); }
         out.write(json!({"protocolVersion":1,"capabilities":caps,"tools":[],"nextOffset":null}).to_string());
         0
     });
     for action in ["execute", "list"] {
-        for key in ["resultEnvelope", "hostAccounting", "parentProgress", "good"] {
+        for key in [
+            "resultEnvelope",
+            "hostAccounting",
+            "parentProgress",
+            "losslessValues",
+            "good",
+        ] {
             let previous = HOST.lock().unwrap().replace(RuntimeFns {
                 action: fake_action,
                 free: rpi_plugin_sdk::callbacks::free_string,
@@ -357,4 +363,47 @@ fn abi_oversized_native_and_json_outputs_compact_to_done_error_preserving_termin
             assert_eq!(v["result"]["details"]["logs"][0], "partial");
         }
     }
+}
+
+#[test]
+fn actual_binding_key_guard_covers_property_names_without_collision_or_overwrite() {
+    let mut value = json!({"runtimeKey":"business","runtimeHandle":42,"__rpi":{"__rpiRuntimeKey":"business"},"prefix secret suffix":{"data":"hidden"},"prefix [redacted] suffix":{"data":"keep"},"nested":[{"secret":"credential-named","[redacted]":"keep","data":"prefix secret suffix"}]});
+    redact(&mut value, "secret");
+    assert!(!value.to_string().contains("secret"));
+    assert_eq!(value["prefix [redacted] suffix"]["data"], "keep");
+    assert_eq!(value["nested"][0]["[redacted]"], "keep");
+    assert_eq!(value["nested"][0]["data"], "prefix [redacted] suffix");
+    assert_eq!(value["runtimeKey"], "business");
+    assert_eq!(value["runtimeHandle"], 42);
+    assert_eq!(value["__rpi"]["__rpiRuntimeKey"], "business");
+}
+
+#[test]
+fn bound_host_response_preserves_business_names_but_never_actual_credentials() {
+    rpi_plugin_sdk::string_handler!(fn fake_action(_action, input, out, _data) {
+        let request: Value = serde_json::from_str(input).unwrap();
+        assert_eq!(request["__rpiRuntimeKey"], "actual-binding-key");
+        out.write(json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"fixture","description":"fixture","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"runtimeHandle":{"type":"number"},"__rpi":{"type":"object"},"__rpiRuntimeKey":{"type":"string"},"actual-binding-key":{"type":"string"},"[redacted]":{"type":"boolean"}},"nested":[{"runtimeKey":"business","text":"actual-binding-key"}]}}],"nextOffset":null}).to_string());
+        0
+    });
+    let action = bind(
+        Some(RuntimeFns {
+            action: fake_action,
+            free: rpi_plugin_sdk::callbacks::free_string,
+        }),
+        &json!({"__rpi":{"runtimeHandle":1,"runtimeKey":"actual-binding-key"}}),
+    )
+    .unwrap();
+    let page = engine::list_page(&*action, 0, 32).unwrap();
+    assert!(!page.to_string().contains("actual-binding-key"));
+    let properties = &page["tools"][0]["parameters"]["properties"];
+    assert_eq!(properties["runtimeKey"]["type"], "string");
+    assert_eq!(properties["runtimeHandle"]["type"], "number");
+    assert_eq!(properties["__rpi"]["type"], "object");
+    assert_eq!(properties["__rpiRuntimeKey"]["type"], "string");
+    assert_eq!(properties["[redacted]"]["type"], "boolean");
+    assert_eq!(
+        page["tools"][0]["parameters"]["nested"][0]["runtimeKey"],
+        "business"
+    );
 }

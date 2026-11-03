@@ -91,10 +91,12 @@ fn bind(host: Option<RuntimeFns>, params: &Value) -> Result<Arc<Action>, String>
     }))
 }
 fn redact(value: &mut Value, key: &str) {
-    engine::public_value(value);
     match value {
         Value::String(s) => *s = s.replace(key, "[redacted]"),
         Value::Object(m) => {
+            // Never rename credential-bearing names: replacement could collide
+            // with a legitimate sibling and silently overwrite its business data.
+            m.retain(|name, _| !name.contains(key));
             for v in m.values_mut() {
                 redact(v, key);
             }
@@ -108,6 +110,7 @@ fn redact(value: &mut Value, key: &str) {
     }
 }
 fn tool_result(mut value: Value) -> String {
+    let exact = value.as_object_mut().and_then(|v| v.remove("nativeResult"));
     let content = value
         .as_object_mut()
         .and_then(|v| v.remove("nativeContent"));
@@ -126,9 +129,14 @@ fn tool_result(mut value: Value) -> String {
         Some(content) => content,
         None => json!([{"type":"text","text":value.to_string()}]),
     };
-    let encoded = json!({"$rpiToolResult":1,"isError":is_error,"result":{
-        "content":content,"details":value,"terminate":terminate}})
-    .to_string();
+    // Exact native selection exposes only content/details and trusted isError.
+    // Keep diagnostics in the internal summary, not in native selected details.
+    let native = if let Some(exact) = exact.filter(|_| value["status"] == "completed") {
+        json!({"content":exact["content"],"details":exact["details"],"terminate":terminate})
+    } else {
+        json!({"content":content,"details":value,"terminate":terminate})
+    };
+    let encoded = json!({"$rpiToolResult":1,"isError":is_error,"result":native}).to_string();
     if encoded.len() <= engine::MAX_JSON {
         return encoded;
     }
@@ -232,7 +240,7 @@ extern "C" fn destroy(handle: StepHandle) {
 fn schema() -> rpi_plugin_sdk::StableToolSchema {
     rpi_plugin_sdk::StableToolSchema {
         name: StbString::from_string("codemode".into()),
-        description: StbString::from_string("Execute a bounded JavaScript async body (with return) using the current invocation's tools, without another model turn or MCP. tools.name(args) / tools.call(name,args) return finalized tool results; Promise.all runs at most 8 active calls concurrently (128 total); batch larger sets yourself. print / console capture bounded logs. action=list pages the effective catalog. Fresh JS; RegExp literals/constructor and regex-backed string operations are unsupported (the pinned native regex engine cannot be interrupted). No direct filesystem/network/process. Reserved host metadata names are filtered recursively in results/catalog schemas and forbidden in arguments; not lossless for arbitrary property names. Calls retain host approvals and may have irreversible side effects; errors/cancellation never roll back or retry. tools.emit(resultOrContentArray) explicitly selects native output; returning a result with content also selects it (text/image only, 128 blocks / 1 MiB). Ordinary JSON stays summary data. Failures retain structured details through the native result envelope. Requires ToolProgram action 30 / protocol v1 with resultEnvelope:1, hostAccounting:1, parentProgress:1.".into()),
+        description: StbString::from_string("Execute a bounded JavaScript async body (with return) using the current invocation's tools, without another model turn or MCP. tools.name(args) / tools.call(name,args) return finalized tool results; Promise.all runs at most 8 active calls concurrently (128 total); batch larger sets yourself. print / console capture bounded logs. action=list pages the effective catalog. Fresh JS; RegExp literals/constructor and regex-backed string operations are unsupported (the pinned native regex engine cannot be interrupted). No direct filesystem/network/process. Business JSON property names are preserved losslessly (requires losslessValues:1); actual invocation credentials are never guest APIs. Calls retain host approvals and may have irreversible side effects; errors/cancellation never roll back or retry. tools.result(nativeResultOrErrorResult) selects exact native content/details/isError once, without tools.emit; tools.emit(resultOrContentArray) explicitly selects native output; returning a result with content also selects it (text/image only, 128 blocks / 1 MiB). Ordinary JSON stays summary data. Failures retain structured details through the native result envelope. Requires ToolProgram action 30 / protocol v1 with resultEnvelope:1, hostAccounting:1, parentProgress:1, losslessValues:1.".into()),
         parameters: StbString::from_string(json!({
             "type":"object", "x-rpi-execution-mode":"sequential", "x-rpi-result-envelope":1, "properties": {
                 "action":{"type":"string","enum":["list","execute"],"default":"execute","description":"execute (default) runs code; list pages the effective invocation catalog without running code. Follow nextOffset until null."},

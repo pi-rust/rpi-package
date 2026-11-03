@@ -6,12 +6,17 @@ MCP server, subprocess interpreter, or TypeScript compiler is involved. Ordinary
 tools remain visible and usable normally; this package does not hide or replace
 them.
 
+The **first full-parity increment is implemented, not the full parity plan**.
+See the [status matrix](../../docs/codemode-full-parity-matrix.md) for proven
+checks, Windows source-build qualification, and outstanding work.
+
 ## Compatibility and installation **from source**
 
 This is source-only functionality, not an advertised published release or
 prebuilt asset. It requires a **new native host implementing ToolProgram runtime
-action 30, protocol version 1**, advertising all three parity capabilities at
-version 1: `resultEnvelope`, `hostAccounting`, and `parentProgress`, including authenticated per-invocation
+action 30, protocol version 1**, advertising all four parity capabilities at
+exact integer version 1: `resultEnvelope`, `hostAccounting`, `parentProgress`, and
+`losslessValues`, including authenticated per-invocation
 `runtimeHandle` / `runtimeKey` capabilities. Installing the extension alone on an
 older host is insufficient: it returns an explicit upgrade error and has **no
 direct-call or subprocess fallback**. The package deliberately keeps the
@@ -55,11 +60,15 @@ the tools it should use, for example `--tools read,write,codemode`.
 ```
 
 Returns `{protocolVersion:1,
-capabilities:{resultEnvelope:1,hostAccounting:1,parentProgress:1},
+capabilities:{resultEnvelope:1,hostAccounting:1,parentProgress:1,losslessValues:1},
 tools:[{name,description,parameters}], nextOffset:number|null}` as the result
 summary's structured `details`. Follow `nextOffset` for another page. Only the current
 invocation's effective catalog is available, not the root session registry;
-the host excludes the running program tool and ancestor tool names.
+the host excludes the running program tool and ancestor tool names. Catalog
+changes follow native batch boundaries: a later invocation sees its batch's
+effective snapshot, not mid-program mutations. `addedToolNames` is metadata,
+not authorization or a refresh signal. Protected self/ancestor exclusion means
+this is not 100% of the native full tool set.
 
 ```json
 {
@@ -85,26 +94,29 @@ the host excludes the running program tool and ancestor tool names.
 
 - `await tools.<name>(arguments)` and `await tools.call(name, arguments)`:
   arguments must be a JSON object. Use `tools.call` for names containing
-  punctuation or colliding with `call` / `list` / `emit`. Ordinary tool errors
-  (`isError`) reject with an Error whose `.result` is the filtered finalized raw
+  punctuation or colliding with `call` / `list` / `emit` / `result`. Ordinary tool errors
+  (`isError`) reject with an Error whose `.result` is the finalized raw
   result object, so callers can inspect it in `catch`. Uncaught errors abort the
   program; lifecycle failures abort even if their exception is caught.
 - Calls resolve to the **finalized result object**, retaining `content`
   (including image blocks), `details`, `terminate`, `addedToolNames`, and `usage`
-  when supplied by the host, rather than just text. Reserved transport metadata
-  is removed recursively, including object properties named `__rpi`,
-  `__rpiRuntimeKey`, `runtimeHandle`, or `runtimeKey`. The same filtering applies
-  to catalog schemas and returned JSON values; these names are also forbidden
-  recursively in tool arguments. Thus arbitrary property names/schemas are NOT
-  preserved losslessly, and tools requiring these names cannot be used here.
-  Exact capability-key text is also redacted from host strings. Host capability
-  values and request handles are never guest APIs.
+  when supplied by the host, rather than just text. Business schemas, arguments,
+  results and guest JSON preserve legitimate properties named `runtimeKey`,
+  `runtimeHandle`, `__rpi`, or `__rpiRuntimeKey`; there is no recursive property-name
+  blacklist. The native extension ABI still owns injected top-level `__rpi`, as
+  with direct plugin calls; it is not a business argument slot. An invocation-local
+  host public-output guard sanitizes actual injected metadata and credential
+  values, not ordinary field names or bare numbers. Credentials are not guest APIs.
 - `tools`, its function set, `print`, and `console` are frozen/non-replaceable;
   bridge operations capture their intrinsic dependencies before guest code runs.
 - `tools.emit(resultOrContentArray)`: explicitly selects native text/image blocks
   for outer output, in emission order; returns `undefined`. It is not a host call
   and does not alter permissions or accounting. A returned native result object's
   own `content` array is selected after emitted blocks. See output rules below.
+- `tools.result(nativeResultOrErrorResult)`: exactly one explicit selection of a
+  captured native child result (or caught `error.result`), preserving its
+  content/details and authoritative error status. Cannot be combined with
+  `tools.emit` or returning another content object; see exact selection below.
 - `tools.list()`: a fresh JSON copy of the bounded catalog discovered at the
   beginning of execution. Newly added tools do not refresh this frozen snapshot.
 - `print(...)`, `console.log/info/warn/error(...)`: captured structured logs.
@@ -178,17 +190,18 @@ return {processed: true};
   and `{type:'image',mimeType:string,data:string}`. Image MIME types are exactly
   `image/png`, `image/jpeg`, `image/gif`, or `image/webp`; data must be nonempty
   canonical padded standard base64 (no whitespace, URL alphabet, or data URI).
-  Validation checks encoding, not image decoding/signatures. Reserved transport
-  fields are filtered recursively first; all other unsupported block fields
-  (including extra metadata) are rejected explicitly rather than silently lost
-  by the native host. Supported text signatures are preserved.
+  Validation checks encoding, not image decoding/signatures. Unsupported block
+  fields (including extra metadata) are rejected explicitly rather than silently
+  lost by the native host; business details are not a block-field whitelist.
+  Supported text signatures are preserved.
   Unsupported/malformed blocks fail explicitly, never disappear silently.
 - Selections share **128 blocks / 1 MiB encoded content** across emission and
   return. Emission serialization/validation/budget failures are sticky even if caught. The
   final envelope still has its separate 1 MiB budget. `tools.emit([])` explicitly
   selects empty native output.
-- Selected blocks replace the normal summary text block; structured `details`
-  always retains the summary. On failure, a short bounded native error text block
+- With ordinary return/content emission, selected blocks replace the normal
+  summary text block; structured `details` retains the summary. On failure, a
+  short bounded native error text block
   is appended after selected blocks (including an empty selection), subject to
   the final envelope budget. For a returned native result, its summary
   `result.content` becomes `{promoted:true,count:N}`. Image base64 then occurs
@@ -197,6 +210,47 @@ return {processed: true};
   arbitrary JSON remains the caller's ordinary JSON data, not auto-promotion.
 - Intermediate images are **not automatically forwarded**. JS retains access to
   raw per-call content/details/usage/names until it chooses output.
+
+### Exact native result selection
+
+```js
+// Exact native content/details, without a Code Mode summary:
+return tools.result(await tools.read({path: 'tiny.png'}));
+
+// Exact native error, retaining its authoritative isError:
+try {
+  await tools.call('some_tool', {});
+} catch (error) {
+  return tools.result(error.result);
+}
+```
+
+`tools.result` returns `undefined`; it selects output rather than calling a tool.
+A captured WeakMap associates native result object identity with the host's
+`isError`, including caught `error.result`. Cloned/fabricated objects are rejected;
+setting an object's `isError` cannot forge that flag. This is not an immutable
+snapshot API: avoid mutating content/details if you want the original values.
+
+Selection uses the current guest-mutated content/details snapshot, not an
+immutable copy. Missing selected `details` (including deletion or `undefined`)
+is normalized to native `null` in the required result-envelope field.
+Authoritative native `isError` remains independent of guest mutations.
+
+Exactly one selection is allowed. Repeated selection, invalid serialization,
+fabricated inputs, mixing with `tools.emit` (even an empty emission), or returning
+another object with `content` fails the invocation. Misuse is sticky even if JS
+catches it. A normally completed selection keeps exact supported content
+(including text signatures), details and authoritative `isError`: no summary is
+inserted into selected details, and no synthetic error-text block is appended
+to an exact native error. Ordinary JSON returns and existing return/content
+emission behavior are unchanged.
+
+Selection remains inline: **128 blocks / 1 MiB encoded content**, plus the
+separate 1 MiB final-envelope bound. Oversized output becomes a bounded error,
+not a large-result reference. Usage, added names and termination remain
+host-authoritative, not copied from guest-selected fields. A later throw,
+cancellation, timeout, OOM, lifecycle failure or terminal child overrides the
+selection; it cannot conceal failure or termination.
 
 A finalized child with `terminate:true` stops execution without resuming JS,
 cancels/disposes remaining calls, and propagates termination. If it also has
@@ -283,6 +337,20 @@ cache, TypeScript compilation, forwarding of raw internal progress, catalog refr
 or automatic retry/replay. No ordinary tool visibility is changed. Real host
 integration and installed-binary qualification are separate from fake-host tests.
 
+The host output guard covers callbacks, Pending payloads, legacy Done, envelope
+successes/structured errors and plain tool errors in both polling and wake
+drivers. It sanitizes actual injected metadata and credential values, including
+ordinary serialized JSON and credential aliases/collisions, without stripping
+unrelated business names or numbers. This is output hygiene, **not a sandbox
+against malicious native plugins**: arbitrary encoding and direct plugin I/O
+are unguarded.
+
+Outstanding full-plan work includes host-backed references/chunks/attachments
+for values over 1 MiB, complete child progress and original native history
+snapshots/recovery, and Web/ACP child cards/reload. A third UI dev worktree was
+approved, but no UI changes are part of this increment. Protected self/ancestor
+exclusion remains; this is not unrestricted full-toolset parity.
+
 ## Development checks
 
 The engine is pinned to `rquickjs = 0.8.1`. Its fallible runtime job API wraps a
@@ -307,24 +375,44 @@ partial side effects, termination, fresh state, capability isolation, invalid
 arguments, old/missing hosts, pending promises, synchronous and microtask-loop
 cancellation/timeouts, memory/stack/code/result/log/call bounds, catalog paging,
 cleanup, schema consistency, and nonblocking ABI lifecycle behavior. Parity tests
-also cover strict three-capability negotiation (including ABI Err for old hosts),
+also cover strict four-capability negotiation (including ABI Err for old hosts),
 Done error/termination round-trips, native PNG promotion, explicit emission,
-ordinary JSON, malformed blocks/base64/MIME/text signatures, recursive reserved
-field filtering, unsupported metadata rejection, sticky emit serialization,
+ordinary JSON, malformed blocks/base64/MIME/text signatures, lossless business
+property names, unsupported block metadata rejection, sticky emit serialization,
 selected-output error diagnostics, shared selection
 budgets and oversized Done-error compaction without losing termination. Additional
 regressions cover unavailable regex paths (including dynamic/implicit creation),
 caught OOM before host effects and during serialization, sticky allocator
 failure, overflow/layout validation, and realloc ownership/accounting.
 
-Companion source-build qualification on Windows passed **25 real native + DLL
-cases**, including PNG delivery to an image-capable loopback provider, explicit
-selection and selected-image failure, no implicit forwarding, structured script
-errors, trusted native usage/name aggregation, terminal error without another
-model turn, parent-linked native progress, cancellation and approval denial.
-The host's `scripts/codemode-smoke.py` and optional test-only ABI fixture reproduce
-these cases; evidence remains local at
-`pi-rust-codemode/target/codemode-parity-native-smoke-5/` with binary SHA-256.
-See the [parity contract](../../docs/codemode-parity-contract.md). This does not
-qualify live providers, installed binaries, native reload races or real native
-integration on Linux/macOS; it is not installation/deployment.
+Current package unit-test evidence is **72 passing tests**. New checks cover exact
+selection/error identity, sticky conflicts, failure/termination precedence,
+lossless business JSON and fail-closed four-capability negotiation. Three new
+native neutral-layer differential tests compare direct vs nested business JSON,
+text signatures, hook rewrites/finalization and catalog batch boundaries; they
+do not establish Web/ACP parity.
+
+**Current-increment local evidence:** fresh actual Windows host + Code Mode DLL,
+test-only fixture and permission gate passed **35 real smoke cases**: 20 base,
+14 fixture and one denial. Ten additions over the original 25 cover direct
+success/error baselines, exact success/error selection, deleted/undefined selected
+details normalized to native null, business JSON, actual binding success/error
+echoes and helper-name aliases (`call/list/emit/result` via `tools.call`).
+Final `results.json` reports PASSED for all 35 cases; `provenance.json` retains
+all four artifact SHA-256 values. Evidence directory: `pi-rust-codemode/target/codemode-full-parity-smoke-5/`.
+Earlier full-parity runs `-1/`, `-2/` and `-4/` failed; `-3/` passed 33 cases
+before the final missing-details fix. They are not the final qualification.
+A read-only review found that omitted selected details produced an invalid
+required-field envelope; engine/final-envelope normalization to null is covered
+by unit checks and two real cases in the final run.
+
+Host `cargo test --locked -p rpi-agent -p rpi-extensions -p rpi-plugin-sdk -p rpi-harness`
+passed **1109 tests, 6 ignored, 0 failed**; log: `pi-rust-codemode/target/codemode-full-parity-tests.log`.
+Host `cargo fmt --all -- --check` passed. Package evidence is **72 passing tests**
+and strict all-target Clippy passed with
+`cargo clippy --locked -p rpi-codemode --all-targets -- -D warnings`.
+This is Windows local source-build qualification, not deployment, installation,
+live-provider or Linux/macOS integration qualification, or a new CI-green claim.
+See the [parity contract](../../docs/codemode-parity-contract.md) and
+[status matrix](../../docs/codemode-full-parity-matrix.md). Native reload races
+and installed-binary qualification also remain unproven.

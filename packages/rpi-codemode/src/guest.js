@@ -1,4 +1,4 @@
-(function(start, log, emit, catalogJSON) {
+(function(start, log, emit, select, catalogJSON) {
   "use strict";
   // Capture bridge dependencies before guest code can replace their globals or
   // prototypes. Native closures and request tokens stay inside this lexical scope.
@@ -8,6 +8,8 @@
   const pending = new Map();
   const get = pending.get.bind(pending), set = pending.set.bind(pending);
   const remove = pending.delete.bind(pending);
+  const finalized = new WeakMap();
+  const mark = finalized.set.bind(finalized), nativeError = finalized.get.bind(finalized);
   const catalog = parse(catalogJSON);
   const tools = Object.create(null);
   const call = freeze((name, args) => new Promise_((resolve, reject) => {
@@ -32,9 +34,21 @@
     // before the sticky bridge latch.
     return emit(typeof encoded === "string" ? encoded : "invalid emitted JSON");
   });
+  tools.result = freeze(value => {
+    const isError = nativeError(value);
+    if (typeof isError !== "boolean")
+      return select("invalid native result selection", false);
+    let encoded;
+    try { encoded = stringify({content:value.content, details:value.details}); }
+    catch (error) {
+      select("invalid native result selection", false);
+      throw error;
+    }
+    return select(typeof encoded === "string" ? encoded : "invalid native result selection", isError);
+  });
   tools.list = freeze(() => parse(catalogJSON));
   for (const tool of catalog) {
-    if (tool.name !== "call" && tool.name !== "list" && tool.name !== "emit")
+    if (tool.name !== "call" && tool.name !== "list" && tool.name !== "emit" && tool.name !== "result")
       tools[tool.name] = freeze(args => call(tool.name, args));
   }
   const expose = (name, value) => define(globalThis, name,
@@ -55,11 +69,16 @@
   return (token, ok, payload) => {
     const entry = get(token);
     remove(token);
-    if (ok) entry.resolve(parse(payload));
+    if (ok) {
+      const result = parse(payload);
+      mark(result, false);
+      entry.resolve(result);
+    }
     else {
       const failure = parse(payload);
       const error = new Error_("tool returned isError: " + failure.message);
       error.result = failure.result;
+      mark(error.result, true);
       entry.reject(error);
     }
   };
