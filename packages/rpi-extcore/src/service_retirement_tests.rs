@@ -9,7 +9,10 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("rpi-retirement-{}", uuid::Uuid::new_v4()));
+        // macOS temp_dir can be under /var -> /private/var. Start fixtures at
+        // the real directory; production deletion must still reject symlinks.
+        let base = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let root = base.join(format!("rpi-retirement-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("sessions")).unwrap();
         let service = Service::new(BackendConfig {
             project: root.clone(),
