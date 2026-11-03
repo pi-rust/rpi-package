@@ -29,14 +29,6 @@ const SNAPSHOT_ENTRY: &str = "background-tasks";
 const BACKGROUND_TOOL: &str = "background";
 const JOBS_TOOL: &str = "jobs";
 
-/// Longest single line kept from a child's output, in bytes.
-///
-/// `read_until` grows its buffer until it sees a newline or EOF, so a command
-/// that emits megabytes without one would allocate all of it before `push` ever
-/// gets to clip the result. Capping the read itself is the only bound that holds
-/// while the pipe is still being drained.
-const MAX_READ_LINE_BYTES: usize = MAX_OUTPUT_BYTES;
-
 /// Upper bound for the command text echoed back into the snapshot/summary.
 const MAX_COMMAND_CHARS: usize = 2_000;
 const MAX_LABEL_CHARS: usize = 200;
@@ -111,7 +103,17 @@ struct Job {
     finished_ms: Option<u128>,
     output: Output,
     /// Kept so `jobs` action `kill` can signal and reap the process group.
+    ///
+    /// Cleared by `settle` once the leader exits, so it must not be the only
+    /// record of the tree.
     child: Option<Arc<Mutex<Child>>>,
+    /// Session that started this job, snapshotted at spawn and never revised.
+    ///
+    /// A job belongs to exactly one session for its whole life: `jobs` list,
+    /// tail and kill only see rows whose owner matches the caller's session.
+    /// A forked or cloned session is a different owner, so it cannot see or
+    /// stop work that belongs to the session it was derived from.
+    owner: String,
     /// Handle on the spawned tree, independent of the leader's lifetime.
     ///
     /// The SDK's `ProcessTree` is a Job Object on Windows and a process group
@@ -120,7 +122,8 @@ struct Job {
     /// only way to reach it is through the tree handle.
     ///
     /// `taskkill /T` is not that mechanism — it walks parent pids, and a
-    /// git-bash child is not on that chain, so it outlives the shell.
+    /// git-bash child is not on that chain, which is why it left processes
+    /// alive when this plugin was reviewed on Windows.
     tree: Option<Arc<ProcessTree>>,
     cancel_requested: bool,
 }
@@ -211,13 +214,25 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, RuntimeFailur
 
 /// Full current job list, newest snapshot wins. Every field is recomputed from
 /// memory so a later snapshot never depends on an earlier one.
-fn snapshot_json(table: &Table) -> Value {
-    json!({"jobs": table.jobs.iter().map(Job::snapshot).collect::<Vec<_>>()})
+/// Snapshot payload for **one session**.
+///
+/// The record is appended to a session's own transcript, so it must describe
+/// only that session's jobs. Writing the whole table would put another
+/// session's commands and pids into this session's durable history even though
+/// the tool queries already hide them.
+fn snapshot_json(table: &Table, owner: &str) -> Value {
+    let jobs: Vec<Value> = table
+        .jobs
+        .iter()
+        .filter(|job| job.owner == owner)
+        .map(Job::snapshot)
+        .collect();
+    json!({"jobs": jobs})
 }
 
 /// Append the whole job table. A failure is reported to the caller but must not
 /// abort the tool: the process is already running and killing it would be worse.
-fn persist_snapshot() -> Result<(), String> {
+fn persist_snapshot(owner: &str) -> Result<(), String> {
     // Take the append gate **before** copying the table.
     //
     // The other order lets two writers interleave: A copies the table, B copies
@@ -228,7 +243,7 @@ fn persist_snapshot() -> Result<(), String> {
     let _gate = APPEND_GATE.lock().unwrap_or_else(|p| p.into_inner());
     let payload = {
         let table = table().lock().unwrap_or_else(|p| p.into_inner());
-        snapshot_json(&table)
+        snapshot_json(&table, owner)
     };
     call_runtime(
         RuntimeActionId::AppendEntry,
@@ -241,7 +256,6 @@ fn persist_snapshot() -> Result<(), String> {
 // Process lifecycle
 // ---------------------------------------------------------------------------
 
-/// Build the shell invocation for this platform. Windows must not allocate a
 /// Run a helper and return its stdout, or `None` if it is missing or fails.
 ///
 /// Used only for shell discovery (`where`, `which`), so a missing helper is an
@@ -372,6 +386,14 @@ fn shell_command(command: &str) -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// Longest single line kept from a child's output, in bytes.
+///
+/// `read_until` grows its buffer until it sees a newline or EOF, so a command
+/// that emits megabytes without one would allocate all of it before `push` ever
+/// gets to clip the result. Capping the read itself is the only bound that holds
+/// while the pipe is still being drained.
+const MAX_READ_LINE_BYTES: usize = MAX_OUTPUT_BYTES;
+
 fn spawn_reader<R: Read + Send + 'static>(
     stream: R,
     id: u64,
@@ -451,6 +473,8 @@ fn spawn_reader<R: Read + Send + 'static>(
 /// Reap one job: record its terminal status, then persist a snapshot.
 /// `fallback` is used when the exit status cannot be read.
 fn settle(id: u64, exit: Option<i32>, fallback: &'static str) {
+    // The snapshot is appended to the owning session's transcript, so the owner
+    // has to come out of the same locked read that settles the row.
     let changed = {
         let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
         let Some(job) = table.jobs.iter_mut().find(|job| job.id == id) else {
@@ -459,6 +483,7 @@ fn settle(id: u64, exit: Option<i32>, fallback: &'static str) {
         if !job.is_active() {
             return;
         }
+        let owner = job.owner.clone();
         // An explicit kill wins over whatever the final exit status says.
         job.status = if job.cancel_requested {
             STATUS_CANCELLED
@@ -471,11 +496,14 @@ fn settle(id: u64, exit: Option<i32>, fallback: &'static str) {
         };
         job.exit_code = exit;
         job.finished_ms = Some(now_ms());
+        // The leader is gone, so the `Child` handle cannot reap or signal any
+        // more. Keep the tree handle: descendants may still be alive and must
+        // remain killable.
         job.child = None;
-        true
+        Some(owner)
     };
-    if changed {
-        let _ = persist_snapshot();
+    if let Some(owner) = changed {
+        let _ = persist_snapshot(&owner);
     }
 }
 
@@ -520,6 +548,7 @@ fn watch(id: u64, stop: Arc<AtomicBool>) {
 }
 
 fn start_background(params: &Value) -> Result<String, String> {
+    let owner = session_owner(params)?;
     let command = params
         .get("command")
         .and_then(Value::as_str)
@@ -555,10 +584,9 @@ fn start_background(params: &Value) -> Result<String, String> {
     // Take the tree handle before anything else can drop the leader: on
     // Windows this is the Job Object the shell and every descendant inherit,
     // and it is the only thing that can still reach them after the shell exits.
-    let tree = Arc::new(
-        ProcessTree::attach(&child)
-            .map_err(|error| format!("failed to own the background process tree: {error}"))?,
-    );
+    let tree = ProcessTree::attach(&child)
+        .map(Arc::new)
+        .map_err(|error| format!("failed to own the background process tree: {error}"))?;
 
     let pid = child.id();
     let stdout = child.stdout.take();
@@ -582,10 +610,20 @@ fn start_background(params: &Value) -> Result<String, String> {
             finished_ms: None,
             output: Output::default(),
             child: Some(Arc::new(Mutex::new(child))),
-            tree: Some(Arc::clone(&tree)),
+            owner: owner.clone(),
+            tree: Some(tree),
             cancel_requested: false,
         });
-        (id, table.jobs.iter().filter(|job| job.is_active()).count())
+        // Scoped to this session: the count is shown to the caller, and
+        // another session's running jobs are neither visible nor their concern.
+        (
+            id,
+            table
+                .jobs
+                .iter()
+                .filter(|job| job.is_active() && job.owner == owner)
+                .count(),
+        )
     };
 
     // Drain both pipes so the child never blocks on a full pipe buffer, then
@@ -599,7 +637,7 @@ fn start_background(params: &Value) -> Result<String, String> {
     }
     watch(id, stop);
 
-    let persistence = persist_snapshot();
+    let persistence = persist_snapshot(&owner);
     let mut details = json!({
         "action": "background",
         "jobId": id,
@@ -624,42 +662,70 @@ fn start_background(params: &Value) -> Result<String, String> {
     .to_string())
 }
 
-fn find_job(id: u64) -> Option<Value> {
+/// Look up one job **owned by `owner`**. Other sessions' jobs are invisible.
+fn find_job(id: u64, owner: &str) -> Option<Value> {
     let table = table().lock().unwrap_or_else(|p| p.into_inner());
     table
         .jobs
         .iter()
-        .find(|job| job.id == id)
+        .find(|job| job.id == id && job.owner == owner)
         .map(Job::snapshot)
 }
 
-fn list_jobs(params: &Value) -> Value {
+/// The error text for a lookup that missed, or hit another session's job.
+///
+/// The two cases are deliberately distinguished: "not found" would be a lie
+/// when the job exists, and silently succeeding would let one session act on
+/// another's work.
+///
+/// Split out because callers usually hold the table lock when they need this,
+/// and `table()` is a plain `Mutex`: asking it again from inside the guard
+/// deadlocks.
+fn exists_error(id: u64, exists: bool) -> String {
+    if exists {
+        format!(
+            "job {id} belongs to another session; background jobs can only be \
+             inspected or stopped by the session that started them"
+        )
+    } else {
+        format!("job {id} not found")
+    }
+}
+
+fn list_jobs(params: &Value, owner: &str) -> Value {
     let include_done = params
         .get("includeDone")
         .and_then(Value::as_bool)
         .unwrap_or(true);
     let table = table().lock().unwrap_or_else(|p| p.into_inner());
-    let jobs: Vec<&Job> = table
-        .jobs
-        .iter()
+    let owned = || table.jobs.iter().filter(|job| job.owner == owner);
+    let jobs: Vec<&Job> = owned()
         .filter(|job| include_done || job.is_active())
         .collect();
-    let active = table.jobs.iter().filter(|job| job.is_active()).count();
+    let active = owned().filter(|job| job.is_active()).count();
     json!({
         "jobs": jobs.iter().map(|job| job.snapshot()).collect::<Vec<_>>(),
-        "total": table.jobs.len(),
+        "total": owned().count(),
         "active": active,
     })
 }
 
-fn tail_job(id: u64, lines: usize) -> Result<String, String> {
+fn tail_job(id: u64, lines: usize, owner: &str) -> Result<String, String> {
     let (tail, truncated, status) = {
         let table = table().lock().unwrap_or_else(|p| p.into_inner());
-        let job = table
+        let job = match table
             .jobs
             .iter()
-            .find(|job| job.id == id)
-            .ok_or_else(|| format!("job {id} not found"))?;
+            .find(|job| job.id == id && job.owner == owner)
+        {
+            Some(job) => job,
+            None => {
+                // Resolve the message here, while the answer is available:
+                // re-locking `table()` from inside this guard would deadlock.
+                let exists = table.jobs.iter().any(|job| job.id == id);
+                return Err(exists_error(id, exists));
+            }
+        };
         (job.output.tail(lines), job.output.truncated, job.status)
     };
     let mut text = format!("Job {id} ({status}) — last {} line(s):", tail.len());
@@ -685,11 +751,18 @@ fn tail_job(id: u64, lines: usize) -> Result<String, String> {
 ///
 /// Falls back to `Child::kill` when the tree-killer is unavailable, so a job
 /// always dies even on a system without the helper binary.
-/// Terminate the job's whole process tree.
+/// Wait for a child to be reaped, giving up after `limit`.
 ///
-/// The SDK's `ProcessTree` covers it: a Job Object on Windows, a process group
-/// on Unix. Both are owned independently of the shell, so a descendant that
-/// outlived the leader is still reachable.
+/// Only one owner may reap, and the caller holds that owner. The bound keeps a
+/// stuck child (unkillable syscall) from blocking the tool or shutdown thread
+/// forever; a timeout is not an error the caller can act on.
+
+/// Terminate a job's whole process tree.
+///
+/// The tree handle is the authority: a Job Object on Windows (which every
+/// descendant inherits) and a process group on Unix. `taskkill /T` is not
+/// equivalent — it walks parent pids, and a git-bash child is not on that
+/// chain, so it survives a kill that "succeeded".
 fn kill_process_tree(tree: Option<&Arc<ProcessTree>>) -> bool {
     match tree {
         Some(tree) => {
@@ -700,14 +773,24 @@ fn kill_process_tree(tree: Option<&Arc<ProcessTree>>) -> bool {
     }
 }
 
-fn kill_job(id: u64) -> Result<String, String> {
+fn kill_job(id: u64, owner: &str) -> Result<String, String> {
     let (child, tree, pid, was_active) = {
         let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
+        if !table
+            .jobs
+            .iter()
+            .any(|job| job.id == id && job.owner == owner)
+        {
+            // Same reason as `tail_job`: decide the message under the lock
+            // instead of re-entering `table()` from inside it.
+            let exists = table.jobs.iter().any(|job| job.id == id);
+            return Err(exists_error(id, exists));
+        }
         let job = table
             .jobs
             .iter_mut()
             .find(|job| job.id == id)
-            .ok_or_else(|| format!("job {id} not found"))?;
+            .expect("the id was just found above");
         if job.is_active() {
             job.cancel_requested = true;
         }
@@ -759,33 +842,15 @@ fn kill_job(id: u64) -> Result<String, String> {
         // status check and the signal, which the waiter will report.
         // Kill the whole **tree**: `Child::kill` only signals the `sh -c`
         // wrapper, so a dev server started as `npm run dev` keeps its workers
-        // alive after the shell dies. The crate forbids `unsafe` (no
-        // `libc::kill`), so this shells out to the platform's tree-killer.
+        // alive after the shell dies. The SDK's `ProcessTree` owns the group
+        // (Job Object on Windows), so the signal reaches every descendant.
         if !kill_process_tree(tree.as_ref()) {
             // Fall back to signalling the direct child.
             if let Err(error) = child.kill() {
                 signal_error.get_or_insert(error.to_string());
             }
         }
-        // Reap with a bounded wait. SIGKILL cannot be ignored, so this returns
-        // almost immediately; the bound only protects the tool thread from an
-        // unkillable child (e.g. stuck in an uninterruptible syscall) and the
-        // handle is detached below, so nobody else can reap this child.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        signal_error.get_or_insert_with(|| {
-                            "process did not exit within 5s of the kill signal".into()
-                        });
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        }
+        let _ = child.wait();
     }
     {
         let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
@@ -815,18 +880,44 @@ fn tool_result(action: &str, text: String, details: Value) -> String {
     json!({"content":[{"type":"text","text":text}],"details":details}).to_string()
 }
 
+/// Session that owns the calling tool invocation.
+///
+/// The host injects `{"__rpi": {"cwd", "sessionId", ...}}` into every plugin
+/// tool call (never visible to the model). `sessionId` is that session's id at
+/// call time, which is what a job binds to.
+///
+/// A missing id is refused rather than papered over: falling back to "no owner"
+/// would either make the job invisible to everyone or visible to everyone,
+/// and both break the guarantee that a job belongs to one session.
+fn session_owner(params: &Value) -> Result<String, String> {
+    params
+        .get(rpi_plugin_sdk::HOST_CONTEXT_KEY)
+        .and_then(|host| host.get("sessionId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            "background tasks require a session id, and this host did not provide one. \
+             Jobs are scoped to the session that started them, so the host must identify \
+             the session on every tool call."
+                .to_string()
+        })
+}
+
 fn background_tool(params: &Value) -> Result<String, String> {
     start_background(params)
 }
 
 fn jobs_tool(params: &Value) -> Result<String, String> {
+    let owner = session_owner(params)?;
     let action = params
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("list");
     match action {
         "list" => {
-            let listed = list_jobs(params);
+            let listed = list_jobs(params, &owner);
             let jobs = listed["jobs"].as_array().cloned().unwrap_or_default();
             let mut text = if jobs.is_empty() {
                 "No background jobs".to_string()
@@ -859,8 +950,8 @@ fn jobs_tool(params: &Value) -> Result<String, String> {
                 .map(|n| n as usize)
                 .unwrap_or(DEFAULT_TAIL_LINES)
                 .clamp(1, MAX_OUTPUT_LINES);
-            let text = tail_job(id, lines)?;
-            let job = find_job(id).unwrap_or(Value::Null);
+            let text = tail_job(id, lines, &owner)?;
+            let job = find_job(id, &owner).unwrap_or(Value::Null);
             Ok(tool_result(action, text, json!({"jobId": id, "job": job})))
         }
         "kill" => {
@@ -868,8 +959,8 @@ fn jobs_tool(params: &Value) -> Result<String, String> {
                 .get("jobId")
                 .and_then(Value::as_u64)
                 .ok_or("jobId is required for action=kill")?;
-            let text = kill_job(id)?;
-            let job = find_job(id).unwrap_or(Value::Null);
+            let text = kill_job(id, &owner)?;
+            let job = find_job(id, &owner).unwrap_or(Value::Null);
             Ok(tool_result(action, text, json!({"jobId": id, "job": job})))
         }
         _ => Err("action must be one of: list, tail, kill".into()),
@@ -989,19 +1080,64 @@ extern "C" fn jobs_destroy(handle: StepHandle) {
     drop(JOBS_HANDLES.remove(handle));
 }
 
+/// Which session the host is serving right now, for the shutdown sweep.
+///
+/// `SessionShutdown` carries no payload — the host puts it in the "no payload"
+/// group (`rpi-extensions/src/translate.rs`) — so this is the only identity
+/// channel available at that point. `__rpi.sessionId` is not, because it exists
+/// only inside a tool call and shutdown is an event.
+///
+/// Two consequences worth knowing:
+///
+/// * `RPI_SESSION_ID` is process-global and writable by any code in this process
+///   (`std::env::set_var`), unlike the per-call snapshot. A misbehaving plugin
+///   could therefore make this read the wrong id.
+/// * The damage is bounded: shutdown only runs as the process exits, so a bad
+///   read at worst skips the sweep (the OS reclaims the children anyway) or
+///   marks the wrong session's rows interrupted in a process that is going away.
+///
+/// The clean fix is a `SessionShutdown` payload carrying the id; until the host
+/// provides one this stays the least-bad option. Do not add a cached
+/// "last session seen" fallback: the env var is rewritten on switch, so a cache
+/// would go stale exactly when this matters, while the env stays current.
+fn current_session() -> Option<String> {
+    std::env::var(rpi_plugin_sdk::SESSION_ID_ENV)
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
 /// Mark still-running jobs as interrupted and persist once. Called on session
 /// shutdown so a supervisor never sees a session that looks permanently busy.
+///
+/// Only the **closing** session's jobs are touched. A host can serve several
+/// sessions from one process (`switch_session`, `/import`, fork all swap the
+/// active session in place without a process exit), and killing another
+/// session's dev server because this one closed is exactly the cross-session
+/// interference job ownership exists to prevent. When the closing session is
+/// unknown — no `RPI_SESSION_ID`, e.g. a host that predates it — every job is
+/// treated as belonging to it, matching the old behaviour for single-session
+/// hosts.
 fn shutdown_jobs() -> i32 {
+    let closing = current_session();
     // Take the children out **and terminate them**.
     //
     // Dropping the `Child` handle only closes our end of the pipes: the process
     // keeps running, orphaned. A session that exits with a dev server still
     // holding a port is the visible symptom.
-    let (changed, children) = {
+    let (owners, children) = {
         let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
-        let mut changed = false;
+        let mut owners: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut children = Vec::new();
-        for job in table.jobs.iter_mut().filter(|job| job.is_active()) {
+        let mine = |job: &Job| match &closing {
+            Some(id) => &job.owner == id,
+            None => true,
+        };
+        for job in table
+            .jobs
+            .iter_mut()
+            .filter(|job| job.is_active() && mine(job))
+        {
             job.status = STATUS_INTERRUPTED;
             job.finished_ms = Some(now_ms());
             // The tree handle is kept (not cleared): the leader may exit before
@@ -1010,10 +1146,13 @@ fn shutdown_jobs() -> i32 {
             if let Some(child) = job.child.take() {
                 children.push((child, job.tree.clone()));
             }
-            changed = true;
+            owners.insert(job.owner.clone());
         }
-        (changed, children)
+        (owners, children)
     };
+    // Terminate, then **reap**. Order matters: `child.take()` above dropped the
+    // watcher's handle, so nothing else will ever call `try_wait` on these. On
+    // Unix that leaves the exited process as a zombie until the host exits.
     for (child, tree) in children {
         if !kill_process_tree(tree.as_ref()) {
             if let Ok(mut child) = child.lock() {
@@ -1021,8 +1160,23 @@ fn shutdown_jobs() -> i32 {
             }
         }
     }
-    if changed {
-        let _ = persist_snapshot();
+    {
+        // Every active job of this session was interrupted above, so its tree
+        // is gone now. Other sessions' rows keep their tree handle: they are still
+        // running and must stay killable.
+        let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
+        let mine = |job: &Job| match &closing {
+            Some(id) => &job.owner == id,
+            None => true,
+        };
+        for job in table.jobs.iter_mut().filter(|job| mine(job)) {
+            job.tree = None;
+        }
+    }
+    // One record per affected session: each session's transcript describes
+    // only the jobs it owned.
+    for owner in owners {
+        let _ = persist_snapshot(&owner);
     }
     0
 }
@@ -1058,7 +1212,10 @@ rpi_plugin_sdk::export_plugin!(|api| {
         description: StbString::from_string(
             "Start a shell command in the background and return immediately with a job id. \
              Use this for long-running work (dev servers, watchers, big builds, test suites) \
-             instead of `bash`, which blocks and can hit its timeout. Read output with the \
+             instead of `bash`, which blocks and can hit its timeout. The command runs under \
+             the same shell the `bash` tool uses, using Bash/POSIX syntax, even on Windows: \
+             PowerShell cmdlets (Get-ChildItem, Select-Object, Select-String) are not valid \
+             here; use ls, find, rg, and POSIX pipelines instead. Read output with the \
              `jobs` tool (action=tail), list everything with action=list, stop it with action=kill."
                 .into(),
         ),
@@ -1174,6 +1331,28 @@ mod tests {
         TABLE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// The session id every test tool call belongs to.
+    const TEST_SESSION: &str = "01a19d08-fdfb-7640-b070-fe252b4b77ac";
+
+    /// Mimic the host: inject `__rpi` the way the real host does, so tests
+    /// exercise the same code path that resolves a job's owner.
+    fn with_session(mut params: Value) -> Value {
+        params[rpi_plugin_sdk::HOST_CONTEXT_KEY] = json!({
+            "cwd": "/tmp",
+            "sessionId": TEST_SESSION,
+        });
+        params
+    }
+
+    /// Same call, but stamped with a different session.
+    fn with_other_session(mut params: Value) -> Value {
+        params[rpi_plugin_sdk::HOST_CONTEXT_KEY] = json!({
+            "cwd": "/tmp",
+            "sessionId": "other-session",
+        });
+        params
+    }
+
     fn reset() {
         *table().lock().unwrap() = Table::default();
         *host().lock().unwrap() = MockHost::default();
@@ -1183,7 +1362,7 @@ mod tests {
         // Bounded wait on the watcher thread; no unbounded sleeps.
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let job = find_job(id).unwrap();
+            let job = find_job(id, TEST_SESSION).unwrap();
             if job["status"] == want {
                 return job;
             }
@@ -1264,6 +1443,7 @@ mod tests {
                 finished_ms: None,
                 output: Output::default(),
                 child: None,
+                owner: TEST_SESSION.to_string(),
                 tree: None,
                 cancel_requested: false,
             });
@@ -1291,6 +1471,8 @@ mod tests {
         stop.store(true, Ordering::SeqCst);
 
         let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
+        // The table is process-global and other tests run concurrently, so scope
+        // every assertion to this job rather than to the table.
         let job = table.jobs.iter().find(|job| job.id == id).unwrap();
         assert!(
             !job.output.lines.is_empty(),
@@ -1305,8 +1487,9 @@ mod tests {
         }
         assert!(
             job.output.lines.iter().any(|l| l.contains("bytes dropped")),
-            "truncation must be reported; stored lines: {}",
-            job.output.lines.len()
+            "truncation must be reported; stored lines: {} (first: {:?})",
+            job.output.lines.len(),
+            job.output.lines.first().map(|l| &l[..l.len().min(80)])
         );
         table.jobs.retain(|job| job.id != id);
     }
@@ -1317,8 +1500,9 @@ mod tests {
     /// asked for (`a && b` cut mid-way runs only `a`), with no signal.
     #[test]
     fn over_long_commands_are_rejected_not_truncated() {
+        let _guard = table_guard();
         let long = "x".repeat(MAX_COMMAND_CHARS + 1);
-        let error = start_background(&json!({ "command": long }))
+        let error = start_background(&with_session(json!({ "command": long })))
             .expect_err("an over-long command must be rejected");
         assert!(
             error.contains("too long"),
@@ -1350,7 +1534,7 @@ mod tests {
         let command = record_pid_command(&pid_file);
         install_host();
         let payload: Value = serde_json::from_str(
-            &background_tool(&json!({"command": command, "label": "tree"})).unwrap(),
+            &background_tool(&with_session(json!({"command": command, "label": "tree"}))).unwrap(),
         )
         .unwrap();
         let id = payload["details"]["jobId"].as_u64().unwrap();
@@ -1361,7 +1545,7 @@ mod tests {
             "the grandchild must be running before the kill"
         );
 
-        let _ = jobs_tool(&json!({"action": "kill", "jobId": id})).unwrap();
+        let _ = jobs_tool(&with_session(json!({"action": "kill", "jobId": id}))).unwrap();
 
         // The tree kill is asynchronous on Windows (the job object is closed
         // when the handle drops), so give it a moment to take effect.
@@ -1388,7 +1572,10 @@ mod tests {
         let before = count_sleepers();
         install_host();
         let payload: Value = serde_json::from_str(
-            &background_tool(&json!({"command": "sleep 60 &", "label": "orphan"})).unwrap(),
+            &background_tool(&with_session(
+                json!({"command": "sleep 60 &", "label": "orphan"}),
+            ))
+            .unwrap(),
         )
         .unwrap();
         let id = payload["details"]["jobId"].as_u64().unwrap();
@@ -1421,7 +1608,7 @@ mod tests {
         );
 
         // The row is finished, but the tree is not: kill must still reach it.
-        let reply = jobs_tool(&json!({"action": "kill", "jobId": id})).unwrap();
+        let reply = jobs_tool(&with_session(json!({"action": "kill", "jobId": id}))).unwrap();
         assert!(
             reply.contains("process tree was terminated")
                 || reply.contains("no process tree remained"),
@@ -1468,17 +1655,17 @@ mod tests {
         install_host();
         reset();
         let value: Value = serde_json::from_str(
-            &background_tool(&json!({
+            &background_tool(&with_session(json!({
                 "command": "if [[ -n bash ]]; then echo is-bash; fi",
                 "label": "bashism"
-            }))
+            })))
             .unwrap(),
         )
         .unwrap();
         let id = value["details"]["jobId"].as_u64().unwrap();
         let job = wait_for_status(id, STATUS_COMPLETED);
         assert_eq!(job["exitCode"], 0, "the bashism must run: {job}");
-        let tail = tail_job(id, 10).unwrap();
+        let tail = tail_job(id, 10, TEST_SESSION).unwrap();
         assert!(
             tail.contains("is-bash"),
             "bash syntax must work through background, got: {tail}"
@@ -1588,18 +1775,207 @@ mod tests {
 
     #[test]
     fn an_empty_table_snapshots_an_empty_job_list() {
-        assert_eq!(snapshot_json(&Table::default())["jobs"], json!([]));
+        assert_eq!(
+            snapshot_json(&Table::default(), "any-session")["jobs"],
+            json!([])
+        );
+    }
+
+    /// Closing one session must not stop another session's jobs.
+    ///
+    /// A host can serve several sessions from one process — `switch_session`,
+    /// `/import` and fork all swap the active session in place — and
+    /// `SessionShutdown` is dispatched per process, not per session. Sweeping
+    /// every row would kill the other session's dev server, which is the exact
+    /// cross-session interference job ownership exists to prevent.
+    #[test]
+    fn shutdown_only_stops_the_closing_sessions_jobs() {
+        let _guard = table_guard();
+        install_host();
+        reset();
+        let mine: Value = serde_json::from_str(
+            &background_tool(&with_session(
+                json!({"command": "sleep 30", "label": "mine"}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let my_id = mine["details"]["jobId"].as_u64().unwrap();
+        let theirs: Value = serde_json::from_str(
+            &background_tool(&with_other_session(
+                json!({"command": "sleep 30", "label": "theirs"}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let their_id = theirs["details"]["jobId"].as_u64().unwrap();
+
+        // Close the *other* session while this one keeps its job.
+        std::env::set_var(rpi_plugin_sdk::SESSION_ID_ENV, "other-session");
+        shutdown_jobs();
+        std::env::remove_var(rpi_plugin_sdk::SESSION_ID_ENV);
+
+        let their_status = find_job(their_id, "other-session").unwrap()["status"].clone();
+        assert_ne!(
+            their_status, STATUS_RUNNING,
+            "the closing session's job must be interrupted"
+        );
+        let my_status = find_job(my_id, TEST_SESSION).unwrap()["status"].clone();
+        assert_eq!(
+            my_status, STATUS_RUNNING,
+            "another session closing must not stop this session's job"
+        );
+
+        let _ = kill_job(my_id, TEST_SESSION);
+    }
+
+    /// An unknown or wrong closing session must not strand the sweep unreachable.
+    ///
+    /// When `RPI_SESSION_ID` names a session with no jobs, nothing is touched —
+    /// the other sessions' rows keep running. That is the safest outcome: the
+    /// process is exiting, so their children die with it, and marking them
+    /// interrupted would be a lie about jobs this session never owned.
+    #[test]
+    fn shutdown_with_an_unrelated_session_id_touches_nothing() {
+        let _guard = table_guard();
+        install_host();
+        reset();
+        let mine: Value = serde_json::from_str(
+            &background_tool(&with_session(
+                json!({"command": "sleep 20", "label": "mine"}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let my_id = mine["details"]["jobId"].as_u64().unwrap();
+
+        std::env::set_var(rpi_plugin_sdk::SESSION_ID_ENV, "a-session-with-no-jobs");
+        shutdown_jobs();
+        std::env::remove_var(rpi_plugin_sdk::SESSION_ID_ENV);
+
+        assert_eq!(
+            find_job(my_id, TEST_SESSION).unwrap()["status"],
+            STATUS_RUNNING,
+            "an unrelated closing id must not interrupt this session's job"
+        );
+        let _ = kill_job(my_id, TEST_SESSION);
+    }
+
+    /// The durable snapshot must describe one session only.
+    ///
+    /// The tool queries filter by owner, but the snapshot is appended to the
+    /// calling session's transcript. Serializing the whole table would write
+    /// another session's commands and pids into this session's history — the
+    /// isolation would hold on reads and leak on writes.
+    #[test]
+    fn snapshot_only_carries_the_owning_sessions_jobs() {
+        let _guard = table_guard();
+        install_host();
+        reset();
+        let mine: Value = serde_json::from_str(
+            &background_tool(&with_session(
+                json!({"command": "sleep 20", "label": "mine"}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let my_id = mine["details"]["jobId"].as_u64().unwrap();
+        let theirs: Value = serde_json::from_str(
+            &background_tool(&with_other_session(
+                json!({"command": "sleep 20", "label": "theirs"}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let their_id = theirs["details"]["jobId"].as_u64().unwrap();
+
+        let table = table().lock().unwrap_or_else(|p| p.into_inner());
+        let for_me = snapshot_json(&table, TEST_SESSION);
+        let for_them = snapshot_json(&table, "other-session");
+        drop(table);
+
+        // `id` is serialized as a string; the tool surface accepts either form.
+        let ids = |snapshot: &Value| -> Vec<u64> {
+            snapshot["jobs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|job| job["id"].as_str().and_then(|id| id.parse().ok()))
+                .collect()
+        };
+        assert_eq!(ids(&for_me), vec![my_id], "my snapshot is mine alone");
+        assert_eq!(
+            ids(&for_them),
+            vec![their_id],
+            "their snapshot is theirs alone"
+        );
+        let mine_text = for_me.to_string();
+        assert!(
+            !mine_text.contains("theirs"),
+            "my snapshot must not mention another session's job: {mine_text}"
+        );
+
+        let _ = kill_job(my_id, TEST_SESSION);
+        let _ = kill_job(their_id, "other-session");
+    }
+
+    /// A job belongs to the session that started it, and no other.
+    ///
+    /// This is the whole point of the owner field: a forked or cloned session
+    /// inherits context but not background work, and must not be able to read
+    /// or stop another session's job even by guessing its id.
+    #[test]
+    fn a_job_is_invisible_and_unstoppable_from_another_session() {
+        let _guard = table_guard();
+        install_host();
+        reset();
+        let value: Value = serde_json::from_str(
+            &background_tool(&with_session(
+                json!({"command": "sleep 30", "label": "mine"}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let id = value["details"]["jobId"].as_u64().unwrap();
+
+        // The owning session sees it.
+        let mine = list_jobs(&with_session(json!({})), TEST_SESSION);
+        assert_eq!(mine["total"], 1, "the owner must see its own job: {mine}");
+
+        // Another session sees nothing, even though the row exists.
+        let theirs = list_jobs(&with_other_session(json!({})), "other-session");
+        assert_eq!(
+            theirs["total"], 0,
+            "another session must not see this job: {theirs}"
+        );
+        assert!(
+            tail_job(id, 5, "other-session").is_err(),
+            "another session must not read the output"
+        );
+        let refused = kill_job(id, "other-session").expect_err("kill must be refused");
+        assert!(
+            refused.contains("belongs to another session"),
+            "the refusal must say why: {refused}"
+        );
+        // Still running: the refusal did not touch the process.
+        assert_eq!(
+            find_job(id, TEST_SESSION).unwrap()["status"],
+            STATUS_RUNNING
+        );
+
+        let _ = kill_job(id, TEST_SESSION);
     }
 
     #[test]
     fn unknown_actions_and_missing_ids_are_rejected() {
-        assert!(jobs_tool(&json!({"action": "bogus"})).is_err());
-        assert!(jobs_tool(&json!({"action": "tail"})).is_err());
-        assert!(jobs_tool(&json!({"action": "kill"})).is_err());
-        assert!(tail_job(999, 5).is_err());
-        assert!(kill_job(999).is_err());
-        assert!(background_tool(&json!({})).is_err());
-        assert!(background_tool(&json!({"command": "   "})).is_err());
+        let _guard = table_guard();
+        assert!(jobs_tool(&with_session(json!({"action": "bogus"}))).is_err());
+        assert!(jobs_tool(&with_session(json!({"action": "tail"}))).is_err());
+        assert!(jobs_tool(&with_session(json!({"action": "kill"}))).is_err());
+        assert!(tail_job(999, 5, TEST_SESSION).is_err());
+        assert!(kill_job(999, TEST_SESSION).is_err());
+        assert!(background_tool(&with_session(json!({}))).is_err());
+        assert!(background_tool(&with_session(json!({"command": "   "}))).is_err());
     }
 
     // All tests that touch the process-wide table or the snapshot gate live in
@@ -1622,7 +1998,10 @@ mod tests {
         reset();
         let started = std::time::Instant::now();
         let value: Value = serde_json::from_str(
-            &background_tool(&json!({"command": "sleep 30", "label": "probe"})).unwrap(),
+            &background_tool(&with_session(
+                json!({"command": "sleep 30", "label": "probe"}),
+            ))
+            .unwrap(),
         )
         .unwrap();
         // The tool must not wait for the child; `sleep 30` proves it.
@@ -1647,11 +2026,13 @@ mod tests {
 
         // `list` reports it as active; `kill` terminates it.
         let listed: Value =
-            serde_json::from_str(&jobs_tool(&json!({"action": "list"})).unwrap()).unwrap();
-        assert_eq!(listed["details"]["active"], 1);
-        let killed: Value =
-            serde_json::from_str(&jobs_tool(&json!({"action": "kill", "jobId": id})).unwrap())
+            serde_json::from_str(&jobs_tool(&with_session(json!({"action": "list"}))).unwrap())
                 .unwrap();
+        assert_eq!(listed["details"]["active"], 1);
+        let killed: Value = serde_json::from_str(
+            &jobs_tool(&with_session(json!({"action": "kill", "jobId": id}))).unwrap(),
+        )
+        .unwrap();
         assert_eq!(killed["details"]["job"]["status"], STATUS_CANCELLED);
         let job = wait_for_status(id, STATUS_CANCELLED);
         assert_eq!(job["status"], STATUS_CANCELLED);
@@ -1660,7 +2041,7 @@ mod tests {
             STATUS_CANCELLED
         );
         // Killing again is a reported no-op, not an error.
-        let again = jobs_tool(&json!({"action": "kill", "jobId": id})).unwrap();
+        let again = jobs_tool(&with_session(json!({"action": "kill", "jobId": id}))).unwrap();
         assert!(again.contains("already finished"));
     }
 
@@ -1668,7 +2049,10 @@ mod tests {
         install_host();
         reset();
         let value: Value = serde_json::from_str(
-            &background_tool(&json!({"command": stdout_and_stderr_command()})).unwrap(),
+            &background_tool(&with_session(
+                json!({"command": stdout_and_stderr_command()}),
+            ))
+            .unwrap(),
         )
         .unwrap();
         let id = value["details"]["jobId"].as_u64().unwrap();
@@ -1678,7 +2062,7 @@ mod tests {
         // Capture both streams without racing the readers.
         let deadline = Instant::now() + Duration::from_secs(10);
         let tail = loop {
-            let tail = tail_job(id, 50).unwrap();
+            let tail = tail_job(id, 50, TEST_SESSION).unwrap();
             if tail.contains("oops") {
                 break tail;
             }
@@ -1693,9 +2077,10 @@ mod tests {
     fn case_a_failing_command_is_settled_as_failed() {
         install_host();
         reset();
-        let value: Value =
-            serde_json::from_str(&background_tool(&json!({"command": failing_command()})).unwrap())
-                .unwrap();
+        let value: Value = serde_json::from_str(
+            &background_tool(&with_session(json!({"command": failing_command()}))).unwrap(),
+        )
+        .unwrap();
         let id = value["details"]["jobId"].as_u64().unwrap();
         let job = wait_for_status(id, STATUS_FAILED);
         assert_eq!(job["exitCode"], 3);
@@ -1704,9 +2089,10 @@ mod tests {
     fn case_shutdown_interrupts_still_running_jobs_and_persists_once() {
         install_host();
         reset();
-        let value: Value =
-            serde_json::from_str(&background_tool(&json!({"command": "sleep 30"})).unwrap())
-                .unwrap();
+        let value: Value = serde_json::from_str(
+            &background_tool(&with_session(json!({"command": "sleep 30"}))).unwrap(),
+        )
+        .unwrap();
         let id = value["details"]["jobId"].as_u64().unwrap();
         let before = host().lock().unwrap().appends.len();
         assert_eq!(
@@ -1716,7 +2102,7 @@ mod tests {
             ),
             0
         );
-        let job = find_job(id).unwrap();
+        let job = find_job(id, TEST_SESSION).unwrap();
         assert_eq!(job["status"], STATUS_INTERRUPTED);
         let appends = host().lock().unwrap().appends.clone();
         assert_eq!(appends.len(), before + 1);
@@ -1733,23 +2119,27 @@ mod tests {
             0
         );
         assert_eq!(host().lock().unwrap().appends.len(), appends.len());
-        let _ = kill_job(id);
+        let _ = kill_job(id, TEST_SESSION);
     }
 
     fn case_a_failed_snapshot_append_does_not_kill_the_job() {
         install_host();
         reset();
         host().lock().unwrap().append_fails = true;
-        let value: Value =
-            serde_json::from_str(&background_tool(&json!({"command": "sleep 30"})).unwrap())
-                .unwrap();
+        let value: Value = serde_json::from_str(
+            &background_tool(&with_session(json!({"command": "sleep 30"}))).unwrap(),
+        )
+        .unwrap();
         let id = value["details"]["jobId"].as_u64().unwrap();
         assert_eq!(value["details"]["status"], STATUS_RUNNING);
         assert!(value["details"]["snapshotError"].is_string());
         // The process is still running and still inspectable.
-        assert_eq!(find_job(id).unwrap()["status"], STATUS_RUNNING);
+        assert_eq!(
+            find_job(id, TEST_SESSION).unwrap()["status"],
+            STATUS_RUNNING
+        );
         host().lock().unwrap().append_fails = false;
-        let _ = kill_job(id);
+        let _ = kill_job(id, TEST_SESSION);
     }
 
     fn invoke(
@@ -1777,7 +2167,7 @@ mod tests {
                 &JOBS_HANDLES,
                 jobs_execute,
                 jobs_poll,
-                json!({"action": "list"})
+                with_session(json!({"action": "list"}))
             ),
             Done
         );
@@ -1787,7 +2177,7 @@ mod tests {
                 &JOBS_HANDLES,
                 jobs_execute,
                 jobs_poll,
-                json!({"action": "tail"})
+                with_session(json!({"action": "tail"}))
             ),
             Failed
         );
@@ -1796,7 +2186,7 @@ mod tests {
                 &BACKGROUND_HANDLES,
                 background_execute,
                 background_poll,
-                json!({"command": "sleep 10", "label": "abi"})
+                with_session(json!({"command": "sleep 10", "label": "abi"}))
             ),
             Done
         );
@@ -1806,7 +2196,7 @@ mod tests {
                 &JOBS_HANDLES,
                 jobs_execute,
                 jobs_poll,
-                json!({"action": "kill", "jobId": id})
+                with_session(json!({"action": "kill", "jobId": id}))
             ),
             Done
         );

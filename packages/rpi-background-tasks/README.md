@@ -29,7 +29,36 @@ This call returned immediately; the process is still running.
 Use the `jobs` tool with action=tail, jobId=0 to read its output; action=list for all jobs; action=kill to stop it.
 ```
 
-Job ids are per-session, monotonically increasing, and start at `0`.
+Job ids are monotonically increasing within the host process and start at `0`.
+The counter is process-wide, so a session that starts its first job after
+another session already did will not see id `0` — ids are unique, not dense.
+
+## Session ownership
+
+A job belongs to the session that started it, for its whole life. The host
+injects `__rpi.sessionId` into every plugin tool call, and that value is
+recorded when the job is created and never revised.
+
+- `jobs` list/tail/kill only see the caller's own jobs.
+- A forked or cloned session is a **different** session: it inherits the
+  conversation, not the background work, and cannot see or stop the jobs of the
+  session it was derived from.
+- The durable `background-tasks` snapshot is written per session and lists only
+  that session's jobs, so one session's transcript never contains another's
+  commands or pids.
+- A host that does not supply a session id cannot use these tools at all: the
+  call fails rather than starting a job nobody owns.
+
+  This deliberately departs from the SDK's advice to "prefer a project-scoped
+  fallback when `sessionId` is missing rather than refusing to work"
+  (`rpi-plugin-sdk/src/lib.rs`). A project-scoped fallback would make every
+  session in the same directory share jobs, which is the opposite of the
+  guarantee this plugin makes. Refusing is the honest outcome: a job with no
+  owner is a job nobody can be held responsible for.
+
+A job whose id belongs to another session reports
+`job <id> belongs to another session` rather than "not found", so a mistyped id
+and a refusal are distinguishable.
 
 ## Status vocabulary
 
@@ -72,14 +101,34 @@ Properties of this contract:
 This lets a supervising UI answer "does this session still have work running?"
 by reading only the latest snapshot.
 
+**Known limitation — where a snapshot lands.** `AppendEntry` writes to the
+session the host is currently serving, and the SDK exposes no way to address a
+different one. The snapshot's *contents* are always correct (only the owning
+session's jobs are listed), but if the host switches sessions in-process between
+a job's state change and the append, that session's snapshot is written into
+the newly active session's transcript. A session's history can therefore
+contain another session's job records.
+
+Fixing this needs a host-side change — an append action that can address a
+session — and is tracked separately. It does not weaken the ownership
+guarantee: one session can never *see or control* another's jobs through the
+tools, only observe stray records in its transcript.
+
 ## Lifecycle
 
 - **Cancelling the tool call** does not kill a started job. `background` returns
   as soon as the process is spawned; the job continues and stays visible through
   `jobs`. Use `action: "kill"` to stop it.
-- **Session shutdown** (`SessionShutdown`) marks every still-running job as
-  `interrupted` and appends one final snapshot, so a supervisor never sees a
-  finished session that looks permanently busy.
+- **Session shutdown** (`SessionShutdown`) marks that session's still-running
+  jobs as `interrupted` and appends one final snapshot per affected session, so
+  a supervisor never sees a finished session that looks permanently busy. Jobs
+  belonging to another session are left alone: the host can serve several
+  sessions from one process, and closing one must not stop the others' work.
+- **Extension reload** (`/reload`) also dispatches `SessionShutdown`, because
+  the host unloads the extension modules before loading new ones. That reload
+  is in-process — the session and its history continue — but the jobs started
+  under this extension are terminated with it, because the plugin instance that
+  owned their process trees is being replaced.
 - **Output capture** is bounded by both lines (500) and bytes (256 KiB) per job.
   Older output is dropped and `tail` says so, so a chatty server cannot grow the
   process table without limit. Both stdout and stderr are captured; stderr lines
@@ -87,9 +136,46 @@ by reading only the latest snapshot.
 
 ## Platform behaviour
 
-- macOS / Linux: `sh -c <command>`
-- Windows: `cmd /C <command>` with `CREATE_NO_WINDOW` (no console flash) and
-  `CREATE_NEW_PROCESS_GROUP`.
+A job runs under **the same shell the `bash` tool uses**, so a command that
+works there works here:
+
+- macOS / Linux: `/bin/bash`, then `which bash`, then `/bin/sh`.
+- Windows: `%ProgramFiles%\Git\bin\bash.exe`, then
+  `%ProgramFiles(x86)%\Git\bin\bash.exe`, then `where bash.exe`.
+
+There is **no `cmd.exe` fallback**. If no bash can be found, the call fails
+with an explicit error rather than running the command under a different
+shell — under `cmd`, `ls -la` fails while the same command succeeds through
+the `bash` tool, and the model has no way to know which shell it is writing
+for.
+
+The probe mirrors the host's own (`rpi-tools::os_env`) because the plugin ABI
+exposes no shell discovery. It is a copy, and will drift if the host changes
+its probe; replace it with the SDK's resolver if one is ever exposed.
+
+### Process-tree ownership
+
+A job's process tree is owned through the SDK's `ProcessTree`, which is a
+Windows **Job Object** and a Unix **process group**. The tree outlives the
+shell that was spawned: a dev server started as `npm run dev` keeps running
+after its `bash -c` wrapper exits, and `jobs kill` is what reaches it.
+
+`taskkill /T` is not equivalent — it walks parent pids, and a git-bash child is
+not on that chain, so it survives a kill that reported success. The Job Object
+is inherited by every descendant, so nothing escapes it.
+
+### Session identity
+
+The host injects `{"__rpi": {"sessionId": …}}` into every plugin tool call.
+That value is recorded when the job is created and never revised.
+
+`SessionShutdown` carries no payload — the host puts it in the "no payload"
+group — so the only identity channel at that point is the process-wide
+`RPI_SESSION_ID` environment variable, which the host rewrites whenever a
+session becomes active. That is a weaker channel than the per-call snapshot
+(any code in the process can write an environment variable), but it is the only
+one available to an event, and it is correct for the decision it drives:
+shutdown stops the jobs of the session that is closing, not another's.
 
 ## Not provided
 
