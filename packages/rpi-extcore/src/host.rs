@@ -299,6 +299,24 @@ pub struct SessionOptions {
     pub resources: Option<crate::resources::ResourceStartup>,
 }
 
+/// Why a session could not be safely retired without interrupting native work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdleCloseError {
+    Busy,
+    Unavailable(String),
+}
+
+impl std::fmt::Display for IdleCloseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy => f.write_str("session is busy"),
+            Self::Unavailable(reason) => write!(f, "idle session state unavailable: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for IdleCloseError {}
+
 pub struct HostSession {
     child_owner: Option<child::NativeChild>,
     worker: Worker,
@@ -1321,6 +1339,115 @@ impl HostSession {
         }
     }
 
+    /// Retire only a provably idle native session. Admission and the run lease
+    /// are acquired without waiting, then held through child exit/reaping.
+    /// Callers that must survive request cancellation should retain their task;
+    /// this method does not create a second request-lifetime wrapper.
+    pub async fn shutdown_if_idle(&self) -> Result<(), IdleCloseError> {
+        if *self.runtime.closed_signal.borrow() {
+            return self.shutdown_idle_child().await;
+        }
+        let _admission = self
+            .admission_gate
+            .clone()
+            .try_write_owned()
+            .map_err(|_| IdleCloseError::Busy)?;
+        // Closure can race acquisition. Closed sessions need no idle proof.
+        if *self.runtime.closed_signal.borrow() {
+            return self.shutdown_idle_child().await;
+        }
+        let _run = self.try_run_lease().map_err(|_| IdleCloseError::Busy)?;
+        self.check_idle_projection().await?;
+
+        // Do not call send(): we already own exclusive admission. The closed
+        // signal still cancels these bounded, directly dispatched probes.
+        let state = self.idle_close_probe("get_state").await?;
+        match state.get("activeOperation") {
+            Some(Value::Null) => {}
+            Some(_) => return Err(IdleCloseError::Busy),
+            None => {
+                return Err(IdleCloseError::Unavailable(
+                    "get_state omitted activeOperation".into(),
+                ));
+            }
+        }
+        for name in ["steering", "followUp"] {
+            let queue = state
+                .get("queue")
+                .and_then(|queue| queue.get(name))
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    IdleCloseError::Unavailable(format!("get_state omitted queue.{name} array"))
+                })?;
+            if !queue.is_empty() {
+                return Err(IdleCloseError::Busy);
+            }
+        }
+        if self.supports_command("get_history") {
+            let history = self.idle_close_probe("get_history").await?;
+            let operations = history["openOperations"].as_array().ok_or_else(|| {
+                IdleCloseError::Unavailable("get_history omitted openOperations array".into())
+            })?;
+            if !operations.is_empty() {
+                return Err(IdleCloseError::Busy);
+            }
+        }
+        // Native events can update projection while the probes are in flight.
+        self.check_idle_projection().await?;
+        // This is permanent for all existing Arcs, including senders waiting
+        // for the admission read lock. stop() intentionally bypasses admission.
+        self.runtime.closed_signal.send_replace(true);
+        self.shutdown_idle_child().await
+    }
+
+    async fn check_idle_projection(&self) -> Result<(), IdleCloseError> {
+        let snapshot = self.snapshot().await;
+        if !snapshot.pending_dialogs.is_empty()
+            || matches!(snapshot.status.as_str(), "running" | "awaiting_input")
+            || self
+                .runtime
+                .execution
+                .lock()
+                .expect("execution admission")
+                .unsettled()
+        {
+            return Err(IdleCloseError::Busy);
+        }
+        if snapshot.status != "ready" {
+            return Err(IdleCloseError::Unavailable(format!(
+                "session status is {}",
+                snapshot.status
+            )));
+        }
+        Ok(())
+    }
+
+    async fn idle_close_probe(&self, command: &str) -> Result<Value, IdleCloseError> {
+        let reply = self
+            .send_unadmitted(json!({"type":command}), Duration::from_secs(15))
+            .await
+            .map_err(IdleCloseError::Unavailable)?;
+        if reply["success"] != true || !reply["data"].is_object() {
+            return Err(IdleCloseError::Unavailable(format!(
+                "{command} returned unsuccessful or invalid state"
+            )));
+        }
+        Ok(reply["data"].clone())
+    }
+
+    async fn shutdown_idle_child(&self) -> Result<(), IdleCloseError> {
+        self.shutdown().await;
+        // shutdown's legacy best-effort contract is unchanged. This stricter
+        // API may only report success once the independent reaper confirms exit.
+        if let Some(child) = &self.child_owner {
+            child
+                .stop_checked()
+                .await
+                .map_err(IdleCloseError::Unavailable)?;
+        }
+        Ok(())
+    }
+
     pub async fn snapshot(&self) -> HostSnapshot {
         let state = self.runtime.state.read().await;
         HostSnapshot {
@@ -1640,6 +1767,7 @@ mod tests {
     include!("host_compact_tests.rs");
     include!("external_tools_host_tests.rs");
     include!("host_file_io_tests.rs");
+    include!("host_retirement_tests.rs");
 
     #[tokio::test]
     async fn bounded_history_boundary_fails_on_publication_and_changes() {

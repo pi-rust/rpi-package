@@ -366,6 +366,9 @@ impl Service {
             if owner.closing.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(ResourceError::unavailable("service shutting down"));
             }
+            if owner.registry.read().await.deletion(&id).is_some() {
+                return Err(ResourceError::conflict("session deletion is pending"));
+            }
             let project = session_project(&owner, &id)
                 .await
                 .map_err(ResourceError::unavailable)?;
@@ -442,6 +445,11 @@ impl Service {
         if self.closing.load(std::sync::atomic::Ordering::Acquire) {
             return Err(ResourceError::unavailable("service shutting down"));
         }
+        self.check_session_admission(&id)
+            .await
+            .map_err(|(_, value)| {
+                ResourceError::conflict(value["error"].as_str().unwrap_or("session is unavailable"))
+            })?;
         let mut record = self.resource_record(&id).await?;
         let existing = record.as_ref().and_then(|r| {
             r.operations

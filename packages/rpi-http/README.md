@@ -112,7 +112,18 @@ cargo test --locked -p rpi-extcore -p rpi-http
 python packages/rpi-http/tests/native_smoke.py --http /path/to/rpi-http --rpi /path/to/rpi
 ```
 
-The native smoke test exercises authentication, metadata, snapshots, SSE, restart recovery and the absence of frontend routes without model calls.
+The native smoke test exercises authentication, metadata, snapshots, SSE, restart recovery and the absence of frontend routes without model calls. It also checks archive PID exit/history preservation, explicit restore/reopen, permanent deletion, independent clone survival, and locked-file deletion retry on Windows. All state and credentials are synthetic; an owned process tree is cleaned up on exit. Optional `--http-sha` and `--rpi-sha` pin the exact binaries; actual hashes are included in the result.
+
+Archival still uses `POST /api/v1/sessions/{id}/metadata` with
+`{"archived":true}`; restoration uses `{"archived":false}` and does not spawn a
+host. `DELETE /api/v1/sessions/{id}` now waits for idle host exit and verified
+history cleanup before returning 204. Busy sessions return 409 `session_busy`;
+unknown idle state returns 503 `session_idle_unknown`. Archived opens return 409
+`session_archived`. A failed partial deletion remains visible as `deleting: true`
+and blocks reopen with 409 `session_deleting`; retry DELETE explicitly. Missing
+history in the configured root returns 409 `deletion_history_missing`, without
+forgetting the session or deleting timings. No history-search fallback to another
+root is attempted. See the [core lifecycle contract](../rpi-extcore/README.md#session-archival-and-permanent-deletion).
 
 ## Optional paginated message queries
 

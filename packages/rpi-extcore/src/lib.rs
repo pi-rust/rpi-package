@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 pub mod configuration;
 pub mod context_usage;
+pub mod deletion;
 pub use context_usage::{parse_context_usage, ContextUsage};
 pub mod dialogs;
 pub mod durable;

@@ -44,6 +44,8 @@ struct RegistryFile {
     preferences: HashMap<String, SessionPreferences>,
     #[serde(default, deserialize_with = "resource_records")]
     resources: HashMap<String, crate::resources::ResourceConfiguration>,
+    #[serde(default)]
+    deletions: HashMap<String, crate::deletion::DeletionPlan>,
 }
 
 #[derive(Debug)]
@@ -52,6 +54,7 @@ pub struct Registry {
     entries: Vec<RegistryEntry>,
     preferences: HashMap<String, SessionPreferences>,
     resources: HashMap<String, crate::resources::ResourceConfiguration>,
+    deletions: HashMap<String, crate::deletion::DeletionPlan>,
 }
 
 /// Default registry location, outside the project tree.
@@ -83,12 +86,51 @@ impl Registry {
             }
             record.validate_session(id).map_err(|e| e.to_string())?;
         }
+        if data.deletions.len() > 128 {
+            return Err("too many pending session deletions".into());
+        }
+        for (id, plan) in &data.deletions {
+            if !ids.contains(id.as_str()) {
+                return Err("deletion intent references unknown session".into());
+            }
+            plan.validate(id)?;
+        }
         Ok(Self {
             path,
             entries: data.sessions,
             preferences: data.preferences,
             resources: data.resources,
+            deletions: data.deletions,
         })
+    }
+
+    pub fn deletion(&self, id: &str) -> Option<&crate::deletion::DeletionPlan> {
+        self.deletions.get(id)
+    }
+
+    /// A deletion intent is supplemental operation metadata, never a transcript.
+    /// Persist before the first unlink and retain until all exact files are gone.
+    pub fn begin_deletion(
+        &mut self,
+        id: &str,
+        plan: crate::deletion::DeletionPlan,
+    ) -> Result<(), String> {
+        if self.get(id).is_none() {
+            return Err("unknown session".into());
+        }
+        plan.validate(id)?;
+        if self.deletions.contains_key(id) {
+            return Err("session deletion is already pending".into());
+        }
+        if self.deletions.len() >= 128 {
+            return Err("too many pending session deletions".into());
+        }
+        self.deletions.insert(id.to_owned(), plan);
+        if let Err(error) = self.save_result() {
+            self.deletions.remove(id);
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn resource_configuration(
@@ -213,13 +255,16 @@ impl Registry {
         let previous = self.entries.clone();
         let resources = self.resources.clone();
         let preferences = self.preferences.clone();
+        let deletions = self.deletions.clone();
         let before = self.entries.len();
         self.entries.retain(|entry| entry.session_id != session_id);
         let removed = self.entries.len() != before;
         if removed {
             self.preferences.remove(session_id);
             self.resources.remove(session_id);
+            self.deletions.remove(session_id);
             if let Err(error) = self.save_result() {
+                self.deletions = deletions;
                 self.resources = resources;
                 self.entries = previous;
                 self.preferences = preferences;
@@ -255,6 +300,7 @@ impl Registry {
             sessions: self.entries.clone(),
             preferences: self.preferences.clone(),
             resources: self.resources.clone(),
+            deletions: self.deletions.clone(),
         };
         let raw = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
         if raw.len() > MAX_REGISTRY_BYTES {
@@ -379,7 +425,7 @@ fn resource_records<'de, D: serde::Deserializer<'de>>(
 const MAX_TAGS: usize = 12;
 const MAX_TAG_LENGTH: usize = 32;
 
-fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
+pub(crate) fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
     let mut normalized = Vec::new();
     for tag in tags {
         let tag = tag.trim();
