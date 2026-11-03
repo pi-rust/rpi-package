@@ -9,6 +9,7 @@
 //! running without reading a full transcript.
 
 use rpi_plugin_sdk::handles::ToolHandles;
+use rpi_plugin_sdk::process::ProcessTree;
 use rpi_plugin_sdk::{
     EventHandlerFn, EventTag, FreeStringFn, PluginApi, RuntimeActionId, StableToolSchema,
     StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
@@ -111,6 +112,16 @@ struct Job {
     output: Output,
     /// Kept so `jobs` action `kill` can signal and reap the process group.
     child: Option<Arc<Mutex<Child>>>,
+    /// Handle on the spawned tree, independent of the leader's lifetime.
+    ///
+    /// The SDK's `ProcessTree` is a Job Object on Windows and a process group
+    /// on Unix. Both outlive the shell that was spawned: a dev server behind
+    /// `npm run dev` keeps running after its `sh -c` wrapper exits, and the
+    /// only way to reach it is through the tree handle.
+    ///
+    /// `taskkill /T` is not that mechanism — it walks parent pids, and a
+    /// git-bash child is not on that chain, so it outlives the shell.
+    tree: Option<Arc<ProcessTree>>,
     cancel_requested: bool,
 }
 
@@ -231,31 +242,134 @@ fn persist_snapshot() -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// Build the shell invocation for this platform. Windows must not allocate a
-/// console; the other targets only need the platform shell.
-fn shell_command(command: &str) -> Command {
-    #[cfg(windows)]
-    {
-        let mut cmd = Command::new("cmd");
-        cmd.arg("/C").arg(command);
-        // CREATE_NO_WINDOW / CREATE_NEW_PROCESS_GROUP: no console window, and a
-        // kill can target the whole tree instead of only the shell.
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
-        cmd
+/// Run a helper and return its stdout, or `None` if it is missing or fails.
+///
+/// Used only for shell discovery (`where`, `which`), so a missing helper is an
+/// ordinary "not found", not an error worth surfacing.
+fn quiet_command(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(command);
-        // Own process group, so a kill can target the whole tree.
-        //
-        // `kill(pid)` only reaches the `sh -c` wrapper; a dev server started as
-        // `npm run dev` keeps its own children running after the shell dies.
-        // With the child as a group leader, `kill(-pgid, …)` reaches all of it.
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-        cmd
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// A bash executable plus the flag it takes for a command string.
+///
+/// Resolved once per process: probing spawns helper commands (`where`,
+/// `which`), and `background` may be called in a tight loop.
+struct ShellConfig {
+    shell: std::path::PathBuf,
+    args: Vec<String>,
+}
+
+/// Find bash the same way the host's `bash` tool does.
+///
+/// This mirrors `rpi-tools::os_env` so a command behaves identically whether it
+/// runs through `bash` or through `background`: same shell, same POSIX syntax,
+/// and the same refusal to fall back to something else.
+///
+/// Deliberately a **copy** of the host's probe: the plugin ABI exposes no shell
+/// discovery, and the alternative — `cmd /C` on Windows — would mean `ls -la`
+/// works through `bash` and fails through `background` in the same session.
+/// Replace this with the SDK's own resolver if it ever exposes one.
+#[cfg(windows)]
+fn resolve_shell() -> Option<ShellConfig> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    // `var_os`, not `var`: a Windows profile path is not required to be UTF-8.
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(base) = std::env::var_os(key) {
+            candidates.push(
+                std::path::PathBuf::from(base)
+                    .join("Git")
+                    .join("bin")
+                    .join("bash.exe"),
+            );
+        }
     }
+    for candidate in &candidates {
+        if candidate.is_file() {
+            return Some(ShellConfig {
+                shell: candidate.clone(),
+                args: vec!["-c".to_string()],
+            });
+        }
+    }
+    // `where bash.exe` — the same fallback the host uses when git-bash is
+    // installed somewhere unusual.
+    let found = crate::quiet_command("where", &["bash.exe"])?;
+    let first = found.lines().next().unwrap_or("").trim().to_string();
+    if first.is_empty() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(first);
+    path.is_file().then_some(ShellConfig {
+        shell: path,
+        args: vec!["-c".to_string()],
+    })
+}
+
+/// Unix: `/bin/bash`, then `which bash`, then `sh`.
+///
+/// `sh` last rather than first: the host prefers bash, and bashisms are common
+/// in the commands people background (`[[ ]]`, arrays). A POSIX-only `sh`
+/// would reject them while the `bash` tool accepts them.
+#[cfg(not(windows))]
+fn resolve_shell() -> Option<ShellConfig> {
+    let bash = std::path::PathBuf::from("/bin/bash");
+    if bash.is_file() {
+        return Some(ShellConfig {
+            shell: bash,
+            args: vec!["-c".to_string()],
+        });
+    }
+    if let Some(found) = crate::quiet_command("which", &["bash"]) {
+        let first = found.lines().next().unwrap_or("").trim().to_string();
+        if !first.is_empty() {
+            let path = std::path::PathBuf::from(first);
+            if path.is_file() {
+                return Some(ShellConfig {
+                    shell: path,
+                    args: vec!["-c".to_string()],
+                });
+            }
+        }
+    }
+    let sh = std::path::PathBuf::from("/bin/sh");
+    sh.is_file().then_some(ShellConfig {
+        shell: sh,
+        args: vec!["-c".to_string()],
+    })
+}
+
+fn shell_config() -> Result<&'static ShellConfig, String> {
+    static SHELL: OnceLock<Option<ShellConfig>> = OnceLock::new();
+    SHELL.get_or_init(resolve_shell).as_ref().ok_or_else(|| {
+        "no usable shell found. Install Bash (Git for Windows provides it on \
+             Windows) and try again; a background job will not run under a \
+             different shell than the `bash` tool uses."
+            .to_string()
+    })
+}
+
+/// Build the shell invocation. No fallback shell: a job must run under the same
+/// shell the `bash` tool would use, or the model's commands behave differently
+/// depending on which tool it picked.
+fn shell_command(command: &str) -> Result<Command, String> {
+    let config = shell_config()?;
+    let mut cmd = Command::new(&config.shell);
+    cmd.args(&config.args).arg(command);
+    // Own process tree so a kill reaches descendants, and so the leader exiting
+    // does not orphan them. `ProcessTree` is a Job Object on Windows and a
+    // process group on Unix; `taskkill /T` would not be equivalent because it
+    // walks parent pids and an MSYS child is not on that chain.
+    rpi_plugin_sdk::process::ProcessTree::prepare(&mut cmd);
+    Ok(cmd)
 }
 
 fn spawn_reader<R: Read + Send + 'static>(
@@ -431,12 +545,20 @@ fn start_background(params: &Value) -> Result<String, String> {
         ));
     }
 
-    let mut child = shell_command(command)
+    let mut child = shell_command(command)?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("failed to start background command: {error}"))?;
+
+    // Take the tree handle before anything else can drop the leader: on
+    // Windows this is the Job Object the shell and every descendant inherit,
+    // and it is the only thing that can still reach them after the shell exits.
+    let tree = Arc::new(
+        ProcessTree::attach(&child)
+            .map_err(|error| format!("failed to own the background process tree: {error}"))?,
+    );
 
     let pid = child.id();
     let stdout = child.stdout.take();
@@ -460,6 +582,7 @@ fn start_background(params: &Value) -> Result<String, String> {
             finished_ms: None,
             output: Output::default(),
             child: Some(Arc::new(Mutex::new(child))),
+            tree: Some(Arc::clone(&tree)),
             cancel_requested: false,
         });
         (id, table.jobs.iter().filter(|job| job.is_active()).count())
@@ -562,55 +685,74 @@ fn tail_job(id: u64, lines: usize) -> Result<String, String> {
 ///
 /// Falls back to `Child::kill` when the tree-killer is unavailable, so a job
 /// always dies even on a system without the helper binary.
-fn kill_process_tree(pid: Option<u32>) -> bool {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = pid {
-            // `kill -<pgid>`: the leading dash targets the group.
-            let status = std::process::Command::new("kill")
-                .arg("-9")
-                .arg(format!("-{pid}"))
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            if matches!(status, Ok(status) if status.success()) {
-                return true;
-            }
+/// Terminate the job's whole process tree.
+///
+/// The SDK's `ProcessTree` covers it: a Job Object on Windows, a process group
+/// on Unix. Both are owned independently of the shell, so a descendant that
+/// outlived the leader is still reachable.
+fn kill_process_tree(tree: Option<&Arc<ProcessTree>>) -> bool {
+    match tree {
+        Some(tree) => {
+            tree.kill();
+            true
         }
+        None => false,
     }
-    #[cfg(windows)]
-    {
-        if let Some(pid) = pid {
-            let status = std::process::Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &pid.to_string()])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            if matches!(status, Ok(status) if status.success()) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn kill_job(id: u64) -> Result<String, String> {
-    let (child, pid) = {
+    let (child, tree, pid, was_active) = {
         let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
         let job = table
             .jobs
             .iter_mut()
             .find(|job| job.id == id)
             .ok_or_else(|| format!("job {id} not found"))?;
-        // A finished job is a no-op, not an error: the process may have exited
-        // between the model's `list` and its `kill`.
-        if !job.is_active() {
-            return Ok(format!("Job {id} already finished ({})", job.status));
+        if job.is_active() {
+            job.cancel_requested = true;
         }
-        job.cancel_requested = true;
-        (job.child.clone(), job.pid)
+        (
+            job.child.clone(),
+            job.tree.clone(),
+            job.pid,
+            job.is_active(),
+        )
     };
+    // A finished job whose leader is gone can still own live descendants: the
+    // shell exits as soon as it has spawned `npm run dev`, and everything the
+    // dev server started is still running. Only report "already finished" when
+    // the tree itself is gone, otherwise `kill` would be a no-op exactly when
+    // the user needs it.
+    if !was_active && tree.is_none() {
+        let table = table().lock().unwrap_or_else(|p| p.into_inner());
+        let status = table
+            .jobs
+            .iter()
+            .find(|job| job.id == id)
+            .map(|job| job.status)
+            .unwrap_or("finished");
+        return Ok(format!("Job {id} already finished ({status})"));
+    }
     let mut signal_error = None;
+    // The leader may already be gone while descendants live on, so target the
+    // tree first; the direct child is only a fallback.
+    if !was_active {
+        let swept = kill_process_tree(tree.as_ref());
+        let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(job) = table.jobs.iter_mut().find(|job| job.id == id) {
+            job.tree = None;
+        }
+        drop(table);
+        return if swept {
+            Ok(format!(
+                "Job {id} had already finished; its process tree was terminated"
+            ))
+        } else {
+            Ok(format!(
+                "Job {id} had already finished; no process tree remained"
+            ))
+        };
+    }
     if let Some(child) = &child {
         let mut child = child.lock().unwrap_or_else(|p| p.into_inner());
         // A failed kill is not fatal: the process may have exited between the
@@ -619,7 +761,7 @@ fn kill_job(id: u64) -> Result<String, String> {
         // wrapper, so a dev server started as `npm run dev` keeps its workers
         // alive after the shell dies. The crate forbids `unsafe` (no
         // `libc::kill`), so this shells out to the platform's tree-killer.
-        if !kill_process_tree(pid) {
+        if !kill_process_tree(tree.as_ref()) {
             // Fall back to signalling the direct child.
             if let Err(error) = child.kill() {
                 signal_error.get_or_insert(error.to_string());
@@ -643,6 +785,12 @@ fn kill_job(id: u64) -> Result<String, String> {
                     std::thread::sleep(Duration::from_millis(20));
                 }
             }
+        }
+    }
+    {
+        let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(job) = table.jobs.iter_mut().find(|job| job.id == id) {
+            job.tree = None;
         }
     }
     // Detach the handle so the waiter stops polling a row we just terminated.
@@ -856,15 +1004,18 @@ fn shutdown_jobs() -> i32 {
         for job in table.jobs.iter_mut().filter(|job| job.is_active()) {
             job.status = STATUS_INTERRUPTED;
             job.finished_ms = Some(now_ms());
+            // The tree handle is kept (not cleared): the leader may exit before
+            // its descendants do, and the sweep below runs after this lock is
+            // gone. It is the only thing that reaches those descendants.
             if let Some(child) = job.child.take() {
-                children.push((child, job.pid));
+                children.push((child, job.tree.clone()));
             }
             changed = true;
         }
         (changed, children)
     };
-    for (child, pid) in children {
-        if !kill_process_tree(pid) {
+    for (child, tree) in children {
+        if !kill_process_tree(tree.as_ref()) {
             if let Ok(mut child) = child.lock() {
                 let _ = child.kill();
             }
@@ -1113,6 +1264,7 @@ mod tests {
                 finished_ms: None,
                 output: Output::default(),
                 child: None,
+                tree: None,
                 cancel_requested: false,
             });
         }
@@ -1185,24 +1337,241 @@ mod tests {
     }
 
     fn case_process_tree_kill_reaches_grandchildren() {
-        // `sh -c 'sleep 60 & sleep 60'` spawns a grandchild; killing only the
-        // wrapper would leave it running.
-        let before = count_sleepers();
+        // The command records the pid of a grandchild it spawns, so the test
+        // can assert on *that* process rather than counting sleepers: counting
+        // is not an identity assertion, and it races both startup and any
+        // unrelated process on the machine.
+        let pid_file = std::env::temp_dir().join(format!(
+            "rpi-bg-pid-{}-{}",
+            std::process::id(),
+            next_unique_suffix()
+        ));
+        let _ = std::fs::remove_file(&pid_file);
+        let command = record_pid_command(&pid_file);
         install_host();
         let payload: Value = serde_json::from_str(
-            &background_tool(&json!({"command": "sleep 60 & sleep 60", "label": "tree"})).unwrap(),
+            &background_tool(&json!({"command": command, "label": "tree"})).unwrap(),
         )
         .unwrap();
         let id = payload["details"]["jobId"].as_u64().unwrap();
-        let started = count_sleepers();
-        assert!(started > before, "the jobs must actually be running");
-        let _ = jobs_tool(&json!({"action": "kill", "jobId": id})).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(600));
-        let after = count_sleepers();
-        assert_eq!(
-            after, before,
-            "kill must reap the whole tree (before={before}, during={started}, after={after})"
+
+        let pid = wait_for_pid_file(&pid_file);
+        assert!(
+            pid_is_running(pid),
+            "the grandchild must be running before the kill"
         );
+
+        let _ = jobs_tool(&json!({"action": "kill", "jobId": id})).unwrap();
+
+        // The tree kill is asynchronous on Windows (the job object is closed
+        // when the handle drops), so give it a moment to take effect.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pid_is_running(pid) {
+            assert!(
+                Instant::now() < deadline,
+                "kill must terminate the grandchild, but pid {pid} is still running"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_file(&pid_file);
+    }
+
+    /// A descendant that outlives the shell must remain killable.
+    ///
+    /// The shell exits as soon as it has spawned the background child, so the
+    /// job settles with `child = None` while the grandchild is still running.
+    /// Before the tree handle was kept, `jobs kill` answered "already finished" and the
+    /// process leaked — the case a kill-while-active test cannot reach.
+    #[test]
+    fn settled_job_can_still_terminate_its_surviving_descendants() {
+        let _guard = table_guard();
+        let before = count_sleepers();
+        install_host();
+        let payload: Value = serde_json::from_str(
+            &background_tool(&json!({"command": "sleep 60 &", "label": "orphan"})).unwrap(),
+        )
+        .unwrap();
+        let id = payload["details"]["jobId"].as_u64().unwrap();
+
+        // The shell exits immediately; its background child keeps running.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut settled = false;
+        while std::time::Instant::now() < deadline {
+            let status = {
+                let table = table().lock().unwrap_or_else(|p| p.into_inner());
+                table
+                    .jobs
+                    .iter()
+                    .find(|job| job.id == id)
+                    .map(|job| job.status)
+            };
+            if status.is_some_and(|status| status != STATUS_RUNNING) {
+                settled = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            settled,
+            "the shell must settle while the child keeps running"
+        );
+        assert!(
+            count_sleepers() > before,
+            "the descendant must still be running after settlement"
+        );
+
+        // The row is finished, but the tree is not: kill must still reach it.
+        let reply = jobs_tool(&json!({"action": "kill", "jobId": id})).unwrap();
+        assert!(
+            reply.contains("process tree was terminated")
+                || reply.contains("no process tree remained"),
+            "a settled job with a live tree must not report a plain no-op: {reply}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert_eq!(
+            count_sleepers(),
+            before,
+            "kill on a settled job must reap the surviving descendants"
+        );
+    }
+
+    /// The resolved shell must be bash, and it must accept a POSIX command.
+    ///
+    /// Picking `cmd /C` on Windows meant `ls -la` worked through the host's
+    /// `bash` tool and failed here. Asserting on the shell name — not just on a
+    /// command succeeding — is what keeps the two tools from drifting apart
+    /// again.
+    #[test]
+    fn the_resolved_shell_is_bash() {
+        let config = shell_config().expect("a bash must be resolvable on a dev machine");
+        let name = config
+            .shell
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert_eq!(
+            name, "bash",
+            "background must run under bash like the `bash` tool does, got {:?}",
+            config.shell
+        );
+        assert_eq!(config.args, vec!["-c".to_string()]);
+    }
+
+    /// A POSIX command must work through `background` itself, end to end.
+    ///
+    /// `[[ ]]` is a bashism: it distinguishes bash from a POSIX-only `sh`, so
+    /// this fails if the resolver ever falls back to something narrower.
+    #[test]
+    fn posix_bash_syntax_runs_through_the_resolved_shell() {
+        let _guard = table_guard();
+        install_host();
+        reset();
+        let value: Value = serde_json::from_str(
+            &background_tool(&json!({
+                "command": "if [[ -n bash ]]; then echo is-bash; fi",
+                "label": "bashism"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let id = value["details"]["jobId"].as_u64().unwrap();
+        let job = wait_for_status(id, STATUS_COMPLETED);
+        assert_eq!(job["exitCode"], 0, "the bashism must run: {job}");
+        let tail = tail_job(id, 10).unwrap();
+        assert!(
+            tail.contains("is-bash"),
+            "bash syntax must work through background, got: {tail}"
+        );
+    }
+
+    /// A command that writes to both stdout and stderr.
+    ///
+    /// One fixture for every platform, because there is one shell: `background`
+    /// resolves bash the way the host's `bash` tool does, so POSIX syntax is
+    /// what runs on Windows too. A `cmd /C`-specific fixture would have been
+    /// evidence that the plugin had picked the wrong shell.
+    fn stdout_and_stderr_command() -> &'static str {
+        "echo hello; echo oops >&2"
+    }
+
+    /// A command that exits with a non-zero status.
+    fn failing_command() -> &'static str {
+        "exit 3"
+    }
+
+    /// Whether a pid still names a live process.
+    ///
+    /// The SDK exposes this for Windows only, and the plugin needs it on every
+    /// platform to assert on a specific descendant.
+    #[cfg(windows)]
+    fn pid_is_running(pid: u32) -> bool {
+        rpi_plugin_sdk::process::process_is_running(pid).unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    fn pid_is_running(pid: u32) -> bool {
+        // The process table answers directly, and a zombie is reported as
+        // gone: the tree kill is what this asserts, and a reaped-but-unwaited
+        // pid is not a surviving descendant.
+        //
+        // `ps` rather than a signal probe because the crate forbids `unsafe`
+        // and `libc` is not a dependency of this package.
+        let out = std::process::Command::new("ps")
+            .args(["-o", "state=", "-p", &pid.to_string()])
+            .output();
+        match out {
+            Ok(out) => {
+                let state = String::from_utf8_lossy(&out.stdout);
+                let state = state.trim();
+                !state.is_empty() && !state.starts_with('Z')
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// A suffix that makes a temp file name unique within this process.
+    fn next_unique_suffix() -> u64 {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A command that starts a long-lived grandchild and records its pid.
+    ///
+    /// `&` backgrounds it under `sh`, and under `cmd` it starts a second
+    /// process instead — the pid written is the one the shell reports, which is
+    /// the process the tree kill has to reach.
+    #[cfg(unix)]
+    fn record_pid_command(pid_file: &std::path::Path) -> String {
+        format!("sleep 60 & echo $! > {}", pid_file.display())
+    }
+
+    #[cfg(windows)]
+    fn record_pid_command(pid_file: &std::path::Path) -> String {
+        format!(
+            "start /B cmd /C \"ping -n 61 127.0.0.1 > nul\" & for /f \"tokens=2 delims=\" \" %i in ('wmic process where \"name='ping.exe'\" get processid /value\"') do @echo %i > {}",
+            pid_file.display()
+        )
+    }
+
+    /// Read the pid a background command recorded, waiting for the file.
+    fn wait_for_pid_file(pid_file: &std::path::Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(pid_file) {
+                if let Ok(pid) = text.trim().parse::<u32>() {
+                    if pid != 0 {
+                        return pid;
+                    }
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the command never recorded a pid in {}",
+                pid_file.display()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn count_sleepers() -> usize {
@@ -1299,7 +1668,7 @@ mod tests {
         install_host();
         reset();
         let value: Value = serde_json::from_str(
-            &background_tool(&json!({"command": "echo hello; echo oops >&2"})).unwrap(),
+            &background_tool(&json!({"command": stdout_and_stderr_command()})).unwrap(),
         )
         .unwrap();
         let id = value["details"]["jobId"].as_u64().unwrap();
@@ -1325,7 +1694,8 @@ mod tests {
         install_host();
         reset();
         let value: Value =
-            serde_json::from_str(&background_tool(&json!({"command": "exit 3"})).unwrap()).unwrap();
+            serde_json::from_str(&background_tool(&json!({"command": failing_command()})).unwrap())
+                .unwrap();
         let id = value["details"]["jobId"].as_u64().unwrap();
         let job = wait_for_status(id, STATUS_FAILED);
         assert_eq!(job["exitCode"], 3);
