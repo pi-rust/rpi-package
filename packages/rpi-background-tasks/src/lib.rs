@@ -584,9 +584,32 @@ fn start_background(params: &Value) -> Result<String, String> {
     // Take the tree handle before anything else can drop the leader: on
     // Windows this is the Job Object the shell and every descendant inherit,
     // and it is the only thing that can still reach them after the shell exits.
-    let tree = ProcessTree::attach(&child)
-        .map(Arc::new)
-        .map_err(|error| format!("failed to own the background process tree: {error}"))?;
+    // `ProcessTree::prepare` creates the process **suspended** on Windows and
+    // `attach` resumes it. If attaching fails the child is left suspended with
+    // no handle owning it: it never runs, never exits, and cannot be killed
+    // through the tree we failed to obtain. Kill it here before reporting.
+    let tree = match ProcessTree::attach(&child) {
+        Ok(tree) => Arc::new(tree),
+        Err(error) => {
+            // Terminate, then reap with a bound.
+            //
+            // `Child::kill` only issues `TerminateProcess` — it does not wait —
+            // so the signal itself cannot block. The wait afterwards does, and
+            // it must be bounded: a process the kernel refuses to terminate
+            // would otherwise wedge the tool call forever. The host's own shell
+            // uses the same shape (`start_kill`, no wait) for the same reason.
+            let mut child = child;
+            let _ = child.kill();
+            reap_bounded(&mut child, Duration::from_secs(5));
+            // The SDK's own wording ("protect MCP process tree") is its
+            // internal context and means nothing here, so the message leads
+            // with what happened and keeps the SDK text only as the cause.
+            return Err(format!(
+                "could not attach the background process to a job object, so it was \
+                 terminated instead of left suspended: {error}"
+            ));
+        }
+    };
 
     let pid = child.id();
     let stdout = child.stdout.take();
@@ -756,6 +779,24 @@ fn tail_job(id: u64, lines: usize, owner: &str) -> Result<String, String> {
 /// Only one owner may reap, and the caller holds that owner. The bound keeps a
 /// stuck child (unkillable syscall) from blocking the tool or shutdown thread
 /// forever; a timeout is not an error the caller can act on.
+fn reap_bounded(child: &mut Child, limit: Duration) {
+    reap_until(child, Instant::now() + limit);
+}
+
+/// Reap until `deadline`, shared across several children.
+fn reap_until(child: &mut Child, deadline: Instant) {
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
 
 /// Terminate a job's whole process tree.
 ///
@@ -850,7 +891,21 @@ fn kill_job(id: u64, owner: &str) -> Result<String, String> {
                 signal_error.get_or_insert(error.to_string());
             }
         }
-        let _ = child.wait();
+        // Reap with a bounded wait. SIGKILL cannot be ignored, so this returns
+        // almost immediately; the bound only protects the tool thread from an
+        // unkillable child (e.g. stuck in an uninterruptible syscall) and the
+        // handle is detached below, so nobody else can reap this child.
+        let reaped_before = Instant::now();
+        reap_bounded(&mut child, Duration::from_secs(5));
+        if child
+            .try_wait()
+            .map(|status| status.is_none())
+            .unwrap_or(false)
+            && Instant::now() >= reaped_before + Duration::from_secs(5)
+        {
+            signal_error
+                .get_or_insert_with(|| "process did not exit within 5s of the kill signal".into());
+        }
     }
     {
         let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
@@ -1153,11 +1208,20 @@ fn shutdown_jobs() -> i32 {
     // Terminate, then **reap**. Order matters: `child.take()` above dropped the
     // watcher's handle, so nothing else will ever call `try_wait` on these. On
     // Unix that leaves the exited process as a zombie until the host exits.
+    // One shared deadline for the whole sweep, not five seconds per job.
+    //
+    // The host gives `SessionShutdown` a bounded budget (15s today); a per-job
+    // five-second reap would blow it at the fourth stuck child and get the rest
+    // skipped. Sharing the budget bounds shutdown as a whole.
+    let deadline = Instant::now() + Duration::from_secs(10);
     for (child, tree) in children {
         if !kill_process_tree(tree.as_ref()) {
             if let Ok(mut child) = child.lock() {
                 let _ = child.kill();
             }
+        }
+        if let Ok(mut child) = child.lock() {
+            reap_until(&mut child, deadline);
         }
     }
     {
