@@ -1,0 +1,40 @@
+name: Code Mode extension checks
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-codemode/**'
+      - 'docs/codemode-host-contract.md'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/codemode-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codemode:
+    name: QuickJS (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt -p rpi-codemode -- --check
+      - name: Test guest budgets, concurrent host calls and ABI lifecycle
+        run: cargo test --locked -p rpi-codemode
+      - name: Lint all extension targets
+        run: cargo clippy --locked -p rpi-codemode --all-targets -- -D warnings
+      - name: Build native library
+        run: cargo build --locked -p rpi-codemode
+      # Fake-host tests do not qualify the companion native host or installed DLLs.
+      # Run scripts/codemode-smoke.py in the companion host checkout separately.
