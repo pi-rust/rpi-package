@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.7...rpi-extcore-v0.2.8) - 2026-11-03
+
+### Fixed
+
+- *(web)* retire archived sessions and permanently delete native history ([#183](https://github.com/pi-rust/rpi-package/pull/183))
+
 ## [0.2.7](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.6...rpi-extcore-v0.2.7) - 2026-11-02
 
 ### Added
