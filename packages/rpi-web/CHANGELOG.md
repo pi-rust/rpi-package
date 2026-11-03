@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.38](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.37...rpi-web-v0.1.38) - 2026-11-03
+
+### Fixed
+
+- *(web)* retire archived sessions and permanently delete native history ([#183](https://github.com/pi-rust/rpi-package/pull/183))
+
 ## [0.1.37](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.36...rpi-web-v0.1.37) - 2026-11-02
 
 ### Other

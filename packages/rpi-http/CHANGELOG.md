@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.15...rpi-http-v0.1.16) - 2026-11-03
+
+### Fixed
+
+- *(web)* retire archived sessions and permanently delete native history ([#183](https://github.com/pi-rust/rpi-package/pull/183))
+
 ## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.14...rpi-http-v0.1.15) - 2026-11-02
 
 ### Other
