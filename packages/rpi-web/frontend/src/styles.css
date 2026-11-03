@@ -2911,7 +2911,6 @@ details[open] > summary:before {
     gap: 0;
   }
   .toolbar-actions .toolbar-picker,
-  .toolbar-actions .toolbar-fork,
   .toolbar-actions .toolbar-clone {
     display: none;
   }
