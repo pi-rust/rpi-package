@@ -22,6 +22,7 @@ export interface SessionSummary {
   projectId?: string;
   pinned?: boolean;
   archived?: boolean;
+  deleting?: boolean;
   tags?: string[];
   title: string | null;
   status: string;
@@ -279,6 +280,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -301,10 +303,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return null;
   });
   if (!response.ok) {
-    const error = value as { error?: string } | null;
+    const error = value as { error?: unknown; code?: unknown } | null;
     throw new ApiError(
-      error?.error ?? `HTTP ${response.status}`,
+      typeof error?.error === "string" ? error.error : `HTTP ${response.status}`,
       response.status,
+      typeof error?.code === "string" ? error.code : undefined,
     );
   }
   return value as T;

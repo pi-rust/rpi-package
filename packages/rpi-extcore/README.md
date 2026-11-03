@@ -77,6 +77,37 @@ to the same directory, otherwise reject before spawning. Empty/missing recorded
 directories retain native fallback; no-MCP compatibility remains unchanged.
 This metadata snapshot is not a concurrent-filesystem sandbox.
 
+## Session archival and permanent deletion
+
+`service::session_metadata(archived: true)` closes only a provably idle native
+host and waits for its actual exit before publishing archived metadata. History
+is retained. Archived sessions reject open/fork/commands until an explicit
+`archived: false` restore; restoring alone does not start a native process.
+Busy sessions are not interrupted (`session_busy`); missing or unsupported idle
+proof fails closed (`session_idle_unknown`). Metadata is validated before close.
+
+`service::delete_session` closes an idle host, then discovers a unique native v4
+history using bounded header-only reads. It acquires the native-compatible stable
+`.lock` before capturing fingerprints and persisting a deletion manifest. The
+same lock remains held through removal. Only that primary, its known temporary
+and progress companions, and that UUID's supplemental timing files are removed;
+project files, external attachments, fork histories and the stable lock stay.
+Registry/preferences/resource records are forgotten only after cleanup succeeds.
+A new deletion with no matching primary fails with `deletion_history_missing`,
+even for a legacy registry-only entry: absence in the current configured root
+cannot prove native never used another root. Repair the storage configuration
+rather than treating this as successful permanent deletion.
+
+Partially completed deletion retains its original persisted manifest and exposes
+`deleting: true`. Reopen/fork/commands/resource apply are blocked with
+`session_deleting`; explicit DELETE retries use the same fingerprints, including
+after restart, and accept captured files already removed. Changed files are never
+silently adopted. No automatic background deletion is started on registry load.
+Retained cleanup owners survive caller cancellation and have bounded admission.
+These checks protect ordinary ownership and filesystem races, not a hostile
+concurrent-filesystem sandbox. Native transcripts remain native-owned; core only
+validates and removes precisely authorized files for this explicit operation.
+
 ## Native identity, ordered prompts and client text I/O
 
 These are source contracts requiring a supporting native binary, not a claim

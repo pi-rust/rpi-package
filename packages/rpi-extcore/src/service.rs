@@ -2,6 +2,10 @@
 pub use crate::run_timing::RunTimingsQuery;
 mod message_queries;
 mod resources;
+mod retirement;
+#[cfg(test)]
+#[path = "service_retirement_tests.rs"]
+mod service_retirement_tests;
 use crate::{
     durable::{DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE},
     host::HostSession,
@@ -26,6 +30,10 @@ use tokio::{
 /// Query persisted native run elapsed metadata without starting a native child.
 /// A conflict invalidates the client's accumulated timings and cursor.
 pub async fn run_timings(state: &Service, id: String, query: RunTimingsQuery) -> ServiceReply {
+    let _lifecycle = state.session_lifecycle.lock().await;
+    if state.registry.read().await.deletion(&id).is_some() {
+        return retirement::deleting_error().into_reply();
+    }
     if uuid::Uuid::parse_str(&id).is_err() {
         return (
             ReplyKind::InvalidInput,
@@ -115,6 +123,7 @@ pub struct Service {
     run_timing_cache: Arc<std::sync::Mutex<crate::run_timing::RunTimingCache>>,
     run_timing_workers: Arc<tokio::sync::Semaphore>,
     resource_workers: Arc<tokio::sync::Semaphore>,
+    retirement_workers: Arc<tokio::sync::Semaphore>,
     closing: Arc<std::sync::atomic::AtomicBool>,
     resource_storage_failed: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
@@ -155,6 +164,7 @@ impl Service {
             run_timing_cache: Arc::new(std::sync::Mutex::new(Default::default())),
             run_timing_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             resource_workers: Arc::new(tokio::sync::Semaphore::new(2)),
+            retirement_workers: Arc::new(tokio::sync::Semaphore::new(16)),
             closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             resource_storage_failed: Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -243,6 +253,7 @@ impl Service {
     /// Forward one durable control-plane mutation to the `rpi-durable`
     /// command. `rpi-extcore` never appends durable entries itself.
     pub async fn mutate_durable(&self, id: &str, mutation: DurableMutation) -> ServiceResult {
+        self.check_session_admission(id).await?;
         if self.live_session(id).await.is_none() {
             return Err((ReplyKind::NotFound, json!({"error": "session not found"})));
         }
@@ -255,6 +266,8 @@ impl Service {
                 }),
             )
         })?;
+        // The runtime retains its HostSession and uses host admission. Never
+        // wait for unrelated lifecycle work before forwarding a control command.
         let result = match runtime.mutate(mutation).await {
             Ok(result) => result,
             Err(error) => {
@@ -721,6 +734,10 @@ fn validated_title(title: Option<String>) -> Result<Option<String>, (ReplyKind, 
 }
 
 pub async fn rename_session(state: &Service, id: String, request: RenameRequest) -> ServiceReply {
+    let _lifecycle = state.session_lifecycle.lock().await;
+    if state.registry.read().await.deletion(&id).is_some() {
+        return retirement::deleting_error().into_reply();
+    }
     let title = match validated_title(Some(request.title)) {
         Ok(Some(title)) => title,
         Ok(None) => unreachable!(),
@@ -761,22 +778,7 @@ pub async fn session_metadata(
     id: String,
     request: MetadataRequest,
 ) -> (ReplyKind, Value) {
-    let mut registry = state.registry.write().await;
-    if registry.get(&id).is_none() {
-        return (ReplyKind::NotFound, json!({"error":"session not found"}));
-    }
-    match registry.update_preferences(&id, request.pinned, request.archived, request.tags) {
-        Ok(prefs) => (
-            ReplyKind::Success,
-            json!({
-                "sessionId": id,
-                "pinned": prefs.pinned,
-                "archived": prefs.archived,
-                "tags": prefs.tags,
-            }),
-        ),
-        Err(error) => (ReplyKind::Internal, json!({"error":error})),
-    }
+    retirement::metadata(state, id, request).await
 }
 
 pub async fn fork_session(state: &Service, id: String, request: ForkRequest) -> ServiceReply {
@@ -825,6 +827,9 @@ async fn fork_session_owned(
             json!({"error":"service shutting down"}),
         )
             .into_reply();
+    }
+    if let Err(error) = state.check_session_admission(source_id).await {
+        return error.into_reply();
     }
     if let Err(error) = state.check_resource_storage(source_id) {
         return resources::reply_error(error).into_reply();
@@ -1069,6 +1074,9 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
             json!({"error":"service shutting down"}),
         );
     }
+    if let Err(error) = state.check_session_admission(&id).await {
+        return error;
+    }
     if let Err(error) = state.check_resource_storage(&id) {
         return resources::reply_error(error);
     }
@@ -1291,6 +1299,7 @@ pub async fn list_sessions(state: &Service, query: SessionListQuery) -> Value {
             "projectId": project_id,
             "pinned": preferences.pinned,
             "archived": preferences.archived,
+            "deleting": registry.deletion(&entry.session_id).is_some(),
             "tags": preferences.tags,
             "sessionId": entry.session_id,
             "title": title,
@@ -1320,6 +1329,10 @@ pub async fn list_sessions(state: &Service, query: SessionListQuery) -> Value {
 }
 
 pub async fn get_session(state: &Service, id: String) -> (ReplyKind, Value) {
+    let (preferences, deleting) = {
+        let registry = state.registry.read().await;
+        (registry.preferences(&id), registry.deletion(&id).is_some())
+    };
     let session = state.sessions.read().await.get(&id).cloned();
     let Some(session) = session else {
         let entry = state.registry.read().await.get(&id).cloned();
@@ -1330,6 +1343,10 @@ pub async fn get_session(state: &Service, id: String) -> (ReplyKind, Value) {
             ReplyKind::Success,
             json!({
                 "sessionId": id,
+                "pinned": preferences.pinned,
+                "archived": preferences.archived,
+                "tags": preferences.tags,
+                "deleting": deleting,
                 "status": "offline",
                 "title": entry.title,
                 "createdAt": entry.created_at,
@@ -1348,6 +1365,10 @@ pub async fn get_session(state: &Service, id: String) -> (ReplyKind, Value) {
         ReplyKind::Success,
         json!({
             "sessionId": id,
+            "pinned": preferences.pinned,
+            "archived": preferences.archived,
+            "tags": preferences.tags,
+            "deleting": deleting,
             "ready": snapshot.ready,
             "status": snapshot.status,
             "title": entry.as_ref().and_then(|entry| entry.title.clone()).or(snapshot.title),
@@ -1379,24 +1400,13 @@ pub async fn get_session(state: &Service, id: String) -> (ReplyKind, Value) {
 }
 
 pub async fn delete_session(state: &Service, id: String) -> ServiceReply {
-    let _lifecycle = state.session_lifecycle.lock().await;
-    let forgotten = match state.registry.write().await.remove(&id) {
-        Ok(forgotten) => forgotten,
-        Err(error) => return (ReplyKind::Internal, json!({"error": error})).into_reply(),
-    };
-    let removed = state.sessions.write().await.remove(&id);
-    detach_durable(state, &id).await;
-    match removed {
-        Some(session) => {
-            session.stop().await;
-            ReplyKind::Empty.into_reply()
-        }
-        None if forgotten => ReplyKind::Empty.into_reply(),
-        None => ReplyKind::NotFound.into_reply(),
-    }
+    retirement::delete(state, id).await
 }
 
 pub async fn command(state: &Service, id: String, command: ApiCommand) -> (ReplyKind, Value) {
+    if let Err(error) = state.check_session_admission(&id).await {
+        return error;
+    }
     if !protocol::SUPPORTED_COMMANDS.contains(&command.kind.as_str()) {
         return (
             ReplyKind::Unsupported,
@@ -1435,6 +1445,9 @@ pub async fn command(state: &Service, id: String, command: ApiCommand) -> (Reply
     let request_id = protocol::command_id(&command);
     let mut value = serde_json::to_value(&command).unwrap_or_else(|_| json!({}));
     value["id"] = request_id.clone();
+    // Host admission coordinates this retained Arc with retirement, including
+    // races after the metadata check. Unrelated lifecycle work must never delay
+    // abort/dialog replies, so command admission takes no service-wide mutex.
     let result = session.send(value).await;
     match result {
         Ok(response) => {
