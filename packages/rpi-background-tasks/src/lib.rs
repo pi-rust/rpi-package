@@ -28,6 +28,14 @@ const SNAPSHOT_ENTRY: &str = "background-tasks";
 const BACKGROUND_TOOL: &str = "background";
 const JOBS_TOOL: &str = "jobs";
 
+/// Longest single line kept from a child's output, in bytes.
+///
+/// `read_until` grows its buffer until it sees a newline or EOF, so a command
+/// that emits megabytes without one would allocate all of it before `push` ever
+/// gets to clip the result. Capping the read itself is the only bound that holds
+/// while the pipe is still being drained.
+const MAX_READ_LINE_BYTES: usize = MAX_OUTPUT_BYTES;
+
 /// Upper bound for the command text echoed back into the snapshot/summary.
 const MAX_COMMAND_CHARS: usize = 2_000;
 const MAX_LABEL_CHARS: usize = 200;
@@ -259,16 +267,57 @@ fn spawn_reader<R: Read + Send + 'static>(
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         let mut buf = Vec::new();
+        // Bytes discarded from the current line after it hit the cap. Reported
+        // once per line so the user knows the content was truncated, rather
+        // than silently seeing a clipped line that looks complete.
+        let mut dropped: u64 = 0;
         loop {
             if stop.load(Ordering::SeqCst) {
                 return;
             }
             buf.clear();
-            match reader.read_until(b'\n', &mut buf) {
+            // `take` bounds the *read*: once the cap is reached it stops
+            // pulling bytes, so memory stays bounded even when the child keeps
+            // writing. The rest of the line is drained and discarded below.
+            let read = (&mut reader)
+                .take(MAX_READ_LINE_BYTES as u64)
+                .read_until(b'\n', &mut buf);
+            match read {
                 Ok(0) => return,
                 Ok(_) => {
+                    let complete = buf.last() == Some(&b'\n');
+                    if !complete {
+                        // Cap hit before a newline: consume the remainder of the
+                        // line so the next iteration starts at a line boundary.
+                        let mut sink = Vec::new();
+                        loop {
+                            sink.clear();
+                            match (&mut reader).take(64 * 1024).read_until(b'\n', &mut sink) {
+                                Ok(0) => break,
+                                Ok(m) => {
+                                    dropped += m as u64;
+                                    if sink.last() == Some(&b'\n') {
+                                        break;
+                                    }
+                                }
+                                Err(_) => return,
+                            }
+                        }
+                    }
                     let text = String::from_utf8_lossy(&buf);
-                    let line = text.trim_end_matches(['\n', '\r']).to_string();
+                    let mut line = text.trim_end_matches(['\n', '\r']).to_string();
+                    if dropped > 0 {
+                        // Clip the body *before* appending the notice: `push`
+                        // clips from the end, so a marker appended to an
+                        // oversized line would be the first thing discarded.
+                        let keep = MAX_OUTPUT_BYTES / 2;
+                        if line.len() > keep {
+                            let clipped: String = line.chars().take(keep).collect();
+                            line = clipped;
+                        }
+                        line.push_str(&format!(" … [{dropped} bytes dropped]"));
+                        dropped = 0;
+                    }
                     let line = if is_stderr {
                         format!("[stderr] {line}")
                     } else {
@@ -962,6 +1011,18 @@ mod tests {
         });
     }
 
+    /// Serializes tests that touch the process-global job table.
+    ///
+    /// `table()` is shared by every test in this binary, so a test that calls
+    /// `reset()` erases jobs another test is still asserting on. Cargo runs
+    /// tests in parallel by default; taking this guard makes the suite behave
+    /// like `--test-threads=1` for the table, without requiring the flag.
+    static TABLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn table_guard() -> std::sync::MutexGuard<'static, ()> {
+        TABLE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     fn reset() {
         *table().lock().unwrap() = Table::default();
         *host().lock().unwrap() = MockHost::default();
@@ -1010,6 +1071,92 @@ mod tests {
         assert!(output.truncated);
         assert!(!output.lines.is_empty());
         assert!(output.bytes <= MAX_OUTPUT_BYTES);
+    }
+
+    /// A newline-free stream must not grow the reader's buffer without bound.
+    ///
+    /// `Output::push` clips what it stores, but it never sees the line until
+    /// `read_until` has already accumulated all of it. This drives the real
+    /// reader over a stream with no newline at all and asserts the stored line
+    /// stayed bounded — the case a `push`-only test cannot reach.
+    #[test]
+    fn newline_free_stream_is_read_in_bounded_memory() {
+        let _guard = table_guard();
+        const EMITTED: usize = MAX_READ_LINE_BYTES * 4;
+        struct Flood(usize);
+        impl Read for Flood {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 == 0 {
+                    return Ok(0);
+                }
+                let n = buf.len().min(self.0);
+                for byte in &mut buf[..n] {
+                    *byte = b'x';
+                }
+                self.0 -= n;
+                Ok(n)
+            }
+        }
+
+        let id = 9_000_001;
+        {
+            let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
+            table.jobs.push(Job {
+                id,
+                kind: "bash",
+                label: "flood".into(),
+                command: "flood".into(),
+                pid: None,
+                status: STATUS_RUNNING,
+                exit_code: None,
+                started_ms: 0,
+                finished_ms: None,
+                output: Output::default(),
+                child: None,
+                cancel_requested: false,
+            });
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        spawn_reader(Flood(EMITTED), id, false, Arc::clone(&stop));
+
+        // Wait for the reader to finish draining, then stop it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let done = {
+                let table = table().lock().unwrap_or_else(|p| p.into_inner());
+                table
+                    .jobs
+                    .iter()
+                    .find(|job| job.id == id)
+                    .is_some_and(|job| !job.output.lines.is_empty())
+            };
+            if done || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        stop.store(true, Ordering::SeqCst);
+
+        let mut table = table().lock().unwrap_or_else(|p| p.into_inner());
+        let job = table.jobs.iter().find(|job| job.id == id).unwrap();
+        assert!(
+            !job.output.lines.is_empty(),
+            "the reader must record the truncated line rather than dropping it"
+        );
+        for line in &job.output.lines {
+            assert!(
+                line.len() <= MAX_READ_LINE_BYTES + 64,
+                "a stored line must stay bounded, got {} bytes",
+                line.len()
+            );
+        }
+        assert!(
+            job.output.lines.iter().any(|l| l.contains("bytes dropped")),
+            "truncation must be reported; stored lines: {}",
+            job.output.lines.len()
+        );
+        table.jobs.retain(|job| job.id != id);
     }
 
     /// An over-long command is rejected, never silently truncated.
@@ -1091,6 +1238,7 @@ mod tests {
     // let one case's jobs and appends leak into another's assertions.
     #[test]
     fn serially_drives_jobs_snapshots_and_the_abi() {
+        let _guard = table_guard();
         case_background_returns_immediately_and_reports_its_job();
         case_natural_completion_is_recorded_with_its_exit_status();
         case_a_failing_command_is_settled_as_failed();
