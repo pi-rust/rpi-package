@@ -149,6 +149,7 @@ export function ConfirmDialog({
   onClose,
   onConfirm,
   confirmLabel,
+  busy = false,
 }: {
   language: Language;
   title: string;
@@ -156,16 +157,17 @@ export function ConfirmDialog({
   onClose: () => void;
   onConfirm: () => void;
   confirmLabel?: string;
+  busy?: boolean;
 }) {
   return (
     <Modal language={language} title={title} onClose={onClose}>
-      <div className="project-form">
+      <div className="project-form" aria-busy={busy}>
         <p className="dialog-description">{message}</p>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
             {translate(language, "cancel")}
           </button>
-          <button type="button" className="danger" onClick={onConfirm}>
+          <button type="button" className="danger" disabled={busy} onClick={onConfirm}>
             {confirmLabel ?? translate(language, "submit")}
           </button>
         </div>
@@ -1016,7 +1018,9 @@ export function ProjectSidebar({
                     }}
                   >
                     <X size={14} />
-                    {zh ? "永久删除" : "Delete permanently"}
+                    {session.deleting
+                      ? zh ? "重试永久删除" : "Retry permanent deletion"
+                      : zh ? "永久删除" : "Delete permanently"}
                   </button>
 
                 </div>,

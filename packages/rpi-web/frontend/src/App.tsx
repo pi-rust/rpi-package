@@ -579,11 +579,45 @@ function errorText(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+function sessionLifecycleError(cause: unknown, language: Language) {
+  if (!(cause instanceof ApiError)) return null;
+  const zh = language === "zh";
+  switch (cause.code) {
+    case "session_busy":
+      return zh ? "会话仍在运行，请先停止并等待结束后再操作。" : "Session is running. Stop it and wait for it to settle before trying again.";
+    case "session_idle_unknown":
+      return zh ? "暂时无法确认会话是否空闲，请稍后重试。" : "Cannot confirm the session is idle. Try again later.";
+    case "session_deleting":
+      return zh ? "会话正在删除，无法打开或操作。请在会话操作菜单中重试永久删除。" : "Session deletion is incomplete. Retry permanent deletion from Session actions before opening or using it.";
+    case "session_archived":
+      return zh ? "请先恢复会话再打开（会话操作 → 恢复会话）。" : "Restore the chat before opening it (Session actions → Restore chat).";
+    default:
+      // Never display remote deletion diagnostics (which may contain private paths).
+      if (cause.code?.includes("delet"))
+        return zh ? "永久删除未完成。请检查会话状态后手动重试。" : "Permanent deletion did not complete. Check the session state, then retry manually.";
+      return null;
+  }
+}
+
+function sessionSelectionError(session?: SessionSummary) {
+  return session?.deleting ? new ApiError("", 409, "session_deleting")
+    : session?.archived ? new ApiError("", 409, "session_archived") : null;
+}
+
 function normalizeLevel(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
 export default function App() {
+  function errorText(cause: unknown) {
+    return sessionLifecycleError(cause, language) ?? (cause instanceof Error ? cause.message : String(cause));
+  }
+
+  function retirementError(cause: unknown, deleting = false) {
+    return sessionLifecycleError(cause, language) ?? (language === "zh"
+      ? deleting ? "永久删除未完成。请检查会话状态后手动重试。" : "无法更新会话，请稍后重试。"
+      : deleting ? "Permanent deletion did not complete. Check the session state, then retry manually." : "Could not update the chat. Try again later.");
+  }
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [nativeMessageQueries, setNativeMessageQueries] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
@@ -595,6 +629,8 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  // Carry a blocked-link explanation through the first conversation reset.
+  const initialSelectionError = useRef("");
   const [sessionId, setSessionId] = useState("");
   const [timelineOpen, setTimelineOpen] = useState(false);
   useEffect(() => {
@@ -608,6 +644,8 @@ export default function App() {
   const [renameTarget, setRenameTarget] = useState<SessionSummary | null>(null);
   const [tagsTarget, setTagsTarget] = useState<SessionSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const deleteInFlight = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toolNameMode, setToolNameMode] = useState<ToolNameMode>(() => {
     try {
@@ -1284,6 +1322,7 @@ export default function App() {
     sessionListRevision.current++;
     sessionListRequest.current = null;
     sessionListValue.current = null;
+    initialSelectionError.current = "";
     activeSessionRef.current = "";
     sessionReadsAbort.current?.abort();
     diagnosticsAbort.current?.abort();
@@ -1487,20 +1526,35 @@ export default function App() {
         const list = await refreshSessions();
         if (cancelled || !list) return;
         const requested = new URLSearchParams(location.search).get("session");
+        const requestedSession = list.find((session) => session.sessionId === requested);
+        const blockedRequest = sessionSelectionError(requestedSession);
         const reusable = list.filter(
           (session) =>
             session.status !== "closed" &&
-            !session.archived &&
+            !session.archived && !session.deleting &&
             (!session.projectId ||
               availableProjects.some((project) =>
                 project.id === session.projectId && !project.archived,
               )),
         );
         const match =
-          list.find((session) => session.sessionId === requested) ??
+          (blockedRequest ? undefined : requestedSession) ??
+          reusable.find((session) => session.sessionId === activeSessionRef.current) ??
           reusable.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        const blocked = blockedRequest ?? (!match
+          ? sessionSelectionError(list.find((session) => session.archived || session.deleting))
+          : null);
+        const selectionChanges = match && match.sessionId !== activeSessionRef.current;
         if (match) select(match.sessionId, match.projectId);
-        else await createSession();
+        else if (blocked) {
+          select("");
+          setLoadingSession(false);
+        } else await createSession();
+        if (blocked) {
+          const message = errorText(blocked);
+          initialSelectionError.current = selectionChanges ? message : "";
+          setError(message);
+        }
       } catch (cause) {
         if (cancelled) return;
         setStatus("error");
@@ -1556,7 +1610,8 @@ export default function App() {
     setSending(false);
     setLevels([]);
     setSeen(0);
-    setError("");
+    setError(initialSelectionError.current);
+    initialSelectionError.current = "";
     setConnectionFailed(false);
     setStatus("connecting");
     setLoadingSession(Boolean(sessionId));
@@ -2980,9 +3035,16 @@ export default function App() {
   }
 
   function select(id: string, selectedProjectId?: string) {
-    const nextProject =
-      selectedProjectId ??
-      sessions.find((entry) => entry.sessionId === id)?.projectId;
+    // refreshSessions publishes this ref before React renders: URL initialization
+    // and post-mutation fallbacks must guard against that latest list too.
+    const known = (sessionListValue.current ?? sessions).find((entry) => entry.sessionId === id);
+    const blocked = sessionSelectionError(known);
+    if (blocked) {
+      setError(errorText(blocked));
+      if (window.innerWidth < 768) setSidebar(false);
+      return;
+    }
+    const nextProject = selectedProjectId ?? known?.projectId;
     if (activeSessionRef.current === id && (!nextProject || projectRef.current === nextProject)) {
       setPanel(false);
       if (window.innerWidth < 768) setSidebar(false);
@@ -3011,7 +3073,8 @@ export default function App() {
     setPanel(false);
     if (window.innerWidth < 768) setSidebar(false);
     const url = new URL(location.href);
-    url.searchParams.set("session", id);
+    if (id) url.searchParams.set("session", id);
+    else url.searchParams.delete("session");
     history.replaceState(null, "", url);
   }
 
@@ -3030,10 +3093,23 @@ export default function App() {
     history.replaceState(null, "", url);
   }
 
+  function selectSidebarSession(session: SessionSummary) {
+    select(session.sessionId, session.projectId);
+  }
+
+  function retirementBusy(session: SessionSummary) {
+    const state = session.sessionId === activeSessionRef.current ? status : session.status;
+    if (!["running", "starting", "awaiting_input"].includes(state)) return false;
+    setError(errorText(new ApiError("", 409, "session_busy")));
+    if (window.innerWidth < 768) setSidebar(false);
+    return true;
+  }
+
   async function updateSessionMetadata(
     session: SessionSummary,
     patch: { pinned?: boolean; archived?: boolean; tags?: string[] },
   ) {
+    if (patch.archived && retirementBusy(session)) return;
     const id = session.sessionId;
     const navigation = navigationRevision.current;
     const revision = (metadataRevisions.current.get(id) ?? 0) + 1;
@@ -3054,23 +3130,17 @@ export default function App() {
           ) {
             const next = list.find(
               (entry) =>
-                entry.projectId === session.projectId && !entry.archived,
+                entry.projectId === session.projectId && !entry.archived && !entry.deleting,
             );
-            if (next) select(next.sessionId, next.projectId);
-            else {
-              activeSessionRef.current = "";
-              setSessionId("");
-              const url = new URL(location.href);
-              url.searchParams.delete("session");
-              history.replaceState(null, "", url);
-            }
+            select(next?.sessionId ?? "", next?.projectId ?? session.projectId);
           }
         } catch (cause) {
           if (
             metadataRevisions.current.get(id) === revision &&
             navigation === navigationRevision.current
           )
-            setError(errorText(cause));
+            setError(retirementError(cause));
+          if (navigation === navigationRevision.current && window.innerWidth < 768) setSidebar(false);
         }
       },
     );
@@ -3083,29 +3153,33 @@ export default function App() {
   }
 
   async function permanentlyDeleteSession(session: SessionSummary) {
+    if (deleteInFlight.current || retirementBusy(session)) return;
     const id = session.sessionId;
+    const navigation = navigationRevision.current;
     const wasActive = activeSessionRef.current === id;
+    deleteInFlight.current = true;
+    setDeletePending(true);
     try {
+      // A sent DELETE may already have landed even if the response fails. Never auto-retry.
       await api.deleteSession(id);
       draftBySession.current.delete(id);
       saveDrafts(draftBySession.current);
       rowsBySession.current.delete(id);
+      setSessions((previous) => previous.filter((entry) => entry.sessionId !== id));
       const list = await refreshSessions();
-      if (!wasActive) return;
+      if (!wasActive || navigation !== navigationRevision.current || activeSessionRef.current !== id) return;
       const next = list?.find(
-        (entry) => entry.projectId === session.projectId && !entry.archived,
+        (entry) => entry.sessionId !== id && entry.projectId === session.projectId && !entry.archived && !entry.deleting,
       );
-      if (next) select(next.sessionId, next.projectId);
-      else {
-        activeSessionRef.current = "";
-        setSessionId("");
-        setRows([]);
-        const url = new URL(location.href);
-        url.searchParams.delete("session");
-        history.replaceState(null, "", url);
-      }
+      select(next?.sessionId ?? "", next?.projectId ?? session.projectId);
     } catch (cause) {
-      setError(errorText(cause));
+      if (navigation !== navigationRevision.current) return;
+      setError(retirementError(cause, true));
+      if (window.innerWidth < 768) setSidebar(false);
+    } finally {
+      deleteInFlight.current = false;
+      setDeletePending(false);
+      setDeleteTarget(null);
     }
   }
 
@@ -3206,15 +3280,14 @@ export default function App() {
           title={language === "zh" ? "永久删除会话" : "Delete session permanently"}
           message={
             language === "zh"
-              ? `确定要永久删除“${deleteTarget.title || "新会话"}”吗？此操作无法撤销。`
-              : `Permanently delete “${deleteTarget.title || "New session"}”? This cannot be undone.`
+              ? `确定要永久删除“${deleteTarget.title || "新会话"}”吗？此操作将删除会话历史记录并释放 RPC 连接，不会删除项目文件，且无法撤销。运行中的会话请先停止并等待结束。`
+              : `Permanently delete “${deleteTarget.title || "New session"}”? This deletes session history and releases the RPC connection, but does not delete project files. This cannot be undone. Stop running sessions and wait for them to settle first.`
           }
           confirmLabel={language === "zh" ? "永久删除" : "Delete permanently"}
+          busy={deletePending}
           onClose={() => setDeleteTarget(null)}
           onConfirm={() => {
-            const target = deleteTarget;
-            setDeleteTarget(null);
-            void permanentlyDeleteSession(target);
+            void permanentlyDeleteSession(deleteTarget);
           }}
         />
       )}
@@ -3371,16 +3444,16 @@ export default function App() {
               canManage={actions.has("session_organization")}
               canCreate={actions.has("create_project")}
               onSelectProject={selectProject}
-              onSelectSession={(session) =>
-                select(session.sessionId, session.projectId)
-              }
+              onSelectSession={selectSidebarSession}
               onNewSession={(id) => void createSession(id)}
               onNewProject={() => setProjectDialog(true)}
               onRename={setRenameTarget}
               onRenameProject={setProjectRenameTarget}
               onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}
-              onDelete={setDeleteTarget}
+              onDelete={(session) => {
+                if (!deleteInFlight.current && !retirementBusy(session)) setDeleteTarget(session);
+              }}
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom">

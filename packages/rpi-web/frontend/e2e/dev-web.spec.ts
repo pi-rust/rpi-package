@@ -11485,3 +11485,271 @@ test.describe("todo summary-only results", () => {
     });
   }
 });
+
+// Retirement is deliberately tested against mocks only: DELETE is irreversible.
+test.describe("retirement", () => {
+  type RetirementSession = typeof session & { archived?: boolean; deleting?: boolean };
+  async function host(page: Page, entries: RetirementSession[] = [{ ...session }]) {
+    await mockHost(page);
+    await page.route("**/api/v1/sessions", (route) => route.request().method() === "GET"
+      ? route.fulfill({ json: { sessions: entries } }) : route.fallback());
+    await page.route("**/api/v1/sessions/*/metadata", (route) => {
+      const entry = entries.find(item => item.sessionId === new URL(route.request().url()).pathname.split("/")[4]);
+      Object.assign(entry ?? {}, route.request().postDataJSON());
+      return route.fulfill({ json: entry });
+    });
+    return entries;
+  }
+  async function sidebar(page: Page) {
+    const toggle = page.getByRole("button", { name: "Toggle sidebar", exact: true });
+    if (!(await page.getByRole("button", { name: "Session actions: Mock session", exact: true }).isVisible())) await toggle.click();
+  }
+  async function action(page: Page, name: string) {
+    await sidebar(page);
+    await page.getByRole("button", { name: "Session actions: Mock session", exact: true }).click();
+    await page.getByRole("menuitem", { name, exact: true }).click();
+  }
+  const confirmation = (page: Page) => page.getByRole("dialog", { name: "Delete session permanently" });
+  const confirm = (page: Page) => confirmation(page).getByRole("button", { name: "Delete permanently", exact: true });
+  const busyText = "Session is running. Stop it and wait for it to settle before trying again.";
+  const unknownText = "Cannot confirm the session is idle. Try again later.";
+
+  for (const width of [375, 1280]) {
+    for (const [code, status, message] of [["session_busy", 409, busyText], ["session_idle_unknown", 503, unknownText]] as const) {
+      test(`archive ${code} preserves row and navigation at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 844 });
+        await host(page);
+        await page.route("**/api/v1/sessions/*/metadata", route => route.fulfill({ status, json: { code, error: "SECRET remote native path" } }));
+        await page.goto("/?session=session-1");
+        await expect(page.getByRole(width < 768 ? "button" : "heading", { name: width < 768 ? "Switch session" : "Mock session", exact: true })).toBeVisible();
+        await action(page, "Archive");
+        await expect(page.getByText(message, { exact: true })).toBeVisible();
+        await expect(page).toHaveURL(/session=session-1/);
+        await sidebar(page);
+        await expect(page.locator(".project-session")).toHaveCount(1);
+        await expect(page.getByText("SECRET remote native path", { exact: true })).toHaveCount(0);
+      });
+    }
+    test(`delete busy preserves row and navigation and permits explicit retry at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const entries = await host(page);
+      let deletes = 0;
+      await page.route("**/api/v1/sessions/session-1", async route => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        deletes++;
+        if (deletes === 1) return route.fulfill({ status: 409, json: { code: "session_busy", error: "SECRET" } });
+        entries.splice(0);
+        return route.fulfill({ status: 204, body: "" });
+      });
+      await page.goto("/?session=session-1");
+      await expect(page.getByRole(width < 768 ? "button" : "heading", { name: width < 768 ? "Switch session" : "Mock session", exact: true })).toBeVisible();
+      await action(page, "Delete permanently");
+      expect(deletes).toBe(0);
+      await expect(confirmation(page)).toContainText("deletes session history and releases the RPC connection, but does not delete project files");
+      await confirm(page).click();
+      await expect(page.getByText(busyText, { exact: true })).toBeVisible();
+      await expect(page).toHaveURL(/session=session-1/);
+      expect(deletes).toBe(1);
+      await action(page, "Delete permanently");
+      await confirm(page).click();
+      await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toHaveCount(0);
+      await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+      expect(deletes).toBe(2);
+    });
+  }
+
+  for (const outcome of ["success", "failure"] as const) {
+    test(`late delete ${outcome} cannot hijack newer navigation or show stale errors`, async ({ page }) => {
+      const entries = await host(page, [{ ...session }, { ...session, sessionId: "session-2", title: "Other chat" }]);
+      let release!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      let deletes = 0;
+      await page.route("**/api/v1/sessions/session-1", async route => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        deletes++;
+        await pending;
+        if (outcome === "failure") return route.fulfill({ status: 500, json: { code: "session_delete_failed", error: "SECRET" } });
+        entries.splice(0, 1);
+        return route.fulfill({ status: 204, body: "" });
+      });
+      await page.goto("/?session=session-1");
+      await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
+      await action(page, "Delete permanently");
+      await confirm(page).click();
+      await expect(confirm(page)).toBeDisabled();
+      expect(deletes).toBe(1);
+      // Closing the dialog never aborts or retries a potentially landed DELETE.
+      await confirmation(page).getByRole("button", { name: "Cancel", exact: true }).click();
+      await page.locator(".project-session-link", { hasText: "Other chat" }).click();
+      await expect(page).toHaveURL(/session=session-2/);
+      release();
+      await expect.poll(() => page.locator(".project-session").count()).toBe(outcome === "success" ? 1 : 2);
+      await expect(page.getByRole("heading", { name: "Other chat", exact: true })).toBeVisible();
+      await expect(page.getByText(/Permanent deletion did not complete/)).toHaveCount(0);
+      await expect(page.getByText("SECRET", { exact: true })).toHaveCount(0);
+      expect(deletes).toBe(1);
+    });
+  }
+
+  test("archived selection sends no open until explicit Restore", async ({ page }) => {
+    await host(page, [{ ...session }, { ...session, sessionId: "archived-chat", title: "Archived chat", archived: true }]);
+    let opens = 0;
+    await page.route("**/api/v1/sessions/archived-chat/open", route => { opens++; return route.fulfill({ json: { ...session, sessionId: "archived-chat" } }); });
+    await page.goto("/?session=session-1");
+    await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
+    await page.locator(".project-session-link", { hasText: "Archived chat" }).click();
+    await expect(page.getByText("Restore the chat before opening it (Session actions → Restore chat).", { exact: true })).toBeVisible();
+    expect(opens).toBe(0);
+    await expect(page).toHaveURL(/session=session-1/);
+    await page.getByRole("button", { name: "Session actions: Archived chat", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Restore chat", exact: true }).click();
+    await page.getByRole("button", { name: "Show projects", exact: true }).click();
+    await page.locator(".project-session-link", { hasText: "Archived chat" }).click();
+    await expect.poll(() => opens).toBe(1);
+    await expect(page).toHaveURL(/session=archived-chat/);
+  });
+
+  for (const code of ["session_delete_failed", undefined]) {
+    test(`partial deletion uses safe generic error and manual retry menu (${code ?? "old backend"})`, async ({ page }) => {
+      await host(page, [{ ...session }, { ...session, sessionId: "deleting-chat", title: "Deleting chat", deleting: true }]);
+      let deletes = 0;
+      await page.route("**/api/v1/sessions/deleting-chat", route => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        deletes++;
+        return route.fulfill({ status: 500, json: { code, error: "SECRET /private/native-history" } });
+      });
+      await page.goto("/?session=session-1");
+      await page.locator(".project-session-link", { hasText: "Deleting chat" }).click();
+      await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
+      await page.getByRole("button", { name: "Session actions: Deleting chat", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Retry permanent deletion", exact: true }).click();
+      await confirm(page).click();
+      await expect(page.getByText("Permanent deletion did not complete. Check the session state, then retry manually.", { exact: true })).toBeVisible();
+      await expect(page.locator(".project-session")).toHaveCount(2);
+      await expect(page).toHaveURL(/session=session-1/);
+      expect(deletes).toBe(1);
+      await expect(page.getByText(/SECRET/)).toHaveCount(0);
+    });
+  }
+
+  // Record every blocked-session read, not only /open: a known retired chat
+  // must never enter snapshot loading (whose compatibility path can reopen it).
+  function forbiddenRequests(page: Page) {
+    const reads: string[] = [];
+    const mutations: string[] = [];
+    page.on("request", request => {
+      const path = new URL(request.url()).pathname;
+      if (/\/sessions\/blocked-chat\/(open|snapshot|commands|events)$/.test(path)) reads.push(path);
+      if (request.method() === "POST" && (path === "/api/v1/sessions" || path.endsWith("/metadata"))) mutations.push(path);
+    });
+    return { reads, mutations };
+  }
+
+  test("phone chooser rejects deleting chat without changing selection or opening it", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 844 });
+    await host(page, [{ ...session }, { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true }]);
+    const requests = forbiddenRequests(page);
+    await page.goto("/?session=session-1");
+    await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+    await page.getByRole("button", { name: "Switch session", exact: true }).click();
+    await page.locator(".mobile-session-option", { hasText: "Deleting chat" }).click();
+    await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
+    await expect(page).toHaveURL(/session=session-1/);
+    await page.getByRole("button", { name: "Switch session", exact: true }).click();
+    await expect(page.locator(".mobile-session-option.selected")).toContainText("Mock session");
+    expect(requests).toEqual({ reads: [], mutations: [] });
+  });
+
+  for (const kind of ["archived", "deleting"] as const) {
+    const message = kind === "archived" ? "Restore the chat before opening it (Session actions → Restore chat)."
+      : "Session deletion is incomplete. Retry permanent deletion from Session actions before opening or using it.";
+    for (const normal of [true, false]) {
+      test(`known ${kind} URL ${normal ? "selects normal fallback" : "stays blank"} without creating or restoring`, async ({ page }) => {
+        await host(page, [
+          { ...session, sessionId: "blocked-chat", title: "Blocked chat", [kind]: true },
+          ...(normal ? [{ ...session }] : []),
+        ]);
+        const requests = forbiddenRequests(page);
+        await page.goto("/?session=blocked-chat");
+        await expect(page.getByText(message, { exact: true })).toBeVisible();
+        await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+        if (normal) {
+          await expect(page).toHaveURL(/session=session-1/);
+          await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+        } else {
+          await expect(page.locator(".project-session-link.selected")).toHaveCount(0);
+          if (kind === "archived") await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
+          await expect(page.locator(".project-session-link", { hasText: "Blocked chat" })).toBeVisible();
+        }
+        // Repeated list refreshes and language changes must not rerun startup,
+        // erase a blocked-link warning or silently create a replacement chat.
+        for (let i = 0; i < 2; i++) await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
+        await chooseMenuOption(page, "Language", "zh");
+        await expect(page.getByRole("button", { name: "刷新会话", exact: true })).toBeVisible();
+        await expect(page.getByText(message, { exact: true })).toBeVisible();
+        expect(requests).toEqual({ reads: [], mutations: [] });
+      });
+    }
+  }
+
+  for (const normal of [true, false]) {
+    test(`default initialization skips deleting newest chat ${normal ? "for normal candidate" : "without creating a chat"}`, async ({ page }) => {
+      await host(page, [
+        { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true, updatedAt: session.updatedAt + 100 },
+        ...(normal ? [{ ...session }] : []),
+      ]);
+      const requests = forbiddenRequests(page);
+      await page.goto("/");
+      if (normal) {
+        await expect(page).toHaveURL(/session=session-1/);
+        await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+      } else {
+        await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
+        await expect(page.locator(".project-session-link", { hasText: "Deleting chat" })).toBeVisible();
+        await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+      }
+      await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+      expect(requests).toEqual({ reads: [], mutations: [] });
+    });
+
+    test(`archive fallback excludes deleting candidate ${normal ? "and selects normal chat" : "and stays blank"}`, async ({ page }) => {
+      await host(page, [
+        { ...session },
+        { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true },
+        ...(normal ? [{ ...session, sessionId: "session-2", title: "Other chat" }] : []),
+      ]);
+      const requests = forbiddenRequests(page);
+      await page.goto("/?session=session-1");
+      await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+      await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+      await action(page, "Archive");
+      await expect.poll(() => new URL(page.url()).searchParams.get("session")).toBe(normal ? "session-2" : null);
+      if (normal) await expect(page.locator(".toolbar h1")).toHaveText("Other chat");
+      await expect(page.locator(".project-session-link", { hasText: "Deleting chat" })).toBeVisible();
+      expect(requests.reads).toEqual([]);
+      expect(requests.mutations).toEqual(["/api/v1/sessions/session-1/metadata"]);
+    });
+  }
+
+  test("session list refresh never navigates to a newer normal candidate", async ({ page }) => {
+    const entries = await host(page);
+    await page.goto("/?session=session-1");
+    await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+    entries.push({ ...session, sessionId: "session-2", title: "Newer chat", updatedAt: session.updatedAt + 100 });
+    await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
+    await expect(page.locator(".project-session-link", { hasText: "Newer chat" })).toBeVisible();
+    await expect(page).toHaveURL(/session=session-1/);
+    await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+  });
+
+  test("unsupported organization action on older backend hides retirement controls", async ({ page }) => {
+    await host(page);
+    await page.route("**/api/v1/capabilities", route => route.fulfill({ json: { ...capabilities, supportedActions: capabilities.supportedActions.filter(action => action !== "session_organization") } }));
+    const mutations: string[] = [];
+    page.on("request", request => { if (request.method() === "DELETE" || request.url().endsWith("/metadata")) mutations.push(request.url()); });
+    await page.goto("/?session=session-1");
+    await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Session actions: Mock session", exact: true })).toHaveCount(0);
+    expect(mutations).toEqual([]);
+  });
+});
