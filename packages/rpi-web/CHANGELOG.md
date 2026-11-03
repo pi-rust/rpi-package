@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.39](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.38...rpi-web-v0.1.39) - 2026-11-03
+
+### Fixed
+
+- *(web)* expose mobile fork and guard pending fork requests ([#185](https://github.com/pi-rust/rpi-package/pull/185))
+
 ## [0.1.38](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.37...rpi-web-v0.1.38) - 2026-11-03
 
 ### Fixed
