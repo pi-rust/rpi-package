@@ -10,13 +10,17 @@ them.
 
 This is source-only functionality, not an advertised published release or
 prebuilt asset. It requires a **new native host implementing ToolProgram runtime
-action 30, protocol version 1**, including authenticated per-invocation
+action 30, protocol version 1**, advertising all three parity capabilities at
+version 1: `resultEnvelope`, `hostAccounting`, and `parentProgress`, including authenticated per-invocation
 `runtimeHandle` / `runtimeKey` capabilities. Installing the extension alone on an
 older host is insufficient: it returns an explicit upgrade error and has **no
 direct-call or subprocess fallback**. The package deliberately keeps the
 workspace's published `rpi-plugin-sdk = 0.3.20` pin and uses a raw action-30 shim.
 The registration includes `x-rpi-execution-mode: sequential`, interpreted by the
-companion native adapter: the outer program cannot overlap another model tool
+companion native adapter, and `x-rpi-result-envelope: 1` to opt into structured
+Done results. Capability negotiation rejects older action-30 hosts before guest
+execution or list output; the extension never feeds an envelope into a legacy
+lenient result parser. The outer program cannot overlap another model tool
 batch peer, while independent Parallel tools inside it may still overlap.
 The host rejects starts from a program not admitted with Sequential semantics.
 
@@ -50,8 +54,10 @@ the tools it should use, for example `--tools read,write,codemode`.
 {"action":"list","offset":0,"limit":32}
 ```
 
-Returns `{protocolVersion:1, tools:[{name,description,parameters}],
-nextOffset:number|null}`. Follow `nextOffset` for another page. Only the current
+Returns `{protocolVersion:1,
+capabilities:{resultEnvelope:1,hostAccounting:1,parentProgress:1},
+tools:[{name,description,parameters}], nextOffset:number|null}` as the result
+summary's structured `details`. Follow `nextOffset` for another page. Only the current
 invocation's effective catalog is available, not the root session registry;
 the host excludes the running program tool and ancestor tool names.
 
@@ -79,9 +85,10 @@ the host excludes the running program tool and ancestor tool names.
 
 - `await tools.<name>(arguments)` and `await tools.call(name, arguments)`:
   arguments must be a JSON object. Use `tools.call` for names containing
-  punctuation or colliding with `call` / `list`. Tool errors (`isError`) and
-  lifecycle failures abort execution with useful error text; catch ordinary `isError`
-  results explicitly when continuing is appropriate.
+  punctuation or colliding with `call` / `list` / `emit`. Ordinary tool errors
+  (`isError`) reject with an Error whose `.result` is the filtered finalized raw
+  result object, so callers can inspect it in `catch`. Uncaught errors abort the
+  program; lifecycle failures abort even if their exception is caught.
 - Calls resolve to the **finalized result object**, retaining `content`
   (including image blocks), `details`, `terminate`, `addedToolNames`, and `usage`
   when supplied by the host, rather than just text. Reserved transport metadata
@@ -94,6 +101,10 @@ the host excludes the running program tool and ancestor tool names.
   values and request handles are never guest APIs.
 - `tools`, its function set, `print`, and `console` are frozen/non-replaceable;
   bridge operations capture their intrinsic dependencies before guest code runs.
+- `tools.emit(resultOrContentArray)`: explicitly selects native text/image blocks
+  for outer output, in emission order; returns `undefined`. It is not a host call
+  and does not alter permissions or accounting. A returned native result object's
+  own `content` array is selected after emitted blocks. See output rules below.
 - `tools.list()`: a fresh JSON copy of the bounded catalog discovered at the
   beginning of execution. Newly added tools do not refresh this frozen snapshot.
 - `print(...)`, `console.log/info/warn/error(...)`: captured structured logs.
@@ -122,26 +133,84 @@ hooks, cwd, effective tools, and safety rules remain authoritative.
 
 ## Results, limits, and cleanup
 
-Successful or terminated execution returns a JSON summary in both text content
-and structured `details`. Failed execution uses **ABI `StepResult::err`**, with
-the JSON summary as error text (not structured `details`):
-`{status,result,error,logs,calls,durationMs,terminate}`. Status is `completed`,
-`error`, `cancelled`, `timed_out`, or `terminated`. Calls contain tool name,
-status, optional `isError`, and duration, not host IDs, arguments, or unbounded
-copies of tool results. The encoded final output also has a 1 MiB limit, including
-duplicated text and structured framing: an oversized output is rejected with a
-compact error summary retaining logs, calls and termination, not truncated.
-Failures preserve bounded logs/call summaries of partial
-work. Invalid top-level arguments and missing/unsupported host bindings produce
-an ABI tool error. Do not rely on `isError` inside a Done JSON envelope: the native adapter ignores
-that field. Failure status is conveyed by the ABI error tag.
-A finalized tool result with `terminate:true` stops the program immediately,
-propagates termination, and cancels/disposes remaining calls without resuming JS.
-Termination takes precedence even if that finalized result also has `isError`;
-the call summary records its error flag and the terminal result remains available.
-If final output encoding exceeds its budget, the compact ABI error preserves
-`terminate` as summary data only; the ABI error channel cannot additionally
-propagate the outer host termination flag.
+The opted-in ABI Done payload is:
+
+```json
+{
+  "$rpiToolResult": 1,
+  "isError": false,
+  "result": {
+    "content": [{"type":"text","text":"JSON summary, unless native content was selected"}],
+    "details": {"status":"completed","result":42,"error":null,"logs":[],"calls":[],"durationMs":1,"terminate":false,"isError":false},
+    "terminate": false
+  }
+}
+```
+
+Script failures, resource-budget failures, cancellation and timeout also return
+**Done with `isError:true`**, retaining the bounded summary in structured details
+and (when no native content was selected) text. Binding, negotiation, invalid
+request and worker/lifecycle infrastructure failures may still use ABI Err.
+Summary status is `completed`, `error`, `cancelled`, `timed_out`, or `terminated`.
+Calls contain tool name, status, optional `isError`, and duration, not host IDs,
+arguments or unbounded copies of tool results. The final encoded envelope is
+limited to **1 MiB**, including text/structured framing; oversized output becomes
+a compact **Done error** retaining termination and bounded logs/calls, never a
+success or an ABI Err that loses the termination flag.
+
+### Native content selection
+
+```js
+// Promote a native read's finalized content to outer native blocks:
+return await tools.read({path: 'tiny.png'});
+
+// Explicitly select intermediate output while returning another JSON summary:
+const image = await tools.read({path: 'tiny.png'});
+tools.emit(image); // also accepts image.content
+return {processed: true};
+```
+
+- A returned non-array object with its own `content` property is treated as a
+  native-result selection and must contain a valid content array. Arbitrary
+  nested JSON is not searched for images. Returning an array alone remains
+  ordinary JSON; use `tools.emit(array)` to select its blocks.
+- Supported block fields only: `{type:'text',text:string,textSignature?:string|null}`
+  and `{type:'image',mimeType:string,data:string}`. Image MIME types are exactly
+  `image/png`, `image/jpeg`, `image/gif`, or `image/webp`; data must be nonempty
+  canonical padded standard base64 (no whitespace, URL alphabet, or data URI).
+  Validation checks encoding, not image decoding/signatures. Reserved transport
+  fields are filtered recursively first; all other unsupported block fields
+  (including extra metadata) are rejected explicitly rather than silently lost
+  by the native host. Supported text signatures are preserved.
+  Unsupported/malformed blocks fail explicitly, never disappear silently.
+- Selections share **128 blocks / 1 MiB encoded content** across emission and
+  return. Emission serialization/validation/budget failures are sticky even if caught. The
+  final envelope still has its separate 1 MiB budget. `tools.emit([])` explicitly
+  selects empty native output.
+- Selected blocks replace the normal summary text block; structured `details`
+  always retains the summary. On failure, a short bounded native error text block
+  is appended after selected blocks (including an empty selection), subject to
+  the final envelope budget. For a returned native result, its summary
+  `result.content` becomes `{promoted:true,count:N}`. Image base64 then occurs
+  only in outer native content, not again in summary text/details. Other raw
+  finalized fields remain summary data. Explicitly copying raw content into
+  arbitrary JSON remains the caller's ordinary JSON data, not auto-promotion.
+- Intermediate images are **not automatically forwarded**. JS retains access to
+  raw per-call content/details/usage/names until it chooses output.
+
+A finalized child with `terminate:true` stops execution without resuming JS,
+cancels/disposes remaining calls, and propagates termination. If it also has
+`isError`, both flags survive simultaneously; invalid/oversized terminal content
+still produces a Done error with `terminate:true`.
+
+The **host** retains and rolls up finalized direct-child usage, added tool names
+and termination exactly once after descendant drain, even when JS throws,
+ignores results or disposes requests. The extension neither invents usage nor
+sums/re-emits child usage/names as its own native result metadata. Returned
+usage/name fields are only raw summary data; they do not refresh the catalog or
+widen authority. The host also emits bounded parent-associated lifecycle progress
+through the normal parent update callback; there is no extension progress
+thread/queue, synthetic child transcript, raw-argument forwarding or ABI change.
 
 Each invocation owns a fresh QuickJS runtime/context and a worker; no guest
 state is retained. Limits:
@@ -210,7 +279,7 @@ summaries before any explicit retry. Do not use untrusted programs with powerful
 tools unless their authority is appropriate.
 
 There is no direct MCP integration, extra model invocation, cross-invocation
-cache, TypeScript compilation, streaming internal tool progress, catalog refresh,
+cache, TypeScript compilation, forwarding of raw internal progress, catalog refresh,
 or automatic retry/replay. No ordinary tool visibility is changed. Real host
 integration and installed-binary qualification are separate from fake-host tests.
 
@@ -237,7 +306,25 @@ Tests cover dependency chains, genuine concurrent starts, full result semantics,
 partial side effects, termination, fresh state, capability isolation, invalid
 arguments, old/missing hosts, pending promises, synchronous and microtask-loop
 cancellation/timeouts, memory/stack/code/result/log/call bounds, catalog paging,
-cleanup, schema consistency, and nonblocking ABI lifecycle behavior. Additional
+cleanup, schema consistency, and nonblocking ABI lifecycle behavior. Parity tests
+also cover strict three-capability negotiation (including ABI Err for old hosts),
+Done error/termination round-trips, native PNG promotion, explicit emission,
+ordinary JSON, malformed blocks/base64/MIME/text signatures, recursive reserved
+field filtering, unsupported metadata rejection, sticky emit serialization,
+selected-output error diagnostics, shared selection
+budgets and oversized Done-error compaction without losing termination. Additional
 regressions cover unavailable regex paths (including dynamic/implicit creation),
 caught OOM before host effects and during serialization, sticky allocator
 failure, overflow/layout validation, and realloc ownership/accounting.
+
+Companion source-build qualification on Windows passed **25 real native + DLL
+cases**, including PNG delivery to an image-capable loopback provider, explicit
+selection and selected-image failure, no implicit forwarding, structured script
+errors, trusted native usage/name aggregation, terminal error without another
+model turn, parent-linked native progress, cancellation and approval denial.
+The host's `scripts/codemode-smoke.py` and optional test-only ABI fixture reproduce
+these cases; evidence remains local at
+`pi-rust-codemode/target/codemode-parity-native-smoke-5/` with binary SHA-256.
+See the [parity contract](../../docs/codemode-parity-contract.md). This does not
+qualify live providers, installed binaries, native reload races or real native
+integration on Linux/macOS; it is not installation/deployment.

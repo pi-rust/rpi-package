@@ -2,6 +2,8 @@ use super::*;
 use rpi_plugin_sdk::StepResultTag;
 use std::time::{Duration, Instant};
 
+static ABI_HOST_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[test]
 fn registration_schema_is_canonical_and_allows_host_injection() {
     let schema = schema();
@@ -9,6 +11,7 @@ fn registration_schema_is_canonical_and_allows_host_injection() {
     let v: Value = serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
     assert_eq!(v["type"], "object");
     assert_eq!(v["x-rpi-execution-mode"], "sequential");
+    assert_eq!(v["x-rpi-result-envelope"], 1);
     assert_eq!(v["additionalProperties"], true);
     assert_eq!(v["properties"]["action"]["default"], "execute");
     assert_eq!(
@@ -65,24 +68,19 @@ fn missing_host_and_missing_invocation_fail_closed() {
         .contains("runtimeKey"));
 }
 #[test]
-fn output_preserves_summary_and_terminate() {
-    for status in ["completed", "terminated"] {
-        let v: Value = serde_json::from_str(
-            &tool_result(json!({"status":status,"terminate":status == "terminated","calls":[]}))
-                .unwrap(),
-        )
+fn output_preserves_summary_error_and_terminate() {
+    for status in ["completed", "terminated", "error", "cancelled", "timed_out"] {
+        let v: Value = serde_json::from_str(&tool_result(json!({"status":status,
+            "terminate":status == "terminated","logs":["partial"],"calls":[{"name":"write"}]})))
         .unwrap();
-        assert_eq!(v["terminate"], status == "terminated");
-        assert_eq!(v["details"]["status"], status);
-    }
-    for status in ["error", "cancelled", "timed_out"] {
-        let text =
-            tool_result(json!({"status":status,"logs":["partial"],"calls":[{"name":"write"}]}))
-                .unwrap_err();
-        let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["status"], status);
-        assert_eq!(v["logs"][0], "partial");
-        assert_eq!(v["calls"][0]["name"], "write");
+        assert_eq!(v["$rpiToolResult"], 1);
+        assert_eq!(v["isError"], !matches!(status, "completed" | "terminated"));
+        assert_eq!(v["result"]["terminate"], status == "terminated");
+        assert_eq!(v["result"]["details"]["status"], status);
+        assert_eq!(v["result"]["details"]["logs"][0], "partial");
+        assert_eq!(v["result"]["details"]["calls"][0]["name"], "write");
+        assert!(v["result"].get("usage").is_none());
+        assert!(v["result"].get("addedToolNames").is_none());
     }
     let mut value = json!({"text":"prefix secret suffix","__rpi":{"runtimeHandle":1},"nested":{"runtimeKey":"secret"}});
     redact(&mut value, "secret");
@@ -95,8 +93,11 @@ fn abi_poll_is_nonblocking_cancel_is_signal_only_destroy_joins() {
     let token = cancelled.clone();
     let (sender, receiver) = mpsc::channel();
     let worker = thread::spawn(move || {
-        let action: Arc<Action> =
-            Arc::new(|_| Ok(json!({"protocolVersion":1,"tools":[],"nextOffset":null})));
+        let action: Arc<Action> = Arc::new(|_| {
+            Ok(
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[],"nextOffset":null}),
+            )
+        });
         let r = engine::execute("for(;;){}", 10000, action, token);
         let _ = sender.send(Ok(r));
     });
@@ -127,13 +128,14 @@ fn abi_poll_is_nonblocking_cancel_is_signal_only_destroy_joins() {
 fn final_encoded_output_has_its_own_budget_without_losing_termination() {
     let text = tool_result(
         json!({"status":"terminated","result":"x".repeat(engine::MAX_JSON/2),"terminate":true,"logs":[],"calls":[{"name":"write","status":"done"}]}),
-    ).unwrap_err();
+    );
     assert!(text.len() <= engine::MAX_JSON);
     let r: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(r["terminate"], true);
-    assert_eq!(r["result"], Value::Null);
-    assert_eq!(r["calls"][0]["name"], "write");
-    assert!(r["error"]
+    assert_eq!(r["isError"], true);
+    assert_eq!(r["result"]["terminate"], true);
+    assert_eq!(r["result"]["details"]["result"], Value::Null);
+    assert_eq!(r["result"]["details"]["calls"][0]["name"], "write");
+    assert!(r["result"]["details"]["error"]
         .as_str()
         .unwrap()
         .contains("encoded codemode output"));
@@ -151,11 +153,12 @@ fn await_abi(handle: StepHandle) -> rpi_plugin_sdk::callbacks::Step {
     }
 }
 #[test]
-fn abi_failed_execution_is_err_not_done_even_with_partial_work() {
+fn abi_failed_execution_is_done_error_with_partial_work() {
+    let _serial = ABI_HOST_TEST_LOCK.lock().unwrap();
     rpi_plugin_sdk::string_handler!(fn fake_action(_action, input, out, _data) {
         let request: Value = serde_json::from_str(input).unwrap();
         assert_eq!(request["__rpiRuntimeKey"], "abi-test-key");
-        out.write(json!({"protocolVersion":1,"tools":[],"nextOffset":null}).to_string());
+        out.write(json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[],"nextOffset":null}).to_string());
         0
     });
     let previous = HOST.lock().unwrap().replace(RuntimeFns {
@@ -172,16 +175,18 @@ fn abi_failed_execution_is_err_not_done_even_with_partial_work() {
     *HOST.lock().unwrap() = previous;
     let result = await_abi(handle);
     destroy(handle);
-    let rpi_plugin_sdk::callbacks::Step::Err(text) = result else {
-        panic!("failure was not ABI Err: {result:?}");
+    let rpi_plugin_sdk::callbacks::Step::Done(text) = result else {
+        panic!("failure was not ABI Done: {result:?}");
     };
-    let value: Value = serde_json::from_str(&text).unwrap();
+    let envelope: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(envelope["isError"], true);
+    let value = &envelope["result"]["details"];
     assert_eq!(value["status"], "error");
     assert_eq!(value["logs"][0]["text"], "partial");
     assert!(value["error"].as_str().unwrap().contains("boom"));
 }
 #[test]
-fn abi_cancelled_worker_reports_err_and_disposes_active_calls() {
+fn abi_cancelled_worker_reports_done_error_and_disposes_active_calls() {
     use std::sync::atomic::Ordering;
     let active = Arc::new(AtomicBool::new(false));
     let disposed = Arc::new(AtomicBool::new(false));
@@ -190,7 +195,7 @@ fn abi_cancelled_worker_reports_err_and_disposes_active_calls() {
     let action: Arc<Action> = Arc::new(move |v| {
         Ok(match v["op"].as_str().unwrap() {
             "list" => {
-                json!({"protocolVersion":1,"tools":[{"name":"wait","description":"test","parameters":{}}],"nextOffset":null})
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[{"name":"wait","description":"test","parameters":{}}],"nextOffset":null})
             }
             "start" => {
                 a.store(true, Ordering::Release);
@@ -232,12 +237,124 @@ fn abi_cancelled_worker_reports_err_and_disposes_active_calls() {
     cancel(handle);
     let result = await_abi(handle);
     destroy(handle);
-    let rpi_plugin_sdk::callbacks::Step::Err(text) = result else {
-        panic!("cancel was not ABI Err: {result:?}");
+    let rpi_plugin_sdk::callbacks::Step::Done(text) = result else {
+        panic!("cancel was not ABI Done: {result:?}");
     };
-    let value: Value = serde_json::from_str(&text).unwrap();
+    let envelope: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(envelope["isError"], true);
+    let value = &envelope["result"]["details"];
     assert_eq!(value["status"], "cancelled");
     assert_eq!(value["calls"][0]["status"], "cancelled");
     assert!(disposed.load(Ordering::Acquire));
     assert!(JOBS.get(handle).is_none());
+}
+
+#[test]
+fn abi_capability_negotiation_fails_closed_for_execute_and_list_and_missing_binding() {
+    let _serial = ABI_HOST_TEST_LOCK.lock().unwrap();
+    rpi_plugin_sdk::string_handler!(fn fake_action(_action, input, out, _data) {
+        let request: Value = serde_json::from_str(input).unwrap();
+        assert_eq!(request["op"],"list","legacy host must not execute guest calls");
+        let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1});
+        let key = request["__rpiRuntimeKey"].as_str().unwrap();
+        if key != "good" { caps.as_object_mut().unwrap().remove(key); }
+        out.write(json!({"protocolVersion":1,"capabilities":caps,"tools":[],"nextOffset":null}).to_string());
+        0
+    });
+    for action in ["execute", "list"] {
+        for key in ["resultEnvelope", "hostAccounting", "parentProgress", "good"] {
+            let previous = HOST.lock().unwrap().replace(RuntimeFns {
+                action: fake_action,
+                free: rpi_plugin_sdk::callbacks::free_string,
+            });
+            let params = json!({"action":action,"code":"throw Error('guest should not run');",
+                "__rpi":{"runtimeHandle":1,"runtimeKey":key}});
+            let handle = execute(
+                StbStringRef::from_str("negotiation"),
+                StbString::from_string(params.to_string()),
+                Some(rpi_plugin_sdk::callbacks::free_string),
+            );
+            *HOST.lock().unwrap() = previous;
+            let result = await_abi(handle);
+            destroy(handle);
+            match result {
+                rpi_plugin_sdk::callbacks::Step::Err(text) if key != "good" => {
+                    assert!(text.contains(key), "{text}")
+                }
+                rpi_plugin_sdk::callbacks::Step::Done(text) if key == "good" => {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(v["$rpiToolResult"], 1);
+                    assert_eq!(v["isError"], action == "execute");
+                    if action == "list" {
+                        assert_eq!(v["result"]["details"]["capabilities"]["hostAccounting"], 1);
+                    }
+                }
+                other => panic!("unexpected result {action}/{key}: {other:?}"),
+            }
+        }
+    }
+    let previous = HOST.lock().unwrap().take();
+    let handle = execute(
+        StbStringRef::from_str("missing-binding"),
+        StbString::from_string(json!({"code":"return 1;"}).to_string()),
+        Some(rpi_plugin_sdk::callbacks::free_string),
+    );
+    *HOST.lock().unwrap() = previous;
+    let result = await_abi(handle);
+    destroy(handle);
+    assert!(matches!(result, rpi_plugin_sdk::callbacks::Step::Err(_)));
+}
+
+fn abi_summary(value: Value) -> Value {
+    let (sender, receiver) = mpsc::channel();
+    sender.send(Ok(value)).unwrap();
+    let handle = JOBS.insert_with_cancel(
+        Job {
+            receiver,
+            worker: None,
+            completed: false,
+        },
+        Arc::new(AtomicBool::new(false)),
+    );
+    let result = await_abi(handle);
+    destroy(handle);
+    let rpi_plugin_sdk::callbacks::Step::Done(text) = result else {
+        panic!("expected Done, got {result:?}")
+    };
+    assert!(text.len() <= engine::MAX_JSON);
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn abi_done_envelope_roundtrips_native_content_and_combined_error_termination() {
+    for is_error in [false, true] {
+        let v = abi_summary(
+            json!({"status":"terminated","isError":is_error,"terminate":true,
+            "result":{"content":{"promoted":true,"count":1}},
+            "nativeContent":[{"type":"image","mimeType":"image/png","data":"AAAA"}]}),
+        );
+        assert_eq!(v["$rpiToolResult"], 1);
+        assert_eq!(v["isError"], is_error);
+        assert_eq!(v["result"]["terminate"], true);
+        assert_eq!(v["result"]["content"][0]["type"], "image");
+        assert!(v["result"]["details"].get("nativeContent").is_none());
+    }
+}
+
+#[test]
+fn abi_oversized_native_and_json_outputs_compact_to_done_error_preserving_termination() {
+    for selected in [false, true] {
+        for is_error in [false, true] {
+            let mut value = json!({"status":"terminated","isError":is_error,"terminate":true,
+                "result":"x".repeat(engine::MAX_JSON/2),"logs":["partial"],"calls":[]});
+            if selected {
+                value["nativeContent"] = json!([{"type":"image","mimeType":"image/png","data":"AAAA".repeat(engine::MAX_JSON/8)}]);
+            }
+            let v = abi_summary(value);
+            assert_eq!(v["isError"], true);
+            assert_eq!(v["result"]["terminate"], true);
+            assert_eq!(v["result"]["details"]["status"], "error");
+            assert_eq!(v["result"]["details"]["logs"][0], "partial");
+        }
+    }
 }

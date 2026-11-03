@@ -1,4 +1,4 @@
-(function(start, log, catalogJSON) {
+(function(start, log, emit, catalogJSON) {
   "use strict";
   // Capture bridge dependencies before guest code can replace their globals or
   // prototypes. Native closures and request tokens stay inside this lexical scope.
@@ -18,9 +18,23 @@
     set(token, {resolve, reject});
   }));
   tools.call = call;
+  tools.emit = freeze(value => {
+    let encoded;
+    try { encoded = stringify(value); }
+    catch (error) {
+      // Latch the native fatal path using only a fixed string, never the value
+      // that failed serialization. Catching this exception cannot restore success.
+      emit("invalid emitted JSON");
+      throw error;
+    }
+    // JSON.stringify(undefined/functions/symbols) returns undefined without
+    // throwing; still enter native validation rather than failing conversion
+    // before the sticky bridge latch.
+    return emit(typeof encoded === "string" ? encoded : "invalid emitted JSON");
+  });
   tools.list = freeze(() => parse(catalogJSON));
   for (const tool of catalog) {
-    if (tool.name !== "call" && tool.name !== "list")
+    if (tool.name !== "call" && tool.name !== "list" && tool.name !== "emit")
       tools[tool.name] = freeze(args => call(tool.name, args));
   }
   const expose = (name, value) => define(globalThis, name,
@@ -42,6 +56,11 @@
     const entry = get(token);
     remove(token);
     if (ok) entry.resolve(parse(payload));
-    else entry.reject(new Error_(payload));
+    else {
+      const failure = parse(payload);
+      const error = new Error_("tool returned isError: " + failure.message);
+      error.result = failure.result;
+      entry.reject(error);
+    }
   };
 })

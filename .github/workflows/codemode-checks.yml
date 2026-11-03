@@ -5,6 +5,7 @@ on:
     paths:
       - 'packages/rpi-codemode/**'
       - 'docs/codemode-host-contract.md'
+      - 'docs/codemode-parity-contract.md'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/codemode-checks.yml'

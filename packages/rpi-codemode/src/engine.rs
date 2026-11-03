@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod content;
+
 pub(crate) type Action = dyn Fn(Value) -> Result<Value, String> + Send + Sync;
 pub(crate) const MAX_CODE: usize = 64 * 1024;
 pub(crate) const MAX_JSON: usize = 1024 * 1024;
@@ -100,6 +102,13 @@ pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Valu
     if page.get("protocolVersion").and_then(Value::as_u64) != Some(1) {
         return Err("unsupported ToolProgram protocol; host must implement v1".into());
     }
+    for capability in ["resultEnvelope", "hostAccounting", "parentProgress"] {
+        if page["capabilities"][capability].as_u64() != Some(1) {
+            return Err(format!(
+                "ToolProgram requires capability {capability}:1; upgrade the host (no fallback)"
+            ));
+        }
+    }
     let tools = page
         .get("tools")
         .and_then(Value::as_array)
@@ -136,7 +145,9 @@ pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Valu
     }
     public_value(&mut page);
     // Return only the public contract, never arbitrary host envelope fields.
-    Ok(json!({"protocolVersion":1,"tools":page["tools"],"nextOffset":page["nextOffset"]}))
+    Ok(
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":page["tools"],"nextOffset":page["nextOffset"]}),
+    )
 }
 
 struct Call {
@@ -158,6 +169,10 @@ struct Bridge {
     memory_failed: Arc<AtomicBool>,
     deadline: Instant,
     terminate: Option<Value>,
+    terminal_error: bool,
+    emitted: Vec<Value>,
+    emitted_bytes: usize,
+    has_emission: bool,
 }
 impl Bridge {
     fn check(&self) -> Result<(), String> {
@@ -245,6 +260,29 @@ impl Bridge {
         self.logs.push(json!({"level":level,"text":text}));
         Ok(())
     }
+    fn emit(&mut self, encoded: String) -> Result<(), String> {
+        self.check()?;
+        if encoded.len() > MAX_JSON {
+            return self.fail("native emitted content exceeds 1 MiB");
+        }
+        let selected = serde_json::from_str(&encoded)
+            .map_err(|_| "invalid emitted JSON".to_owned())
+            .and_then(content::blocks);
+        let selected = match selected {
+            Ok(v) => v,
+            Err(e) => return self.fail(&e),
+        };
+        let bytes = selected.iter().map(|v| v.to_string().len()).sum::<usize>();
+        if self.emitted.len().saturating_add(selected.len()) > content::MAX_BLOCKS
+            || self.emitted_bytes.saturating_add(bytes) > MAX_JSON
+        {
+            return self.fail("native emitted content budget exceeded (128 blocks / 1 MiB)");
+        }
+        self.emitted_bytes += bytes;
+        self.has_emission = true;
+        self.emitted.extend(selected);
+        Ok(())
+    }
     fn cleanup(&mut self) {
         for call in self.pending.drain(..) {
             let _ = (self.action)(json!({"op":"cancel","requestId":call.id}));
@@ -316,11 +354,15 @@ pub(crate) fn execute(
         memory_failed: Arc::new(AtomicBool::new(false)),
         deadline,
         terminate: None,
+        terminal_error: false,
+        emitted: Vec::new(),
+        emitted_bytes: 0,
+        has_emission: false,
     }));
     let result = run(code, &bridge, &cancelled, deadline);
     let mut state = bridge.borrow_mut();
     state.cleanup();
-    let (status, result, error) = if let Some(result) = state.terminate.take() {
+    let (mut status, mut result, mut error) = if let Some(result) = state.terminate.take() {
         ("terminated", result, None)
     } else if cancelled.load(Ordering::Acquire) {
         ("cancelled", Value::Null, Some("codemode cancelled".into()))
@@ -344,8 +386,41 @@ pub(crate) fn execute(
             Err(e) => ("error", Value::Null, Some(e)),
         }
     };
-    json!({"status":status,"result":result,"error":error,"logs":state.logs,"calls":state.calls,
-        "durationMs":started.elapsed().as_millis() as u64,"terminate":status == "terminated"})
+    let terminate = status == "terminated";
+    let mut selected = std::mem::take(&mut state.emitted);
+    let mut has_selection = state.has_emission;
+    if matches!(status, "completed" | "terminated") {
+        match content::promote(&mut result) {
+            Ok(Some(blocks)) => {
+                has_selection = true;
+                selected.extend(blocks);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                status = "error";
+                result = Value::Null;
+                error = Some(e);
+            }
+        }
+    }
+    if selected.len() > content::MAX_BLOCKS
+        || serde_json::to_vec(&selected).map_or(true, |v| v.len() > MAX_JSON)
+    {
+        status = "error";
+        error = Some("native selected content budget exceeded (128 blocks / 1 MiB)".into());
+        selected.clear();
+        has_selection = false;
+    }
+    let is_error = state.terminal_error || !matches!(status, "completed" | "terminated");
+    if state.terminal_error && error.is_none() {
+        error = Some("terminal tool returned isError".into());
+    }
+    let mut summary = json!({"status":status,"result":result,"error":error,"logs":state.logs,"calls":state.calls,
+        "durationMs":started.elapsed().as_millis() as u64,"terminate":terminate,"isError":is_error});
+    if has_selection {
+        summary["nativeContent"] = Value::Array(selected);
+    }
+    summary
 }
 
 fn run(
@@ -436,10 +511,18 @@ fn run(
                         .map_err(|e| Exception::throw_message(&ctx, &e))
                 },
             )?;
+            let emit_state = bridge.clone();
+            let emit = Function::new(ctx.clone(), move |ctx: Ctx<'_>, encoded: String| {
+                emit_state
+                    .borrow_mut()
+                    .emit(encoded)
+                    .map_err(|e| Exception::throw_message(&ctx, &e))
+            })?;
             let factory: Function = ctx.eval(include_str!("guest.js"))?;
             let settle: Function = factory.call((
                 start,
                 log,
+                emit,
                 serde_json::to_string(&catalog).unwrap_or_default(),
             ))?;
             let promise: Promise =
@@ -509,9 +592,14 @@ fn run(
                     state.calls.push(json!({"name":call.name,"status":if is_error {"error"} else {"done"},"isError":is_error,"durationMs":call.started.elapsed().as_millis() as u64}));
                     disposal.map_err(|e|Exception::throw_message(&ctx,&format!("host dispose failed: {}",bounded(&e,4096))))?;
                     if failed { return Err(Exception::throw_message(&ctx,&format!("host lifecycle failed: {}",bounded(reply.get("error").and_then(Value::as_str).unwrap_or("host tool failed"),4096)))); }
-                    if result.get("terminate").and_then(Value::as_bool) == Some(true) { state.terminate = Some(result); return Ok(Some(Value::Null)); }
-                    let payload = if is_error { bounded(&format!("tool returned isError: {}",result),4096) }
-                        else { result.to_string() };
+                    if result.get("terminate").and_then(Value::as_bool) == Some(true) { state.terminal_error = is_error; state.terminate = Some(result); return Ok(Some(Value::Null)); }
+                    let payload = if is_error {
+                        let message = result.get("content").and_then(Value::as_array)
+                            .and_then(|blocks| blocks.iter().find_map(|b| {
+                                (b["type"] == "text").then(|| b["text"].as_str()).flatten()
+                            })).unwrap_or("finalized tool error; inspect error.result");
+                        json!({"message":bounded(message,4096),"result":result}).to_string()
+                    } else { result.to_string() };
                     ready.push((call.token,!is_error,payload));
                 }
             }

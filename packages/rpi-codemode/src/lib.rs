@@ -107,25 +107,45 @@ fn redact(value: &mut Value, key: &str) {
         _ => {}
     }
 }
-fn tool_result(value: Value) -> Result<String, String> {
-    // The native adapter ignores isError in Done JSON. Fail via the ABI tag,
-    // retaining the complete bounded summary as error text rather than details.
-    if value.get("status").is_some()
-        && !matches!(value["status"].as_str(), Some("completed" | "terminated"))
-    {
-        return Err(value.to_string());
-    }
-    let encoded = json!({"content":[{"type":"text","text":value.to_string()}],
-        "terminate":value["terminate"] == true,"details":value})
+fn tool_result(mut value: Value) -> String {
+    let content = value
+        .as_object_mut()
+        .and_then(|v| v.remove("nativeContent"));
+    let is_error = value["isError"] == true
+        || (value.get("status").is_some()
+            && !matches!(value["status"].as_str(), Some("completed" | "terminated")));
+    let terminate = value["terminate"] == true;
+    let content = match content {
+        Some(Value::Array(mut blocks)) => {
+            if is_error {
+                let reason = value["error"].as_str().unwrap_or("codemode failed");
+                blocks.push(json!({"type":"text","text":format!("codemode error: {}", engine::bounded(reason, 512))}));
+            }
+            Value::Array(blocks)
+        }
+        Some(content) => content,
+        None => json!([{"type":"text","text":value.to_string()}]),
+    };
+    let encoded = json!({"$rpiToolResult":1,"isError":is_error,"result":{
+        "content":content,"details":value,"terminate":terminate}})
     .to_string();
     if encoded.len() <= engine::MAX_JSON {
-        return Ok(encoded);
+        return encoded;
     }
-    Err(json!({"status":"error","result":null,
+    // Compact without losing error or termination. No child usage/name rollup:
+    // finalized accounting and descendant drain are exclusively host-owned.
+    let mut summary = json!({"status":"error","result":null,
         "error":"encoded codemode output exceeds 1 MiB (including text/structured framing)",
         "logs":value.get("logs"),"calls":value.get("calls"),
-        "durationMs":value.get("durationMs"),"terminate":value["terminate"] == true})
-    .to_string())
+        "durationMs":value.get("durationMs"),"terminate":terminate});
+    if summary.to_string().len() > engine::MAX_JSON / 4 {
+        summary["logs"] = json!([]);
+        summary["calls"] = json!([]);
+    }
+    json!({"$rpiToolResult":1,"isError":true,"result":{
+        "content":[{"type":"text","text":summary.to_string()}],
+        "details":summary,"terminate":terminate}})
+    .to_string()
 }
 
 rpi_plugin_sdk::execute_handler!(fn execute(_tool_call_id, params, free_params) {
@@ -144,7 +164,14 @@ rpi_plugin_sdk::execute_handler!(fn execute(_tool_call_id, params, free_params) 
                 let action = bind(host,&params)?;
                 match request {
                     Request::List { offset,limit } => engine::list_page(&*action,offset,limit),
-                    Request::Execute { code,timeout_ms } => Ok(engine::execute(&code,timeout_ms,action,token)),
+                    Request::Execute { code,timeout_ms } => {
+                        // Negotiate before guest execution. Infrastructure failures stay ABI Err;
+                        // never feed this envelope to an older lenient action-30 host.
+                        let discovery_started = std::time::Instant::now();
+                        engine::list_page(&*action,0,32)?;
+                        let remaining = timeout_ms.saturating_sub(discovery_started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                        Ok(engine::execute(&code,remaining,action,token))
+                    },
                 }
             }).unwrap_or_else(|_|Err("codemode worker panicked; no calls retried".into()));
             let _ = sender.send(result);
@@ -171,10 +198,7 @@ extern "C" fn poll(
         match job.receiver.try_recv() {
             Ok(Ok(value)) => {
                 job.completed = true;
-                match tool_result(value) {
-                    Ok(text) => StepResult::done(StbString::from_string(text)),
-                    Err(text) => StepResult::err(StbString::from_string(text)),
-                }
+                StepResult::done(StbString::from_string(tool_result(value)))
             }
             Ok(Err(e)) => {
                 job.completed = true;
@@ -208,9 +232,9 @@ extern "C" fn destroy(handle: StepHandle) {
 fn schema() -> rpi_plugin_sdk::StableToolSchema {
     rpi_plugin_sdk::StableToolSchema {
         name: StbString::from_string("codemode".into()),
-        description: StbString::from_string("Execute a bounded JavaScript async body (with return) using the current invocation's tools, without another model turn or MCP. tools.name(args) / tools.call(name,args) return finalized tool results; Promise.all runs at most 8 active calls concurrently (128 total); batch larger sets yourself. print / console capture bounded logs. action=list pages the effective catalog. Fresh JS; RegExp literals/constructor and regex-backed string operations are unsupported (the pinned native regex engine cannot be interrupted). No direct filesystem/network/process. Reserved host metadata names are filtered recursively in results/catalog schemas and forbidden in arguments; not lossless for arbitrary property names. Calls retain host approvals and may have irreversible side effects; errors/cancellation never roll back or retry. Failures return a JSON summary as error text; success includes structured details. Requires ToolProgram action 30 / protocol v1.".into()),
+        description: StbString::from_string("Execute a bounded JavaScript async body (with return) using the current invocation's tools, without another model turn or MCP. tools.name(args) / tools.call(name,args) return finalized tool results; Promise.all runs at most 8 active calls concurrently (128 total); batch larger sets yourself. print / console capture bounded logs. action=list pages the effective catalog. Fresh JS; RegExp literals/constructor and regex-backed string operations are unsupported (the pinned native regex engine cannot be interrupted). No direct filesystem/network/process. Reserved host metadata names are filtered recursively in results/catalog schemas and forbidden in arguments; not lossless for arbitrary property names. Calls retain host approvals and may have irreversible side effects; errors/cancellation never roll back or retry. tools.emit(resultOrContentArray) explicitly selects native output; returning a result with content also selects it (text/image only, 128 blocks / 1 MiB). Ordinary JSON stays summary data. Failures retain structured details through the native result envelope. Requires ToolProgram action 30 / protocol v1 with resultEnvelope:1, hostAccounting:1, parentProgress:1.".into()),
         parameters: StbString::from_string(json!({
-            "type":"object", "x-rpi-execution-mode":"sequential", "properties": {
+            "type":"object", "x-rpi-execution-mode":"sequential", "x-rpi-result-envelope":1, "properties": {
                 "action":{"type":"string","enum":["list","execute"],"default":"execute","description":"execute (default) runs code; list pages the effective invocation catalog without running code. Follow nextOffset until null."},
                 "code":{"type":"string","minLength":1,"description":"JavaScript async function body, not TypeScript; required for execute. 1..65536 UTF-8 bytes. Return a JSON-compatible value (up to 1 MiB)."},
                 "timeoutMs":{"type":"integer","minimum":1,"maximum":120000,"default":30000,"description":"Execute-only total deadline in milliseconds, including catalog discovery; default 30000, range 1..120000. Invalid values are rejected. Timeout does not undo tool effects."},

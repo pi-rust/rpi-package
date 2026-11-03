@@ -24,7 +24,7 @@ fn host(mode: &str) -> (Arc<Mutex<Fake>>, Arc<Action>) {
                     return Err("unknown runtime action 30".into());
                 }
                 Ok(
-                    json!({"protocolVersion":1,"tools":[{"name":"echo","description":"test","parameters":{"type":"object"}},{"name":"other","description":"test","parameters":{"type":"object"}}],"nextOffset":null}),
+                    json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[{"name":"echo","description":"test","parameters":{"type":"object"}},{"name":"other","description":"test","parameters":{"type":"object"}}],"nextOffset":null}),
                 )
             }
             "start" => {
@@ -369,14 +369,14 @@ fn parser_is_strict_but_accepts_host_and_unknown_fields() {
 fn paginated_catalog_is_bounded_and_validated() {
     let action = |v: Value| {
         Ok(
-            json!({"protocolVersion":1,"tools":[],"nextOffset":if v["offset"]==0 {json!(32)} else {Value::Null}}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[],"nextOffset":if v["offset"]==0 {json!(32)} else {Value::Null}}),
         )
     };
     assert_eq!(list_page(&action, 0, 32).unwrap()["nextOffset"], 32);
     for page in [
         json!({"protocolVersion":0,"tools":[],"nextOffset":null}),
-        json!({"protocolVersion":1,"tools":[],"nextOffset":0}),
-        json!({"protocolVersion":1,"tools":[{}],"nextOffset":null}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[],"nextOffset":0}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[{}],"nextOffset":null}),
     ] {
         assert!(list_page(&move |_| Ok(page.clone()), 0, 32).is_err());
     }
@@ -421,7 +421,7 @@ fn paginated_execute_discovers_only_bounded_contract_entries() {
             vec![json!({"name":"b","description":"second","parameters":{}})]
         };
         Ok(
-            json!({"protocolVersion":1,"tools":entries,"nextOffset":if offset==0 {json!(1)} else {Value::Null}}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":entries,"nextOffset":if offset==0 {json!(1)} else {Value::Null}}),
         )
     });
     let r = execute(
@@ -496,7 +496,7 @@ fn promise_job_exception_aborts_even_if_main_function_returned() {
 fn catalog_filtering_is_explicitly_lossy_for_reserved_schema_properties() {
     let action = |_| {
         Ok(
-            json!({"protocolVersion":1,"tools":[{"name":"schema","description":"test","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"ordinary":{"type":"string"}}}}],"nextOffset":null}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},"tools":[{"name":"schema","description":"test","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"ordinary":{"type":"string"}}}}],"nextOffset":null}),
         )
     };
     let page = list_page(&action, 0, 32).unwrap();
@@ -564,4 +564,391 @@ fn caught_oom_is_fatal_before_host_calls_and_during_serialization() {
         assert_eq!(r["error"], "codemode memory budget exceeded", "{r}");
         cleaned(&h, starts);
     }
+}
+
+const PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6N3sAAAAASUVORK5CYII=";
+
+fn native_host(result: Value, is_error: bool) -> Arc<Action> {
+    Arc::new(move |v| {
+        Ok(match v["op"].as_str().unwrap() {
+            "list" => {
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1},
+            "tools":[{"name":"read","description":"fixture","parameters":{}}],"nextOffset":null})
+            }
+            "start" => json!({"requestId":"private","status":"running"}),
+            "poll" => {
+                json!({"requestId":"private","status":"done","isError":is_error,"result":result})
+            }
+            "dispose" | "cancel" => json!({}),
+            _ => panic!("unexpected action"),
+        })
+    })
+}
+fn native_run(code: &str, result: Value, is_error: bool) -> Value {
+    execute(
+        code,
+        2000,
+        native_host(result, is_error),
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+fn image_result() -> Value {
+    json!({"content":[{"type":"text","text":"tiny"},{"type":"image","mimeType":"image/png","data":PNG}],
+        "details":{"ok":true},"usage":{"cost":1},"addedToolNames":["new"],"terminate":false})
+}
+
+#[test]
+fn capabilities_require_all_three_exact_integer_versions_before_guest_execution() {
+    for key in ["resultEnvelope", "hostAccounting", "parentProgress"] {
+        for invalid in [
+            Value::Null,
+            json!(0),
+            json!(2),
+            json!("1"),
+            json!(true),
+            json!(1.0),
+        ] {
+            let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1});
+            caps[key] = invalid;
+            let a: Arc<Action> = Arc::new(move |v| {
+                assert_eq!(v["op"], "list", "guest must never start");
+                Ok(json!({"protocolVersion":1,"capabilities":caps,"tools":[],"nextOffset":null}))
+            });
+            assert!(list_page(&*a, 0, 32).unwrap_err().contains(key));
+            let r = execute(
+                "throw Error('guest ran');",
+                2000,
+                a,
+                Arc::new(AtomicBool::new(false)),
+            );
+            assert!(r["error"].as_str().unwrap().contains(key), "{r}");
+        }
+    }
+    let a = |_| Ok(json!({"protocolVersion":1,"tools":[],"nextOffset":null}));
+    assert!(list_page(&a, 0, 32).unwrap_err().contains("upgrade"));
+}
+
+#[test]
+fn list_preserves_only_public_capabilities() {
+    let a = |_| {
+        Ok(json!({"protocolVersion":1,"tools":[],"nextOffset":null,
+        "capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"private":"hidden"},"private":"hidden"}))
+    };
+    let page = list_page(&a, 0, 32).unwrap();
+    assert_eq!(
+        page["capabilities"],
+        json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1})
+    );
+    assert!(!page.to_string().contains("hidden"));
+}
+
+#[test]
+fn returning_native_result_promotes_blocks_without_base64_duplication_or_accounting() {
+    let r = native_run("return await tools.read({});", image_result(), false);
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["result"]["content"], json!({"promoted":true,"count":2}));
+    assert_eq!(r["nativeContent"][1]["data"], PNG);
+    let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert_eq!(output["isError"], false);
+    assert_eq!(output["result"]["content"][1]["data"], PNG);
+    assert_eq!(output.to_string().matches(PNG).count(), 1);
+    assert!(output["result"].get("usage").is_none());
+    assert!(output["result"].get("addedToolNames").is_none());
+}
+
+#[test]
+fn explicit_emit_selects_intermediates_while_returning_summary_and_keeps_order() {
+    let r = native_run("const r=await tools.read({}); tools.emit(r); tools.emit([{type:'text',text:'last'}]); return {ok:r.details.ok};",image_result(),false);
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["result"], json!({"ok":true}));
+    assert_eq!(r["nativeContent"][2]["text"], "last");
+    assert_eq!(r.to_string().matches(PNG).count(), 1);
+}
+
+#[test]
+fn ordinary_json_and_intermediate_images_are_not_auto_forwarded_or_reinterpreted() {
+    let r = native_run(
+        "await tools.read({}); return {answer:42,nested:{content:[{type:'unknown'}]}};",
+        image_result(),
+        false,
+    );
+    assert_eq!(r["status"], "completed", "{r}");
+    assert!(r.get("nativeContent").is_none());
+    assert!(!r.to_string().contains(PNG));
+    assert_eq!(r["result"]["nested"]["content"][0]["type"], "unknown");
+    let r = native_run(
+        "return [{type:'image',mimeType:'image/png',data:'AAAA'}];",
+        image_result(),
+        false,
+    );
+    assert!(
+        r.get("nativeContent").is_none(),
+        "arrays need explicit tools.emit"
+    );
+}
+
+#[test]
+fn per_call_raw_content_and_error_result_are_available_before_output_selection() {
+    for error in [false, true] {
+        let code = if error {
+            "try {await tools.read({});} catch(e) {return {data:e.result.content[1].data,cost:e.result.usage.cost};}"
+        } else {
+            "const r=await tools.read({}); return {data:r.content[1].data,cost:r.usage.cost};"
+        };
+        let r = native_run(code, image_result(), error);
+        assert_eq!(r["status"], "completed", "{r}");
+        assert_eq!(r["result"]["data"], PNG);
+        assert_eq!(r["result"]["cost"], 1);
+    }
+}
+
+#[test]
+fn malformed_native_blocks_fail_explicitly_for_both_return_and_emit() {
+    for content in [
+        json!(null),
+        json!({}),
+        json!([{}]),
+        json!([{"type":"text","text":7}]),
+        json!([{"type":"text","text":"ok","textSignature":7}]),
+        json!([{"type":"text","text":"ok","textSignature":false}]),
+        json!([{"type":"text","text":"ok","textSignature":{}}]),
+        json!([{"type":"text","text":"ok","textSignature":[]}]),
+        json!([{"type":"audio","data":"AAAA"}]),
+        json!([{"type":"image","mimeType":"text/plain","data":"AAAA"}]),
+        json!([{"type":"image","mimeType":"image/svg+xml","data":"AAAA"}]),
+        json!([{"type":"image","mimeType":"image/png"}]),
+        json!([{"type":"image","mimeType":"image/png","data":""}]),
+        json!([{"type":"image","mimeType":"image/png","data":"AB=="}]),
+        json!([{"type":"image","mimeType":"image/png","data":"AA=A"}]),
+        json!([{"type":"image","mimeType":"image/png","data":"AAAA\n"}]),
+    ] {
+        for code in [
+            "return await tools.read({});",
+            "const r=await tools.read({}); try {tools.emit(r);} catch(e){} return 42;",
+        ] {
+            let r = native_run(code, json!({"content":content}), false);
+            assert_eq!(r["status"], "error", "{content}: {r}");
+            assert_eq!(r["isError"], true);
+        }
+    }
+}
+
+#[test]
+fn invalid_text_signature_becomes_structured_done_error_with_logs() {
+    for code in [
+        "print('before invalid signature'); return await tools.read({});",
+        "print('before invalid signature'); try {tools.emit(await tools.read({}));} catch(e) {} return 42;",
+    ] {
+        let r = native_run(code, json!({"content":[{"type":"text","text":"ok","textSignature":7}]}), false);
+        let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        assert_eq!(output["$rpiToolResult"], 1);
+        assert_eq!(output["isError"], true);
+        assert_eq!(output["result"]["details"]["status"], "error");
+        assert_eq!(output["result"]["details"]["logs"][0]["text"], "before invalid signature");
+        assert_eq!(output["result"]["details"]["error"], "native textSignature must be null or a string");
+        assert!(output["result"]["content"][0]["text"].as_str().unwrap().contains("textSignature"));
+    }
+}
+
+#[test]
+fn emitted_reserved_metadata_is_filtered_and_native_text_signature_retained() {
+    let r = native_run("tools.emit({runtimeHandle:42,content:[{type:'text',text:'ok',textSignature:'native-signature',runtimeKey:'secret',__rpi:{nested:[{runtimeHandle:42}]}}]}); return 1;",image_result(),false);
+    assert_eq!(r["status"], "completed", "{r}");
+    assert!(!r.to_string().contains("secret"));
+    assert_eq!(
+        r["nativeContent"],
+        json!([{"type":"text","text":"ok","textSignature":"native-signature"}])
+    );
+    let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert_eq!(
+        output["result"]["content"][0]["textSignature"],
+        "native-signature"
+    );
+
+    let mut nested = json!({"content":[{"type":"text","text":"ok","meta":{"label":"public","nested":[{"runtimeKey":"secret","__rpiRuntimeKey":"secret","runtimeHandle":42,"__rpi":{}}]}}]});
+    public_value(&mut nested);
+    assert_eq!(
+        nested["content"][0]["meta"],
+        json!({"label":"public","nested":[{}]})
+    );
+    assert!(content::blocks(nested).unwrap_err().contains("unsupported"));
+}
+
+#[test]
+fn returned_native_text_signatures_accept_only_absent_null_or_string() {
+    for block in [
+        json!({"type":"text","text":"ok"}),
+        json!({"type":"text","text":"ok","textSignature":null}),
+        json!({"type":"text","text":"ok","textSignature":"native-signature"}),
+    ] {
+        for code in [
+            "return await tools.read({});",
+            "tools.emit(await tools.read({})); return 1;",
+        ] {
+            let r = native_run(code, json!({"content":[block]}), false);
+            assert_eq!(r["status"], "completed", "{r}");
+            let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+            assert_eq!(output["result"]["content"][0], block);
+        }
+    }
+}
+
+#[test]
+fn unsupported_block_metadata_is_rejected_for_return_and_caught_emit() {
+    for block in [
+        json!({"type":"text","text":"ok","meta":{"label":"public"}}),
+        json!({"type":"text","text":"ok","meta":{"runtimeKey":"secret"}}),
+        json!({"type":"text","text":"ok","unknown":null}),
+        json!({"type":"image","mimeType":"image/png","data":"AAAA","meta":{"label":"public"}}),
+        json!({"type":"image","mimeType":"image/png","data":"AAAA","textSignature":"not-supported"}),
+    ] {
+        for code in [
+            "print('before'); return await tools.read({});",
+            "print('before'); try {tools.emit(await tools.read({}));} catch(e){} return 42;",
+        ] {
+            let r = native_run(code, json!({"content":[block]}), false);
+            assert_eq!(r["status"], "error", "{r}");
+            assert!(
+                r["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("unsupported native content block metadata"),
+                "{r}"
+            );
+            assert_eq!(r["logs"][0]["text"], "before");
+        }
+    }
+}
+
+#[test]
+fn caught_emit_serialization_failures_latch_native_fatal_before_later_host_effects() {
+    for value in [
+        "(()=>{const v=[]; v.push(v); return v;})()",
+        "[{type:'text',text:1n}]",
+        "({toJSON(){throw Error('toJSON failed');}})",
+        "undefined",
+        "(()=>{})",
+        "Symbol('unserializable')",
+        "({toJSON(){return undefined;}})",
+    ] {
+        let code = format!("print('before'); try {{tools.emit({value});}} catch(e) {{}} try {{await tools.echo({{}});}} catch(e) {{}} return {{usage:{{cost:999}},addedToolNames:['forged']}};");
+        let (r, h) = run_fake(&code, "");
+        assert_eq!(r["status"], "error", "{value}: {r}");
+        assert_eq!(r["error"], "invalid emitted JSON", "{value}: {r}");
+        assert_eq!(r["logs"][0]["text"], "before");
+        assert_eq!(r["result"], Value::Null);
+        cleaned(&h, 0);
+    }
+}
+
+#[test]
+fn selected_image_or_empty_output_then_throw_keeps_blocks_logs_and_visible_error() {
+    for selection in [
+        json!([]),
+        json!([{"type":"image","mimeType":"image/png","data":PNG}]),
+    ] {
+        let code = format!(
+            "print('before'); tools.emit({selection}); throw Error('selected output failed');"
+        );
+        let r = native_run(&code, image_result(), false);
+        assert_eq!(r["status"], "error", "{r}");
+        assert_eq!(r["nativeContent"], selection);
+        let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        let blocks = output["result"]["content"].as_array().unwrap();
+        let selected = selection.as_array().unwrap();
+        assert_eq!(&blocks[..selected.len()], selected);
+        assert_eq!(blocks.len(), selected.len() + 1);
+        assert!(blocks.last().unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .contains("selected output failed"));
+        assert_eq!(output["isError"], true);
+        assert_eq!(output["result"]["details"]["logs"][0]["text"], "before");
+        assert!(output["result"]["details"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("selected output failed"));
+        assert_eq!(output["result"]["terminate"], false);
+    }
+}
+
+#[test]
+fn selected_output_error_diagnostic_is_utf8_bounded_and_keeps_full_selection() {
+    let r = native_run("tools.emit(Array.from({length:128},()=>({type:'text',text:'selected'}))); throw Error('界'.repeat(4096));", image_result(), false);
+    let encoded = crate::tool_result(r);
+    assert!(encoded.len() <= MAX_JSON);
+    let output: Value = serde_json::from_str(&encoded).unwrap();
+    let blocks = output["result"]["content"].as_array().unwrap();
+    assert_eq!(
+        blocks.len(),
+        129,
+        "diagnostic is not a guest-selected block"
+    );
+    assert!(blocks[..128]
+        .iter()
+        .all(|block| block["text"] == "selected"));
+    assert!(blocks[128]["text"].as_str().unwrap().len() <= "codemode error: ".len() + 512);
+}
+
+#[test]
+fn emitted_and_returned_native_content_share_count_and_byte_limits() {
+    for code in [
+        "tools.emit(Array.from({length:129},()=>({type:'text',text:'x'})));",
+        "tools.emit(Array.from({length:128},()=>({type:'text',text:'x'}))); return {content:[{type:'text',text:'extra'}]};",
+        "try {tools.emit([{type:'text',text:'x'.repeat(1048576)}]);} catch(e) {} return 1;",
+        "tools.emit([{type:'text',text:'x'.repeat(600000)}]); tools.emit([{type:'text',text:'x'.repeat(600000)}]);",
+    ] {
+        let r = native_run(code,image_result(),false);
+        assert_eq!(r["status"],"error","{code}: {r}");
+    }
+    let r = native_run("tools.emit([]); return 42;", image_result(), false);
+    assert_eq!(r["nativeContent"], json!([]));
+}
+
+#[test]
+fn terminal_error_keeps_both_flags_and_native_blocks_even_when_content_validation_fails() {
+    for content in [image_result()["content"].clone(), json!([{"type":"audio"}])] {
+        let r = native_run(
+            "await tools.read({}); throw Error('must not resume');",
+            json!({"content":content,"terminate":true}),
+            true,
+        );
+        assert_eq!(r["terminate"], true, "{r}");
+        let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        assert_eq!(output["isError"], true);
+        assert_eq!(output["result"]["terminate"], true);
+        if content[0]["type"] == "text" {
+            assert_eq!(output["result"]["content"][0], content[0]);
+            assert_eq!(output["result"]["content"][1], content[1]);
+            assert_eq!(
+                output["result"]["content"][2]["text"],
+                "codemode error: terminal tool returned isError"
+            );
+        }
+    }
+}
+
+#[test]
+fn finalized_errors_keep_bounded_useful_text_without_serializing_images_in_error_message() {
+    let r = native_run("try {await tools.read({});} catch(e) {return {message:e.message,data:e.result.content[1].data};}",image_result(),true);
+    assert_eq!(r["result"]["message"], "tool returned isError: tiny");
+    assert_eq!(r["result"]["data"], PNG);
+    assert_eq!(r.to_string().matches(PNG).count(), 1);
+}
+
+#[test]
+fn native_content_supports_each_documented_mime_and_exact_count_boundary() {
+    for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+        let selected =
+            content::blocks(json!([{"type":"image","mimeType":mime,"data":"AAA="}])).unwrap();
+        assert_eq!(selected[0]["mimeType"], mime);
+    }
+    for data in ["AA==", "AAA=", "AAAA"] {
+        assert!(
+            content::blocks(json!([{"type":"image","mimeType":"image/png","data":data}])).is_ok()
+        );
+    }
+    let blocks = vec![json!({"type":"text","text":"ok"}); 128];
+    assert_eq!(content::blocks(json!(blocks)).unwrap().len(), 128);
 }
