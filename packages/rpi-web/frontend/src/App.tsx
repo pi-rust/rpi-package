@@ -857,6 +857,8 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
+  const [forkPending, setForkPending] = useState(false);
+  const forkInFlight = useRef(false);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
   const [levels, setLevels] = useState<string[]>([]);
   const [modelPending, setModelPending] = useState(false);
@@ -886,6 +888,8 @@ export default function App() {
     };
   }, [sessionId, projectId]);
   function requestText(request: TextRequest) {
+    // Replacing the shared prompt must also release the previous caller.
+    textRequestResolver.current?.(null);
     return new Promise<string | null>((resolve) => {
       textRequestResolver.current = resolve;
       setTextRequest(request);
@@ -2886,25 +2890,31 @@ export default function App() {
   }
 
   async function forkCurrent(entryId?: string) {
-    if (!sessionId || !actions.has("fork")) return;
+    if (!sessionId || !actions.has("fork") || forkInFlight.current) return;
+    const sourceSessionId = sessionId;
     const navigation = navigationRevision.current;
-    const defaultTitle = t("forkOf", {
-      title: current?.title ?? sessionId.slice(0, 8),
-    });
-    const title = await requestText({
-      kind: "prompt",
-      title: t("forkName"),
-      defaultValue: defaultTitle,
-    });
-    if (title === null) return;
+    forkInFlight.current = true;
+    setForkPending(true);
     try {
-      const created = await api.fork(sessionId, entryId, title);
+      const title = await requestText({
+        kind: "prompt",
+        title: t("forkName"),
+        defaultValue: t("forkOf", {
+          title: current?.title ?? sourceSessionId.slice(0, 8),
+        }),
+      });
+      if (title === null || navigation !== navigationRevision.current) return;
+      // A sent fork creates a durable session: never retry it automatically.
+      const created = await api.fork(sourceSessionId, entryId, title);
       await refreshSessions();
       if (navigation !== navigationRevision.current) return;
       select(created.sessionId);
     } catch (cause) {
       if (navigation !== navigationRevision.current) return;
       setError(errorText(cause));
+    } finally {
+      forkInFlight.current = false;
+      setForkPending(false);
     }
   }
 
@@ -3602,7 +3612,8 @@ export default function App() {
             )}
             {actions.has("fork") && (
               <button
-                disabled={!sessionId}
+                type="button"
+                disabled={!sessionId || forkPending}
                 className="icon-button toolbar-fork"
                 title={t("forkSession")}
                 aria-label={t("forkSession")}
@@ -4995,7 +5006,7 @@ export default function App() {
                                 <div className="history-actions">
                                   <button
                                     title={t("forkHere")}
-                                    disabled={mutationPending}
+                                    disabled={mutationPending || forkPending}
                                     onClick={() => void forkCurrent(target)}
                                   >
                                     <GitBranch size={12} /> {t("fork")}

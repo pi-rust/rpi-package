@@ -3079,6 +3079,300 @@ test("a rejected permission answer keeps the dialog available for retry", async 
   ).toBeEnabled();
 });
 
+test.describe("mobile fork regression", () => {
+  const forkEntryId = "chosen-history-leaf";
+  const forkError = "Mock fork failed without changing the selection";
+  const toolbarFork = (page: Page) => page.locator(".toolbar-fork");
+  const historyFork = (page: Page) => page.getByTitle("Fork from this point", { exact: true });
+  const titleDialog = (page: Page) => page.getByRole("dialog", { name: "Name the new fork", exact: true });
+
+  async function host(page: Page, options: { hold?: boolean; error?: boolean } = {}) {
+    await mockHost(page);
+    const entries = [
+      { ...session },
+      { ...session, sessionId: "session-2", title: "Other chat" },
+    ];
+    const requests: Array<{ method: string; source: string; body: unknown }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const history = {
+      records: [{ id: "fork-record", seq: 4, type: "operation_finished", sourceLeafId: forkEntryId, outcome: "completed" }],
+      total: 1, hasMore: false, openOperations: [],
+    };
+    await page.route("**/api/v1/sessions", route => route.request().method() === "GET"
+      ? route.fulfill({ json: { sessions: entries } }) : route.fallback());
+    await page.route("**/api/v1/sessions/*/snapshot*", route => {
+      const id = new URL(route.request().url()).pathname.split("/")[4];
+      return route.fulfill({ json: {
+        sessionId: id, lastSeq: 4, events: [], leafId: "leaf-1", history,
+        messages: [{ role: "user", entryId: `message-${id}`, content: `Transcript: ${id}` }],
+      } });
+    });
+    await page.route("**/api/v1/sessions/*/commands", route => {
+      const body = route.request().postDataJSON();
+      return body.type === "get_history"
+        ? route.fulfill({ json: response(history, body.type) }) : route.fallback();
+    });
+    await page.route("**/api/v1/sessions/*/fork", async route => {
+      const request = route.request();
+      const body = request.postDataJSON();
+      requests.push({ method: request.method(), source: new URL(request.url()).pathname.split("/")[4], body });
+      if (options.hold) await gate;
+      if (options.error) return route.fulfill({ status: 500, json: { error: forkError } });
+      entries.push({ ...session, sessionId: "fork-new", title: body.title });
+      return route.fulfill({ status: 201, json: { sessionId: "fork-new", sourceSessionId: sessionId, status: "ready" } });
+    });
+    return { requests, release };
+  }
+
+  async function openHistory(page: Page) {
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+    await page.locator(".history-timeline-item summary").click();
+    await expect(historyFork(page)).toBeEnabled();
+  }
+
+  async function assertLocked(page: Page, locked: boolean) {
+    for (const button of [toolbarFork(page), historyFork(page)]) {
+      if (locked) await expect(button).toBeDisabled();
+      else await expect(button).toBeEnabled();
+    }
+  }
+
+  async function navigate(page: Page, destination: "project" | "session", behindDialog = false) {
+    const target = destination === "project"
+      ? page.getByRole("button", { name: "Expand project: rpi-package", exact: true })
+      : page.locator(".project-session-link").filter({ hasText: "Other chat" });
+    // Exercise navigation while a prompt is outstanding, without pretending a
+    // pointer can pass through the modal backdrop.
+    if (behindDialog) await target.evaluate((element: HTMLElement) => element.click());
+    else await target.click();
+    if (destination === "project") {
+      await expect(page.locator(".toolbar .breadcrumb")).toContainText("rpi-package");
+      await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+    } else {
+      await expect(page).toHaveURL(/session=session-2/);
+      await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+    }
+  }
+
+  for (const width of [320, 375, 768, 1280]) {
+    test(`fork is reachable without horizontal overflow at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const mock = await host(page);
+      await page.goto("/?session=session-1");
+      const button = toolbarFork(page);
+      await expect(button).toHaveAccessibleName("Fork current session");
+      await expect(button).toBeVisible();
+      await expect(button).toBeEnabled();
+      const clone = page.getByRole("button", { name: "Clone current session", exact: true });
+      if (width < 768) await expect(clone).toBeHidden();
+      else await expect(clone).toBeVisible();
+      const bounds = await button.boundingBox();
+      expect(bounds).not.toBeNull();
+      // Phones retain the existing 32px touch target; desktop uses compact icons.
+      expect(bounds!.width).toBeGreaterThanOrEqual(width < 768 ? 32 : 28);
+      expect(bounds!.height).toBeGreaterThanOrEqual(width < 768 ? 32 : 28);
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.y).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(844);
+      await expect.poll(() => page.evaluate(() => ({
+        document: document.documentElement.scrollWidth <= innerWidth,
+        body: document.body.scrollWidth <= innerWidth,
+        toolbar: document.querySelector(".toolbar")!.scrollWidth <= document.querySelector(".toolbar")!.clientWidth,
+      }))).toEqual({ document: true, body: true, toolbar: true });
+      await button.click(); // Hit-tested, including the narrowest phone.
+      await expect(titleDialog(page)).toBeVisible();
+      await expect(titleDialog(page).getByRole("textbox")).toHaveValue("Fork of Mock session");
+      await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(button).toBeEnabled();
+      expect(mock.requests).toEqual([]);
+    });
+  }
+
+  for (const origin of ["toolbar", "history"] as const) {
+    test(`${origin} fork is single-flight through title and API, preserving source and chosen entry`, async ({ page }) => {
+      await page.setViewportSize({ width: origin === "toolbar" ? 375 : 1280, height: 844 });
+      const mock = await host(page, { hold: true });
+      try {
+        await page.goto("/?session=session-1");
+        await openHistory(page);
+        // Same-task activation covers the ref guard before React publishes the
+        // disabled state; another entry point must not replace the first prompt.
+        await page.evaluate(origin => {
+          const toolbar = document.querySelector<HTMLButtonElement>(".toolbar-fork")!;
+          const history = document.querySelector<HTMLButtonElement>(".history-actions button")!;
+          const first = origin === "toolbar" ? toolbar : history;
+          const second = origin === "toolbar" ? history : toolbar;
+          first.click(); second.click(); first.click();
+        }, origin);
+        await expect(titleDialog(page)).toBeVisible();
+        await assertLocked(page, true);
+        expect(mock.requests).toEqual([]);
+        await titleDialog(page).getByRole("textbox").fill("Chosen fork title");
+        await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+        await expect.poll(() => mock.requests.length).toBe(1);
+        await expect(titleDialog(page)).toHaveCount(0);
+        await assertLocked(page, true);
+        await toolbarFork(page).evaluate((button: HTMLButtonElement) => button.click());
+        await historyFork(page).evaluate((button: HTMLButtonElement) => button.click());
+        expect(mock.requests).toEqual([{ method: "POST", source: sessionId, body: {
+          title: "Chosen fork title", ...(origin === "history" ? { entryId: forkEntryId } : {}),
+        } }]);
+        mock.release();
+        await expect(page).toHaveURL(/session=fork-new/);
+        await expect(page.locator(".toolbar .breadcrumb")).toContainText("Chosen fork title");
+        await expect(page.locator(".message.user")).toContainText("Transcript: fork-new");
+        await expect(toolbarFork(page)).toBeEnabled();
+        expect(mock.requests).toHaveLength(1);
+      } finally { mock.release(); }
+    });
+  }
+
+  for (const outcome of ["cancel", "error"] as const) {
+    test(`${outcome} unlocks both fork entry points for an explicit retry`, async ({ page }) => {
+      const mock = await host(page, { hold: true, error: true });
+      try {
+        await page.goto("/?session=session-1");
+        await openHistory(page);
+        await historyFork(page).click();
+        await assertLocked(page, true);
+        if (outcome === "cancel") {
+          await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+        } else {
+          await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+          await expect.poll(() => mock.requests.length).toBe(1);
+          await assertLocked(page, true);
+          mock.release();
+          await expect(page.locator(".error-banner")).toContainText(forkError);
+        }
+        await assertLocked(page, false);
+        await expect(page).toHaveURL(/session=session-1/);
+        await expect(page.locator(".message.user")).toContainText("Transcript: session-1");
+        await toolbarFork(page).click();
+        await expect(titleDialog(page)).toBeVisible();
+        await assertLocked(page, true);
+        await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+        await assertLocked(page, false);
+        expect(mock.requests).toHaveLength(outcome === "cancel" ? 0 : 1);
+      } finally { mock.release(); }
+    });
+  }
+
+  for (const origin of ["toolbar", "history"] as const) {
+    for (const outcome of ["cancel", "submit"] as const) {
+      test(`${origin} fork unlocks when a keyboard-opened clone replaces its prompt (${outcome})`, async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height: 844 });
+        const mock = await host(page);
+        const cloneRequests: Array<{ method: string; source: string; body: unknown }> = [];
+        await page.route("**/api/v1/sessions/*/clone", route => {
+          const request = route.request();
+          cloneRequests.push({
+            method: request.method(), source: new URL(request.url()).pathname.split("/")[4],
+            body: request.postDataJSON(),
+          });
+          // Reuse the host's other mocked session; never contact a real clone API.
+          return route.fulfill({ status: 201, json: { sessionId: "session-2" } });
+        });
+        await page.goto("/?session=session-1");
+        await openHistory(page);
+        await (origin === "toolbar" ? toolbarFork(page) : historyFork(page)).click();
+        await expect(titleDialog(page)).toBeVisible();
+        await titleDialog(page).getByRole("textbox").fill("Abandoned fork title");
+        await assertLocked(page, true);
+
+        const clone = page.getByRole("button", { name: "Clone current session", exact: true });
+        // The modal currently has no focus trap/inert background. Exercise real
+        // desktop Tab + Enter activation, not a pointer through its backdrop.
+        for (let tabs = 0; tabs < 80 && !(await clone.evaluate(button => button === document.activeElement)); tabs++) {
+          await page.keyboard.press("Tab");
+        }
+        await expect(clone).toBeFocused();
+        await page.keyboard.press("Enter");
+        const cloneDialog = page.getByRole("dialog", { name: "Name the cloned session", exact: true });
+        await expect(cloneDialog).toBeVisible();
+        await expect(titleDialog(page)).toHaveCount(0);
+        // Replacement must settle the abandoned fork, even before clone finishes.
+        await assertLocked(page, false);
+        expect(mock.requests).toEqual([]);
+        if (outcome === "submit") {
+          await cloneDialog.getByRole("textbox").fill("Replacement clone title");
+          await cloneDialog.getByRole("button", { name: "Submit", exact: true }).click();
+          await expect(page).toHaveURL(/session=session-2/);
+          await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+          // A new session starts with its history details collapsed.
+          await page.locator(".history-timeline-item summary").click();
+          await expect(historyFork(page)).toBeVisible();
+        } else {
+          await cloneDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+          await expect(page).toHaveURL(/session=session-1/);
+        }
+        await expect(cloneDialog).toHaveCount(0);
+        await assertLocked(page, false);
+        // Retry through the opposite entry point proves the shared ref lock cleared.
+        await (origin === "toolbar" ? historyFork(page) : toolbarFork(page)).click();
+        await expect(titleDialog(page)).toBeVisible();
+        await assertLocked(page, true);
+        await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+        await assertLocked(page, false);
+        expect(mock.requests).toEqual([]);
+        expect(cloneRequests).toEqual(outcome === "submit" ? [{
+          method: "POST", source: sessionId, body: { title: "Replacement clone title" },
+        }] : []);
+        await expect(page.locator(".error-banner")).toHaveCount(0);
+      });
+    }
+  }
+
+  for (const destination of ["project", "session"] as const) {
+    test(`${destination} navigation during the title prompt sends no stale fork`, async ({ page }) => {
+      const mock = await host(page);
+      await page.goto("/?session=session-1");
+      await toolbarFork(page).click();
+      await expect(titleDialog(page)).toBeVisible();
+      await navigate(page, destination, true);
+      await titleDialog(page).getByRole("textbox").fill("Stale fork title");
+      await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+      await expect(titleDialog(page)).toHaveCount(0);
+      await chooseMenuOption(page, "Language", "zh");
+      if (destination === "session") await expect(toolbarFork(page)).toBeEnabled();
+      else await expect(toolbarFork(page)).toBeDisabled();
+      expect(mock.requests).toEqual([]);
+      await expect(page.locator(".toolbar .breadcrumb")).toContainText(destination === "project" ? "rpi-package" : "Other chat");
+      await expect(page.locator(".error-banner")).toHaveCount(0);
+    });
+
+    for (const outcome of ["success", "error"] as const) {
+      test(`late fork ${outcome} preserves newer ${destination} navigation`, async ({ page }) => {
+        const mock = await host(page, { hold: true, error: outcome === "error" });
+        try {
+          await page.goto("/?session=session-1");
+          await toolbarFork(page).click();
+          await titleDialog(page).getByRole("textbox").fill("Late fork title");
+          await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+          await expect.poll(() => mock.requests.length).toBe(1);
+          await navigate(page, destination);
+          const completed = page.waitForResponse(res => res.url().endsWith("/fork"));
+          mock.release();
+          await (await completed).finished();
+          // A UI round trip after delivery lets the fetch continuation and React
+          // settle before negative assertions (no arbitrary timeout or sleep).
+          await chooseMenuOption(page, "Language", "zh");
+          await expect(page.locator(".toolbar .breadcrumb")).toContainText(destination === "project" ? "rpi-package" : "Other chat");
+          expect(new URL(page.url()).searchParams.get("session")).toBe(destination === "project" ? null : "session-2");
+          if (destination === "session") {
+            await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+            await expect(toolbarFork(page)).toBeEnabled();
+          }
+          await expect(page.locator(".error-banner")).toHaveCount(0);
+          await expect(page.getByRole("dialog")).toHaveCount(0);
+          expect(mock.requests).toEqual([{ method: "POST", source: sessionId, body: { title: "Late fork title" } }]);
+        } finally { mock.release(); }
+      });
+    }
+  }
+});
+
 for (const action of ["fork", "clone"] as const) {
   test(`a late ${action} response preserves subsequent project navigation`, async ({
     page,
