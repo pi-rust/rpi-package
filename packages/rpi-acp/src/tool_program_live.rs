@@ -79,6 +79,7 @@ struct Entry {
     token: u64,
     cancel: watch::Sender<bool>,
     done: Option<oneshot::Receiver<()>>,
+    writer: Arc<Writer>,
 }
 
 #[derive(Clone, Default)]
@@ -146,6 +147,7 @@ impl SubscriptionRegistry {
                     token,
                     cancel,
                     done: Some(done_rx),
+                    writer: writer.clone(),
                 },
             );
         }
@@ -242,8 +244,18 @@ impl SubscriptionRegistry {
         let entry = self.entries.lock().await.remove(subscription_id);
         let Some(mut entry) = entry else { return false };
         let _ = entry.cancel.send(true);
-        if let Some(done) = entry.done.take() {
-            let _ = done.await;
+        if let Some(mut done) = entry.done.take() {
+            // A notification or the initial snapshot response may be blocked
+            // behind a stalled ACP peer. Cancellation owns the connection
+            // writer as a bounded fallback: closing it makes FrameWrite
+            // terminal and wakes the task instead of waiting forever.
+            if tokio::time::timeout(std::time::Duration::from_secs(2), &mut done)
+                .await
+                .is_err()
+            {
+                entry.writer.close();
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), &mut done).await;
+            }
         }
         true
     }
