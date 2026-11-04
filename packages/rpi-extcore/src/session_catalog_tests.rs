@@ -64,6 +64,18 @@ async fn all(c: &SessionCatalog, limit: usize) -> Vec<SessionSummary> {
     }
     panic!("no progress")
 }
+async fn until_error(c: &SessionCatalog) -> CatalogError {
+    let mut cursor = None;
+    loop {
+        match c.page(query(cursor, 50), CatalogControl::default()).await {
+            Err(error) => return error,
+            Ok(page) => {
+                cursor = page.next_cursor;
+                assert!(cursor.is_some(), "expected the bounded scan to continue");
+            }
+        }
+    }
+}
 fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -278,12 +290,7 @@ async fn session_catalog_fail_closed_budgets() {
             },
         };
         let c = f.catalog(limits);
-        assert_eq!(
-            c.page(query(None, 50), CatalogControl::default())
-                .await
-                .unwrap_err(),
-            CatalogError::LimitExceeded
-        );
+        assert_eq!(until_error(&c).await, CatalogError::LimitExceeded);
         assert!(lock(&c.inner.state).generations.is_empty());
         c.shutdown().await;
     }
@@ -297,12 +304,7 @@ async fn session_catalog_fail_closed_budgets() {
         total_entries: 3,
         ..CatalogLimits::default()
     });
-    assert_eq!(
-        c.page(query(None, 50), CatalogControl::default())
-            .await
-            .unwrap_err(),
-        CatalogError::LimitExceeded
-    );
+    assert_eq!(until_error(&c).await, CatalogError::LimitExceeded);
     c.shutdown().await;
 }
 #[tokio::test]
@@ -337,10 +339,7 @@ async fn session_catalog_headers_identity_layout_duplicates_and_utf8() {
             fs::write(&path, vec![b'x'; 65536]).unwrap();
         }
         let c = f.catalog(CatalogLimits::default());
-        let e = c
-            .page(query(None, 50), CatalogControl::default())
-            .await
-            .unwrap_err();
+        let e = until_error(&c).await;
         assert_eq!(
             e,
             if kind == 6 {
@@ -367,13 +366,17 @@ async fn session_catalog_duplicate_header_keys_fail_closed() {
         let duplicate = format!("{{\"{key}\":{},{}\n", header[key], &text[1..]);
         fs::write(&path, duplicate).unwrap();
         let c = f.catalog(CatalogLimits::default());
-        assert_eq!(
-            c.page(query(None, 50), CatalogControl::default())
-                .await
-                .unwrap_err(),
-            CatalogError::Unavailable,
-            "duplicate {key}"
-        );
+        let mut cursor = None;
+        let error = loop {
+            match c.page(query(cursor, 50), CatalogControl::default()).await {
+                Err(error) => break error,
+                Ok(page) => {
+                    cursor = page.next_cursor;
+                    assert!(cursor.is_some(), "duplicate {key} was accepted");
+                }
+            }
+        };
+        assert_eq!(error, CatalogError::Unavailable, "duplicate {key}");
         c.shutdown().await;
     }
 }
@@ -393,12 +396,7 @@ async fn session_catalog_header_exact_bound_and_no_body_parse() {
     v["padding"] = json!("x".repeat(65537 - overhead));
     fs::write(path, format!("{v}\n")).unwrap();
     let c = f.catalog(CatalogLimits::default());
-    assert_eq!(
-        c.page(query(None, 50), CatalogControl::default())
-            .await
-            .unwrap_err(),
-        CatalogError::LimitExceeded
-    );
+    assert_eq!(until_error(&c).await, CatalogError::LimitExceeded);
     c.shutdown().await;
 }
 #[tokio::test]

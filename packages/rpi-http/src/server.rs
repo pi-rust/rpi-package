@@ -1,6 +1,6 @@
 use crate::security::{self, Security};
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
     middleware::from_fn_with_state,
     response::{
@@ -18,14 +18,18 @@ use rpi_extcore::{
     durable::{DurableMutation, QueueStatus},
     host::BufferedEvent,
     protocol::{self, ApiCommand},
-    reply::{IntoReply, ReplyKind, ServiceReply},
+    reply::{IntoReply, ReplyKind, ServiceReply, ServiceResult},
     service::{
-        self, AuthRefreshRequest, BackendConfig, CreateProjectRequest, CreateSessionRequest,
-        FileQuery, ForkRequest, MetadataRequest, ProjectFoldersQuery, ProjectMetadataRequest,
-        RenameProjectRequest, RenameRequest, RunTimingsQuery, Service, SessionListQuery,
+        self,
+        tool_program_live::ChildStreamItem,
+        tool_program_queries::{ChildBodyQuery, ChildPageQuery, ChildPhaseQuery, Direction},
+        AuthRefreshRequest, BackendConfig, ChildSnapshotQuery, CreateProjectRequest,
+        CreateSessionRequest, FileQuery, ForkRequest, MetadataRequest, ProjectFoldersQuery,
+        ProjectMetadataRequest, RenameProjectRequest, RenameRequest, RunTimingsQuery, Service,
+        SessionListQuery,
     },
 };
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::{broadcast, watch};
@@ -108,6 +112,34 @@ impl IntoResponse for HttpReply {
         }
     }
 }
+// Transport-only conversion: validation and error categories stay in core.
+fn typed_reply<T: Serialize>(result: ServiceResult<T>) -> HttpReply {
+    HttpReply(
+        result
+            .and_then(|value| {
+                serde_json::to_value(value).map_err(|_| {
+                    rpi_extcore::reply::failure(
+                        ReplyKind::Internal,
+                        "response serialization failed",
+                    )
+                })
+            })
+            .into_reply(),
+    )
+}
+
+fn strict_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, HttpReply> {
+    body.map(|Json(value)| value).map_err(|_| {
+        HttpReply(
+            (
+                ReplyKind::InvalidInput,
+                json!({"error":"invalid JSON request body"}),
+            )
+                .into_reply(),
+        )
+    })
+}
+
 pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     serve_until(
         config,
@@ -268,12 +300,160 @@ fn routes(state: AppState) -> Router {
         .route("/api/v1/sessions/{id}/message-window", get(message_window))
         .route("/api/v1/sessions/{id}/run-timings/query", post(run_timings))
         .route(
+            "/api/v1/sessions/{id}/tool-program/children/query",
+            post(child_summaries),
+        )
+        .route(
+            "/api/v1/sessions/{id}/tool-program/phases/query",
+            post(child_phases),
+        )
+        .route(
+            "/api/v1/sessions/{id}/tool-program/body/query",
+            post(child_body),
+        )
+        .route(
+            "/api/v1/sessions/{id}/tool-program/snapshot",
+            post(child_snapshot),
+        )
+        .route(
+            "/api/v1/sessions/{id}/tool-program/events",
+            get(child_events),
+        )
+        .route(
             "/api/v1/sessions/{id}/durable",
             get(durable_state).post(durable_mutation),
         )
         .route("/api/v1/sessions/{id}/durable/events", get(durable_events))
         .route("/api/v1/sessions/{id}/events", get(events))
         .with_state(state)
+}
+
+async fn child_summaries(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    query: Result<Json<ChildPageQuery>, JsonRejection>,
+) -> Result<HttpReply, HttpReply> {
+    let query = strict_json(query)?;
+    Ok(typed_reply(
+        service::child_summaries(&state.backend, id, query).await,
+    ))
+}
+
+async fn child_phases(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    query: Result<Json<ChildPhaseQuery>, JsonRejection>,
+) -> Result<HttpReply, HttpReply> {
+    let query = strict_json(query)?;
+    Ok(typed_reply(
+        service::child_phases(&state.backend, id, query).await,
+    ))
+}
+
+async fn child_body(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    query: Result<Json<ChildBodyQuery>, JsonRejection>,
+) -> Result<HttpReply, HttpReply> {
+    let query = strict_json(query)?;
+    Ok(typed_reply(
+        service::child_body(&state.backend, id, query).await,
+    ))
+}
+
+async fn child_snapshot(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    query: Result<Json<ChildSnapshotQuery>, JsonRejection>,
+) -> Result<HttpReply, HttpReply> {
+    let query = strict_json(query)?;
+    Ok(typed_reply(
+        service::child_snapshot(&state.backend, id, query).await,
+    ))
+}
+
+// Reconnects deliberately establish a NEW bounded child snapshot. Ordinary
+// transcript SSE IDs and Last-Event-ID replay semantics are not changed.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChildEventQuery {}
+
+async fn child_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Query(_query): Query<ChildEventQuery>,
+) -> axum::response::Response {
+    let query = ChildSnapshotQuery {
+        children: ChildPageQuery {
+            leaf_id: None,
+            cursor: None,
+            direction: Direction::NewestFirst,
+            limit: 8,
+            max_bytes: 32768,
+        },
+        phase_limit: 8,
+    };
+    let subscription = match service::child_subscription(&state.backend, id, query).await {
+        Ok(subscription) => subscription,
+        Err(error) => return HttpReply(error.into_reply()).into_response(),
+    };
+    let initial = match child_snapshot_event(subscription.snapshot()) {
+        Ok(event) => event,
+        Err(_) => {
+            return typed_reply::<Value>(Err((
+                ReplyKind::Internal,
+                json!({"error":"child stream serialization failed"}),
+            )))
+            .into_response()
+        }
+    };
+    let updates = stream::unfold(Some(subscription), |subscription| async move {
+        let mut subscription = subscription?;
+        let item = subscription.next().await?;
+        match child_update_event(&item) {
+            Ok(event) => Some((Ok(event), Some(subscription))),
+            Err(_) => Some((
+                Ok(Event::default()
+                    .event("resync_required")
+                    .data("{\"code\":\"child_stream_serialization_failed\"}")),
+                None,
+            )),
+        }
+    });
+    let mut shutdown = state.shutdown;
+    Sse::new(
+        authorized_events(
+            stream::once(async move { Ok(initial) }).chain(updates),
+            state.security,
+            headers,
+        )
+        .take_until(async move {
+            if !*shutdown.borrow_and_update() {
+                let _ = shutdown.changed().await;
+            }
+        }),
+    )
+    .keep_alive(axum::response::sse::KeepAlive::default())
+    .into_response()
+}
+
+fn child_snapshot_event(snapshot: &service::ChildSnapshot) -> Result<Event, serde_json::Error> {
+    Ok(Event::default()
+        .event("tool_program_child_snapshot")
+        .id(snapshot.last_seq.to_string())
+        .data(serde_json::to_string(snapshot)?))
+}
+
+fn child_update_event(item: &ChildStreamItem) -> Result<Event, serde_json::Error> {
+    let (name, seq) = match item {
+        ChildStreamItem::Update { seq, .. } => ("tool_program_child_update", seq),
+        ChildStreamItem::ResyncRequired { seq, .. } => ("resync_required", seq),
+    };
+    Ok(Event::default()
+        .event(name)
+        .id(seq.to_string())
+        .data(serde_json::to_string(item)?))
 }
 
 async fn project_metadata(
@@ -1026,6 +1206,116 @@ fn to_sse(mut event: BufferedEvent) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn child_sse_preserves_independent_snapshot_boundary_and_typed_updates() {
+        use service::{
+            tool_program_live::ChildResyncReason, tool_program_snapshot::ReplayDisposition,
+        };
+        let snapshot: service::ChildSnapshot = serde_json::from_value(json!({
+            "sessionId":"session","lane":"main","page":{"leafId":null,"children":[],
+            "nextCursor":null,"scanExhausted":true},"phases":[],"observations":[],
+            "startSeq":3,"lastSeq":7,"events":[],"resyncRequired":false
+        }))
+        .unwrap();
+        let child = "tpchild-11111111-1111-4111-8111-111111111111";
+        let event = serde_json::from_value(json!({"type":"tool_program_child_begin", "schemaVersion":1,
+            "sourceSessionId":"session","lane":"main","entryId":child,"parentEntryId":null,
+            "seq":100,"customType":"rpi.tool_program.child_begin.v1","data":{"version":1,
+            "childId":child,"origin":{"runId":"run","assistantEntryId":"assistant","toolIndex":0},
+            "rootCallId":"call","rootToolName":"program","toolName":"read","ordinal":0,"parentChildId":null}
+        })).unwrap();
+        let update = ChildStreamItem::Update {
+            seq: 8,
+            event: Box::new(event),
+            observation: None,
+            disposition: ReplayDisposition::Applied,
+        };
+        let resync = ChildStreamItem::ResyncRequired {
+            seq: 9,
+            reason: ChildResyncReason::Lagged,
+        };
+        let frames = vec![
+            child_snapshot_event(&snapshot).unwrap(),
+            child_update_event(&update).unwrap(),
+            child_update_event(&resync).unwrap(),
+        ];
+        let response =
+            Sse::new(stream::iter(frames.into_iter().map(Ok::<_, Infallible>))).into_response();
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), 32768)
+            .await
+            .unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        let frames: Vec<_> = text.trim_end().split("\n\n").collect();
+        assert_eq!(frames.len(), 3);
+        for (frame, name, seq, expected) in [
+            (
+                frames[0],
+                "tool_program_child_snapshot",
+                7,
+                serde_json::to_value(&snapshot).unwrap(),
+            ),
+            (
+                frames[1],
+                "tool_program_child_update",
+                8,
+                serde_json::to_value(&update).unwrap(),
+            ),
+            (
+                frames[2],
+                "resync_required",
+                9,
+                serde_json::to_value(&resync).unwrap(),
+            ),
+        ] {
+            assert!(frame.lines().any(|line| line == format!("event: {name}")));
+            assert!(frame.lines().any(|line| line == format!("id: {seq}")));
+            let data = frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap();
+            assert_eq!(serde_json::from_str::<Value>(data).unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_child_results_preserve_json_and_existing_status_mapping() {
+        use service::tool_program_queries::ChildPage;
+
+        let page = ChildPage {
+            leaf_id: Some("leaf".into()),
+            children: vec![],
+            next_cursor: None,
+            scan_exhausted: true,
+        };
+        let expected = serde_json::to_value(&page).unwrap();
+        let response = typed_reply(Ok(page)).into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "application/json");
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
+
+        for (kind, status) in [
+            (ReplyKind::InvalidInput, 400),
+            (ReplyKind::NotFound, 404),
+            (ReplyKind::Conflict, 409),
+            (ReplyKind::LimitExceeded, 413),
+            (ReplyKind::Unsupported, 501),
+            (ReplyKind::HostUnavailable, 502),
+            (ReplyKind::Timeout, 504),
+        ] {
+            let value = json!({"error":"neutral core error","code":"test_code"});
+            let response = typed_reply::<ChildPage>(Err((kind, value.clone()))).into_response();
+            assert_eq!(response.status().as_u16(), status);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), value);
+        }
+    }
 
     #[test]
     fn durable_requests_map_to_protocol_neutral_mutations() {

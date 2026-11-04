@@ -356,5 +356,21 @@ fn spool_capture_bounds_overflow_deadline_and_inherited_descriptor_lifetime() {
     assert!(path.exists());
     drop(spool);
     assert!(!path.exists());
-    std::fs::remove_dir_all(root).unwrap();
+    // A Windows job can terminate the descendant before the kernel releases
+    // its inherited directory handle. Retry only that sharing violation with a
+    // bounded wait; other cleanup failures must still fail the test.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::fs::remove_dir_all(&root) {
+            Ok(()) => break,
+            Err(error)
+                if cfg!(windows)
+                    && error.raw_os_error() == Some(32)
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("remove test tree: {error}"),
+        }
+    }
 }

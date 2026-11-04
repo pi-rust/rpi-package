@@ -1,6 +1,19 @@
 //! Session and workspace operations shared by protocol adapters.
 pub use crate::run_timing::RunTimingsQuery;
 mod message_queries;
+mod tool_program_access;
+pub mod tool_program_events;
+pub mod tool_program_live;
+pub use tool_program_live::{child_subscription, child_subscription_for_host};
+pub mod tool_program_queries;
+pub mod tool_program_snapshot;
+pub use tool_program_queries::{
+    child_body, child_body_for_host, child_phases, child_phases_for_host, child_summaries,
+    child_summaries_for_host,
+};
+pub use tool_program_snapshot::{
+    child_snapshot, child_snapshot_for_host, ChildSnapshot, ChildSnapshotQuery,
+};
 mod resources;
 mod retirement;
 #[cfg(test)]
@@ -926,7 +939,7 @@ async fn fork_session_owned(
         )
             .into_reply();
     };
-    if actual_id.is_empty()
+    if !tool_program_queries::valid_id(&actual_id)
         || state.registry.read().await.get(&actual_id).is_some()
         || state.sessions.read().await.contains_key(&actual_id)
     {
@@ -934,6 +947,16 @@ async fn fork_session_owned(
         return (
             ReplyKind::HostUnavailable,
             json!({"error":"forked host returned an existing or invalid session id"}),
+        )
+            .into_reply();
+    }
+    // Native --fork does not consume requested_id. Bind its validated readback
+    // once, before publishing this owner under the actual destination ID.
+    if session.finalize_fork_destination(&actual_id).is_err() {
+        session.shutdown().await;
+        return (
+            ReplyKind::HostUnavailable,
+            json!({"error":"forked host destination identity unavailable"}),
         )
             .into_reply();
     }
@@ -1616,6 +1639,13 @@ pub fn replay_gap(after: Option<u64>, first: Option<u64>, latest: u64) -> bool {
     after.is_some_and(|after| {
         after > latest || first.is_some_and(|first| after.saturating_add(1) < first)
     })
+}
+
+#[cfg(test)]
+impl Service {
+    pub(crate) async fn test_register_host(&self, id: &str, host: Arc<HostSession>) {
+        self.sessions.write().await.insert(id.to_owned(), host);
+    }
 }
 
 #[cfg(test)]
