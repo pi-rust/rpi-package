@@ -47,7 +47,10 @@ is claimed. This focused review is not independent final approval.
   whole-workspace formatting or CI-green claim.
 - Actual Windows native → HTTP recovered reads and initial child SSE:
   `target/codemode-http-child-native-6/results.json` — **26 sessions / 70 children /
-  38 selected / 2,374 body chunks / zero execution events**. This is not ongoing
+  38 selected / 2,374 body chunks / zero execution events**. The same run observed
+  zero post-ACK child events after the subscription boundary and only initial SSE
+  snapshots; the explicit blocked qualification is recorded in
+  `target/codemode-native-live-overlap-blocked.json`. This is not ongoing
   live-native/core overlap or installed Web backend proof.
 - Actual Windows stdio ACP bridge → launcher → frozen native:
   `target/codemode-acp-child-native-11/results.json` — **26 sessions / 70 children /
@@ -55,7 +58,8 @@ is claimed. This focused review is not independent final approval.
   checks. Prebuild source inventory, Cargo artifact and all binary hashes are in
   `target/codemode-acp-child-native-build-11/`. Source/copied primaries and progress
   sidecars remained unchanged. First-chunk coverage is not full-body aggregate
-  integrity; there is no ACP live-notification proof.
+  integrity; the frozen read-only path provides no post-ACK live event to map into
+  ACP, so no non-standard ACP live notification contract is advertised.
 - Frozen native stays SHA-256
   `559fd48b57dc671865205d5a8f1bb5ec6caad69628cb3bbfa3c6e838f8c9bfc7`.
   No installed/production binary was replaced or restarted. Proof launchers only
@@ -96,12 +100,16 @@ termination 1; missing/incomplete wrapper receipts remain explicit. This is not
 an all-system-console audit or graceful native-shutdown claim. Preliminary failed
 runs 1–8 remain retained; earlier non-final passes are not substituted for run 10.
 
-**Remaining:** real-native ongoing adapter overlap/branch/generation qualification,
-ACP live child notification/presentation (not advertised by these read-only RPCs),
-and final integration review. The targeted actual-native Web recovery is now
-qualified only for the bounded one-session proof above. Protected self/ancestor
-policy remains unchanged. Unix/live-provider, installed-runtime, production,
-CI-green and full-parity qualification remain absent.
+**Blocked by frozen native read-only boundary:** real-native ongoing adapter
+live overlap/branch/generation qualification cannot be demonstrated because the
+fresh subscription run emits no post-ACK child events without executing or
+replaying a program (`target/codemode-native-live-overlap-blocked.json`). ACP
+live child notification/presentation likewise has no standard typed subscription
+contract or native frames to map, so it remains intentionally unadvertised.
+Final integration review is recorded below; the targeted actual-native Web
+recovery is qualified only for the bounded one-session proof above. Protected
+self/ancestor policy remains unchanged. Unix/live-provider, installed-runtime,
+production, CI-green and full-parity qualification remain absent.
 
 ## Latest neutral child snapshot and replay integration
 
