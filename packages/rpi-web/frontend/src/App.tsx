@@ -95,6 +95,8 @@ import { useRunTimings, timingByRow } from "./useRunTimings";
 import { groupTodoUpdates, isTodoTool } from "./todoGroups";
 import { RunElapsed } from "./RunElapsed";
 import { ExecutionTrace } from "./ExecutionTracePanel";
+import { ToolProgramChildren, ToolProgramProvider } from "./ToolProgramChildren";
+import { parentToolCallId } from "./toolProgram";
 import { useExecutionTrace } from "./useExecutionTrace";
 import { traceView } from "./executionTrace";
 import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
@@ -1265,6 +1267,7 @@ export default function App() {
         case "tool_execution_start":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               args: event.args,
               timing: toolTiming(event.webTiming),
@@ -1275,6 +1278,7 @@ export default function App() {
         case "tool_execution_update":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               args: event.args,
               result: event.partialResult,
@@ -1287,6 +1291,7 @@ export default function App() {
         case "tool_execution_end":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               result: event.result,
               images: imageBlocksOf(event.result),
@@ -3996,6 +4001,7 @@ export default function App() {
 
                 <ProjectImageContext.Provider value={project}>
                   <ToolNameModeContext.Provider value={toolNameMode}>
+                    <ToolProgramProvider key={`${traceBinding}:${historical.active}:${historical.target?.entryId ?? ""}:${historical.page?.firstId ?? ""}`} sessionId={sessionId} enabled={!loadingSession && !connectionFailed}>
                     {displayedRows.map((row) => {
                       // A historical window may begin mid-run, without all run
                       // boundaries. Keep every update visible instead of folding
@@ -4014,12 +4020,16 @@ export default function App() {
                               language={language}
                             />
                           )}
+                          {group !== null && row.kind === "tool" && parentToolCallId(row) && (
+                            <ToolProgramChildren rootCallId={parentToolCallId(row)!} rootToolName={row.name} language={language} />
+                          )}
                           {runFooters.get(row.id)?.map((timing) => (
                             <RunElapsed key={timing.runId} timing={timing} language={language} />
                           ))}
                         </div>
                       );
                     })}
+                    </ToolProgramProvider>
                   </ToolNameModeContext.Provider>
                 </ProjectImageContext.Provider>
 

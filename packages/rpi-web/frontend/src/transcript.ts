@@ -475,6 +475,8 @@ type RowContent =
   | {
       kind: "tool";
       id: string;
+      /** Observed native ID only; row IDs may contain synthetic fallbacks. */
+      nativeToolCallId?: string;
       name: string;
       args?: unknown;
       result?: unknown;
@@ -558,6 +560,7 @@ export function rowsFromAssistant(
       rows.push({
         kind: "tool",
         id: `call-${callId}`,
+        nativeToolCallId: callId,
         name: String(block.name ?? "tool"),
         args: block.arguments,
         status: (block.webTiming as { running?: boolean } | undefined)?.running
@@ -646,6 +649,7 @@ export function rowsFromMessages(raw: unknown[]): Row[] {
       rows.push({
         kind: "tool",
         id,
+        nativeToolCallId: typeof message.toolCallId === "string" ? message.toolCallId : undefined,
         name: String(message.toolName ?? "tool"),
         result: resultOf(message),
         images: imageBlocksOf(message),
@@ -703,6 +707,7 @@ export function prependRows(older: Row[], current: Row[]): Row[] {
     if (candidate.kind !== "tool" || row.kind !== "tool") continue;
     merged[existing] = {
       ...candidate,
+      nativeToolCallId: row.nativeToolCallId ?? candidate.nativeToolCallId,
       name: row.name !== "tool" ? row.name : candidate.name,
       args: row.args ?? candidate.args,
       result: row.result ?? candidate.result,
@@ -724,6 +729,7 @@ export function upsertTool(
   rows: Row[],
   id: string,
   patch: {
+    nativeToolCallId?: string;
     name?: string;
     args?: unknown;
     result?: unknown;
@@ -742,6 +748,7 @@ export function upsertTool(
       {
         kind: "tool",
         id: rowId,
+        nativeToolCallId: patch.nativeToolCallId,
         name: patch.name ?? "tool",
         args: patch.args,
         result: patch.result,
@@ -756,6 +763,7 @@ export function upsertTool(
   if (row.kind === "tool") {
     next[index] = {
       ...row,
+      nativeToolCallId: patch.nativeToolCallId ?? row.nativeToolCallId,
       name: patch.name ?? row.name,
       args: patch.args ?? row.args,
       result: patch.result ?? row.result,
