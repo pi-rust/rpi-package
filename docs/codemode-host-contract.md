@@ -8,6 +8,37 @@ implemented; full parity remains incomplete**. See the
 [status matrix](codemode-full-parity-matrix.md) for qualification and remaining work.
 The native SDK ABI/layout and published `rpi-plugin-sdk = 0.3.20` pin are unchanged.
 
+## Latest native result-codec follow-up (child-history groundwork)
+
+The uncommitted native follow-up adds camelCase `Serialize` for `AgentToolResult` and
+untagged `Serialize` for `TextContentOrImage`. ToolProgram reference mode now
+serializes the borrowed native result without an intermediate payload `Value`;
+native RPC uses the same canonical serializer, fixing dropped optional
+`textSignature` in `ToolExecutionUpdate` / `ToolExecutionEnd`. The native field
+is `Option<String>`: even JSON-formatted signature strings retain their exact
+string bytes, not a parsed/reformatted object. Result wire fields are unchanged
+except this additive optional RPC field. Reference JSON now follows canonical
+struct field order; byte-identical object-key order across the upgrade is **not**
+promised. No `Deserialize` or new authority is added; `isError` remains external
+to the result and host-authoritative. Native SDK ABI/layout and the Code Mode
+DLL/source are unchanged; that DLL was not rebuilt for this follow-up.
+
+This is a codec foundation for a **future native child journal**, not a fourth
+history increment or full child-history parity. Actual child events/records,
+bounded history/query/replay/recovery, neutral core/adapter integration and UI
+remain pending. No install, deployment or running-service upgrade is implied.
+
+Latest Windows evidence:
+`pi-rust-codemode/target/codemode-native-codec-smoke-2/{results.json,provenance.json}`: **59 cases PASSED, all true**, with all four
+artifact hashes verified. SDK/agent/extensions/harness passed **1,128 tests,
+0 failed, 6 ignored, twice**; focused CLI protocol tests passed **8** (not the
+full CLI suite). Package **124 tests and strict all-target Clippy remain passing**
+from unchanged package evidence; **native strict Clippy is blocked**, not green.
+See the [latest matrix checkpoint](codemode-full-parity-matrix.md#latest-native-result-codec-follow-up-child-history-groundwork)
+for hashes, logs, focused codec checks and native lint blockers. The earlier
+third-increment 59-case / 1,123-test evidence and `5dba…` host hash are
+historical, not qualification of the rebuilt host.
+
 ## Native invocation and operations
 
 The existing runtime action is `RuntimeActionId::ToolProgram = 30`, protocol v1.
