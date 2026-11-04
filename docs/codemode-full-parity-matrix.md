@@ -65,8 +65,14 @@ is claimed. This focused review is not independent final approval.
   identity, explicit pages/fragments, new-leaf overlay body reads, independent SSE,
   reconnect/reload, auth/errors and navigation cancellation. **134 related local
   trace/session/timeline regressions** pass. Public CSS HMR and its exact restoration
-  were observed (`target/codemode-web-child-public-hmr.json` in dev). These browser
-  tests mock the API; they do not establish real-native ongoing Web behavior.
+  were observed (`target/codemode-web-child-public-hmr.json` in dev). A separate
+  targeted actual-native Web recovery also passed through a local `rpi-http` server,
+  Vite proxy and real Chromium frontend: one frozen-native saved session rendered,
+  the child inspector opened, and the browser issued the bounded snapshot request
+  without execution or replay (`D:/Projects/rpi-package-dev/target/codemode-web-native-local/results.json`).
+  This is one Windows read-only recovery session, not ongoing native live overlap,
+  full-body aggregate coverage, Unix/provider behavior, installed-runtime behavior,
+  or production qualification.
 - All six unrelated dev edits remain preserved: five files byte-exact to baseline,
   and App.tsx's inverse task patch matches its original canonical baseline. Only
   task-specific files/hunks are committed/transplanted; no reset or sweep.
@@ -92,9 +98,10 @@ runs 1–8 remain retained; earlier non-final passes are not substituted for run
 
 **Remaining:** real-native ongoing adapter overlap/branch/generation qualification,
 ACP live child notification/presentation (not advertised by these read-only RPCs),
-actual-native end-to-end Web recovery and final integration review. Protected
-self/ancestor policy remains unchanged. Unix/live-provider, installed-runtime,
-production, CI-green and full-parity qualification remain absent.
+and final integration review. The targeted actual-native Web recovery is now
+qualified only for the bounded one-session proof above. Protected self/ancestor
+policy remains unchanged. Unix/live-provider, installed-runtime, production,
+CI-green and full-parity qualification remain absent.
 
 ## Latest neutral child snapshot and replay integration
 
@@ -581,7 +588,7 @@ Historical second-increment evidence files:
 | --- | --- |
 | Complete native child events | Preserve original bounded child identity/order/updates/content/final events and cancellation/late-event behavior without credential leaks. |
 | Bounded native history/query/replay/recovery | Native transcript authority, bounded resumable reads, exact finalized outcomes, interruption/restart and snapshot/live sequence continuity. Audit markers and bounded final smoke snapshots are insufficient. Never replay uncertain effects. |
-| extcore / HTTP / ACP / Web | Typed core/HTTP/ACP reads, dedicated core/HTTP live feed and frontend cards/reconnect/reload are implemented and locally qualified above. Real-native ongoing overlap, ACP live child notifications and actual-native end-to-end Web acceptance remain; mocked public browser tests/HMR are not that proof. |
+| extcore / HTTP / ACP / Web | Typed core/HTTP/ACP reads, dedicated core/HTTP live feed and frontend cards/reconnect/reload are implemented and locally qualified above. A targeted actual-native Web read-only recovery is also recorded, but real-native ongoing overlap and ACP live child notifications remain; the one-session browser proof and mocked public browser tests/HMR are not full parity or production qualification. |
 | Protected recursion/self/ancestors | Explicit approval and tested authority/lifecycle/recursion policy; current exclusion prevents unrestricted full-toolset parity. |
 | Wider real integration | Linux/macOS real native execution, live providers, reload races and separately identified installed binaries require fresh evidence. Local Windows fixture-provider success is not those claims. |
 
