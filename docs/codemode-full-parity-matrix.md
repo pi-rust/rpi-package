@@ -11,18 +11,21 @@ are historical evidence, not claims that their then-remaining work is still abse
 
 Implemented: core host-bound typed child queries/snapshot and caller-owned live
 subscription; thin HTTP typed POSTs and a separate snapshot-first child SSE feed;
-four optional ACP read-only typed RPCs with bounded asynchronous request tasks;
-frontend-owned child cards, explicit pagination/body fragments and fresh bounded
-reconnect/reload. Native transcripts and execution remain native-owned. No tool
-execution/replay, adapter transcript database, hidden body/history scan or changed
-SDK 0.3.20/ABI, auth/permissions/accounting/termination/recursion policy.
+four optional ACP read-only typed RPCs with bounded asynchronous request tasks plus
+an optional ACP `rpi` live subscription extension; frontend-owned child cards,
+explicit pagination/body fragments and fresh bounded reconnect/reload. Native
+transcripts and execution remain native-owned. No tool execution/replay, adapter
+transcript database, hidden body/history scan or changed SDK 0.3.20/ABI,
+auth/permissions/accounting/termination/recursion policy.
 
 The live subscription preserves its initial pinned pages/cursors, validates source
 and identities, and performs bounded fresh branch proof before each child delivery.
 Lag, conflicting/evicted facts, branch changes and uncertain proof terminate with
-explicit resync. ACP's 64-task connection registry keeps ordinary requests and
-cancellation responsive; dropping a query retires its correlation, not the host.
-ACP advertises **only four read-only methods**, not live child notifications.
+explicit resync. ACP's 64-task query registry and 16-subscription connection
+registry keep ordinary requests and cancellation responsive; dropping a query or
+subscription retires its correlation, not the host. The live ACP extension is
+explicitly vendor-scoped and uses `session/tool_program_update`, not standard
+`session/update`.
 
 Two P2 review counterexamples were fixed: native forks finalize their actual
 native-selected destination from existing get_state readback exactly once rather
@@ -34,9 +37,12 @@ is claimed. This focused review is not independent final approval.
 
 ### Evidence and limitations
 
-- Default core/HTTP/ACP/Web Rust regression: **621 passed / 0 failed / 5 ignored**,
-  `target/codemode-child-adapters-current-1.log`. The focused live proof now also
-  covers every selected begin, including a selected child with no phase facts. The first run encountered
+- Default core/HTTP/ACP/Web Rust regression before this ACP-only extension: **621
+  passed / 0 failed / 5 ignored**, `target/codemode-child-adapters-current-1.log`.
+  The focused live proof now also covers every selected begin, including a selected
+  child with no phase facts. The ACP live extension adds a focused **213 passed / 0
+  failed** ACP lib run (including snapshot-first, duplicate-subscription and
+  unsubscribe-race coverage). The first run encountered
   the previously observed unchanged catalog duplicate-header test failure; its
   isolated rerun and subsequent full runs passed. Preserve that failure in
   `target/codemode-child-adapters-parent-final-1.log`, not a clean-first-run claim.
@@ -59,7 +65,8 @@ is claimed. This focused review is not independent final approval.
   `target/codemode-acp-child-native-build-11/`. Source/copied primaries and progress
   sidecars remained unchanged. First-chunk coverage is not full-body aggregate
   integrity; the frozen read-only path provides no post-ACK live event to map into
-  ACP, so no non-standard ACP live notification contract is advertised.
+  the newly implemented optional ACP extension, so real-native ACP live delivery
+  remains unqualified.
 - Frozen native stays SHA-256
   `559fd48b57dc671865205d5a8f1bb5ec6caad69628cb3bbfa3c6e838f8c9bfc7`.
   No installed/production binary was replaced or restarted. Proof launchers only
@@ -103,9 +110,10 @@ runs 1–8 remain retained; earlier non-final passes are not substituted for run
 **Blocked by frozen native read-only boundary:** real-native ongoing adapter
 live overlap/branch/generation qualification cannot be demonstrated because the
 fresh subscription run emits no post-ACK child events without executing or
-replaying a program (`target/codemode-native-live-overlap-blocked.json`). ACP
-live child notification/presentation likewise has no standard typed subscription
-contract or native frames to map, so it remains intentionally unadvertised.
+replaying a program (`target/codemode-native-live-overlap-blocked.json`). The
+optional ACP live child notification contract is now implemented and
+fixture-tested, but this frozen read-only path supplies no native frames to map
+into it, so real-native ACP live delivery remains explicitly unqualified.
 Final integration review is recorded below; the targeted actual-native Web
 recovery is qualified only for the bounded one-session proof above. Protected
 self/ancestor policy remains unchanged. Unix/live-provider, installed-runtime,
@@ -164,9 +172,9 @@ Qualification of this core increment:
   cancelled-response fixture initially unwrapped expected no-subscriber delivery;
   corrected fixture behavior retains the cancellation/isolation assertion.
 
-**Remaining:** thin HTTP/ACP typed queries/events, ongoing live projection and
-real-native core-to-adapter overlap acceptance, approved dev frontend child
-cards/reload/reconnect/HMR and final integration. Frontend's six unrelated edits
+**Remaining:** real-native core-to-adapter live-overlap acceptance (including
+ACP delivery), approved dev frontend child cards/reload/reconnect/HMR and final
+integration. Frontend's six unrelated edits
 remain untouched. No live-provider, Unix runtime, installed-binary upgrade,
 production restart, deployment, merge, CI-green or full-parity claim.
 
@@ -596,7 +604,7 @@ Historical second-increment evidence files:
 | --- | --- |
 | Complete native child events | Preserve original bounded child identity/order/updates/content/final events and cancellation/late-event behavior without credential leaks. |
 | Bounded native history/query/replay/recovery | Native transcript authority, bounded resumable reads, exact finalized outcomes, interruption/restart and snapshot/live sequence continuity. Audit markers and bounded final smoke snapshots are insufficient. Never replay uncertain effects. |
-| extcore / HTTP / ACP / Web | Typed core/HTTP/ACP reads, dedicated core/HTTP live feed and frontend cards/reconnect/reload are implemented and locally qualified above. A targeted actual-native Web read-only recovery is also recorded, but real-native ongoing overlap and ACP live child notifications remain; the one-session browser proof and mocked public browser tests/HMR are not full parity or production qualification. |
+| extcore / HTTP / ACP / Web | Typed core/HTTP/ACP reads, dedicated core/HTTP live feed, optional ACP live subscription and frontend cards/reconnect/reload are implemented and locally qualified above. A targeted actual-native Web read-only recovery is also recorded, but real-native ongoing overlap and ACP live delivery remain unqualified; the one-session browser proof and mocked public browser tests/HMR are not full parity or production qualification. |
 | Protected recursion/self/ancestors | Explicit approval and tested authority/lifecycle/recursion policy; current exclusion prevents unrestricted full-toolset parity. |
 | Wider real integration | Linux/macOS real native execution, live providers, reload races and separately identified installed binaries require fresh evidence. Local Windows fixture-provider success is not those claims. |
 

@@ -51,6 +51,8 @@ mod protocol_response_progress_tests;
 #[cfg(test)]
 #[path = "protocol_tool_program_tests.rs"]
 mod protocol_tool_program_tests;
+#[path = "tool_program_live.rs"]
+mod tool_program_live;
 #[path = "tool_program_queries.rs"]
 mod tool_program_queries;
 
@@ -529,7 +531,9 @@ pub fn initialize_result() -> Value {
         "agentCapabilities": {
             "_meta": {
                 "pi-rust/questions": 1,
-                "rpi/tool-program-children": tool_program_queries::capability(),
+                "rpi/tool-program-children": tool_program_queries::capability_with_live(
+                    tool_program_live::capability(),
+                ),
                 "rpi/durable": {
                     "version": 1,
                     "optional": true,
@@ -1105,6 +1109,7 @@ where
     let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut list_tasks = crate::session_list::ListTasks::new(list_root);
     let mut query_tasks = tool_program_queries::QueryTasks::default();
+    let live_tasks = tool_program_live::SubscriptionRegistry::default();
 
     // Why the loop ended, reported once at the bottom. Zed forwards agent stderr
     // into its own log, so this is what turns "transport closed" into a cause.
@@ -1170,6 +1175,7 @@ where
             if prompt_tasks.contains_key(&key)
                 || list_tasks.contains(&key)
                 || query_tasks.contains(&key)
+                || live_tasks.contains_request(&key).await
             {
                 writer
                     .respond_error(id, -32600, "duplicate request id")
@@ -1337,6 +1343,14 @@ where
                 query_tasks
                     .start(writer.clone(), &sessions, id, method, params)
                     .await;
+            }
+            (Some(id), tool_program_live::SUBSCRIBE_METHOD) => {
+                live_tasks
+                    .start(writer.clone(), &sessions, id, params)
+                    .await;
+            }
+            (Some(id), tool_program_live::UNSUBSCRIBE_METHOD) => {
+                live_tasks.unsubscribe(&writer, &id, params).await;
             }
             (Some(id), "session/durable") => {
                 let params = match request_params(&params, "session/durable") {
@@ -1749,6 +1763,7 @@ where
                     }
                 };
                 query_tasks.cancel_session(&session_id).await;
+                live_tasks.cancel_session(&session_id).await;
                 let live = stop_live_session(
                     &session_id,
                     &sessions,
@@ -1818,7 +1833,8 @@ where
                 };
                 let list_found = list_tasks.cancel(&key);
                 let query_found = query_tasks.cancel(&key).await;
-                if !prompt_found && !list_found && !query_found {
+                let live_found = live_tasks.cancel_request(&key).await;
+                if !prompt_found && !list_found && !query_found && !live_found {
                     if let Some(numeric_id) = request_id.as_u64() {
                         writer.cancel_request(numeric_id).await;
                     }
@@ -1845,6 +1861,7 @@ where
                     }
                 };
                 query_tasks.cancel_session(&session_id).await;
+                live_tasks.cancel_session(&session_id).await;
                 let sessions_session = sessions.lock().await.get(&session_id).cloned();
                 if let Some(session) = sessions_session {
                     let _ = session.abort().await;
@@ -1869,6 +1886,7 @@ where
 
     // Drop query futures/correlations before retiring any shared native host.
     query_tasks.shutdown().await;
+    live_tasks.shutdown().await;
     // Retain existing best-effort list completions on EOF. ListTasks owns
     // terminal cancellation of its writes; FrameWrite closes a partial stream.
     list_tasks.shutdown().await;

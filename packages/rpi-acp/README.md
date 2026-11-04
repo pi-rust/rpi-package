@@ -403,11 +403,30 @@ remain owned by [extcore](../rpi-extcore/README.md).
 Adapter availability at initialize does not claim a native profile. Every read
 checks the existing host through core; older/incompatible hosts fail explicitly.
 Snapshot additionally requires core's exact native child-event profile to validate
-its bounded metadata/replay boundary. This descriptor **does not advertise child
-notifications, live child cards or an ACP subscription method**. Snapshot sequence
-fields alone do not create an ACP live feed. Summary state remains `unknown`;
-scan exhaustion is not child settlement, and returned body chunks do not verify
-unread chunks or whole-body integrity.
+its bounded metadata/replay boundary. The descriptor also contains an optional
+`live` object (`snapshotFirst: true`, `maxSubscriptions: 16`) advertising the
+vendor methods `session/tool_program_subscribe` and
+`session/tool_program_unsubscribe`, plus the notification
+`session/tool_program_update`. These are deliberately not standard
+`session/update` messages: clients must opt into the `rpi` metadata contract.
+
+Subscribe params add a caller-owned `subscriptionId` to the same typed snapshot
+query. The response contains the bounded snapshot before any update notification
+is emitted. Every later notification has `{sessionId, subscriptionId, update}`;
+`update` is a typed child update or a terminal `resyncRequired` item from core.
+Lag, branch/generation changes, host replacement/closure, invalid native events,
+or native resync end the subscription with an explicit resync reason. The client
+must issue a fresh bounded subscription after resynchronizing; the adapter never
+fabricates a child event or silently resumes from an uncertain cursor.
+
+Subscriptions belong to one ACP connection and are capped at 16. Duplicate
+subscription IDs, wrong-session unsubscribe requests, malformed envelopes and
+unknown fields are rejected. `$/cancel_request`, `session/cancel`, close/delete,
+EOF and shutdown cancel and join pending snapshot work and live watchers before
+retiring the session or connection. The optional feed does not execute tools,
+create a transcript owner or change standard ACP `session/update` semantics.
+Summary state remains `unknown`; scan exhaustion is not child settlement, and
+returned body chunks do not verify unread chunks or whole-body integrity.
 
 Core `InvalidInput`/`NotFound` map to JSON-RPC `-32602`; other core failures map to
 `-32001`. Typed core failures include bounded, sanitized `error.data.code` (for

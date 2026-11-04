@@ -23,6 +23,12 @@ pub(super) fn capability() -> Value {
     json!({"version":1,"optional":true,"recovery":"readOnly","methods":METHODS})
 }
 
+pub(super) fn capability_with_live(live: Value) -> Value {
+    let mut capability = capability();
+    capability["live"] = live;
+    capability
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Request<Q> {
@@ -94,7 +100,7 @@ fn map_reply_kind(kind: ReplyKind) -> (i64, &'static str) {
 
 // Preserve known neutral-core diagnostics/codes, never arbitrary native output
 // or adapter debug strings. New core diagnostics get a safe bounded fallback.
-fn error_value((kind, value): ServiceError) -> Value {
+pub(super) fn error_value((kind, value): ServiceError) -> Value {
     let (code, name) = map_reply_kind(kind);
     let message = value["error"]
         .as_str()

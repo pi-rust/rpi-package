@@ -179,6 +179,18 @@ impl Session {
         .await
     }
 
+    pub(crate) async fn tool_program_subscription(
+        &self,
+        query: rpi_extcore::service::tool_program_snapshot::ChildSnapshotQuery,
+    ) -> rpi_extcore::reply::ServiceResult<rpi_extcore::service::tool_program_live::ChildSubscription>
+    {
+        rpi_extcore::service::tool_program_live::child_subscription_for_host(
+            self.rpc.clone(),
+            query,
+        )
+        .await
+    }
+
     async fn send(&self, value: Value) -> Result<(), String> {
         self.rpc.notify(value).await
     }

@@ -59,12 +59,14 @@ struct Fixture {
     session: Arc<Session>,
     requests: Arc<StdMutex<Vec<Value>>>,
     reject: Arc<std::sync::atomic::AtomicBool>,
+    events: rpi_extcore::host::TestEvents,
     worker: tokio::task::JoinHandle<()>,
 }
 impl Fixture {
     async fn new(ready: Value) -> Self {
         let (writer, peer) = tokio::io::duplex(65536);
         let (host, events) = HostSession::test_connection_with_ready(writer, 64, ready);
+        let response_events = events.clone();
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let recorded = requests.clone();
         let reject = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -95,7 +97,7 @@ impl Fixture {
                     };
                     json!({"type":"response","id":request["id"],"success":true,"data":data})
                 };
-                if events.send(response).is_err() {
+                if response_events.send(response).is_err() {
                     break;
                 }
             }
@@ -104,6 +106,7 @@ impl Fixture {
             session: Session::attach_for_test(host).await.unwrap(),
             requests,
             reject,
+            events,
             worker,
         }
     }
@@ -234,6 +237,77 @@ async fn dispatcher_projects_all_four_typed_reads_without_client_capability() {
 }
 
 #[tokio::test]
+async fn live_child_subscription_is_snapshot_first_and_unsubscribes_cleanly() {
+    let fixture = Fixture::new(ready()).await;
+    let events = fixture.events.clone();
+    connection(&fixture, |mut client| async move {
+        let response = client
+            .request(
+                40,
+                tool_program_live::SUBSCRIBE_METHOD,
+                json!({
+                    "sessionId": SESSION,
+                    "subscriptionId": "sub-1",
+                    "query": queries()[3],
+                }),
+            )
+            .await;
+        assert_eq!(response["result"]["sessionId"], SESSION);
+        assert_eq!(response["result"]["subscriptionId"], "sub-1");
+        assert_eq!(response["result"]["snapshot"]["events"], json!([]));
+
+        let duplicate = client
+            .request(
+                42,
+                tool_program_live::SUBSCRIBE_METHOD,
+                json!({
+                    "sessionId": SESSION,
+                    "subscriptionId": "sub-1",
+                    "query": queries()[3],
+                }),
+            )
+            .await;
+        assert_eq!(duplicate["error"]["code"], -32602);
+        assert_eq!(duplicate["error"]["message"], "duplicate subscriptionId");
+
+        events
+            .send_projected(json!({
+                "type":"tool_program_child_begin", "schemaVersion":1,
+                "sourceSessionId":SESSION, "lane":"main", "entryId":CHILD,
+                "parentEntryId":null, "seq":10,
+                "customType":"rpi.tool_program.child_begin.v1",
+                "data":{"version":1, "childId":CHILD,
+                    "origin":{"runId":"run","assistantEntryId":"assistant","toolIndex":0},
+                    "rootCallId":"call", "rootToolName":"program", "toolName":"read",
+                    "ordinal":0, "parentChildId":null}
+            }))
+            .await;
+        let line = tokio::time::timeout(Duration::from_secs(3), client.output.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let notification: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            notification["method"],
+            tool_program_live::NOTIFICATION_METHOD
+        );
+        assert_eq!(notification["params"]["subscriptionId"], "sub-1");
+        assert!(notification["params"]["update"].is_object());
+
+        let unsubscribed = client
+            .request(
+                41,
+                tool_program_live::UNSUBSCRIBE_METHOD,
+                json!({"sessionId":SESSION,"subscriptionId":"sub-1"}),
+            )
+            .await;
+        assert_eq!(unsubscribed["result"], json!({}));
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn strict_params_cursors_and_bounds_reject_before_native_write() {
     let fixture = Fixture::new(ready()).await;
     let mut cases = vec![];
@@ -356,23 +430,52 @@ async fn unknown_session_legacy_method_and_initialize_remain_compatible() {
     let fixture = Fixture::new(ready()).await;
     connection(&fixture, |mut client| async move {
         for (id, q) in queries().into_iter().enumerate() {
-            let frame = client.request(id as u64, tool_program_queries::METHODS[id], json!({"sessionId":"not-open","query":q})).await;
+            let frame = client
+                .request(
+                    id as u64,
+                    tool_program_queries::METHODS[id],
+                    json!({"sessionId":"not-open","query":q}),
+                )
+                .await;
             assert_eq!(frame["error"]["code"], -32602);
             assert_eq!(frame["error"]["message"], "unknown sessionId");
         }
-        let unknown = client.request(5, "session/tool_program_execute", json!({})).await;
+        let unknown = client
+            .request(5, "session/tool_program_execute", json!({}))
+            .await;
         assert_eq!(unknown["error"]["code"], -32601);
-        let initialized = client.request(6, "initialize", json!({"protocolVersion":1,"clientCapabilities":{}})).await;
+        let initialized = client
+            .request(
+                6,
+                "initialize",
+                json!({"protocolVersion":1,"clientCapabilities":{}}),
+            )
+            .await;
         let result = &initialized["result"];
         assert_eq!(result["protocolVersion"], 1);
         assert_eq!(result["authMethods"], json!([]));
         assert_eq!(result["agentCapabilities"]["loadSession"], true);
-        assert_eq!(result["agentCapabilities"]["promptCapabilities"], json!({"image":true,"audio":false,"embeddedContext":true}));
-        assert_eq!(result["agentCapabilities"]["_meta"]["rpi/durable"]["notifications"], json!(["session/durable_update"]));
+        assert_eq!(
+            result["agentCapabilities"]["promptCapabilities"],
+            json!({"image":true,"audio":false,"embeddedContext":true})
+        );
+        assert_eq!(
+            result["agentCapabilities"]["_meta"]["rpi/durable"]["notifications"],
+            json!(["session/durable_update"])
+        );
         let cap = &result["agentCapabilities"]["_meta"]["rpi/tool-program-children"];
-        assert_eq!(*cap, json!({"version":1,"optional":true,"recovery":"readOnly","methods":tool_program_queries::METHODS}));
-        assert!(cap.get("notifications").is_none());
-    }).await;
+        assert_eq!(cap["version"], 1);
+        assert_eq!(cap["optional"], true);
+        assert_eq!(cap["recovery"], "readOnly");
+        assert_eq!(cap["methods"], json!(tool_program_queries::METHODS));
+        assert_eq!(cap["live"]["snapshotFirst"], true);
+        assert_eq!(cap["live"]["maxSubscriptions"], 16);
+        assert_eq!(
+            cap["live"]["notification"],
+            tool_program_live::NOTIFICATION_METHOD
+        );
+    })
+    .await;
     assert!(fixture.requests.lock().unwrap().is_empty());
 }
 
