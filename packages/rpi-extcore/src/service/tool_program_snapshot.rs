@@ -5,7 +5,10 @@
 //! No bodies, transcript fallback, child execution, parent settlement, cache or
 //! background worker is introduced. A historical fork's outcome describes its
 //! copied records, never execution in the destination.
-use super::{tool_program_events as events, tool_program_queries as query, Service};
+use super::{
+    tool_program_access::ChildAccess, tool_program_events as events, tool_program_queries as query,
+    Service,
+};
 use crate::{
     host::{HostSession, ReplayError},
     reply::{failure, ReplyKind, ServiceError, ServiceResult},
@@ -84,6 +87,9 @@ pub struct ChildSnapshot {
     pub resync_required: bool,
 }
 
+pub(super) fn binding_conflict() -> ServiceError {
+    conflict()
+}
 fn conflict() -> ServiceError {
     (
         ReplyKind::Conflict,
@@ -107,7 +113,11 @@ fn bounded<T: Serialize>(value: &T) -> ServiceResult<()> {
     )
     .map_err(|_| conflict())
 }
-async fn same_host(state: &Service, id: &str, host: &Arc<HostSession>) -> ServiceResult<()> {
+pub(super) async fn same_host(
+    state: &Service,
+    id: &str,
+    host: &Arc<HostSession>,
+) -> ServiceResult<()> {
     state.check_session_admission(id).await?;
     if state
         .live_session(id)
@@ -121,7 +131,7 @@ async fn same_host(state: &Service, id: &str, host: &Arc<HostSession>) -> Servic
 }
 
 #[derive(Default)]
-struct Identities {
+pub(super) struct Identities {
     entries: HashMap<String, (u64, Value)>,
     sequences: HashMap<u64, String>,
 }
@@ -140,19 +150,31 @@ impl Identities {
         self.entries.insert(id.into(), (seq, value));
         Ok(())
     }
-    fn begin(&mut self, child: &query::ChildSummary) -> ServiceResult<()> {
+    pub(super) fn contains(&self, id: &str) -> bool {
+        self.entries.contains_key(id)
+    }
+    /// Live subscriptions retain only recent canonical facts. Unknown older
+    /// identities must then require resync rather than being accepted anew.
+    pub(super) fn retain_recent(&mut self, max: usize) {
+        while self.entries.len() > max {
+            let seq = *self.sequences.keys().min().expect("identity sequence");
+            let id = self.sequences.remove(&seq).expect("identity ID");
+            self.entries.remove(&id);
+        }
+    }
+    pub(super) fn begin(&mut self, child: &query::ChildSummary) -> ServiceResult<()> {
         let mut canonical = child.clone();
         // Provenance is validated separately, not part of the shared native
         // begin payload when comparing a fork query with a commit envelope.
         canonical.origin_verification = query::ChildOriginVerification::NativeCheckpoint;
         self.record(&child.child_id, child.seq, &canonical)
     }
-    fn phase(&mut self, phase: &ChildPhase) -> ServiceResult<()> {
+    pub(super) fn phase(&mut self, phase: &ChildPhase) -> ServiceResult<()> {
         self.record(&phase.entry_id, phase.seq, phase)
     }
 }
 
-fn observe(child_id: &str, phases: &[ChildPhase]) -> ChildObservation {
+pub(super) fn observe(child_id: &str, phases: &[ChildPhase]) -> ChildObservation {
     let latest = phases.iter().max_by_key(|p| p.seq);
     let final_phase = phases
         .iter()
@@ -193,7 +215,10 @@ fn observe(child_id: &str, phases: &[ChildPhase]) -> ChildObservation {
 
 // Check identities and lifecycle ordering across query/replay overlap, without
 // claiming that missing old phases or scan exhaustion establish completion.
-fn merge(phases: &mut Vec<ChildPhase>, incoming: ChildPhase) -> ServiceResult<ReplayDisposition> {
+pub(super) fn merge(
+    phases: &mut Vec<ChildPhase>,
+    incoming: ChildPhase,
+) -> ServiceResult<ReplayDisposition> {
     if let Some(old) = phases.iter().find(|p| p.entry_id == incoming.entry_id) {
         return if old == &incoming {
             Ok(ReplayDisposition::Duplicate)
@@ -245,8 +270,27 @@ pub async fn child_snapshot(
     id: String,
     request: ChildSnapshotQuery,
 ) -> ServiceResult<ChildSnapshot> {
+    validate_request(&id, &request)?;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let access = ChildAccess::for_service(state, id).await?;
+        snapshot_inner(&access, request).await
+    })
+    .await
+    .map_err(|_| failure(ReplyKind::Timeout, "native child snapshot timed out"))?
+}
+
+/// Snapshot an existing host Arc; no Service, registry or additional native RPC.
+pub async fn child_snapshot_for_host(
+    host: Arc<HostSession>,
+    request: ChildSnapshotQuery,
+) -> ServiceResult<ChildSnapshot> {
+    let access = ChildAccess::for_host(host).await?;
+    snapshot_for_access(&access, request).await
+}
+
+fn validate_request(id: &str, request: &ChildSnapshotQuery) -> ServiceResult<()> {
     let q = &request.children;
-    if !query::valid_id(&id)
+    if !query::valid_id(id)
         || !(1..=MAX_CHILDREN).contains(&q.limit)
         || !(1..=MAX_CHILD_SNAPSHOT_BYTES).contains(&q.max_bytes)
         || q.direction != Direction::NewestFirst
@@ -259,22 +303,27 @@ pub async fn child_snapshot(
             "invalid bounded fresh child snapshot query",
         ));
     }
-    tokio::time::timeout(Duration::from_secs(30), snapshot_inner(state, id, request))
+    Ok(())
+}
+
+pub(super) async fn snapshot_for_access(
+    access: &ChildAccess,
+    request: ChildSnapshotQuery,
+) -> ServiceResult<ChildSnapshot> {
+    validate_request(&access.id, &request)?;
+    tokio::time::timeout(Duration::from_secs(30), snapshot_inner(access, request))
         .await
         .map_err(|_| failure(ReplyKind::Timeout, "native child snapshot timed out"))?
 }
 
 async fn snapshot_inner(
-    state: &Service,
-    id: String,
+    access: &ChildAccess,
     request: ChildSnapshotQuery,
 ) -> ServiceResult<ChildSnapshot> {
-    state.check_session_admission(&id).await?;
-    let host = state
-        .live_session(&id)
-        .await
-        .ok_or_else(|| failure(ReplyKind::NotFound, "session not found"))?;
-    if !query::supported(&host) || !events::supported(&host) {
+    access.check_read().await?;
+    let host = &access.host;
+    let id = &access.id;
+    if !query::supported(host) || !events::supported(host) {
         return Err(failure(
             ReplyKind::Unsupported,
             "native host does not advertise child snapshot queries and events",
@@ -287,7 +336,12 @@ async fn snapshot_inner(
     };
     let _receiver = host.subscribe();
     let start = host.history_boundary().await.map_err(|_| conflict())?;
-    let page = query::child_summaries(state, id.clone(), request.children).await?;
+    let page = query::child_summaries_owned(
+        query::QueryOwner::Bound(access),
+        id.clone(),
+        request.children,
+    )
+    .await?;
     let mut snapshot = ChildSnapshot {
         session_id: id.clone(),
         lane: context.lane.clone(),
@@ -305,9 +359,9 @@ async fn snapshot_inner(
     }
     let mut working = HashMap::<String, Vec<ChildPhase>>::new();
     for child in &snapshot.page.children {
-        same_host(state, &id, &host).await?;
-        let page = query::child_phases(
-            state,
+        access.check_read().await?;
+        let page = query::child_phases_owned(
+            query::QueryOwner::Bound(access),
             id.clone(),
             query::ChildPhaseQuery {
                 child_id: child.child_id.clone(),
@@ -331,11 +385,11 @@ async fn snapshot_inner(
         snapshot.phases.push(page);
         bounded(&snapshot)?;
     }
-    same_host(state, &id, &host).await?;
+    access.check_read().await?;
     // Lightweight native child query revalidates the pinned branch membership;
     // never use get_state/history/message scans or a source-session fallback.
-    let check = query::child_summaries(
-        state,
+    let check = query::child_summaries_owned(
+        query::QueryOwner::Bound(access),
         id.clone(),
         ChildPageQuery {
             leaf_id: snapshot.page.leaf_id.clone(),
@@ -354,7 +408,7 @@ async fn snapshot_inner(
     for child in &check.children {
         identities.begin(child)?;
     }
-    same_host(state, &id, &host).await?;
+    access.check_read().await?;
     let mut event_bytes = query::Counter {
         bytes: 0,
         max: MAX_CHILD_SNAPSHOT_BYTES,
@@ -454,7 +508,7 @@ async fn snapshot_inner(
         Err(ReplayError::Gap) => return Err(conflict()),
         Err(ReplayError::Projection(error)) => return Err(error),
     };
-    same_host(state, &id, &host).await?;
+    access.check_read().await?;
     snapshot.last_seq = last_seq;
     snapshot.events = replay;
     snapshot.observations = snapshot

@@ -1,12 +1,103 @@
-# Code Mode full-parity matrix — third increment
+# Code Mode full-parity matrix — qualification checkpoints
 
-Scope: companion host `D:/Projects/pi-rust-codemode` and package
-`D:/Projects/rpi-package-codemode`. **Third increment implemented; overall full
-parity INCOMPLETE.** No unrestricted full-toolset, source release, installation,
-deployment, production restart, merge or CI-green claim. This increment does not
-edit the frontend; existing dev-worktree edits are preserved and not included.
+Scope: companion host `D:/Projects/pi-rust-codemode`, package
+`D:/Projects/rpi-package-codemode`, and task-only frontend work in
+`D:/Projects/rpi-package-dev` (`dev/web-hmr`). **Overall full parity remains
+INCOMPLETE.** No unrestricted full-toolset, source release, installation,
+deployment, production restart, merge or CI-green claim. Older checkpoints below
+are historical evidence, not claims that their then-remaining work is still absent.
+
+## Current child adapter and Web increment
+
+Implemented: core host-bound typed child queries/snapshot and caller-owned live
+subscription; thin HTTP typed POSTs and a separate snapshot-first child SSE feed;
+four optional ACP read-only typed RPCs with bounded asynchronous request tasks;
+frontend-owned child cards, explicit pagination/body fragments and fresh bounded
+reconnect/reload. Native transcripts and execution remain native-owned. No tool
+execution/replay, adapter transcript database, hidden body/history scan or changed
+SDK 0.3.20/ABI, auth/permissions/accounting/termination/recursion policy.
+
+The live subscription preserves its initial pinned pages/cursors, validates source
+and identities, and performs bounded fresh branch proof before each child delivery.
+Lag, conflicting/evicted facts, branch changes and uncertain proof terminate with
+explicit resync. ACP's 64-task connection registry keeps ordinary requests and
+cancellation responsive; dropping a query retires its correlation, not the host.
+ACP advertises **only four read-only methods**, not live child notifications.
+
+Two P2 review counterexamples were fixed: native forks finalize their actual
+native-selected destination from existing get_state readback exactly once rather
+than using an unused requested ID; newly replayed/live phases do not borrow an
+older pinned leaf for body reads. An explicit initial overlay-body read pins the
+current branch through the authoritative body API, and continuations keep the
+returned leaf. Fork regression is in-memory; no real-native live-fork qualification
+is claimed. This focused review is not independent final approval.
+
+### Evidence and limitations
+
+- Default core/HTTP/ACP/Web Rust regression: **620 passed / 0 failed / 5 ignored**,
+  `target/codemode-child-adapters-parent-final-3.log`. The first run encountered
+  the previously observed unchanged catalog duplicate-header test failure; its
+  isolated rerun and subsequent full runs passed. Preserve that failure in
+  `target/codemode-child-adapters-parent-final-1.log`, not a clean-first-run claim.
+- Package Rust formatting passes. Targeted diagnostic Clippy (lib/bins/tests)
+  passes with existing durable.rs and ACP diagnostics; all-target Clippy is blocked
+  by the existing configuration_fixture.rs export-macro raw-pointer diagnostic.
+  `target/codemode-child-adapters-clippy-{targeted,final}-1.log`. No strict Clippy,
+  whole-workspace formatting or CI-green claim.
+- Actual Windows native → HTTP recovered reads and initial child SSE:
+  `target/codemode-http-child-native-5/results.json` — **26 sessions / 70 children /
+  38 selected / 2,374 body chunks / zero execution events**. This is not ongoing
+  live-native/core overlap or installed Web backend proof.
+- Actual Windows stdio ACP bridge → launcher → frozen native:
+  `target/codemode-acp-child-native-10/results.json` — **26 sessions / 70 children /
+  38 selected / 38 first body chunks / zero execution frames**, 156 strict error
+  checks. Prebuild source inventory, Cargo artifact and all binary hashes are in
+  `target/codemode-acp-child-native-build-10/`. Source/copied primaries and progress
+  sidecars remained unchanged. First-chunk coverage is not full-body aggregate
+  integrity; there is no ACP live-notification proof.
+- Frozen native stays SHA-256
+  `559fd48b57dc671865205d5a8f1bb5ec6caad69628cb3bbfa3c6e838f8c9bfc7`.
+  No installed/production binary was replaced or restarted. Proof launchers only
+  supply fixed discovery exclusions and forward real native pipes.
+- Frontend task commit in the approved dev worktree: `277a620`. Typecheck passes;
+  **14 local and 14 public-dev browser fixture tests** cover exact native parent
+  identity, explicit pages/fragments, new-leaf overlay body reads, independent SSE,
+  reconnect/reload, auth/errors and navigation cancellation. **134 related local
+  trace/session/timeline regressions** pass. Public CSS HMR and its exact restoration
+  were observed (`target/codemode-web-child-public-hmr.json` in dev). These browser
+  tests mock the API; they do not establish real-native ongoing Web behavior.
+- All six unrelated dev edits remain preserved: five files byte-exact to baseline,
+  and App.tsx's inverse task patch matches its original canonical baseline. Only
+  task-specific files/hunks are committed/transplanted; no reset or sweep.
+
+### Failed proof safety incident
+
+Earlier ACP probes failed on the invalid ready.sessionId assumption and overly
+strict graceful-exit/optional launcher-receipt assumptions. More seriously,
+`target/codemode-acp-child-native-6/session-4/cleanup.json` records an unsafe old
+helper inferring descendants through historical PIDs and terminating unrelated
+`work-cli` processes after PID reuse. **That run is failed evidence, not acceptance.**
+No unknown process was restarted to conceal or guess at its prior state.
+
+The helper now admits only the directly created bridge, verified direct launcher
+and explicitly receipted native process, checking actual image path/SHA, kernel
+creation time, direct parent and snapshot/open races. Retained handles never
+expand into arbitrary PID trees; no PID/tree-kill command remains. **26 stdlib mock
+safety tests** pass and fresh actual-native run 10 passes. Manual exact-handle
+cleanup is always failure. Native EOF retirement records actual exit 0 or owner
+termination 1; missing/incomplete wrapper receipts remain explicit. This is not
+an all-system-console audit or graceful native-shutdown claim. Preliminary failed
+runs 1–8 remain retained; earlier non-final passes are not substituted for run 10.
+
+**Remaining:** real-native ongoing adapter overlap/branch/generation qualification,
+ACP live child notification/presentation (not advertised by these read-only RPCs),
+actual-native end-to-end Web recovery and final integration review. Protected
+self/ancestor policy remains unchanged. Unix/live-provider, installed-runtime,
+production, CI-green and full-parity qualification remain absent.
 
 ## Latest neutral child snapshot and replay integration
+
+*Historical foundation checkpoint; current adapter/Web status is above.*
 
 Core now exposes actual event validation and bounded child snapshot/replay
 runtime semantics, not only page readers. `service::tool_program_events` validates
@@ -489,7 +580,7 @@ Historical second-increment evidence files:
 | --- | --- |
 | Complete native child events | Preserve original bounded child identity/order/updates/content/final events and cancellation/late-event behavior without credential leaks. |
 | Bounded native history/query/replay/recovery | Native transcript authority, bounded resumable reads, exact finalized outcomes, interruption/restart and snapshot/live sequence continuity. Audit markers and bounded final smoke snapshots are insufficient. Never replay uncertain effects. |
-| extcore / HTTP / ACP / Web | Neutral core semantics first; thin HTTP/ACP mappings and frontend-owned cards. Verify full child cards, errors/progress, reload/reconnect/history, and public dev HMR in the approved `D:/Projects/rpi-package-dev` worktree on `dev/web-hmr`. None implemented here; that frontend remains untouched. |
+| extcore / HTTP / ACP / Web | Typed core/HTTP/ACP reads, dedicated core/HTTP live feed and frontend cards/reconnect/reload are implemented and locally qualified above. Real-native ongoing overlap, ACP live child notifications and actual-native end-to-end Web acceptance remain; mocked public browser tests/HMR are not that proof. |
 | Protected recursion/self/ancestors | Explicit approval and tested authority/lifecycle/recursion policy; current exclusion prevents unrestricted full-toolset parity. |
 | Wider real integration | Linux/macOS real native execution, live providers, reload races and separately identified installed binaries require fresh evidence. Local Windows fixture-provider success is not those claims. |
 

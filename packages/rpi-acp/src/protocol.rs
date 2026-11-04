@@ -48,6 +48,11 @@ mod protocol_context_usage_tests;
 #[cfg(test)]
 #[path = "protocol_response_progress_tests.rs"]
 mod protocol_response_progress_tests;
+#[cfg(test)]
+#[path = "protocol_tool_program_tests.rs"]
+mod protocol_tool_program_tests;
+#[path = "tool_program_queries.rs"]
+mod tool_program_queries;
 
 /// The pollable stdin reader, re-exported so the frontends can build one.
 pub use rpi_plugin_sdk::stdio::StdinLines;
@@ -524,6 +529,7 @@ pub fn initialize_result() -> Value {
         "agentCapabilities": {
             "_meta": {
                 "pi-rust/questions": 1,
+                "rpi/tool-program-children": tool_program_queries::capability(),
                 "rpi/durable": {
                     "version": 1,
                     "optional": true,
@@ -1098,6 +1104,7 @@ where
     let mut prompt_tasks: HashMap<String, PromptTask> = HashMap::new();
     let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut list_tasks = crate::session_list::ListTasks::new(list_root);
+    let mut query_tasks = tool_program_queries::QueryTasks::default();
 
     // Why the loop ended, reported once at the bottom. Zed forwards agent stderr
     // into its own log, so this is what turns "transport closed" into a cause.
@@ -1155,11 +1162,15 @@ where
         // while avoiding an unbounded task map.
         prompt_tasks.retain(|_, task| !task.handle.is_finished());
         list_tasks.reap().await;
+        query_tasks.reap().await;
         // IDs retain their JSON type: 1 and "1" are separate requests. Check
-        // both task classes before parsing parameters.
+        // all task classes before parsing parameters.
         if let Some(id) = &id {
             let key = request_key(id);
-            if prompt_tasks.contains_key(&key) || list_tasks.contains(&key) {
+            if prompt_tasks.contains_key(&key)
+                || list_tasks.contains(&key)
+                || query_tasks.contains(&key)
+            {
                 writer
                     .respond_error(id, -32600, "duplicate request id")
                     .await;
@@ -1321,6 +1332,11 @@ where
                     }
                     Err(error) => writer.session_error(&id, "session/new", &error).await,
                 }
+            }
+            (Some(id), method) if tool_program_queries::METHODS.contains(&method) => {
+                query_tasks
+                    .start(writer.clone(), &sessions, id, method, params)
+                    .await;
             }
             (Some(id), "session/durable") => {
                 let params = match request_params(&params, "session/durable") {
@@ -1732,6 +1748,7 @@ where
                         continue;
                     }
                 };
+                query_tasks.cancel_session(&session_id).await;
                 let live = stop_live_session(
                     &session_id,
                     &sessions,
@@ -1800,7 +1817,8 @@ where
                     false
                 };
                 let list_found = list_tasks.cancel(&key);
-                if !prompt_found && !list_found {
+                let query_found = query_tasks.cancel(&key).await;
+                if !prompt_found && !list_found && !query_found {
                     if let Some(numeric_id) = request_id.as_u64() {
                         writer.cancel_request(numeric_id).await;
                     }
@@ -1826,6 +1844,7 @@ where
                         continue;
                     }
                 };
+                query_tasks.cancel_session(&session_id).await;
                 let sessions_session = sessions.lock().await.get(&session_id).cloned();
                 if let Some(session) = sessions_session {
                     let _ = session.abort().await;
@@ -1848,6 +1867,8 @@ where
         }
     }
 
+    // Drop query futures/correlations before retiring any shared native host.
+    query_tasks.shutdown().await;
     // Retain existing best-effort list completions on EOF. ListTasks owns
     // terminal cancellation of its writes; FrameWrite closes a partial stream.
     list_tasks.shutdown().await;

@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex as StdMutex,
+        Arc, Mutex as StdMutex, OnceLock,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -332,6 +332,8 @@ pub struct HostSession {
     admission_gate: Arc<RwLock<()>>,
     retired: std::sync::atomic::AtomicBool,
     launch_options: Option<SessionOptions>,
+    // Native --fork chooses its own destination; never bind its unused requested ID.
+    fork_destination: OnceLock<String>,
     cancellation: tokio::sync::watch::Sender<u64>,
     writer_abort: StdMutex<Option<tokio::task::AbortHandle>>,
     commands: mpsc::Sender<Outbound>,
@@ -859,6 +861,7 @@ impl HostSession {
             admission_gate: Arc::new(RwLock::new(())),
             retired: std::sync::atomic::AtomicBool::new(false),
             launch_options: Some(launch_options.clone()),
+            fork_destination: OnceLock::new(),
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(None),
             commands,
@@ -1197,6 +1200,7 @@ impl HostSession {
             admission_gate: Arc::new(RwLock::new(())),
             retired: std::sync::atomic::AtomicBool::new(false),
             launch_options: None,
+            fork_destination: OnceLock::new(),
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(None),
             commands,
@@ -1246,6 +1250,47 @@ impl HostSession {
 
     pub fn ready(&self) -> Value {
         self.ready.clone()
+    }
+
+    /// Finalize only a fork's native-selected destination after validated get_state
+    /// readback and before publication. Ordinary owners cannot be rebound.
+    pub(crate) fn finalize_fork_destination(&self, actual_id: &str) -> Result<(), &'static str> {
+        if !self
+            .launch_options
+            .as_ref()
+            .is_some_and(|options| options.fork_source.is_some())
+        {
+            return Err("native owner is not a fork");
+        }
+        let bound = self.fork_destination.get_or_init(|| actual_id.to_owned());
+        if bound == actual_id {
+            Ok(())
+        } else {
+            Err("native fork destination identity differs")
+        }
+    }
+
+    /// Identity owned by this native session. Ready does not advertise sessionId;
+    /// ordinary launch metadata stays unchanged, while forks fail closed until
+    /// the service finalizes their native-selected destination exactly once.
+    pub(crate) fn bound_session_id(&self) -> Option<&str> {
+        if let Some(options) = &self.launch_options {
+            return if options.fork_source.is_some() {
+                self.fork_destination.get().map(String::as_str)
+            } else {
+                Some(&options.session_id)
+            };
+        }
+        // In-memory peers have no native launch options. This fixture-only field
+        // supplies the same binding without changing production ready parsing.
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.ready["sessionId"].as_str()
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            None
+        }
     }
 
     /// Whether the native ready frame advertises an optional RPC command.
@@ -1814,6 +1859,148 @@ mod tests {
     include!("external_tools_host_tests.rs");
     include!("host_file_io_tests.rs");
     include!("host_retirement_tests.rs");
+
+    #[tokio::test]
+    async fn child_binding_identity_uses_launch_metadata_not_a_ready_wire_field() {
+        let (writer, _peer) = tokio::io::duplex(1024);
+        let (mut session, injector) =
+            HostSession::test_connection_with_ready(writer, 16, json!({"type":"ready"}));
+        drop(injector);
+        let host = Arc::get_mut(&mut session).expect("only the native owner retains its binding");
+        host.launch_options = Some(SessionOptions {
+            executable: PathBuf::from("must-not-launch"),
+            project: PathBuf::from("unused"),
+            session_id: "bound-session".into(),
+            session_dir: None,
+            saved_session: None,
+            fork_source: None,
+            timings_dir: PathBuf::from("unused"),
+            model: None,
+            provider: None,
+            permission_gate: false,
+            bypass: false,
+            resources: None,
+        });
+        assert_eq!(host.bound_session_id(), Some("bound-session"));
+        assert!(host.finalize_fork_destination("bound-session").is_err());
+        assert!(host.finalize_fork_destination("different-session").is_err());
+        host.ready["sessionId"] = json!("unrelated-ready-extension");
+        assert_eq!(host.bound_session_id(), Some("bound-session"));
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn fork_destination_binding_is_finalized_once_and_used_by_child_identity_checks() {
+        use crate::service::{
+            child_summaries, tool_program_queries::ChildPageQuery, BackendConfig, Service,
+        };
+        let mut ready_bytes = &b"{\"type\":\"ready\",\"protocol\":\"rpi\"}\n"[..];
+        let mut ready = read_ready(&mut ready_bytes, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(ready.get("sessionId").is_none());
+        ready["supportedCommands"] = json!([
+            "get_tool_program_children",
+            "get_tool_program_child_phases",
+            "get_tool_program_child_body"
+        ]);
+        ready["toolProgramChildren"] = json!({
+            "version":1,"summaryCommand":"get_tool_program_children",
+            "phaseCommand":"get_tool_program_child_phases","bodyCommand":"get_tool_program_child_body",
+            "maxCount":32,"maxPhaseCandidates":128,"maxResponseBytes":131072,
+            "responseBytesScope":"pageBytes","maxBodyDecodedBytes":65536,
+            "summaryState":"unknown","recovery":"readOnly"
+        });
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (mut session, injector) = HostSession::test_connection_with_ready(writer, 16, ready);
+        drop(injector);
+        let host = Arc::get_mut(&mut session).unwrap();
+        host.launch_options = Some(SessionOptions {
+            executable: PathBuf::from("must-not-launch"),
+            project: PathBuf::from("unused"),
+            session_id: "requested-destination".into(),
+            session_dir: None,
+            saved_session: None,
+            fork_source: Some("source-session".into()),
+            timings_dir: PathBuf::from("unused"),
+            model: None,
+            provider: None,
+            permission_gate: false,
+            bypass: false,
+            resources: None,
+        });
+        assert_eq!(host.bound_session_id(), None);
+        let root = std::env::temp_dir().join(format!("rpi-fork-binding-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let service = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("registry.json"),
+            rpi_bin: root.join("must-not-launch"),
+            ..Default::default()
+        })
+        .unwrap();
+        for id in ["actual-destination", "requested-destination"] {
+            service.test_register_host(id, session.clone()).await;
+        }
+        let query = || {
+            serde_json::from_value::<ChildPageQuery>(json!({
+                "leafId":null,"cursor":null,"direction":"newestFirst","limit":1,"maxBytes":32768
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            child_summaries(&service, "actual-destination".into(), query())
+                .await
+                .unwrap_err()
+                .0,
+            crate::reply::ReplyKind::HostUnavailable
+        );
+        session
+            .finalize_fork_destination("actual-destination")
+            .unwrap();
+        assert_eq!(session.bound_session_id(), Some("actual-destination"));
+        assert!(session
+            .finalize_fork_destination("actual-destination")
+            .is_ok());
+        assert!(session
+            .finalize_fork_destination("requested-destination")
+            .is_err());
+        assert_eq!(session.bound_session_id(), Some("actual-destination"));
+        assert_eq!(
+            child_summaries(&service, "requested-destination".into(), query())
+                .await
+                .unwrap_err()
+                .0,
+            crate::reply::ReplyKind::HostUnavailable
+        );
+        let mut peer = BufReader::new(peer);
+        let mut line = String::new();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), peer.read_line(&mut line))
+                .await
+                .is_err(),
+            "unfinalized/requested identity checks must not issue an RPC"
+        );
+        let replies = TestEvents(session.clone());
+        let responder = tokio::spawn(async move {
+            peer.read_line(&mut line).await.unwrap();
+            let command: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(command["type"], "get_tool_program_children");
+            replies
+                .send(json!({"type":"response","id":command["id"],"success":true,
+                "data":{"leafId":"leaf","children":[],"nextCursor":null,"scanExhausted":true}}))
+                .unwrap();
+        });
+        assert!(
+            child_summaries(&service, "actual-destination".into(), query())
+                .await
+                .is_ok()
+        );
+        responder.await.unwrap();
+        session.shutdown().await;
+        drop(service);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn bounded_history_boundary_fails_on_publication_and_changes() {

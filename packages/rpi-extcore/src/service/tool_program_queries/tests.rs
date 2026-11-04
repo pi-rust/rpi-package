@@ -12,7 +12,7 @@ const PHASE: &str = "tpphase-33333333-3333-4333-8333-333333333333";
 const PHASE2: &str = "tpphase-44444444-4444-4444-8444-444444444444";
 const BODY: &str = "55555555-5555-4555-8555-555555555555";
 fn ready() -> Value {
-    json!({"toolProgramChildren":profile(),"supportedCommands":[SUMMARY_COMMAND,PHASE_COMMAND,BODY_COMMAND]})
+    json!({"sessionId":SESSION,"toolProgramChildren":profile(),"supportedCommands":[SUMMARY_COMMAND,PHASE_COMMAND,BODY_COMMAND]})
 }
 fn sq() -> ChildPageQuery {
     ChildPageQuery {
@@ -106,13 +106,47 @@ impl Fixture {
             ..Default::default()
         })
         .unwrap();
-        let (writer, peer) = tokio::io::duplex(8192);
-        let (session, replies) = HostSession::test_connection_with_ready(writer, 16, ready);
+        let bare = BareFixture::new(ready, data).await;
         service
             .sessions
             .write()
             .await
-            .insert(SESSION.into(), session);
+            .insert(SESSION.into(), bare.host);
+        let (task, data, requests, frame) = (bare.task, bare.data, bare.requests, bare.frame);
+        Self {
+            service,
+            root,
+            task,
+            data,
+            requests,
+            frame,
+        }
+    }
+    fn data(&self, data: Value) {
+        *self.data.lock().unwrap() = data;
+    }
+    fn frame(&self, frame: Value) {
+        *self.frame.lock().unwrap() = Some(frame);
+    }
+    async fn close(self) {
+        self.service.shutdown().await;
+        self.task.abort();
+        drop(self.service);
+        std::fs::remove_dir_all(self.root).unwrap();
+    }
+}
+// Same native page peer as Service tests, but no filesystem/backend/registry.
+struct BareFixture {
+    host: Arc<HostSession>,
+    task: tokio::task::JoinHandle<()>,
+    data: Arc<Mutex<Value>>,
+    requests: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    frame: Arc<Mutex<Option<Value>>>,
+}
+impl BareFixture {
+    async fn new(ready: Value, data: Value) -> Self {
+        let (writer, peer) = tokio::io::duplex(8192);
+        let (session, replies) = HostSession::test_connection_with_ready(writer, 16, ready);
         let data = Arc::new(Mutex::new(data));
         let response = data.clone();
         let frame = Arc::new(Mutex::new(None::<Value>));
@@ -136,27 +170,20 @@ impl Fixture {
             }
         });
         Self {
-            service,
-            root,
+            host: session,
             task,
             data,
             requests,
             frame,
         }
     }
-    fn data(&self, data: Value) {
-        *self.data.lock().unwrap() = data;
-    }
-    fn frame(&self, frame: Value) {
-        *self.frame.lock().unwrap() = Some(frame);
-    }
     async fn close(self) {
-        self.service.shutdown().await;
+        self.host.shutdown().await;
         self.task.abort();
-        drop(self.service);
-        std::fs::remove_dir_all(self.root).unwrap();
+        let _ = self.task.await;
     }
 }
+
 #[tokio::test]
 async fn exact_profile_forwards_all_three_typed_queries_and_preserves_historical_unknown() {
     let mut f = Fixture::new(ready(), summary_page()).await;
@@ -882,4 +909,274 @@ async fn whole_body_stream_retains_full_descriptor_hash_and_partial_final_chunk(
     }
     assert_eq!(assembled, bytes);
     f.close().await;
+}
+
+#[tokio::test]
+async fn service_route_identity_must_match_owner_binding_before_any_child_query() {
+    use crate::service::{tool_program_events as events, tool_program_live, tool_program_snapshot};
+    for source in [
+        json!("foreign-session"),
+        Value::Null,
+        json!("invalid\nsource"),
+    ] {
+        let mut r = ready();
+        r["sessionId"] = source;
+        r["toolProgramChildEvents"] = events::profile();
+        r["supportedEvents"] = json!([
+            "tool_program_child_begin",
+            "tool_program_child_phase",
+            "tool_program_child_resync_required"
+        ]);
+        let mut f = Fixture::new(r, summary_page()).await;
+        assert_eq!(
+            child_summaries(&f.service, SESSION.into(), sq())
+                .await
+                .unwrap_err()
+                .0,
+            ReplyKind::HostUnavailable
+        );
+        assert_eq!(
+            child_phases(&f.service, SESSION.into(), pq())
+                .await
+                .unwrap_err()
+                .0,
+            ReplyKind::HostUnavailable
+        );
+        assert_eq!(
+            child_body(&f.service, SESSION.into(), bq())
+                .await
+                .unwrap_err()
+                .0,
+            ReplyKind::HostUnavailable
+        );
+        let snapshot_query = tool_program_snapshot::ChildSnapshotQuery {
+            children: ChildPageQuery {
+                leaf_id: None,
+                cursor: None,
+                direction: Direction::NewestFirst,
+                limit: 8,
+                max_bytes: 32768,
+            },
+            phase_limit: 8,
+        };
+        assert_eq!(
+            tool_program_snapshot::child_snapshot(
+                &f.service,
+                SESSION.into(),
+                snapshot_query.clone()
+            )
+            .await
+            .unwrap_err()
+            .0,
+            ReplyKind::HostUnavailable
+        );
+        assert!(matches!(
+            tool_program_live::child_subscription(&f.service, SESSION.into(), snapshot_query).await,
+            Err((ReplyKind::HostUnavailable, _))
+        ));
+        assert!(f.requests.try_recv().is_err());
+        f.close().await;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HostReader {
+    Summaries,
+    Phases,
+    Body,
+}
+impl HostReader {
+    fn page(self) -> Value {
+        match self {
+            Self::Summaries => summary_page(),
+            Self::Phases => phase_page(),
+            Self::Body => body_page(b"{}", 0, 1),
+        }
+    }
+    async fn read(self, host: &HostSession, invalid: bool) -> ServiceResult<Value> {
+        match self {
+            Self::Summaries => {
+                let mut q = sq();
+                if invalid {
+                    q.max_bytes = MAX_RESPONSE_BYTES + 1;
+                }
+                child_summaries_for_host(host, q)
+                    .await
+                    .map(|p| serde_json::to_value(p).unwrap())
+            }
+            Self::Phases => {
+                let mut q = pq();
+                if invalid {
+                    q.limit = 33;
+                }
+                child_phases_for_host(host, q)
+                    .await
+                    .map(|p| serde_json::to_value(p).unwrap())
+            }
+            Self::Body => {
+                let mut q = bq();
+                if invalid {
+                    q.max_bytes = 65537;
+                }
+                child_body_for_host(host, q)
+                    .await
+                    .map(|p| serde_json::to_value(p).unwrap())
+            }
+        }
+    }
+}
+const HOST_READERS: [HostReader; 3] = [HostReader::Summaries, HostReader::Phases, HostReader::Body];
+fn host_ready() -> Value {
+    let mut r = ready();
+    r["sessionId"] = json!(SESSION);
+    r
+}
+
+#[tokio::test]
+async fn bare_host_all_readers_preserve_valid_native_fixture_pages() {
+    for reader in HOST_READERS {
+        let mut f = BareFixture::new(host_ready(), reader.page()).await;
+        assert_eq!(reader.read(&f.host, false).await.unwrap(), reader.page());
+        let sent = f.requests.recv().await.unwrap();
+        assert!([SUMMARY_COMMAND, PHASE_COMMAND, BODY_COMMAND]
+            .contains(&sent["type"].as_str().unwrap()));
+        assert!(f.requests.try_recv().is_err());
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+async fn bare_host_all_readers_profile_and_budget_preflight_send_zero_requests() {
+    for reader in HOST_READERS {
+        for supported in [true, false] {
+            let mut profile = host_ready();
+            if !supported {
+                profile["toolProgramChildren"]["maxCount"] = json!(31);
+            }
+            let mut f = BareFixture::new(profile, reader.page()).await;
+            assert_eq!(
+                reader.read(&f.host, true).await.unwrap_err().0,
+                ReplyKind::InvalidInput
+            );
+            if !supported {
+                assert_eq!(
+                    reader.read(&f.host, false).await.unwrap_err().0,
+                    ReplyKind::Unsupported
+                );
+            }
+            assert!(f.requests.try_recv().is_err());
+            f.close().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn bare_host_source_identity_and_foreign_cursors_fail_without_rpc() {
+    for id in [
+        Value::Null,
+        json!(""),
+        json!("bad\nidentity"),
+        json!("x".repeat(513)),
+    ] {
+        let mut profile = host_ready();
+        profile["sessionId"] = id;
+        let mut f = BareFixture::new(profile, summary_page()).await;
+        for reader in HOST_READERS {
+            assert_eq!(
+                reader.read(&f.host, false).await.unwrap_err().0,
+                ReplyKind::HostUnavailable
+            );
+        }
+        assert!(f.requests.try_recv().is_err());
+        f.close().await;
+    }
+    let mut f = BareFixture::new(host_ready(), summary_page()).await;
+    let mut q = sq();
+    let mut c = cursor(None, CHILD, 10);
+    c["sessionId"] = json!("foreign");
+    q.cursor = Some(serde_json::from_value(c).unwrap());
+    assert_eq!(
+        child_summaries_for_host(&f.host, q).await.unwrap_err().0,
+        ReplyKind::InvalidInput
+    );
+    let mut q = pq();
+    let mut c = cursor(Some(CHILD), PHASE, 20);
+    c["sessionId"] = json!("foreign");
+    q.cursor = Some(serde_json::from_value(c).unwrap());
+    assert_eq!(
+        child_phases_for_host(&f.host, q).await.unwrap_err().0,
+        ReplyKind::InvalidInput
+    );
+    let mut q = bq();
+    q.cursor = Some(ChildBodyCursor {
+        direction: Direction::OldestFirst,
+        child_id: CHILD.into(),
+        phase_entry_id: PHASE.into(),
+        body: BodyCursor {
+            session_id: "foreign".into(),
+            lane: "main".into(),
+            leaf_id: "leaf".into(),
+            descriptor_id: q.descriptor_id.clone(),
+            next_index: 0,
+        },
+    });
+    assert_eq!(
+        child_body_for_host(&f.host, q).await.unwrap_err().0,
+        ReplyKind::InvalidInput
+    );
+    assert!(f.requests.try_recv().is_err());
+    f.close().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn bare_host_all_readers_timeout_cancel_sanitize_and_reuse_correlation() {
+    for reader in HOST_READERS {
+        let mut f = BareFixture::new(host_ready(), reader.page()).await;
+        *f.frame.lock().unwrap() = Some(Value::Null);
+        let host = f.host.clone();
+        let timed = tokio::spawn(async move { reader.read(&host, false).await });
+        f.requests.recv().await.unwrap();
+        tokio::time::advance(Duration::from_secs(31)).await;
+        assert_eq!(
+            timed.await.unwrap().unwrap_err(),
+            failure(ReplyKind::HostUnavailable, "native child query failed")
+        );
+        let host = f.host.clone();
+        let cancelled = tokio::spawn(async move { reader.read(&host, false).await });
+        f.requests.recv().await.unwrap();
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        *f.frame.lock().unwrap() = Some(json!({"success":false,"error":"SECRET backend/path"}));
+        let err = reader.read(&f.host, false).await.unwrap_err();
+        assert_eq!(
+            err,
+            failure(ReplyKind::HostUnavailable, "native child query rejected")
+        );
+        f.requests.recv().await.unwrap();
+        *f.frame.lock().unwrap() = None;
+        reader.read(&f.host, false).await.unwrap();
+        f.requests.recv().await.unwrap();
+        assert!(f.requests.try_recv().is_err());
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+async fn bare_host_closed_and_retired_readers_fail_without_requests() {
+    for mode in ["closed", "retired"] {
+        let mut f = BareFixture::new(host_ready(), summary_page()).await;
+        match mode {
+            "closed" => f.host.shutdown().await,
+            "retired" => f.host.block_resource_storage(),
+            _ => unreachable!(),
+        }
+        for reader in HOST_READERS {
+            assert_eq!(
+                reader.read(&f.host, false).await.unwrap_err().0,
+                ReplyKind::HostUnavailable
+            );
+        }
+        assert!(f.requests.try_recv().is_err());
+        f.close().await;
+    }
 }

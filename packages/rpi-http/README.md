@@ -99,6 +99,81 @@ repeat the query with the returned cursor to continue the bounded scan. A 409
 invalidates accumulated timings and the cursor; retry without the cursor.
 Invalid requests return 400 and unknown session UUIDs return 404.
 
+## Read-only Code Mode child queries
+
+These additive routes inspect an **already opened, live** session through the
+core's typed child services. Each accepts `Content-Type: application/json`:
+
+| POST route | Example JSON body |
+| --- | --- |
+| `/api/v1/sessions/{id}/tool-program/children/query` | `{"direction":"newestFirst","limit":8,"maxBytes":32768}` |
+| `/api/v1/sessions/{id}/tool-program/phases/query` | `{"childId":"tpchild-01234567-89ab-4cde-8fab-0123456789ab","direction":"newestFirst","limit":8,"maxBytes":32768}` |
+| `/api/v1/sessions/{id}/tool-program/body/query` | `{"childId":"tpchild-01234567-89ab-4cde-8fab-0123456789ab","phaseEntryId":"tpphase-01234567-89ab-4cde-8fab-0123456789ab","descriptorId":"native-descriptor-id","limit":2,"maxBytes":65536}` |
+| `/api/v1/sessions/{id}/tool-program/snapshot` | `{"children":{"direction":"newestFirst","limit":8,"maxBytes":32768},"phaseLimit":2}` |
+
+Replace example IDs with native IDs from prior responses. Page queries optionally
+accept `leafId` and a typed `cursor`; pass the returned `nextCursor` unchanged,
+retaining direction and target. Summary/phase direction is `oldestFirst` or
+`newestFirst`; body cursors always traverse ascending chunk indexes. Snapshot
+accepts only a fresh newest-first window, without a supplied leaf or cursor.
+Unknown fields (including nested cursor fields), null bodies, malformed JSON and
+invalid types are rejected, not defaulted. Query bounds and cursor binding are
+validated by core.
+
+Although these POSTs are read-only, they retain the **same cookie authentication,
+Host/Origin checks and `X-Rpi-Web: 1` marker** as other POST routes. Log in through
+`/api/v1/auth` first; omission of the marker is 403, not a read-only exemption.
+The existing JSON extractor body limit (2 MiB) is unchanged. Extraction failures,
+including oversized input, return a sanitized 400 without echoing supplied data.
+
+Summary and phase requests require explicit `limit` (1–32) and `maxBytes`
+(1–131072, complete encoded page). Phase scans consume at most 128 candidates;
+an empty page with continuation is valid. Body requests allow 1–8 chunks and
+1–65536 decoded bytes per page. Snapshots select 1–8 children and 1–8 phases per
+child, have a 128 KiB complete-result budget and a 30-second total core deadline.
+There is no hidden pagination loop or body hydration in a summary/snapshot.
+
+Success is 200 with the typed core result, without an adapter envelope. Core
+errors retain the existing mapping: invalid query 400, unknown/not-live session
+404, stale/conflicting snapshot or cursor 409, exceeded result budget 413,
+unsupported native capability 501, malformed/unavailable host reply 502, timeout
+504. An old or mismatched live host lacking the exact child query profile is
+unsupported; snapshots additionally require the child event profile. These reads
+do not open a session, execute a tool, scan fallback history or create another
+transcript store. Native transcripts remain authoritative.
+
+A summary's `state: "unknown"` and `scanExhausted` never imply lifecycle success.
+Snapshot observations report only validated final/closed facts; historical fork
+origins do not imply destination execution. Body pages verify returned chunks,
+not unread chunks or whole-body integrity; aggregate verification requires all
+pages. Snapshot `startSeq`/`lastSeq`, replay metadata and `resyncRequired` are
+serialized unchanged from core. Existing ordinary snapshot and SSE routes are
+unchanged; the child feed below has its own boundary.
+
+### Dedicated child SSE
+
+`GET /api/v1/sessions/{id}/tool-program/events` creates a caller-owned core
+subscription for eight newest children / eight phases each. It sends one bounded
+`tool_program_child_snapshot`, then validated `tool_program_child_update` items;
+terminal uncertainty sends `resync_required` and stops. Source/lane, identity,
+branch proof, budgets and cancellation remain core semantics. HTTP only encodes
+these typed items. Dropping the stream releases its subscription, not the shared
+native host. Existing cookie/Host/Origin checks, authorization rechecks,
+`auth_required` behavior, keepalive and listener shutdown still apply.
+
+This is a fresh-snapshot feed, **not transcript replay**: it does not accept query
+parameters; `Last-Event-ID` is not a child resume token. SSE IDs are core sequence
+numbers, while nested native `event.seq` is a separate sequence domain. After
+resync/disconnection, retire the old stream and request a fresh bounded snapshot
+and subscription; never silently rebase historical/native cursors.
+
+The opt-in `tests/tool_program_native.rs` proof with explicit frozen native path,
+SHA and new evidence directory passed 26 Windows recovered sessions / 70 children,
+38 selected children and 2,374 body chunks, with zero execution events. It covers
+typed HTTP reads and initial SSE, not real-native ongoing overlap, a running Web
+backend upgrade, live UI/provider qualification, Unix, deployment, CI or full
+parity. See the [current qualification](../../docs/codemode-full-parity-matrix.md#current-child-adapter-and-web-increment).
+
 ## Embed the API
 
 `router(core, &config, shutdown_receiver)` builds an API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. Rust callers and HTTP clients then observe the same service state.

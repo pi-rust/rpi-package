@@ -6,7 +6,10 @@
 //! is not lifecycle settlement. ForkCopy preserves historical origin IDs and
 //! does not establish a destination run checkpoint. Live child events require
 //! the separately negotiated native event profile; this module only reads pages.
-use super::Service;
+use super::{
+    tool_program_access::{self, ChildAccess},
+    Service,
+};
 use crate::{
     host::HostSession,
     reply::{failure, ReplyKind, ServiceError, ServiceResult},
@@ -393,25 +396,58 @@ impl Write for Counter {
         Ok(())
     }
 }
+pub(super) enum QueryOwner<'a> {
+    Service(&'a Service),
+    Host(&'a HostSession),
+    Bound(&'a ChildAccess),
+}
+impl QueryOwner<'_> {
+    async fn check(&self, id: &str, host: &HostSession) -> ServiceResult<()> {
+        match self {
+            Self::Service(state) => {
+                state.check_session_admission(id).await?;
+                if !state
+                    .live_session(id)
+                    .await
+                    .is_some_and(|current| std::ptr::eq(current.as_ref(), host))
+                {
+                    return Err(super::tool_program_snapshot::binding_conflict());
+                }
+                tool_program_access::check_identity(host, id).await
+            }
+            Self::Host(_) => tool_program_access::read_health(host).await,
+            Self::Bound(access) => access.check_read().await,
+        }
+    }
+}
 async fn read<Q: Serialize, P: DeserializeOwned>(
-    state: &Service,
+    owner: QueryOwner<'_>,
     id: &str,
     command: &str,
     query: &Q,
     max_bytes: usize,
 ) -> ServiceResult<P> {
-    state.check_session_admission(id).await?;
-    let session = state
-        .live_session(id)
-        .await
-        .ok_or_else(|| failure(ReplyKind::NotFound, "session not found"))?;
-    if !supported(&session) {
+    let owned;
+    let session = match owner {
+        QueryOwner::Service(state) => {
+            state.check_session_admission(id).await?;
+            owned = state
+                .live_session(id)
+                .await
+                .ok_or_else(|| failure(ReplyKind::NotFound, "session not found"))?;
+            owned.as_ref()
+        }
+        QueryOwner::Host(host) => host,
+        QueryOwner::Bound(access) => &access.host,
+    };
+    if !supported(session) {
         return Err((
             ReplyKind::Unsupported,
             json!({"code":"tool_program_queries_unsupported",
             "error":"native host does not advertise the exact read-only child query profile"}),
         ));
     }
+    owner.check(id, session).await?;
     let mut request = serde_json::to_value(query).map_err(|_| invalid())?;
     request["type"] = json!(command);
     request["id"] = json!(uuid::Uuid::new_v4().to_string());
@@ -421,6 +457,7 @@ async fn read<Q: Serialize, P: DeserializeOwned>(
         .send_timeout(request, Duration::from_secs(30))
         .await
         .map_err(|_| failure(ReplyKind::HostUnavailable, "native child query failed"))?;
+    owner.check(id, session).await?;
     if response["success"] != true {
         ensure(response["success"] == false)?;
         // Native RPC currently drops structured SessionError codes. Never infer
@@ -720,6 +757,23 @@ pub async fn child_summaries(
     id: String,
     query: ChildPageQuery,
 ) -> ServiceResult<ChildPage> {
+    child_summaries_owned(QueryOwner::Service(state), id, query).await
+}
+
+/// Read an existing host using validated local source metadata, without Service.
+pub async fn child_summaries_for_host(
+    host: &HostSession,
+    query: ChildPageQuery,
+) -> ServiceResult<ChildPage> {
+    let id = tool_program_access::host_id(host).await?;
+    child_summaries_owned(QueryOwner::Host(host), id, query).await
+}
+
+pub(super) async fn child_summaries_owned(
+    owner: QueryOwner<'_>,
+    id: String,
+    query: ChildPageQuery,
+) -> ServiceResult<ChildPage> {
     query_base(
         &id,
         query.limit,
@@ -735,7 +789,7 @@ pub async fn child_summaries(
         None,
         query.cursor.as_ref(),
     )?;
-    let page = read(state, &id, SUMMARY_COMMAND, &query, query.max_bytes).await?;
+    let page = read(owner, &id, SUMMARY_COMMAND, &query, query.max_bytes).await?;
     validate_summaries(&id, &query, &page)?;
     Ok(page)
 }
@@ -743,6 +797,23 @@ pub async fn child_summaries(
 /// establish completion; the only summary state is Unknown.
 pub async fn child_phases(
     state: &Service,
+    id: String,
+    query: ChildPhaseQuery,
+) -> ServiceResult<ChildPhasePage> {
+    child_phases_owned(QueryOwner::Service(state), id, query).await
+}
+
+/// Read an existing host using validated local source metadata, without Service.
+pub async fn child_phases_for_host(
+    host: &HostSession,
+    query: ChildPhaseQuery,
+) -> ServiceResult<ChildPhasePage> {
+    let id = tool_program_access::host_id(host).await?;
+    child_phases_owned(QueryOwner::Host(host), id, query).await
+}
+
+pub(super) async fn child_phases_owned(
+    owner: QueryOwner<'_>,
     id: String,
     query: ChildPhaseQuery,
 ) -> ServiceResult<ChildPhasePage> {
@@ -764,7 +835,7 @@ pub async fn child_phases(
         Some(&query.child_id),
         query.cursor.as_ref(),
     )?;
-    let page = read(state, &id, PHASE_COMMAND, &query, query.max_bytes).await?;
+    let page = read(owner, &id, PHASE_COMMAND, &query, query.max_bytes).await?;
     validate_phases(&id, &query, &page)?;
     Ok(page)
 }
@@ -772,6 +843,23 @@ pub async fn child_phases(
 /// chunks or the whole body. Chunk indexes are always ascending.
 pub async fn child_body(
     state: &Service,
+    id: String,
+    query: ChildBodyQuery,
+) -> ServiceResult<ChildBodyPage> {
+    child_body_owned(QueryOwner::Service(state), id, query).await
+}
+
+/// Read an existing host using validated local source metadata, without Service.
+pub async fn child_body_for_host(
+    host: &HostSession,
+    query: ChildBodyQuery,
+) -> ServiceResult<ChildBodyPage> {
+    let id = tool_program_access::host_id(host).await?;
+    child_body_owned(QueryOwner::Host(host), id, query).await
+}
+
+pub(super) async fn child_body_owned(
+    owner: QueryOwner<'_>,
     id: String,
     query: ChildBodyQuery,
 ) -> ServiceResult<ChildBodyPage> {
@@ -799,7 +887,7 @@ pub async fn child_body(
     {
         return Err(invalid());
     }
-    let page = read(state, &id, BODY_COMMAND, &query, MAX_RESPONSE_BYTES).await?;
+    let page = read(owner, &id, BODY_COMMAND, &query, MAX_RESPONSE_BYTES).await?;
     validate_body(&id, &query, &page)?;
     Ok(page)
 }

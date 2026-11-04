@@ -739,3 +739,75 @@ Metadata ancestry/eager custom backends are not an RSS bound. See the
 [latest qualification checkpoint](../../docs/codemode-full-parity-matrix.md#latest-neutral-child-snapshot-and-replay-integration)
 for evidence, failed preliminary probes and remaining work. No installation,
 production restart or deployment is performed.
+
+
+### Ongoing bounded child subscription
+
+`service::child_subscription(&Service, id: String, ChildSnapshotQuery)` returns
+`ServiceResult<service::tool_program_live::ChildSubscription>`. The receiver is
+created before invoking the existing bounded `child_snapshot`, with independent
+query/event capability gates and the same host Arc checked at both boundaries.
+`subscription.snapshot() -> &ChildSnapshot` is the immutable initial result;
+`subscription.next().await -> Option<ChildStreamItem>` follows its `lastSeq`.
+Pinned native pages, cursors, fork provenance and public initial observations
+are never mutated. Working observations seed both query phases and validated
+snapshot overlap/terminal facts, using the same identity, merge and outcome
+rules as snapshots, not a second lifecycle implementation.
+
+The exact Serde DTO (boxed Rust event/observation fields serialize transparently)
+is:
+
+```text
+{"type":"update","seq":<core sequence>,"event":<validated ChildEvent>,
+ "observation":<ChildObservation or null>,"disposition":"applied"|"duplicate"}
+{"type":"resyncRequired","seq":<last consumed core sequence>,"reason":<reason>}
+```
+
+`event.seq` is a native entry sequence, not the outer core sequence. `observation`
+is present for applied phase facts and null for duplicates; outcomes still need
+actual final/adjacent closed records and do not settle the parent. The native
+source session and main lane are strictly checked before returning any child
+metadata. Unrelated events advance the core cursor without returning their
+payloads. Queued events already included at or before initial `lastSeq` are
+skipped. Lag is terminal even if dropped frames might have been snapshot overlap.
+
+`ChildResyncReason` serializes as `snapshotUncertain`, `hostReplaced`,
+`hostClosed`, `hostError`, `receiverClosed`, `lagged`, `coreSequenceGap`,
+`invalidChildEvent`, `nativeResync`, `outsideWindow`, `identityConflict`,
+`unknownOldIdentity`, `phaseDiscontinuity`, `branchChanged` or `branchUnavailable`.
+Each emits one sanitized terminal
+item, then `None`: no untrusted error payload is forwarded, no refresh is hidden,
+and no completeness is inferred. A replacement host with the same session ID
+cannot join the old feed; checks occur before and after receive. As with any
+lock-free delivery boundary, later replacement cannot retract an already returned
+item. Callers explicitly request a new subscription/snapshot after resync.
+Before each child delivery (including duplicates), bounded fresh summary/phase
+reads prove retained facts and the incoming frame against one current branch;
+a second summary confirms that head did not change during proof. Inconclusive,
+evicted or conflicting facts terminate with explicit resync, not a hidden scan
+or optimistic old-branch update. One proof is bounded by 30 seconds. Dropping a
+pending `next()` preserves its frame for a subsequent call.
+
+Host-bound APIs use core-owned launch identity, not an invented `ready.sessionId`
+field. A native `--fork` chooses its own destination ID: core finalizes that
+owner's destination exactly once from the existing validated `get_state`
+readback before publishing it. Unfinalized forks fail closed; ordinary owners
+cannot be rebound. No additional per-read identity RPC or transcript store is
+introduced.
+
+All ongoing state is caller-owned and finite: at most eight selected children,
+eight working phases per child, 128 recent canonical identities and 128 recent
+complete event envelopes, plus the unchanged initial snapshot (128 KiB maximum).
+Old unknown/evicted native identities conservatively require resync instead of
+being reaccepted; exact retained duplicates are idempotent and contradictory
+cross-child IDs/sequences fail closed. A native phase-index gap requires resync;
+native entry-sequence jumps alone are allowed because other journal entries can
+interleave. These are bounded metadata structures, not a claim about native RSS.
+
+Dropping the subscription only releases its receiver/references, never kills or
+cancels the shared host. `next()` is cancellation safe even after receive while
+checking host identity. There is no detached task, poll watcher, child or parent
+execution, worker, persistent store, transcript fallback or body read. Fixtures
+use actual `TestEvents.send_projected` publication, including over 128 ongoing
+updates; they do not qualify real-native ongoing acceptance or HTTP/ACP/UI
+integration. No runtime deployment is implied.

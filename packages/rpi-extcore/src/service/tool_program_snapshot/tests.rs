@@ -11,7 +11,7 @@ const FINAL: &str = "tpphase-44444444-4444-4444-8444-444444444444";
 const CLOSED: &str = "tpphase-55555555-5555-4555-8555-555555555555";
 
 fn ready() -> Value {
-    json!({"toolProgramChildren":{"version":1,"summaryCommand":"get_tool_program_children",
+    json!({"sessionId":SESSION,"toolProgramChildren":{"version":1,"summaryCommand":"get_tool_program_children",
         "phaseCommand":"get_tool_program_child_phases","bodyCommand":"get_tool_program_child_body",
         "maxCount":32,"maxPhaseCandidates":128,"maxResponseBytes":131072,"responseBytesScope":"pageBytes",
         "maxBodyDecodedBytes":65536,"summaryState":"unknown","recovery":"readOnly"},
@@ -101,9 +101,43 @@ impl Fixture {
             ..Default::default()
         })
         .unwrap();
+        let bare = BareFixture::new(mode, ready).await;
+        service
+            .sessions
+            .write()
+            .await
+            .insert(SESSION.into(), bare.host);
+        let (task, replies, mode, requests) = (bare.task, bare.replies, bare.mode, bare.requests);
+        Self {
+            service,
+            root,
+            task,
+            replies,
+            mode,
+            requests,
+        }
+    }
+    async fn close(self) {
+        self.task.abort();
+        let _ = self.task.await;
+        self.service.shutdown().await;
+        drop(self.replies);
+        drop(self.service);
+        std::fs::remove_dir_all(self.root).unwrap();
+    }
+}
+
+struct BareFixture {
+    host: Arc<HostSession>,
+    task: tokio::task::JoinHandle<()>,
+    replies: TestEvents,
+    mode: Arc<Mutex<Mode>>,
+    requests: tokio::sync::mpsc::UnboundedReceiver<Value>,
+}
+impl BareFixture {
+    async fn new(mode: Mode, ready: Value) -> Self {
         let (writer, peer) = tokio::io::duplex(8192);
         let (host, replies) = HostSession::test_connection_with_ready(writer, 1024, ready);
-        service.sessions.write().await.insert(SESSION.into(), host);
         let mode = Arc::new(Mutex::new(mode));
         let selected = mode.clone();
         let publish = replies.clone();
@@ -189,8 +223,7 @@ impl Fixture {
             }
         });
         Self {
-            service,
-            root,
+            host,
             task,
             replies,
             mode,
@@ -198,12 +231,9 @@ impl Fixture {
         }
     }
     async fn close(self) {
+        self.host.shutdown().await;
         self.task.abort();
         let _ = self.task.await;
-        self.service.shutdown().await;
-        drop(self.replies);
-        drop(self.service);
-        std::fs::remove_dir_all(self.root).unwrap();
     }
 }
 
@@ -543,5 +573,104 @@ async fn total_snapshot_deadline_covers_a_stalled_native_read() {
     child_snapshot(&f.service, SESSION.into(), request())
         .await
         .unwrap();
+    f.close().await;
+}
+
+fn host_ready() -> Value {
+    let mut r = ready();
+    r["sessionId"] = json!(SESSION);
+    r
+}
+#[tokio::test]
+async fn bare_host_snapshot_reuses_pages_overlap_and_outcomes_without_service() {
+    let mut f = BareFixture::new(Mode::Overlap, host_ready()).await;
+    let snapshot = child_snapshot_for_host(f.host.clone(), request())
+        .await
+        .unwrap();
+    assert_eq!(snapshot.session_id, SESSION);
+    assert_eq!(snapshot.observations[0].outcome, ChildOutcome::Succeeded);
+    assert!(!snapshot.resync_required);
+    assert_eq!(snapshot.events.len(), 3);
+    let mut count = 0;
+    while let Ok(q) = f.requests.try_recv() {
+        assert!(
+            ["get_tool_program_children", "get_tool_program_child_phases"]
+                .contains(&q["type"].as_str().unwrap())
+        );
+
+        count += 1;
+    }
+    assert_eq!(count, 3);
+    f.close().await;
+}
+#[tokio::test]
+async fn bare_host_snapshot_profiles_preflight_and_health_send_no_requests() {
+    for missing in ["toolProgramChildren", "toolProgramChildEvents"] {
+        let mut profile = host_ready();
+        profile.as_object_mut().unwrap().remove(missing);
+        let mut f = BareFixture::new(Mode::Plain, profile).await;
+        assert_eq!(
+            child_snapshot_for_host(f.host.clone(), request())
+                .await
+                .unwrap_err()
+                .0,
+            ReplyKind::Unsupported
+        );
+        assert!(f.requests.try_recv().is_err());
+        f.close().await;
+    }
+    let mut f = BareFixture::new(Mode::Plain, host_ready()).await;
+    let mut q = request();
+    q.phase_limit = 9;
+    assert_eq!(
+        child_snapshot_for_host(f.host.clone(), q)
+            .await
+            .unwrap_err()
+            .0,
+        ReplyKind::InvalidInput
+    );
+    f.replies
+        .send_projected(json!({"type":"host_error","error":"private diagnostic"}))
+        .await;
+    assert_eq!(
+        child_snapshot_for_host(f.host.clone(), request())
+            .await
+            .unwrap_err()
+            .0,
+        ReplyKind::HostUnavailable
+    );
+    assert!(f.requests.try_recv().is_err());
+    f.close().await;
+}
+#[tokio::test(start_paused = true)]
+async fn bare_host_snapshot_cancel_deadline_and_close_keep_captured_arc() {
+    let mut f = BareFixture::new(Mode::Hold, host_ready()).await;
+    let host = f.host.clone();
+    let pending = tokio::spawn(async move { child_snapshot_for_host(host, request()).await });
+    f.requests.recv().await.unwrap();
+    f.requests.recv().await.unwrap();
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+    let host = f.host.clone();
+    let timed = tokio::spawn(async move { child_snapshot_for_host(host, request()).await });
+    f.requests.recv().await.unwrap();
+    f.requests.recv().await.unwrap();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    assert!(matches!(
+        timed.await.unwrap().unwrap_err().0,
+        ReplyKind::Timeout | ReplyKind::HostUnavailable
+    ));
+    *f.mode.lock().unwrap() = Mode::Plain;
+    child_snapshot_for_host(f.host.clone(), request())
+        .await
+        .unwrap();
+    f.host.shutdown().await;
+    assert_eq!(
+        child_snapshot_for_host(f.host.clone(), request())
+            .await
+            .unwrap_err()
+            .0,
+        ReplyKind::HostUnavailable
+    );
     f.close().await;
 }
