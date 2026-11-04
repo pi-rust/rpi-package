@@ -67,14 +67,14 @@
   },
   {
     "name": "rpi-durable",
-    "version": "0.3.1",
+    "version": "0.3.2",
     "type": "extension",
     "tool": "durable",
     "inspiredBy": "Durable session workflow checkpoints",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-durable --path packages/rpi-durable",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-durable-v0.3.1/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-durable-v0.3.2/rpi-extension.json"
   },
   {
     "name": "rpi-todo",
@@ -243,14 +243,14 @@
   },
   {
     "name": "rpi-web",
-    "version": "0.1.39",
+    "version": "0.1.40",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Browser project and session workspace",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-web",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.39/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.40/rpi-extension.json"
   },
   {
     "name": "rpi-edit-diagnostics",

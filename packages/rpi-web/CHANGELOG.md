@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.40](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.39...rpi-web-v0.1.40) - 2026-11-04
+
+### Added
+
+- *(web)* show pending answers and inspect Code Mode children
+
 ## [0.1.39](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.38...rpi-web-v0.1.39) - 2026-11-03
 
 ### Fixed
