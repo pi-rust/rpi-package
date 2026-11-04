@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.8...rpi-extcore-v0.2.9) - 2026-11-04
+
+### Added
+
+- *(adapters)* expose bounded Code Mode child queries and live feed
+- *(extcore)* reconcile bounded child snapshots with native commit replay
+- *(extcore)* add capability-gated native ToolProgram child readers
+
+### Fixed
+
+- *(catalog)* reject duplicate headers and page test scans
+- *(extcore)* reprove every selected child before live delivery
+
+### Other
+
+- tolerate Windows process cleanup latency
+
 ## [0.2.8](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.7...rpi-extcore-v0.2.8) - 2026-11-03
 
 ### Fixed
