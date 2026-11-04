@@ -10,8 +10,9 @@ edit the frontend; existing dev-worktree edits are preserved and not included.
 
 This increment adds actual native query/event implementation and neutral package
 readers, not just another codec or documentation checkpoint. Historical source
-checkpoints below remain historical. Native source:
-`4b75ea3a8f2937194b4ccb42c821ce12d199c195`. The package now includes core-reader
+checkpoints below remain historical. Native implementation:
+`4b75ea3a8f2937194b4ccb42c821ce12d199c195`; final pump cleanup/qualification:
+`3fb2209920c8fadcd0c9212a1703abf3a0b1babe`. The package now includes core-reader
 runtime code, not only documentation; the Code Mode DLL itself remains unchanged.
 **Overall full parity remains incomplete.**
 
@@ -51,13 +52,13 @@ Qualification of the current source:
   **2,079 bounded RPC pages**, verifying per-chunk and aggregate hashes, with
   **zero execution events** and original evidence files unchanged. This uses the
   real native RPC commands, not the local audit as a replacement reader.
-- Evidence in native `target/codemode-native-query-events-smoke-1/` and
-  `target/codemode-query-recovery-final/`; native full tests
+- Evidence in native `target/codemode-native-query-events-smoke-2/` and
+  `target/codemode-query-recovery-final-2/`; native full tests
   `target/codemode-query-events-full{,-repeat}.log`; package
   `target/codemode-query-adapters-regression-repeat.log` and
   `target/codemode-core-query-fix-results.md`.
 - Frozen Windows host SHA-256:
-  `0b7ec9871462d8a6b68367ccbe5e55358eef1a5f502eea67a3f8d733750d1a39`.
+  `559fd48b57dc671865205d5a8f1bb5ec6caad69628cb3bbfa3c6e838f8c9bfc7`.
   Code Mode DLL remains `5fccaaa062bdebb1fe74294a470d18816cbb59ffe8e79ad43196e220e8ebdd6f`,
   fixture `27830e8fe1ca4a1f94918c1be51912472d34bba6ed3ace716dd933339eb23bac`,
   gate `b52ce8ce8f10e032b701eb53cbca01e1abe04d567843aa96e2be9d880542cb34`.
