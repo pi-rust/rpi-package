@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.16...rpi-http-v0.1.17) - 2026-11-04
+
+### Added
+
+- *(adapters)* expose bounded Code Mode child queries and live feed
+
 ## [0.1.16](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.15...rpi-http-v0.1.16) - 2026-11-03
 
 ### Fixed
