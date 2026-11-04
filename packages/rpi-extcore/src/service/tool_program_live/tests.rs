@@ -940,7 +940,7 @@ async fn fresh_leaf_with_all_facts_and_same_leaf_exact_duplicates_are_valid() {
             assert_eq!(q["direction"], "newestFirst");
             assert!(q["cursor"].is_null());
             if q["type"] == "get_tool_program_children" {
-                assert_eq!(q["limit"], 1);
+                assert_eq!(q["limit"], 8);
                 assert!(q["leafId"].is_null());
             } else {
                 assert_eq!(q["limit"], 32);
@@ -1200,6 +1200,22 @@ async fn whole_branch_proof_has_one_thirty_second_budget_not_per_read_budgets() 
     assert!(s.next().await.is_none());
     assert_eq!(s.cursor, s.snapshot.last_seq);
     f.release.notify_one();
+    f.close().await;
+}
+
+#[tokio::test]
+async fn every_selected_begin_must_remain_on_branch_even_without_phase_facts() {
+    let f = Fixture::new(1024, vec![], false, false, true, ready()).await;
+    let mut s = f.subscribe().await;
+    {
+        let mut oracle = f.publish.oracle.lock().unwrap();
+        oracle.phases.remove(OTHER);
+        oracle.snapshot_phases.remove(OTHER);
+        oracle.others[0]["toolName"] = json!("changed-on-branch");
+    }
+    f.publish.send_projected(event(&phase(2, "final"))).await;
+    reason(&mut s, ChildResyncReason::BranchChanged).await;
+    assert_eq!(s.working[OTHER].len(), 0);
     f.close().await;
 }
 

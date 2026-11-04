@@ -34,8 +34,9 @@ is claimed. This focused review is not independent final approval.
 
 ### Evidence and limitations
 
-- Default core/HTTP/ACP/Web Rust regression: **620 passed / 0 failed / 5 ignored**,
-  `target/codemode-child-adapters-parent-final-3.log`. The first run encountered
+- Default core/HTTP/ACP/Web Rust regression: **621 passed / 0 failed / 5 ignored**,
+  `target/codemode-child-adapters-current-1.log`. The focused live proof now also
+  covers every selected begin, including a selected child with no phase facts. The first run encountered
   the previously observed unchanged catalog duplicate-header test failure; its
   isolated rerun and subsequent full runs passed. Preserve that failure in
   `target/codemode-child-adapters-parent-final-1.log`, not a clean-first-run claim.
@@ -45,14 +46,14 @@ is claimed. This focused review is not independent final approval.
   `target/codemode-child-adapters-clippy-{targeted,final}-1.log`. No strict Clippy,
   whole-workspace formatting or CI-green claim.
 - Actual Windows native → HTTP recovered reads and initial child SSE:
-  `target/codemode-http-child-native-5/results.json` — **26 sessions / 70 children /
+  `target/codemode-http-child-native-6/results.json` — **26 sessions / 70 children /
   38 selected / 2,374 body chunks / zero execution events**. This is not ongoing
   live-native/core overlap or installed Web backend proof.
 - Actual Windows stdio ACP bridge → launcher → frozen native:
-  `target/codemode-acp-child-native-10/results.json` — **26 sessions / 70 children /
+  `target/codemode-acp-child-native-11/results.json` — **26 sessions / 70 children /
   38 selected / 38 first body chunks / zero execution frames**, 156 strict error
   checks. Prebuild source inventory, Cargo artifact and all binary hashes are in
-  `target/codemode-acp-child-native-build-10/`. Source/copied primaries and progress
+  `target/codemode-acp-child-native-build-11/`. Source/copied primaries and progress
   sidecars remained unchanged. First-chunk coverage is not full-body aggregate
   integrity; there is no ACP live-notification proof.
 - Frozen native stays SHA-256

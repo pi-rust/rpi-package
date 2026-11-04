@@ -341,12 +341,38 @@ impl ChildSubscription {
                 leaf_id: None,
                 cursor: None,
                 direction: query::Direction::NewestFirst,
-                limit: 1,
+                // Re-prove every retained begin, not only the newest child. A
+                // selected child with no phase facts still needs authoritative
+                // branch membership before a live frame is delivered.
+                limit: 8,
                 max_bytes: 32768,
             },
         )
         .await
         .map_err(|(kind, _)| Self::proof_error(kind))
+    }
+
+    fn prove_children(
+        page: &mut query::ChildPage,
+        original: &[query::ChildSummary],
+    ) -> Result<(), ChildResyncReason> {
+        if page.children.len() != original.len() {
+            return Err(ChildResyncReason::BranchChanged);
+        }
+        for expected in original {
+            let actual = page
+                .children
+                .iter_mut()
+                .find(|child| child.child_id == expected.child_id)
+                .ok_or(ChildResyncReason::BranchChanged)?;
+            // ForkCopy is core-owned provenance normalized from validated fork
+            // metadata; native query pages may report the checkpoint variant.
+            actual.origin_verification = expected.origin_verification;
+            if actual != expected {
+                return Err(ChildResyncReason::BranchChanged);
+            }
+        }
+        Ok(())
     }
 
     fn proof_error(kind: ReplyKind) -> ChildResyncReason {
@@ -360,28 +386,19 @@ impl ChildSubscription {
     /// Frozen v1 has no generation token or reliable navigation event. Prove
     /// every retained fact (including terminal facts) and the incoming phase on
     /// one fresh authoritative branch before EACH delivery, even duplicates.
-    /// At most 8 phase pages + 2 heads, 32 KiB/page, one page at a time; native
-    /// scans at most 128 candidates/page and verifies the selected begin ancestry.
-    /// Missing facts, even in an exhausted/sparse scan, require explicit resync;
-    /// no continuation or history fallback. The final fresh head/leaf must be
-    /// EXACTLY stable: ordinary concurrent appends may conservatively resync.
+    /// At most 8 summary children + 8 phase pages + 2 summary heads, 32 KiB/page,
+    /// one page at a time; native scans at most 128 candidates/page and verifies
+    /// every selected begin ancestry. Missing facts, even in an exhausted/sparse
+    /// scan, require explicit resync; no continuation or history fallback. The
+    /// final fresh head/leaf must be EXACTLY stable: ordinary concurrent appends
+    /// may conservatively resync.
     async fn branch_proof(&self, event: &ChildEvent) -> Result<(), ChildResyncReason> {
-        let head = self.fresh_head().await?;
-        let original = self
-            .snapshot
-            .page
-            .children
-            .first()
-            .ok_or(ChildResyncReason::OutsideWindow)?;
-        let mut newest = head
-            .children
-            .first()
-            .cloned()
-            .ok_or(ChildResyncReason::BranchChanged)?;
-        newest.origin_verification = original.origin_verification;
-        if &newest != original {
-            return Err(ChildResyncReason::BranchChanged);
+        let mut head = self.fresh_head().await?;
+        let original = &self.snapshot.page.children;
+        if original.is_empty() {
+            return Err(ChildResyncReason::OutsideWindow);
         }
+        Self::prove_children(&mut head, original)?;
         let leaf = head
             .leaf_id
             .as_ref()
@@ -413,7 +430,8 @@ impl ChildSubscription {
                 return Err(ChildResyncReason::BranchChanged);
             }
         }
-        let check = self.fresh_head().await?;
+        let mut check = self.fresh_head().await?;
+        Self::prove_children(&mut check, original)?;
         if check.leaf_id != head.leaf_id || check.children != head.children {
             return Err(ChildResyncReason::BranchChanged);
         }
