@@ -110,7 +110,7 @@ type Bridge = Window & {
   emitChild: (name: string, value: unknown) => void;
   disconnectChild: () => void;
 };
-async function fixture(page: Page, status = 200) {
+async function fixture(page: Page, status = 200, transcriptToolName = "program") {
   const calls: { path: string; body: Json; headers: Record<string, string> }[] =
     [];
   const unexpected: string[] = [];
@@ -264,7 +264,7 @@ async function fixture(page: Page, status = 200) {
               {
                 type: "toolCall",
                 id: "real-parent",
-                name: "program",
+                name: transcriptToolName,
                 arguments: { code: "not executed" },
               },
             ],
@@ -272,7 +272,7 @@ async function fixture(page: Page, status = 200) {
           {
             role: "toolResult",
             toolCallId: "real-parent",
-            toolName: "program",
+            toolName: transcriptToolName,
             content: [{ type: "text", text: "Ordinary parent output remains" }],
           },
         ],
@@ -373,9 +373,11 @@ async function fixture(page: Page, status = 200) {
     return send({ error: "Unexpected fixture request" }, 500);
   });
   await page.goto("/?session=s");
-  await expect(
-    page.getByRole("button", { name: "Inspect child calls" }),
-  ).toBeVisible();
+  if (transcriptToolName === "program") {
+    await expect(
+      page.getByRole("button", { name: "Inspect child calls" }),
+    ).toBeVisible();
+  }
   return {
     calls,
     unexpected,
@@ -396,6 +398,11 @@ async function open(page: Page) {
     snapshot(),
   );
 }
+
+test("ordinary tools do not advertise child inspection", async ({ page }) => {
+  await fixture(page, 200, "read");
+  await expect(page.getByRole("button", { name: "Inspect child calls", exact: true })).toHaveCount(0);
+});
 
 test("exact parent binding, bounded explicit pages, body fragments and core outcome", async ({
   page,

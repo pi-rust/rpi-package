@@ -22,6 +22,7 @@
   --blue-text: #005fc5;
   --danger: #bd2d26;
   --green: #218147;
+  --amber: #925700;
   --shadow: 0 8px 32px #1d1d2512;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --radius: 10px;
@@ -44,6 +45,7 @@
   --blue-text: #74b6ff;
   --danger: #ff8c84;
   --green: #6fd297;
+  --amber: #f4be62;
   --shadow: 0 8px 32px #0004;
   color-scheme: dark;
   color: var(--text);
@@ -357,6 +359,7 @@ code {
   flex: 1;
   min-width: 0;
 }
+.session-answer-badge,
 .session-issue {
   display: inline-flex;
   align-items: center;
@@ -368,9 +371,20 @@ code {
   line-height: 1.4;
   white-space: nowrap;
 }
+.session-answer-badge {
+  color: var(--amber);
+}
+.session-answer-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 5px;
+  border-radius: 50%;
+  background: var(--amber);
+}
 .session-issue-resume {
   color: var(--muted);
 }
+.session-answer-badge > svg,
 .session-issue > svg {
   flex-shrink: 0;
 }
@@ -2725,11 +2739,13 @@ details[open] > summary:before {
   .toolbar-left {
     flex: 1;
     min-width: 0;
+    gap: 4px;
   }
   .breadcrumb {
     display: none;
   }
   .mobile-session-switcher {
+    overflow: hidden;
     display: flex;
     flex: 1;
     min-width: 0;
@@ -2771,6 +2787,12 @@ details[open] > summary:before {
   .mobile-session-status .status-dot {
     width: 5px;
     height: 5px;
+  }
+  .mobile-session-status.awaiting-input {
+    color: var(--amber) !important;
+  }
+  .mobile-session-status.awaiting-input .status-dot {
+    background: var(--amber);
   }
   .mobile-session-switcher strong {
     font-size: 12px;
@@ -2867,6 +2889,10 @@ details[open] > summary:before {
   .mobile-session-option.selected .mobile-session-option-status.running {
     background: var(--green);
   }
+  .mobile-session-option-status.awaiting-input,
+  .mobile-session-option.selected .mobile-session-option-status.awaiting-input {
+    background: var(--amber);
+  }
   .mobile-session-option-copy {
     display: flex;
     min-width: 0;
@@ -2907,7 +2933,7 @@ details[open] > summary:before {
   .breadcrumb-separator {
     display: none;
   }
-  .toolbar-actions {
+  .workspace .toolbar .toolbar-actions {
     gap: 0;
   }
   .toolbar-actions .toolbar-picker,
@@ -2918,8 +2944,9 @@ details[open] > summary:before {
     min-width: 32px;
     min-height: 32px;
   }
-  .connection {
+  .workspace header.toolbar .connection {
     font-size: 0;
+    gap: 0;
     margin: 0 4px;
   }
   .connection > .status-dot {

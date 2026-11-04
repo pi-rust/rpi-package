@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { api, type Project, type SessionSummary } from "./api";
 import { translate, type Language } from "./i18n";
-import { SessionIssueBadge } from "./SessionIssueBadge";
+import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
 import { createPortal } from "react-dom";
 type FolderNode = {
   name: string;
@@ -866,9 +866,8 @@ export function ProjectSidebar({
   }
   function sessionRow(session: SessionSummary) {
     const title = session.title || (zh ? "新会话" : "New session");
-    const running = ["running", "starting", "awaiting_input"].includes(
-      session.status,
-    );
+    const awaitingAnswer = session.status === "awaiting_input";
+    const running = ["running", "starting"].includes(session.status);
     return (
       <div
         className={`project-session ${session.sessionId === sessionId ? "active" : ""}`}
@@ -889,7 +888,9 @@ export function ProjectSidebar({
           title={title}
           aria-current={session.sessionId === sessionId ? "page" : undefined}
         >
-          {running ? (
+          {awaitingAnswer ? (
+            <span className="session-answer-dot" title={translate(language, "sessionAwaitingAnswer")} aria-hidden="true" />
+          ) : running ? (
             <span
               className="session-running-dot"
               title={zh ? "运行中" : "Running"}
@@ -903,6 +904,7 @@ export function ProjectSidebar({
             {session.relation && <span className="fork-label">↳ </span>}
             {title}
           </span>
+          <SessionAnswerBadge session={session} language={language} />
           <SessionIssueBadge session={session} language={language} />
           {draftSessionIds.has(session.sessionId) && (
             <span

@@ -1,6 +1,22 @@
-import { CircleAlert, RotateCcw } from "lucide-react";
+import { CircleAlert, MessageCircleQuestion, RotateCcw } from "lucide-react";
 import type { SessionSummary } from "./api";
 import { translate, type Language } from "./i18n";
+
+/** No question text or permission details are exposed in the session list. */
+export function SessionAnswerBadge({ session, language }: {
+  session: SessionSummary;
+  language: Language;
+}) {
+  if (session.status !== "awaiting_input") return null;
+  const label = translate(language, "sessionAwaitingAnswer");
+  const hint = translate(language, "sessionAwaitingAnswerHint");
+  return (
+    <span className="session-answer-badge" title={hint} role="img" aria-label={`${label}. ${hint}`}>
+      <MessageCircleQuestion size={11} aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+}
 
 /** Only explicit summary evidence: offline/closed alone is not a failed run. */
 export function sessionIssue(

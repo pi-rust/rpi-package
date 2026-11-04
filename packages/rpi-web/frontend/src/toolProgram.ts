@@ -47,9 +47,13 @@ export const childUnsupported = (error: unknown) =>
 export function parentToolCallId(row: {
   kind: string;
   id: string;
+  name?: string;
   nativeToolCallId?: string;
 }): string | null {
-  return row.kind === "tool" && row.nativeToolCallId
+  // ToolProgram records are rooted at Code Mode's `program` tool. A native
+  // call ID exists on every ordinary tool too, so it is not an eligibility
+  // signal by itself.
+  return row.kind === "tool" && row.name === "program" && row.nativeToolCallId
     ? row.nativeToolCallId
     : null;
 }

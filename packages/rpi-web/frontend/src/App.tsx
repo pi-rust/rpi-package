@@ -50,7 +50,7 @@ import {
 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
-import { SessionIssueBadge } from "./SessionIssueBadge";
+import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
 import { ProviderManager } from "./ProviderManager";
 import { useTheme } from "./useTheme";
@@ -947,9 +947,11 @@ export default function App() {
   const sidebarSessions = useMemo(
     () =>
       sessions.map((entry) =>
-        entry.sessionId === sessionId ? { ...entry, status } : entry,
+        entry.sessionId === sessionId
+          ? { ...entry, status: dialog ? "awaiting_input" : status }
+          : entry,
       ),
-    [sessions, sessionId, status],
+    [sessions, sessionId, status, dialog],
   );
   const mobileSessionResults = useMemo(() => {
     const query = mobileSessionQuery.trim().toLowerCase();
@@ -3598,8 +3600,8 @@ export default function App() {
                 <small>{project?.name ?? "rpi"}</small>
                 <strong>{current?.title ?? t("newSession")}</strong>
                 {activeSessionRunning && (
-                  <small className="mobile-session-status">
-                    <span className="status-dot" /> {t("running")}
+                  <small className={`mobile-session-status${activeSession?.status === "awaiting_input" ? " awaiting-input" : ""}`}>
+                    <span className="status-dot" /> {t(activeSession?.status === "awaiting_input" ? "sessionAwaitingAnswer" : "running")}
                   </small>
                 )}
               </span>
@@ -3734,11 +3736,8 @@ export default function App() {
                       (item) => item.id === entry.projectId,
                     );
                     const selected = entry.sessionId === sessionId;
-                    const entryRunning = [
-                      "running",
-                      "starting",
-                      "awaiting_input",
-                    ].includes(entry.status ?? "");
+                    const entryAwaitingAnswer = entry.status === "awaiting_input";
+                    const entryRunning = ["running", "starting"].includes(entry.status ?? "");
                     return (
                       <button
                         type="button"
@@ -3750,7 +3749,7 @@ export default function App() {
                         }}
                       >
                         <span
-                          className={`mobile-session-option-status${entryRunning ? " running" : ""}`}
+                          className={`mobile-session-option-status${entryAwaitingAnswer ? " awaiting-input" : entryRunning ? " running" : ""}`}
                         />
                         <span className="mobile-session-option-copy">
                           <strong>{entry.title || t("newSession")}</strong>
@@ -3759,6 +3758,7 @@ export default function App() {
                             {entryRunning && ` · ${t("running")}`}
                           </small>
                         </span>
+                        <SessionAnswerBadge session={entry} language={language} />
                         <SessionIssueBadge session={entry} language={language} />
                         {selected && <Check size={15} />}
                       </button>
