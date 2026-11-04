@@ -762,8 +762,42 @@ fn parse_header(
         created_at: i64,
         cwd: String,
     }
-    // Typed fields reject duplicate identity/metadata keys rather than choosing
-    // whichever duplicate happened to appear last. Unknown native fields ignored.
+    // Reject duplicate keys before typed deserialization, which otherwise
+    // accepts the last value and would make ambiguous native metadata appear
+    // valid. Unknown fields remain ignored by the typed header below.
+    {
+        use serde::{
+            de::{self, IgnoredAny, MapAccess, Visitor},
+            Deserializer as _,
+        };
+        struct UniqueObjectKeys;
+        impl<'de> Visitor<'de> for UniqueObjectKeys {
+            type Value = ();
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON object with unique keys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut keys = HashSet::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if !keys.insert(key) {
+                        return Err(de::Error::custom("duplicate JSON object key"));
+                    }
+                    map.next_value::<IgnoredAny>()?;
+                }
+                Ok(())
+            }
+        }
+        let mut deserializer = serde_json::Deserializer::from_slice(&p.header);
+        deserializer
+            .deserialize_map(UniqueObjectKeys)
+            .map_err(|_| CatalogError::Unavailable)?;
+        deserializer.end().map_err(|_| CatalogError::Unavailable)?;
+    }
     let v: Header = serde_json::from_slice(&p.header).map_err(|_| CatalogError::Unavailable)?;
     if v.kind != "header" || v.version != 4 || v.id != p.id {
         return Err(CatalogError::Unavailable);
