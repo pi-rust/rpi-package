@@ -6,7 +6,74 @@ parity INCOMPLETE.** No unrestricted full-toolset, source release, installation,
 deployment, production restart, merge or CI-green claim. Current dev frontend
 is untouched; approval for a third UI dev worktree does not prove UI work.
 
-## Latest native result-codec follow-up (child-history groundwork)
+## Latest native observation seam (not durable history)
+
+Native source: `02d30b6298bb120590d7fec181e34a4f8a131369`. This package
+follow-up changes documentation only; package runtime/DLL remain at `3db4122`.
+
+The host now provides an **optional native observation seam**, not a production
+child journal or new RPC capability. It observes genuine requested/prepared
+arguments, original signed partials and the actual post-hook final result.
+Existing private `tp-*` request/progress/audit identity is unchanged; a future
+native durable entry ID is separate. Default emitters return no observer, so the
+normal CLI still has **no installed child-history writer**. Six negotiated Code
+Mode capabilities and the SDK ABI/layout remain unchanged.
+
+`AgentEmitter::tool_program_observer()` is forwarded through native settling,
+frame and extension tee wrappers. Nested captures inherit their real parent;
+guest JSON cannot select lineage or an observer. At the harness execution
+barrier, effective arguments are observed only after the existing Never-replay
+checkpoint ACK and before effects. Prepared-observer errors, including future
+construction/poll panics, refuse effects and report a harness persistence error.
+
+The driver retains finalized usage/names/termination **before** fallible observer
+finish/serialization. An optional atomic admission/retirement gate drains accepted
+in-flight callbacks before finish/close; saved callbacks hold only weak runtime
+and writer references. One absolute timeout covers work and writer shutdown.
+Cancellation/timeout replies remain prompt even during close, but the same native
+work/close future and active permits are retained through drain. One tee observer
+is forwarded; identical shared owner Arcs are deduplicated and distinct owners
+fail closed before either begin. Ordinary event fan-out is unchanged.
+
+The observer owns partially-created resources until begin returns success, and
+must clean them up on error/panic. Close must drain/join even when returning an
+error. These contracts and mock failure tests do **not** prove cleanup by an
+as-yet-unimplemented production writer.
+
+Qualification: default-parallel SDK/agent/extensions/harness **1,146 passed,
+0 failed, 6 ignored**, twice; logs `target/codemode-native-observation-tests-final-repeat.log`
+and `target/codemode-native-observation-tests-qualified-repeat.log`. This includes
+**18 new tests** (10 agent observation, 6 real-harness observation, 2 tee), not
+additional counts to sum again. Tests cover after-hook authority, prepared
+checkpoint ordering, denial/invalid preparation, retained accounting/termination,
+weak ownership, panic/failure, in-flight updates, and cancellation during close.
+An independent second review accepted the optional seam after the four discovered
+lifecycle/composition/panic issues were fixed.
+
+Fresh Windows host plus unchanged Code Mode DLL/fixture/gate passed the existing
+**59/59 cases**: `pi-rust-codemode/target/codemode-native-observation-smoke-1/{results.json,provenance.json}`.
+All four actual artifact hashes were independently verified. This smoke proves
+unchanged normal host/DLL behavior, **not production child archival capture**.
+Native workspace fmt and CLI build pass. Strict native all-target Clippy remains
+blocked by existing agent/extensions/harness diagnostics; the two introduced
+manual-inspect diagnostics were fixed. Package runtime/checkpoint remains the
+unchanged **124 tests plus strict all-target Clippy**. No deployment, installation,
+production restart, live-provider, Linux/macOS or full-parity claim.
+
+| Current verified Windows artifact | SHA-256 |
+| --- | --- |
+| Host | `1a80a4f96ded98ccf6e493dd275c443d2920cf578d65102958dc277100a17a95` |
+| Code Mode DLL | `5fccaaa062bdebb1fe74294a470d18816cbb59ffe8e79ad43196e220e8ebdd6f` |
+| Fixture DLL | `27830e8fe1ca4a1f94918c1be51912472d34bba6ed3ace716dd933339eb23bac` |
+| Permission gate DLL | `b52ce8ce8f10e032b701eb53cbca01e1abe04d567843aa96e2be9d880542cb34` |
+
+**Still pending:** native primary-session durable body/record writer, bounded
+lazy queries and explicit capabilities/events, interruption/restart/fork and
+snapshot/live continuity, neutral extcore/thin HTTP/ACP integration, and Web
+cards/reload/reconnect/HMR in the approved `rpi-package-dev` worktree. Do not infer
+any of these from this seam or the old intent/finish markers.
+
+## Historical native result-codec checkpoint
 
 The native codec follow-up adds camelCase `Serialize` for `AgentToolResult` and
 untagged `Serialize` for `TextContentOrImage`. ToolProgram reference mode now
@@ -26,7 +93,7 @@ history increment or full child-history parity. Actual child events/records,
 bounded history/query/replay/recovery, neutral core/adapter integration and UI
 remain pending. No install, deployment or running-service upgrade is implied.
 
-| Latest evidence | Proven scope / limits |
+| Historical codec evidence | Proven scope / limits |
 | --- | --- |
 | Current rebuilt Windows host + unchanged DLL/fixture/gate | `pi-rust-codemode/target/codemode-native-codec-smoke-2/results.json`: **PASSED, 59 cases, all true**. Same 59 cases, no new smoke cases. All four provenance hashes below verified against actual artifacts. |
 | Broad native regression | Default-parallel SDK/agent/extensions/harness: **1,128 passed, 0 failed, 6 ignored**, twice. Native `target/codemode-native-codec-tests.log` and `target/codemode-native-codec-tests-repeat.log`. Includes the **5** added agent codec tests and existing **35** ToolProgram tests; do not add them again to the total. |
@@ -111,7 +178,7 @@ Historical second-increment evidence files:
 | Measurement / bounds | measure_result_content counts canonical serialized selected blocks via to_writer byte counter (no array punctuation/huge allocation). Omit/null all, [] none, reorder/repeat valid; native owner/range/cancel checks. Native 256 parts/blocks and 32 MiB final array checked before each clone. Engine 128 selected parts/blocks and combined 32 MiB **including 4096-byte reserve** for final diagnostic with reason bounded to 512 UTF-8 bytes/worst-case JSON escaping. | Generated inline 128 blocks/1 MiB and separate 1 MiB envelope unchanged; native payload not inline; no hard RSS ceiling. |
 | Raw index safety | Validate before serialization in both guest paths: undefined/null all, otherwise max128 nonnegative integer primitives, once-read frozen null-prototype snapshot; captured intrinsics/property definition/primitive JSON encoding avoid setters/toJSON/NaN/Infinity/boxed-object widening. Native range validation remains authoritative. | Sticky failure prohibits later starts; new adversarial index smoke plus package tests. No ID-based authority forgery. |
 | Failure eligibility probe | After cleanup an uncertain ordinary host-action/budget failure may recover only attachment eligibility via exact empty-index read-only measurements for every distinct already-emitted receipt (max16): matching resultId, zero blocks/bytes, exact bounded shape/frame. Sticky/root failure remains; no failed-operation retry, starts, payload reads or replay. | No recovery for cancelled/full-selection/terminal/known retained-cleanup failures; native final owner checks run again. Unit/source coverage, not a claim that all cleanup races are proven by smoke. |
-| Native result codec | Shared canonical serialization, borrowed ToolProgram reference encoding and optional RPC textSignature preservation described above. No Deserialize or result-internal isError authority. | Latest 1,128-test regression twice, focused codec/protocol checks and rebuilt-host 59-case smoke; groundwork only, not native child journal/events/history completion. |
+| Native result codec | Shared canonical serialization, borrowed ToolProgram reference encoding and optional RPC textSignature preservation described above. No Deserialize or result-internal isError authority. | Historical codec 1,128-test regression twice, focused codec/protocol checks and rebuilt-host 59-case smoke; groundwork only, not native child journal/events/history completion. |
 | Progress / history baseline | Bounded parent lifecycle/count updates and intent/finish audit markers; Never-replay interrupted programs; no synthetic assistant tool-result history. | Native/source and smoke markers only. Not complete child events, bounded native history/query/replay/recovery or Web/ACP parity. |
 
 ## Remaining full-plan acceptance
