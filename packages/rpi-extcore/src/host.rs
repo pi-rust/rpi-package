@@ -281,6 +281,11 @@ pub struct BufferedEvent {
     pub value: Value,
 }
 
+pub(crate) enum ReplayError<E> {
+    Gap,
+    Projection(E),
+}
+
 /// Native launch settings independent of any client protocol.
 #[derive(Clone, Debug)]
 pub struct SessionOptions {
@@ -1289,6 +1294,33 @@ impl HostSession {
             .collect()
     }
 
+    /// Select bounded metadata without first cloning arbitrary message/tool bodies.
+    /// The end boundary and retained events are sampled under the same lock.
+    /// In-flight/future publication remains beyond this boundary for live replay.
+    pub(crate) async fn map_history<T, E>(
+        &self,
+        after: u64,
+        mut project: impl FnMut(&BufferedEvent) -> Result<Option<T>, E>,
+    ) -> Result<(u64, Vec<T>), ReplayError<E>> {
+        let history = self.runtime.history.lock().await;
+        let last = history.back().map_or(0, |event| event.seq);
+        if crate::service::replay_gap(after.into(), history.front().map(|e| e.seq), last) {
+            return Err(ReplayError::Gap);
+        }
+        let mut cursor = after;
+        let mut selected = Vec::new();
+        for event in history.iter().filter(|event| event.seq > after) {
+            if cursor.checked_add(1) != Some(event.seq) {
+                return Err(ReplayError::Gap);
+            }
+            if let Some(value) = project(event).map_err(ReplayError::Projection)? {
+                selected.push(value);
+            }
+            cursor = event.seq;
+        }
+        Ok((last, selected))
+    }
+
     /// The first prompt becomes the sidebar title. Returns whether it was set.
     pub async fn set_title_if_empty(&self, title: &str) -> bool {
         let mut state = self.runtime.state.write().await;
@@ -1657,6 +1689,20 @@ impl Drop for HostSession {
 pub struct TestEvents(Arc<HostSession>);
 #[cfg(any(test, feature = "test-support"))]
 impl TestEvents {
+    /// Fixture equivalent of a non-response frame passing through native projection.
+    pub async fn send_projected(&self, value: Value) {
+        assert_ne!(value["type"], "response");
+        let _ = self.send(value.clone());
+        publish(
+            &self.0.runtime.events,
+            &self.0.runtime.history,
+            &self.0.runtime.state,
+            &self.0.runtime.seq,
+            value,
+        )
+        .await;
+    }
+
     pub fn send(&self, value: Value) -> Result<usize, broadcast::error::SendError<Value>> {
         if self.0.runtime.route_external(&value).is_err()
             || self.0.runtime.route_file_io(&value).is_err()

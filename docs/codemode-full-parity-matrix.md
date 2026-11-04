@@ -6,7 +6,66 @@ parity INCOMPLETE.** No unrestricted full-toolset, source release, installation,
 deployment, production restart, merge or CI-green claim. This increment does not
 edit the frontend; existing dev-worktree edits are preserved and not included.
 
-## Latest bounded native child queries, commit events and core readers
+## Latest neutral child snapshot and replay integration
+
+Core now exposes actual event validation and bounded child snapshot/replay
+runtime semantics, not only page readers. `service::tool_program_events` validates
+strict typed metadata under the separate exact event capability. The explicit
+`service::child_snapshot` API subscribes before its boundary, reads a fresh
+newest-first window of at most eight children / eight phases each, and reconciles
+query/live overlap while preserving native pages and cursors. Complete output
+and selected-event accounting are bounded to 128 KiB with a 30-second total
+budget. Replay eviction/overflow requires reload; new out-of-window children and
+native resync signals explicitly mark `resyncRequired`. No body hydration, generic
+history fallback, new executable session, execution replay or parent settlement.
+
+A snapshot-wide native identity registry rejects cross-child ID/sequence
+contradictions, including query/event overlap. Outcome projection requires actual
+adjacent final/closed records and flags; missing evidence stays uncertain. A
+copied fork's facts remain historical, not a destination execution claim. Ordinary
+transcript snapshots and existing adapter behavior remain unchanged.
+
+Qualification of this core increment:
+
+- Focused coverage: **39 passed**, plus one separately opt-in ignored native test
+  (12 event tests, 13 snapshot/identity/lifecycle tests, 14 prior query tests).
+- Core/HTTP/ACP/Web regression **552 passed / 0 failed / 4 ignored**, twice.
+  Logs: package `target/codemode-core-child-snapshot-adapters-final{,-2}.log`.
+- Diagnostic core Clippy has only the two existing durable.rs warnings; no new
+  touched-file warnings. Extcore formatting and diff checks pass. This is not a
+  strict-baseline-green or whole-workspace-format claim.
+- Current-source real Windows native/core read-only acceptance:
+  `target/codemode-core-child-snapshot-native-4/results.json` — **26 sessions /
+  38 selected children / zero execution events**; largest observed complete
+  snapshot **22,281 bytes**. Every selected final/closed record and observed
+  outcome matched the source native transcript; source primary hashes and the
+  copied primary during queries remained unchanged. The 8-child window does not
+  claim all 70 source children were loaded by this API.
+- The source-checked frozen native remains SHA-256
+  `559fd48b57dc671865205d5a8f1bb5ec6caad69628cb3bbfa3c6e838f8c9bfc7`.
+  A test-only std launcher adds fixed discovery exclusions and forwards pipes
+  unchanged; it does not manufacture native protocol output. Its hash and snapshot
+  source hash are retained in results. The Code Mode DLL stays unchanged.
+- A focused review identified a P2 cross-child identity gap; the registry and
+  regression checks fix it. The review hit its turn ceiling and is **not** an
+  independent final approval. Preliminary native probes failed before acceptance:
+  this frozen native lacks the unrelated safe-resource-query profile, and the
+  first launcher probe put the copied primary outside the native session root.
+  The final probe uses only fixed discovery exclusions and the correct copied
+  layout. A paused-time test initially over-specified which of the equal 30-second
+  deadlines wins; it now checks the total bound and safe subsequent read. A late
+  cancelled-response fixture initially unwrapped expected no-subscriber delivery;
+  corrected fixture behavior retains the cancellation/isolation assertion.
+
+**Remaining:** thin HTTP/ACP typed queries/events, ongoing live projection and
+real-native core-to-adapter overlap acceptance, approved dev frontend child
+cards/reload/reconnect/HMR and final integration. Frontend's six unrelated edits
+remain untouched. No live-provider, Unix runtime, installed-binary upgrade,
+production restart, deployment, merge, CI-green or full-parity claim.
+
+<a id="latest-bounded-native-child-queries-commit-events-and-core-readers"></a>
+
+## Historical bounded native child queries, commit events and core readers
 
 This increment adds actual native query/event implementation and neutral package
 readers, not just another codec or documentation checkpoint. Historical source
@@ -26,7 +85,7 @@ runtime code, not only documentation; the Code Mode DLL itself remains unchanged
 | Neutral package API | `rpi_extcore::service::{child_summaries, child_phases, child_body}` and named strict DTOs. Exact ready profile/all three commands required before sending; old hosts return Unsupported with zero new requests/scans. Existing live host owner/correlation/admission/timeouts, no new executable session. Count/bytes/cursors/order/descriptors/base64/chunk hashes validated. Unclassified native rejections are sanitized HostUnavailable, not presumed caller input errors. |
 | Remaining | Core snapshot/live reconciliation, bounded combined child-state projection, thin HTTP/ACP mappings, approved dev frontend cards/reload/reconnect/HMR. Raw native events surviving core replay alone is not this integration. No frontend source changed yet. |
 
-Qualification of the current source:
+Qualification of that query/reader checkpoint:
 
 - Native agent/extensions/harness/SDK **1,201 passed / 0 failed / 6 ignored,
   twice**, 73 result summaries. Includes 10 new query tests and 2 native event

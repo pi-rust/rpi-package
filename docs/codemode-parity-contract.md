@@ -10,17 +10,20 @@ The SDK ABI/layout and published `rpi-plugin-sdk = 0.3.20` pin are unchanged.
 No install, deploy, production service/binary restart, merge or Web/ACP
 implementation is included.
 
-## Latest native child query/event and core-reader checkpoint
+## Latest native child queries, events and core snapshot checkpoint
 
 Native now provides installed genuine child journaling, bounded read-only child
 summary/phase/body RPC queries, and ordered post-ACK begin/phase commit events
 with explicit resync signals. Package `rpi-extcore` adds strict typed readers,
-exact-profile capability gates, and reply/cursor/body validation. The existing
-six Code Mode tool capabilities, SDK 0.3.20/ABI, protected recursion policy and
-native execution/accounting ownership are unchanged. This is **not full parity**:
-core snapshot/live reconciliation, HTTP/ACP mappings and Web cards/reload/HMR
-remain outstanding. See the
-[current evidence and limitations](codemode-full-parity-matrix.md#latest-bounded-native-child-queries-commit-events-and-core-readers).
+exact-profile capability gates, reply/cursor/body validation, strict independent
+event parsing and an explicit bounded child snapshot/replay handoff. Pinned pages
+remain separate from observed live child outcomes; gaps and unknown window
+members require resync. The existing six Code Mode tool capabilities, SDK
+0.3.20/ABI, protected recursion policy and native execution/accounting ownership
+are unchanged. This is **not full parity**: thin HTTP/ACP mappings, ongoing live
+projection, real-native core-to-adapter overlap acceptance and Web
+cards/reload/HMR remain outstanding. See the
+[current evidence and limitations](codemode-full-parity-matrix.md#latest-neutral-child-snapshot-and-replay-integration).
 
 ## Historical native observation seam (before installed journaling)
 

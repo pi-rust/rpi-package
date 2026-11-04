@@ -7,18 +7,22 @@ visible and usable normally. The **third full-parity increment is implemented;
 overall full parity remains INCOMPLETE**. See the
 [status matrix](../../docs/codemode-full-parity-matrix.md) for evidence and gaps.
 
-## Latest native child query/event and core-reader checkpoint
+## Latest native child queries, events and core snapshot checkpoint
 
 The companion host now installs the genuine child journal and advertises bounded
 child summary/phase/body queries plus post-ACK child commit events. This package
 adds neutral, strict, exact-profile-gated `rpi-extcore` readers; the Code Mode DLL
 itself, six tool capabilities, SDK 0.3.20 pin and ABI remain unchanged. Recovery
 is read-only, summaries explicitly remain unknown, and fork copies retain
-historical provenance without claiming new execution. **Snapshot/live merging,
-HTTP/ACP mappings and Web cards/reload/HMR remain unfinished.** See the
-[latest matrix checkpoint](../../docs/codemode-full-parity-matrix.md#latest-bounded-native-child-queries-commit-events-and-core-readers)
-for current source scope, 59-case differential/event/RPC recovery evidence and
-qualification limits. No installed binary or service was replaced or restarted.
+historical provenance without claiming new execution. Core now also validates
+strict live metadata and provides an explicit bounded child snapshot/replay
+handoff, with cross-child identity checks and explicit gap/resync behavior.
+**HTTP/ACP mappings, ongoing live projection, real-native adapter overlap and
+Web cards/reload/HMR remain unfinished.** See the
+[latest matrix checkpoint](../../docs/codemode-full-parity-matrix.md#latest-neutral-child-snapshot-and-replay-integration)
+for the 59-case differential/event/RPC evidence, 26 real-native/core read-only
+snapshots and qualification limits. No installed binary or service was replaced
+or restarted.
 
 ## Historical native observation seam (before installed journaling)
 

@@ -672,10 +672,70 @@ message is introduced. `originVerification: forkCopy` preserves historical origi
 IDs without claiming a destination run checkpoint; missing final/close stays
 uncertain and scan exhaustion never means execution completed.
 
-Native now separately advertises bounded post-ACK child commit events and explicit
-resync-on-lag. This query module does not yet integrate those events with core
-snapshots or add HTTP/ACP/Web presentation. Native transcripts remain authoritative.
+Native separately advertises bounded post-ACK child commit events and explicit
+resync-on-lag. `service::tool_program_events::{supported, parse}` independently
+negotiates that exact profile and validates typed begin/phase/resync metadata:
+pinned source/lane, native IDs, flags, descriptors and strict nested fields.
+The complete original event is at most 32 KiB and its data at most 16 KiB,
+checked before cloning; unrelated events remain ignored even on older hosts.
+Parsing trusts the negotiated native post-ACK promise, not an independent
+checkpoint/body verification. Native transcripts remain authoritative.
+
+### Child snapshot and replay handoff
+
+`service::child_snapshot(&Service, id, ChildSnapshotQuery)` is a new explicit
+read-only operation, separate from the unchanged ordinary transcript snapshot.
+Example request:
+
+```json
+{"children":{"direction":"newestFirst","limit":8,"maxBytes":32768},"phaseLimit":2}
+```
+
+It requires both exact query and event profiles. Only a fresh newest-first window
+is accepted; use the existing typed page APIs for historical continuations.
+A snapshot reads at most eight begins and one bounded newest-first phase scan
+(up to eight phases) per child, without a hidden pagination loop or body read.
+The entire future has a 30-second budget, including existing native correlation
+and writer backpressure; an existing per-RPC timeout can win that same deadline.
+No worker, run lease, cache, transcript scan or execution is started.
+
+Core subscribes before capturing the replay boundary, pins native query pages,
+revalidates their branch and host identity, then captures the replay end and
+selected metadata under the history lock. It does not first clone unrelated
+message/tool bodies. The complete result and selected-event accounting are each
+bounded to 128 KiB. Eviction, discontinuity or byte overflow returns Conflict
+with `child_snapshot_resync_required`, not truncated success. Continue the
+existing replay/subscription strictly after `lastSeq`; later eviction still
+requires resync. Core replay sequences and native entry sequences are distinct.
+
+Pinned `page`/`phases` and their cursors remain unchanged. `observations` fold
+validated overlapping events by stable native identity; a bounded identity table
+also rejects cross-child entry-ID/sequence contradictions. `events` carries typed
+metadata and its applied/duplicate/outside-window/resync disposition. New children
+outside the selected window and native lag signals set `resyncRequired`; clients
+must refresh rather than treat that window as complete. Ordinary parent run
+settlement is untouched.
+
+A child outcome requires the actual final and adjacent closed records and their
+native flags. Final alone is `finalObserved`; missing final/close or exhausted
+scans cannot imply success. Outcomes describe observed child history (historical
+in a fork), never destination execution, parent settlement, or unread body
+availability/integrity. HTTP/ACP mappings and Web cards/reconnect/HMR remain
+unfinished; this API does not automatically change their existing behavior.
+
+Focused fixtures cover strict events, overlap, resubscription, sparse pages,
+replay eviction, byte budgets, source conflicts, cancellation, same-ID host
+replacement and the total deadline. The opt-in ignored
+`actual_native_readonly_child_snapshots` test requires explicit absolute
+`RPI_CODEMODE_NATIVE_BIN`, `RPI_CODEMODE_NATIVE_EVIDENCE`, a new
+`RPI_CODEMODE_CORE_EVIDENCE_OUT`, and `RPI_CODEMODE_NATIVE_SHA256`. It compiles a
+std-only fixed-discovery-exclusion launcher, forwards native pipes unchanged,
+and opens only copied retained sessions. The launcher is not a protocol mock.
+Current Windows evidence covers 26 real-native/core snapshots, 38 selected
+children, zero execution events, exact final/closed facts and unchanged source
+primaries. It does **not** qualify live native-core overlap or adapter/UI behavior.
+
 Metadata ancestry/eager custom backends are not an RSS bound. See the
-[latest qualification checkpoint](../../docs/codemode-full-parity-matrix.md#latest-bounded-native-child-queries-commit-events-and-core-readers)
-for fixture tests, actual Windows native RPC recovery/event evidence and remaining
-work. No installation, production restart or deployment is performed.
+[latest qualification checkpoint](../../docs/codemode-full-parity-matrix.md#latest-neutral-child-snapshot-and-replay-integration)
+for evidence, failed preliminary probes and remaining work. No installation,
+production restart or deployment is performed.

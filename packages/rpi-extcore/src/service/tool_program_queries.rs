@@ -69,7 +69,7 @@ pub struct ChildPhaseQuery {
     pub max_bytes: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChildOrigin {
     pub run_id: String,
@@ -93,7 +93,7 @@ pub enum ChildOriginVerification {
 }
 /// Authoritative begin metadata only. State is deliberately not inferred from
 /// a bounded window; missing final/close never means successful completion.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChildSummary {
     pub version: u8,
@@ -117,7 +117,7 @@ pub enum ChildPhaseKind {
     Final,
     Closed,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChildPhase {
     pub entry_id: String,
@@ -268,13 +268,13 @@ fn ensure(condition: bool) -> ServiceResult<()> {
         Err(malformed())
     }
 }
-fn valid_id(s: &str) -> bool {
+pub(super) fn valid_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control)
 }
 fn uuid4(s: &str) -> bool {
     uuid::Uuid::parse_str(s).is_ok_and(|u| u.get_version_num() == 4 && u.to_string() == s)
 }
-fn native_id(s: &str, prefix: &str) -> bool {
+pub(super) fn native_id(s: &str, prefix: &str) -> bool {
     s.strip_prefix(prefix).is_some_and(uuid4)
 }
 fn hash(s: &str) -> bool {
@@ -367,16 +367,16 @@ fn profile() -> Value {
         "maxResponseBytes":131072,"responseBytesScope":"pageBytes","maxBodyDecodedBytes":65536,
         "summaryState":"unknown","recovery":"readOnly"})
 }
-fn supported(session: &HostSession) -> bool {
+pub(super) fn supported(session: &HostSession) -> bool {
     session.ready()["toolProgramChildren"] == profile()
         && [SUMMARY_COMMAND, PHASE_COMMAND, BODY_COMMAND]
             .iter()
             .all(|s| session.supports_command(s))
 }
 // Bound serialization of the DATA PAGE, not the duplicated data/result RPC frame.
-struct Counter {
-    bytes: usize,
-    max: usize,
+pub(super) struct Counter {
+    pub(super) bytes: usize,
+    pub(super) max: usize,
 }
 impl Write for Counter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -483,7 +483,7 @@ fn descriptor(d: &BodyDescriptor, child: &str) -> ServiceResult<()> {
             && hash(&d.sha256),
     )
 }
-fn summary(s: &ChildSummary) -> ServiceResult<()> {
+pub(super) fn summary(s: &ChildSummary) -> ServiceResult<()> {
     ensure(
         s.version == 1
             && native_id(&s.child_id, "tpchild-")
@@ -559,7 +559,7 @@ fn validate_summaries(id: &str, q: &ChildPageQuery, p: &ChildPage) -> ServiceRes
     }
     Ok(())
 }
-fn phase(p: &ChildPhase, child: &str) -> ServiceResult<()> {
+pub(super) fn phase(p: &ChildPhase, child: &str) -> ServiceResult<()> {
     let closed = p.phase == ChildPhaseKind::Closed;
     let final_phase = p.phase == ChildPhaseKind::Final;
     ensure(

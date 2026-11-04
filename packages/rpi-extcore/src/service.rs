@@ -1,8 +1,11 @@
 //! Session and workspace operations shared by protocol adapters.
 pub use crate::run_timing::RunTimingsQuery;
 mod message_queries;
+pub mod tool_program_events;
 pub mod tool_program_queries;
+pub mod tool_program_snapshot;
 pub use tool_program_queries::{child_body, child_phases, child_summaries};
+pub use tool_program_snapshot::{child_snapshot, ChildSnapshot, ChildSnapshotQuery};
 mod resources;
 mod retirement;
 #[cfg(test)]
