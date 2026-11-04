@@ -95,7 +95,7 @@ fn abi_poll_is_nonblocking_cancel_is_signal_only_destroy_joins() {
     let worker = thread::spawn(move || {
         let action: Arc<Action> = Arc::new(|_| {
             Ok(
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[],"nextOffset":null}),
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[],"nextOffset":null}),
             )
         });
         let r = engine::execute("for(;;){}", 10000, action, token);
@@ -158,7 +158,7 @@ fn abi_failed_execution_is_done_error_with_partial_work() {
     rpi_plugin_sdk::string_handler!(fn fake_action(_action, input, out, _data) {
         let request: Value = serde_json::from_str(input).unwrap();
         assert_eq!(request["__rpiRuntimeKey"], "abi-test-key");
-        out.write(json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[],"nextOffset":null}).to_string());
+        out.write(json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[],"nextOffset":null}).to_string());
         0
     });
     let previous = HOST.lock().unwrap().replace(RuntimeFns {
@@ -195,13 +195,14 @@ fn abi_cancelled_worker_reports_done_error_and_disposes_active_calls() {
     let action: Arc<Action> = Arc::new(move |v| {
         Ok(match v["op"].as_str().unwrap() {
             "list" => {
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"wait","description":"test","parameters":{}}],"nextOffset":null})
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{"name":"wait","description":"test","parameters":{}}],"nextOffset":null})
             }
             "start" => {
                 a.store(true, Ordering::Release);
                 json!({"requestId":"private","status":"running"})
             }
             "poll" => json!({"requestId":"private","status":"running"}),
+            "release_result" => json!({"resultId":"private","status":"released"}),
             "cancel" => json!({"status":"cancelled"}),
             "dispose" => {
                 d.store(true, Ordering::Release);
@@ -255,7 +256,7 @@ fn abi_capability_negotiation_fails_closed_for_execute_and_list_and_missing_bind
     rpi_plugin_sdk::string_handler!(fn fake_action(_action, input, out, _data) {
         let request: Value = serde_json::from_str(input).unwrap();
         assert_eq!(request["op"],"list","legacy host must not execute guest calls");
-        let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1});
+        let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1});
         let key = request["__rpiRuntimeKey"].as_str().unwrap();
         if key != "good" { caps.as_object_mut().unwrap().remove(key); }
         out.write(json!({"protocolVersion":1,"capabilities":caps,"tools":[],"nextOffset":null}).to_string());
@@ -267,6 +268,7 @@ fn abi_capability_negotiation_fails_closed_for_execute_and_list_and_missing_bind
             "hostAccounting",
             "parentProgress",
             "losslessValues",
+            "resultReferences",
             "good",
         ] {
             let previous = HOST.lock().unwrap().replace(RuntimeFns {
@@ -383,7 +385,7 @@ fn bound_host_response_preserves_business_names_but_never_actual_credentials() {
     rpi_plugin_sdk::string_handler!(fn fake_action(_action, input, out, _data) {
         let request: Value = serde_json::from_str(input).unwrap();
         assert_eq!(request["__rpiRuntimeKey"], "actual-binding-key");
-        out.write(json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"fixture","description":"fixture","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"runtimeHandle":{"type":"number"},"__rpi":{"type":"object"},"__rpiRuntimeKey":{"type":"string"},"actual-binding-key":{"type":"string"},"[redacted]":{"type":"boolean"}},"nested":[{"runtimeKey":"business","text":"actual-binding-key"}]}}],"nextOffset":null}).to_string());
+        out.write(json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{"name":"fixture","description":"fixture","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"runtimeHandle":{"type":"number"},"__rpi":{"type":"object"},"__rpiRuntimeKey":{"type":"string"},"actual-binding-key":{"type":"string"},"[redacted]":{"type":"boolean"}},"nested":[{"runtimeKey":"business","text":"actual-binding-key"}]}}],"nextOffset":null}).to_string());
         0
     });
     let action = bind(

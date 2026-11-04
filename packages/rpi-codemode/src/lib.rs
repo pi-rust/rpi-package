@@ -110,6 +110,20 @@ fn redact(value: &mut Value, key: &str) {
     }
 }
 fn tool_result(mut value: Value) -> String {
+    if matches!(value["status"].as_str(), Some("completed" | "terminated")) {
+        if let Some(reference) = value
+            .as_object_mut()
+            .and_then(|v| v.remove("nativeResultReference"))
+        {
+            if reference["version"].as_u64() == Some(1)
+                && reference["id"].as_str().is_some_and(|id| !id.is_empty())
+            {
+                return json!({"$rpiToolResult":1,"isError":value["isError"] == true,
+                    "resultReference":reference})
+                .to_string();
+            }
+        }
+    }
     let exact = value.as_object_mut().and_then(|v| v.remove("nativeResult"));
     let content = value
         .as_object_mut()
@@ -240,7 +254,7 @@ extern "C" fn destroy(handle: StepHandle) {
 fn schema() -> rpi_plugin_sdk::StableToolSchema {
     rpi_plugin_sdk::StableToolSchema {
         name: StbString::from_string("codemode".into()),
-        description: StbString::from_string("Execute a bounded JavaScript async body (with return) using the current invocation's tools, without another model turn or MCP. tools.name(args) / tools.call(name,args) return finalized tool results; Promise.all runs at most 8 active calls concurrently (128 total); batch larger sets yourself. print / console capture bounded logs. action=list pages the effective catalog. Fresh JS; RegExp literals/constructor and regex-backed string operations are unsupported (the pinned native regex engine cannot be interrupted). No direct filesystem/network/process. Business JSON property names are preserved losslessly (requires losslessValues:1); actual invocation credentials are never guest APIs. Calls retain host approvals and may have irreversible side effects; errors/cancellation never roll back or retry. tools.result(nativeResultOrErrorResult) selects exact native content/details/isError once, without tools.emit; tools.emit(resultOrContentArray) explicitly selects native output; returning a result with content also selects it (text/image only, 128 blocks / 1 MiB). Ordinary JSON stays summary data. Failures retain structured details through the native result envelope. Requires ToolProgram action 30 / protocol v1 with resultEnvelope:1, hostAccounting:1, parentProgress:1, losslessValues:1.".into()),
+        description: StbString::from_string("Execute a bounded JavaScript async body (with return) using the current invocation's tools, without another model turn or MCP. tools.name(args) / tools.call(name,args) return finalized tool results; Promise.all runs at most 8 active calls concurrently (128 total); batch larger sets yourself. print / console capture bounded logs. action=list pages the effective catalog. Fresh JS; RegExp literals/constructor and regex-backed string operations are unsupported (the pinned native regex engine cannot be interrupted). No direct filesystem/network/process. Business JSON property names are preserved losslessly (requires losslessValues:1); actual invocation credentials are never guest APIs. Calls retain host approvals and may have irreversible side effects; errors/cancellation never roll back or retry. tools.result(nativeResultOrErrorResult) selects exact native content/details/isError once, without tools.emit; tools.emit(resultOrContentArray) explicitly selects native output; returning a result with content also selects it (text/image only, 128 blocks / 1 MiB). Ordinary JSON stays summary data. Failures retain structured details through the native result envelope. Requires ToolProgram action 30 / protocol v1 with resultEnvelope:1, hostAccounting:1, parentProgress:1, losslessValues:1, resultReferences:1. Results up to 1 MiB remain mutable guest objects; larger results (advertised JSON at most 32 MiB) are immutable lazy native receipts (inspection uses the same 32 MiB guest heap, not unlimited memory). Native retention is limited to 16 receipts and a shared 64 MiB invocation-tree storage quota; tools.result(receipt) forwards without materialization; tools.release(receipt) frees retained storage and invalidates reading/forwarding. Use tools.call for a native tool named release.".into()),
         parameters: StbString::from_string(json!({
             "type":"object", "x-rpi-execution-mode":"sequential", "x-rpi-result-envelope":1, "properties": {
                 "action":{"type":"string","enum":["list","execute"],"default":"execute","description":"execute (default) runs code; list pages the effective invocation catalog without running code. Follow nextOffset until null."},

@@ -24,7 +24,7 @@ fn host(mode: &str) -> (Arc<Mutex<Fake>>, Arc<Action>) {
                     return Err("unknown runtime action 30".into());
                 }
                 Ok(
-                    json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"echo","description":"test","parameters":{"type":"object"}},{"name":"other","description":"test","parameters":{"type":"object"}}],"nextOffset":null}),
+                    json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{"name":"echo","description":"test","parameters":{"type":"object"}},{"name":"other","description":"test","parameters":{"type":"object"}}],"nextOffset":null}),
                 )
             }
             "start" => {
@@ -362,14 +362,14 @@ fn parser_is_strict_but_accepts_host_and_unknown_fields() {
 fn paginated_catalog_is_bounded_and_validated() {
     let action = |v: Value| {
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[],"nextOffset":if v["offset"]==0 {json!(32)} else {Value::Null}}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[],"nextOffset":if v["offset"]==0 {json!(32)} else {Value::Null}}),
         )
     };
     assert_eq!(list_page(&action, 0, 32).unwrap()["nextOffset"], 32);
     for page in [
         json!({"protocolVersion":0,"tools":[],"nextOffset":null}),
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[],"nextOffset":0}),
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{}],"nextOffset":null}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[],"nextOffset":0}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{}],"nextOffset":null}),
     ] {
         assert!(list_page(&move |_| Ok(page.clone()), 0, 32).is_err());
     }
@@ -414,7 +414,7 @@ fn paginated_execute_discovers_only_bounded_contract_entries() {
             vec![json!({"name":"b","description":"second","parameters":{}})]
         };
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":entries,"nextOffset":if offset==0 {json!(1)} else {Value::Null}}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":entries,"nextOffset":if offset==0 {json!(1)} else {Value::Null}}),
         )
     });
     let r = execute(
@@ -489,7 +489,7 @@ fn promise_job_exception_aborts_even_if_main_function_returned() {
 fn catalog_preserves_business_schema_properties() {
     let action = |_| {
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"schema","description":"test","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"ordinary":{"type":"string"}}}}],"nextOffset":null}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{"name":"schema","description":"test","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"ordinary":{"type":"string"}}}}],"nextOffset":null}),
         )
     };
     let page = list_page(&action, 0, 32).unwrap();
@@ -567,7 +567,7 @@ fn native_host(result: Value, is_error: bool) -> Arc<Action> {
     Arc::new(move |v| {
         Ok(match v["op"].as_str().unwrap() {
             "list" => {
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},
             "tools":[{"name":"read","description":"fixture","parameters":{}}],"nextOffset":null})
             }
             "start" => json!({"requestId":"private","status":"running"}),
@@ -593,12 +593,13 @@ fn image_result() -> Value {
 }
 
 #[test]
-fn capabilities_require_all_four_exact_integer_versions_before_guest_execution() {
+fn capabilities_require_all_five_exact_integer_versions_before_guest_execution() {
     for key in [
         "resultEnvelope",
         "hostAccounting",
         "parentProgress",
         "losslessValues",
+        "resultReferences",
     ] {
         for invalid in [
             Value::Null,
@@ -608,7 +609,7 @@ fn capabilities_require_all_four_exact_integer_versions_before_guest_execution()
             json!(true),
             json!(1.0),
         ] {
-            let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1});
+            let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1});
             caps[key] = invalid;
             let a: Arc<Action> = Arc::new(move |v| {
                 assert_eq!(v["op"], "list", "guest must never start");
@@ -632,12 +633,12 @@ fn capabilities_require_all_four_exact_integer_versions_before_guest_execution()
 fn list_preserves_only_public_capabilities() {
     let a = |_| {
         Ok(json!({"protocolVersion":1,"tools":[],"nextOffset":null,
-        "capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"private":"hidden"},"private":"hidden"}))
+        "capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"private":"hidden"},"private":"hidden"}))
     };
     let page = list_page(&a, 0, 32).unwrap();
     assert_eq!(
         page["capabilities"],
-        json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1})
+        json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1})
     );
     assert!(!page.to_string().contains("hidden"));
 }
@@ -893,7 +894,7 @@ fn emitted_and_returned_native_content_share_count_and_byte_limits() {
 }
 
 #[test]
-fn terminal_error_keeps_both_flags_and_native_blocks_even_when_content_validation_fails() {
+fn terminal_error_forwards_native_reference_without_revalidating_finalized_content() {
     for content in [image_result()["content"].clone(), json!([{"type":"audio"}])] {
         let r = native_run(
             "await tools.read({}); throw Error('must not resume');",
@@ -903,15 +904,13 @@ fn terminal_error_keeps_both_flags_and_native_blocks_even_when_content_validatio
         assert_eq!(r["terminate"], true, "{r}");
         let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
         assert_eq!(output["isError"], true);
-        assert_eq!(output["result"]["terminate"], true);
-        if content[0]["type"] == "text" {
-            assert_eq!(output["result"]["content"][0], content[0]);
-            assert_eq!(output["result"]["content"][1], content[1]);
-            assert_eq!(
-                output["result"]["content"][2]["text"],
-                "codemode error: terminal tool returned isError"
-            );
-        }
+        assert_eq!(
+            output["resultReference"],
+            json!({"version":1,"id":"receipt-1"})
+        );
+        assert!(output.get("result").is_none());
+        // Finalized native content is now resolved by the owning host, not
+        // reserialized or decorated with synthetic diagnostic blocks here.
     }
 }
 
@@ -948,7 +947,7 @@ fn business_property_names_survive_schemas_arguments_results_and_guest_returns()
     let action: Arc<Action> = Arc::new(move |v| {
         Ok(match v["op"].as_str().unwrap() {
             "list" => {
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":[{"name":"echo","description":"fixture","parameters":schema}],"nextOffset":null})
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{"name":"echo","description":"fixture","parameters":schema}],"nextOffset":null})
             }
             "start" => {
                 assert_eq!(v["arguments"], expected_business);
@@ -1140,8 +1139,661 @@ fn later_terminal_child_overrides_exact_selection_without_losing_content_or_flag
         assert!(r.get("nativeResult").is_none());
         let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
         assert_eq!(output["isError"], is_error);
-        assert_eq!(output["result"]["terminate"], true);
-        assert_eq!(output["result"]["content"][0]["text"], "terminal");
+        assert_eq!(
+            output["resultReference"],
+            json!({"version":1,"id":"receipt-2"})
+        );
+        assert!(output.get("result").is_none());
         assert!(!output.to_string().contains(PNG));
+    }
+}
+
+// A reference-protocol peer around the existing tool-outcome fixtures. Fixtures
+// describe finalized native results, not a production inline compatibility path.
+// Storage survives dispose and is removed only by release or simulated finish.
+fn reference_peer(tool: Arc<Action>) -> Arc<Action> {
+    #[derive(Default)]
+    struct Peer {
+        next: usize,
+        requests: HashMap<String, String>,
+        results: HashMap<String, String>,
+    }
+    let state = Mutex::new(Peer::default());
+    Arc::new(move |mut request| {
+        let mut state = state.lock().unwrap();
+        let op = request["op"].as_str().unwrap().to_owned();
+        if op == "read_result" {
+            let id = request["resultId"].as_str().unwrap();
+            let text = state.results.get(id).ok_or("unknown reference")?;
+            let offset = request["offset"].as_u64().unwrap() as usize;
+            let mut end = (offset + request["limit"].as_u64().unwrap() as usize).min(text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            return Ok(
+                json!({"resultId":id,"offset":offset,"data":&text[offset..end],
+                "byteLength":text.len(),"nextOffset":if end < text.len() {Some(end)} else {None}}),
+            );
+        }
+        if op == "release_result" {
+            let id = request["resultId"].as_str().unwrap();
+            state.results.remove(id).ok_or("unknown reference")?;
+            return Ok(json!({"resultId":id,"status":"released"}));
+        }
+        if op == "start" {
+            assert_eq!(request["resultMode"], "reference");
+        }
+        let public_id = request["requestId"].as_str().map(str::to_owned);
+        if let Some(id) = &public_id {
+            request["requestId"] = json!(state.requests.get(id).ok_or("unknown request")?);
+        }
+        let mut reply = tool(request)?;
+        if op == "start" {
+            state.next += 1;
+            let id = format!("receipt-{}", state.next);
+            state
+                .requests
+                .insert(id.clone(), reply["requestId"].as_str().unwrap().into());
+            reply["requestId"] = json!(id);
+        } else if let Some(id) = public_id {
+            if reply.get("requestId").is_some() {
+                reply["requestId"] = json!(id);
+            }
+            // Keep the deliberately oversized host-frame fixture malformed.
+            if op == "poll"
+                && reply["status"] == "done"
+                && (reply["result"]["content"].is_array() || reply.to_string().len() <= MAX_JSON)
+            {
+                let result = reply.as_object_mut().unwrap().remove("result").unwrap();
+                let text = result.to_string();
+                reply["isError"] = json!(reply["isError"] == true);
+                reply["resultReference"] = json!({"version":1,"id":id,"byteLength":text.len(),
+                    "contentBlocks":result["content"].as_array().map_or(0, Vec::len),
+                    "isError":reply["isError"],"terminate":result["terminate"] == true});
+                state.results.insert(id, text);
+            }
+        }
+        Ok(reply)
+    })
+}
+fn execute(code: &str, timeout_ms: u64, action: Arc<Action>, cancelled: Arc<AtomicBool>) -> Value {
+    super::execute(code, timeout_ms, reference_peer(action), cancelled)
+}
+
+fn large_result() -> Value {
+    json!({"content":[{"type":"text","text":"界".repeat(400_000)},
+        {"type":"image","mimeType":"image/png","data":PNG}],
+        "details":{"nested":[{"value":7}],"text":"details"},
+        "usage":{"cost":1},"addedToolNames":["new"],"terminate":false})
+}
+fn recorded_reference(result: Value, error: bool) -> (Arc<Action>, Arc<Mutex<Vec<Value>>>) {
+    let base = reference_peer(native_host(result, error));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let shared = events.clone();
+    (
+        Arc::new(move |v| {
+            shared.lock().unwrap().push(v.clone());
+            base(v)
+        }),
+        events,
+    )
+}
+fn direct(code: &str, action: Arc<Action>) -> Value {
+    super::execute(code, 5000, action, Arc::new(AtomicBool::new(false)))
+}
+fn count(events: &Arc<Mutex<Vec<Value>>>, op: &str) -> usize {
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|v| v["op"] == op)
+        .count()
+}
+fn resolve_fixture(action: &Arc<Action>, reference: &Value) -> Value {
+    let mut text = String::new();
+    loop {
+        let r = action(json!({"op":"read_result","resultId":reference["id"],"offset":text.len(),"limit":65536})).unwrap();
+        text.push_str(r["data"].as_str().unwrap());
+        if r["nextOffset"].is_null() {
+            break;
+        }
+    }
+    serde_json::from_str(&text).unwrap()
+}
+#[test]
+fn large_receipts_forward_without_materialization_and_survive_bridge_drop() {
+    for error in [false, true] {
+        let original = large_result();
+        let (action, events) = recorded_reference(original.clone(), error);
+        let code = if error {
+            "try {await tools.read({});} catch(e) {tools.result(e.result);}"
+        } else {
+            "tools.result(await tools.read({})); return {diagnostic:true};"
+        };
+        let r = direct(code, action.clone());
+        assert_eq!(r["status"], "completed", "{r}");
+        assert_eq!(r["isError"], error);
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 0);
+        assert_eq!(count(&events, "start"), 1);
+        let output: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        assert_eq!(
+            output,
+            json!({"$rpiToolResult":1,"isError":error,
+            "resultReference":{"version":1,"id":"receipt-1"}})
+        );
+        assert_eq!(
+            resolve_fixture(&action, &output["resultReference"]),
+            original
+        );
+    }
+}
+#[test]
+fn lazy_receipts_are_enumerable_deeply_frozen_and_forward_original_after_inspection() {
+    let (action, events) = recorded_reference(large_result(), false);
+    let r = direct("const r=await tools.read({}); const names=Object.keys(r); const copy={...r}; let n=0; for(const f of [()=>{r.content=[]},()=>{r.details.nested[0].value=9},()=>{r.content.push({})},()=>{Object.setPrototypeOf(r,{})}]) {try{f()}catch(e){n++}} tools.result(r); return {n,names,len:copy.content[0].text.length,json:JSON.stringify(r).length};", action.clone());
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["result"]["n"], 4);
+    assert_eq!(r["result"]["len"], 400_000);
+    assert_eq!(
+        r["result"]["names"],
+        json!(["content", "details", "usage", "addedToolNames", "terminate"])
+    );
+    let reads = count(&events, "read_result");
+    assert!(reads > 16);
+    assert_eq!(
+        resolve_fixture(&action, &r["nativeResultReference"]),
+        large_result()
+    );
+    assert_eq!(count(&events, "release_result"), 0);
+}
+#[test]
+fn lazy_freeze_uses_captured_intrinsics_not_mutable_guest_helpers() {
+    let (action, _) = recorded_reference(large_result(), false);
+    let r = direct("const frozen=Object.isFrozen; Object.freeze=Object.keys=Object.defineProperty=()=>{throw Error('poison')}; Array.prototype.push=Array.prototype.pop=Array.prototype[Symbol.iterator]=()=>{throw Error('poison')}; WeakMap.prototype.get=()=>({token:1,isError:true}); JSON.parse=()=>{throw Error('poison')}; const r=await tools.read({}); const d=r.details; return {frozen:frozen(d)&&frozen(d.nested)&&frozen(d.nested[0]),value:d.nested[0].value};",action);
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["result"], json!({"frozen":true,"value":7}));
+}
+#[test]
+fn releasing_large_receipts_supports_bounded_loops_and_small_release_is_noop() {
+    for result in [large_result(), image_result()] {
+        let large = result.to_string().len() > MAX_JSON;
+        let (action, events) = recorded_reference(result, false);
+        let r = direct(
+            "for(let i=0;i<24;i++){const r=await tools.read({}); tools.release(r);} return 24;",
+            action,
+        );
+        assert_eq!(r["status"], "completed", "{r}");
+        assert_eq!(r["result"], 24);
+        assert_eq!(count(&events, "start"), 24);
+        assert_eq!(count(&events, "release_result"), 24);
+        assert_eq!(count(&events, "read_result") > 0, !large);
+        assert!(r.get("usage").is_none());
+    }
+}
+#[test]
+fn release_invalidates_cached_reads_and_selection_and_identity_cannot_be_forged() {
+    for tail in [
+        "tools.release(r); try {r.details} catch(e){} return 1;",
+        "void r.details; tools.release(r); try {r.details} catch(e){} return 1;",
+        "tools.release(r); try {tools.result(r)} catch(e){} return 1;",
+        "tools.result(r); try {tools.release(r)} catch(e){} return 1;",
+        "try {tools.result(Object.create(r))} catch(e){} return 1;",
+        "tools.result(r); try {tools.emit([])} catch(e){} return 1;",
+        "tools.emit([]); try {tools.result(r)} catch(e){} return 1;",
+        "tools.result(r); try {tools.result(r)} catch(e){} return 1;",
+    ] {
+        let (action, events) = recorded_reference(large_result(), false);
+        let r = direct(&format!("const r=await tools.read({{}}); {tail}"), action);
+        assert_eq!(r["status"], "error", "{tail}: {r}");
+        assert!(r.get("nativeResultReference").is_none());
+        assert_eq!(count(&events, "release_result"), 1);
+    }
+    let (action, events) = recorded_reference(large_result(), false);
+    let r=direct("for(const r of [{content:[]},Object.create(null),null,7]) {try {tools.release(r); throw Error('accepted');} catch(e) {if(e.message==='accepted') throw e;}} return 4;",action);
+    assert_eq!(r["result"], 4);
+    assert_eq!(count(&events, "start"), 0);
+}
+#[test]
+fn large_selected_receipts_are_discarded_on_throw_timeout_oom_and_cancellation() {
+    for tail in [
+        "throw Error('later');",
+        "for(;;){}",
+        "try{const a=[];for(;;)a.push(new Array(10000).fill('x'));}catch(e){}",
+    ] {
+        let (action, events) = recorded_reference(large_result(), false);
+        let r = super::execute(
+            &format!("tools.result(await tools.read({{}})); {tail}"),
+            if tail == "for(;;){}" { 50 } else { 5000 },
+            action,
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(
+            matches!(r["status"].as_str(), Some("error" | "timed_out")),
+            "{r}"
+        );
+        assert!(r.get("nativeResultReference").is_none());
+        assert_eq!(count(&events, "release_result"), 1);
+        assert_eq!(count(&events, "read_result"), 0);
+    }
+    let (base, events) = recorded_reference(large_result(), false);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let token = cancel.clone();
+    let action: Arc<Action> = Arc::new(move |v| {
+        if v["op"] == "start" && v["arguments"]["cancel"] == true {
+            token.store(true, Ordering::Release);
+        }
+        base(v)
+    });
+    let r = super::execute(
+        "tools.result(await tools.read({})); await tools.read({cancel:true});",
+        5000,
+        action,
+        cancel,
+    );
+    assert_eq!(r["status"], "cancelled", "{r}");
+    assert!(r.get("nativeResultReference").is_none());
+    assert!(count(&events, "release_result") >= 1);
+}
+#[test]
+fn large_terminal_child_never_resumes_and_keeps_native_flags_and_payload() {
+    for error in [false, true] {
+        let mut original = large_result();
+        original["terminate"] = json!(true);
+        let (action, events) = recorded_reference(original.clone(), error);
+        let r = direct(
+            "try{await tools.read({});}catch(e){} throw Error('resumed');",
+            action.clone(),
+        );
+        assert_eq!(r["status"], "terminated", "{r}");
+        assert_eq!(r["isError"], error);
+        assert_eq!(r["terminate"], true);
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 0);
+        assert_eq!(
+            resolve_fixture(&action, &r["nativeResultReference"]),
+            original
+        );
+    }
+}
+
+#[test]
+fn manifests_reject_missing_wrong_and_surplus_fields_without_guest_recovery() {
+    for (field, bad) in [
+        ("version", json!(2)),
+        ("version", json!(1.0)),
+        ("id", json!("other")),
+        ("byteLength", json!(0)),
+        ("byteLength", json!(MEMORY + 1)),
+        ("byteLength", json!(-1)),
+        ("byteLength", json!(1.5)),
+        ("contentBlocks", json!(u64::MAX)),
+        ("isError", json!(true)),
+        ("terminate", Value::Null),
+    ] {
+        let (base, events) = recorded_reference(image_result(), false);
+        let field = field.to_owned();
+        let action: Arc<Action> = Arc::new(move |v| {
+            let poll = v["op"] == "poll";
+            let mut r = base(v)?;
+            if poll {
+                r["resultReference"][&field] = bad.clone();
+            }
+            Ok(r)
+        });
+        let r = direct("try{await tools.read({});}catch(e){} return 42;", action);
+        assert_eq!(r["status"], "error", "{r}");
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 1);
+    }
+    for mode in [
+        "inline",
+        "both",
+        "missing",
+        "outer_error",
+        "running_inline",
+        "poll_id",
+        "start_inline",
+    ] {
+        let (base, _) = recorded_reference(image_result(), false);
+        let action: Arc<Action> = Arc::new(move |v| {
+            let op = v["op"].clone();
+            let mut r = base(v)?;
+            if op == "poll" {
+                match mode {
+                    "inline" => {
+                        r.as_object_mut().unwrap().remove("resultReference");
+                        r["result"] = image_result();
+                    }
+                    "both" => r["result"] = image_result(),
+                    "missing" => {
+                        r.as_object_mut().unwrap().remove("resultReference");
+                    }
+                    "outer_error" => r["isError"] = Value::Null,
+                    "running_inline" => {
+                        r["status"] = json!("running");
+                        r["result"] = image_result();
+                    }
+                    "poll_id" => r["requestId"] = json!("other"),
+                    _ => {}
+                }
+            }
+            if op == "start" && mode == "start_inline" {
+                r["result"] = image_result();
+            }
+            Ok(r)
+        });
+        let r = direct("try{await tools.read({});}catch(e){} return 42;", action);
+        assert_eq!(r["status"], "error", "{mode}: {r}");
+    }
+}
+#[test]
+fn chunk_validation_rejects_bad_identity_lengths_progress_eof_and_json() {
+    for mode in [
+        "id",
+        "offset",
+        "length",
+        "empty",
+        "oversize",
+        "cursor",
+        "early_eof",
+        "late_eof",
+        "surplus",
+        "invalid_json",
+        "content_count",
+        "flag",
+    ] {
+        let (base, events) = recorded_reference(image_result(), false);
+        let action: Arc<Action> = Arc::new(move |v| {
+            let read = v["op"] == "read_result";
+            let mut r = base(v)?;
+            if read {
+                match mode {
+                    "id" => r["resultId"] = json!("other"),
+                    "offset" => r["offset"] = json!(1),
+                    "length" => r["byteLength"] = json!(1),
+                    "empty" => r["data"] = json!(""),
+                    "oversize" => r["data"] = json!("x".repeat(MAX_JSON + 1)),
+                    "cursor" => r["nextOffset"] = json!(0),
+                    "early_eof" => {
+                        r["data"] = json!("{");
+                        r["nextOffset"] = Value::Null;
+                    }
+                    "late_eof" => r["nextOffset"] = r["byteLength"].clone(),
+                    "surplus" => r["result"] = json!({}),
+                    "invalid_json" => {
+                        let n = r["data"].as_str().unwrap().len();
+                        r["data"] = json!("x".repeat(n));
+                    }
+                    "content_count" => {
+                        let text = r["data"]
+                            .as_str()
+                            .unwrap()
+                            .replace("\"type\":\"text\"", "\"type\":\"xxxx\"");
+                        r["data"] = json!(text);
+                        r["data"] = json!(r["data"]
+                            .as_str()
+                            .unwrap()
+                            .replace("\"content\"", "\"xxxxxxx\""));
+                    }
+                    "flag" => {
+                        r["data"] = json!(r["data"]
+                            .as_str()
+                            .unwrap()
+                            .replace("\"terminate\":false", "\"terminate\":null "));
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Ok(r)
+        });
+        let r = direct("try{await tools.read({});}catch(e){} return 42;", action);
+        assert_eq!(r["status"], "error", "{mode}: {r}");
+        assert_eq!(count(&events, "release_result"), 1);
+    }
+}
+#[test]
+fn chunk_checks_cancel_and_deadline_between_reads_and_stable_total_length() {
+    for mode in ["cancel", "deadline", "changed_length"] {
+        let (base, events) = recorded_reference(large_result(), false);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let token = cancel.clone();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let action: Arc<Action> = Arc::new(move |v| {
+            let read = v["op"] == "read_result";
+            let mut r = base(v)?;
+            if read {
+                let n = reads.fetch_add(1, Ordering::AcqRel);
+                match mode {
+                    "cancel" => token.store(true, Ordering::Release),
+                    "deadline" => std::thread::sleep(Duration::from_millis(1100)),
+                    "changed_length" if n == 1 => r["byteLength"] = json!(MEMORY),
+                    _ => {}
+                }
+            }
+            Ok(r)
+        });
+        let r = super::execute(
+            "const r=await tools.read({}); try{void r.details;}catch(e){} return 42;",
+            if mode == "deadline" { 1000 } else { 5000 },
+            action,
+            cancel,
+        );
+        assert_ne!(r["status"], "completed", "{mode}: {r}");
+        assert_eq!(
+            count(&events, "read_result"),
+            if mode == "changed_length" { 2 } else { 1 }
+        );
+        assert_eq!(count(&events, "release_result"), 1);
+    }
+}
+
+#[test]
+fn lazy_freeze_does_not_invoke_poisoned_descriptor_prototypes() {
+    let (action, _) = recorded_reference(large_result(), false);
+    let r=direct("Object.defineProperty(Object.prototype,'get',{get(){throw Error('descriptor trap')},configurable:true}); Object.defineProperty(Object.prototype,'value',{get(){throw Error('descriptor trap')},configurable:true}); const r=await tools.read({}); return r.details.nested[0].value;",action);
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["result"], 7);
+}
+#[test]
+fn release_helper_does_not_shadow_explicit_native_release_call() {
+    let base = reference_peer(native_host(image_result(), false));
+    let names = Arc::new(Mutex::new(Vec::new()));
+    let shared = names.clone();
+    let action: Arc<Action> = Arc::new(move |v| {
+        if v["op"] == "start" {
+            shared.lock().unwrap().push(v["name"].clone());
+        }
+        let list = v["op"] == "list";
+        let mut r = base(v)?;
+        if list {
+            r["tools"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name":"release","description":"native alias","parameters":{}}));
+        }
+        Ok(r)
+    });
+    let r = direct(
+        "const r=await tools.call('release',{}); tools.release(r); return r.details;",
+        action,
+    );
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(*names.lock().unwrap(), vec![json!("release")]);
+}
+#[test]
+fn cleanup_releases_unselected_large_references_and_preserves_only_one_handoff() {
+    let (action, events) = recorded_reference(large_result(), false);
+    let r=direct("const a=await tools.read({}); const b=await tools.read({}); const c=await tools.read({}); tools.result(b);",action.clone());
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["nativeResultReference"]["id"], "receipt-2");
+    assert_eq!(count(&events, "read_result"), 0);
+    assert_eq!(count(&events, "release_result"), 2);
+    for id in ["receipt-1", "receipt-3"] {
+        assert!(action(json!({"op":"read_result","resultId":id,"offset":0,"limit":4})).is_err());
+    }
+    assert_eq!(
+        resolve_fixture(&action, &r["nativeResultReference"]),
+        large_result()
+    );
+}
+#[test]
+fn large_details_and_png_payloads_forward_without_loading_or_duplicate_accounting() {
+    for result in [
+        json!({"content":[],"details":{"data":"x".repeat(1_200_000)},"terminate":false}),
+        json!({"content":[{"type":"image","mimeType":"image/png","data":"AAAA".repeat(300_000)}],"details":null,"terminate":false}),
+    ] {
+        let (action, events) = recorded_reference(result.clone(), false);
+        let r = direct("tools.result(await tools.read({}));", action.clone());
+        assert_eq!(r["status"], "completed", "{r}");
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(
+            resolve_fixture(&action, &r["nativeResultReference"]),
+            result
+        );
+        let encoded = crate::tool_result(r);
+        assert!(encoded.len() < 256);
+        assert!(!encoded.contains("usage"));
+        assert!(!encoded.contains("addedToolNames"));
+    }
+}
+
+#[test]
+fn retained_count_limit_and_host_quota_fail_closed_after_selection() {
+    let (action, events) = recorded_reference(large_result(), false);
+    let r = direct(
+        "try{for(let i=0;i<17;i++)await tools.read({});}catch(e){} return 42;",
+        action,
+    );
+    assert_eq!(r["status"], "error", "{r}");
+    assert!(r["error"].as_str().unwrap().contains("reference limit"));
+    assert_eq!(count(&events, "release_result"), 17);
+    let (base, events) = recorded_reference(large_result(), false);
+    let polls = std::sync::atomic::AtomicUsize::new(0);
+    let action: Arc<Action> = Arc::new(move |v| {
+        if v["op"] == "poll" && polls.fetch_add(1, Ordering::AcqRel) > 0 {
+            return Ok(
+                json!({"requestId":v["requestId"],"status":"failed","error":"invocation-tree result reference byte quota exceeded"}),
+            );
+        }
+        base(v)
+    });
+    let r = direct(
+        "tools.result(await tools.read({})); try{await tools.read({});}catch(e){} return 42;",
+        action,
+    );
+    assert_eq!(r["status"], "error", "{r}");
+    assert!(r.get("nativeResultReference").is_none());
+    assert!(r["error"].as_str().unwrap().contains("quota"));
+    assert_eq!(count(&events, "release_result"), 1);
+}
+#[test]
+fn lazy_inspection_is_not_unlimited_guest_memory_and_caught_oom_releases_native_storage() {
+    let original = json!({"content":[{"type":"text","text":"x".repeat(20*1024*1024)}],"details":null,"terminate":false});
+    let (action, events) = recorded_reference(original, false);
+    let r = direct(
+        "const r=await tools.read({}); try{void r.content;}catch(e){} return 42;",
+        action,
+    );
+    assert_eq!(r["status"], "error", "{r}");
+    assert_eq!(r["error"], "codemode memory budget exceeded");
+    assert_eq!(count(&events, "release_result"), 1);
+    assert!(r.get("nativeResultReference").is_none());
+}
+#[test]
+fn forged_or_reused_request_identity_cannot_select_a_stale_receipt() {
+    let (base, events) = recorded_reference(large_result(), false);
+    let action: Arc<Action> = Arc::new(move |v| {
+        let start = v["op"] == "start";
+        let mut r = base(v)?;
+        if start {
+            r["requestId"] = json!("receipt-1");
+        }
+        Ok(r)
+    });
+    let r = direct(
+        "tools.result(await tools.read({})); try{await tools.read({});}catch(e){} return 42;",
+        action,
+    );
+    assert_eq!(r["status"], "error", "{r}");
+    assert!(r["error"].as_str().unwrap().contains("reused request"));
+    assert!(r.get("nativeResultReference").is_none());
+    assert_eq!(count(&events, "release_result"), 1);
+}
+
+#[test]
+fn later_terminal_large_receipt_overrides_a_prior_large_selection() {
+    for error in [false, true] {
+        let mut terminal = large_result();
+        terminal["terminate"] = json!(true);
+        terminal["details"] = json!({"terminal":true});
+        let expected = terminal.clone();
+        let base = native_host(large_result(), false);
+        let polls = std::sync::atomic::AtomicUsize::new(0);
+        let tool: Arc<Action> = Arc::new(move |v| {
+            if v["op"] == "poll" && polls.fetch_add(1, Ordering::AcqRel) > 0 {
+                return Ok(
+                    json!({"requestId":"private","status":"done","isError":error,"result":terminal}),
+                );
+            }
+            base(v)
+        });
+        let peer = reference_peer(tool);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let shared = events.clone();
+        let action: Arc<Action> = Arc::new(move |v| {
+            shared.lock().unwrap().push(v.clone());
+            peer(v)
+        });
+        let r = direct(
+            "tools.result(await tools.read({})); await tools.read({}); throw Error('resumed');",
+            action.clone(),
+        );
+        assert_eq!(r["status"], "terminated", "{r}");
+        assert_eq!(r["isError"], error);
+        assert_eq!(r["nativeResultReference"]["id"], "receipt-2");
+        assert_eq!(count(&events, "release_result"), 1);
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(
+            resolve_fixture(&action, &r["nativeResultReference"]),
+            expected
+        );
+    }
+}
+#[test]
+fn lifecycle_read_release_and_dispose_errors_are_not_replayed_or_caught_as_success() {
+    for op in ["read_result", "release_result", "dispose"] {
+        let (base, events) = recorded_reference(large_result(), false);
+        let failures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let shared = failures.clone();
+        let action: Arc<Action> = Arc::new(move |v| {
+            if v["op"] == op {
+                shared.fetch_add(1, Ordering::AcqRel);
+                return Err("uncertain lifecycle failure".into());
+            }
+            base(v)
+        });
+        let r=direct("try {const r=await tools.read({}); if(true)void r.details; tools.release(r);}catch(e){} return 42;",action);
+        assert_eq!(r["status"], "error", "{op}: {r}");
+        assert!(r.get("nativeResultReference").is_none());
+        assert_eq!(failures.load(Ordering::Acquire), 1, "must not retry {op}");
+        assert_eq!(count(&events, "start"), 1);
+    }
+}
+#[test]
+fn large_receipts_do_not_widen_arbitrary_return_or_explicit_emission_limits() {
+    for tail in [
+        "return r;",
+        "tools.emit(r); return 42;",
+        "return r.details;",
+        "return 'x'.repeat(1048577);",
+    ] {
+        let mut original = large_result();
+        original["details"] = json!("x".repeat(1_200_000));
+        let (action, events) = recorded_reference(original, false);
+        let r = direct(&format!("const r=await tools.read({{}}); {tail}"), action);
+        assert_eq!(r["status"], "error", "{tail}: {r}");
+        assert!(r.get("nativeResultReference").is_none());
+        assert_eq!(count(&events, "release_result"), 1);
     }
 }

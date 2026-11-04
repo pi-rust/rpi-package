@@ -1,120 +1,172 @@
-# Code Mode native parity contract (first full-parity increment)
+# Code Mode native parity contract (second full-parity increment)
 
-Companion worktrees/PRs remain `pi-rust-codemode` (#238) and `rpi-package-codemode` (#187). This follow-up preserves the native tool chain, invocation authority, Never-replay recovery, cancellation drain gates and old plugin ABI layout. No Web/ACP changes or deployment.
+Companion worktrees/PRs: `pi-rust-codemode` (#238) and
+`rpi-package-codemode` (#187). The **second increment is implemented, not the
+full parity plan**. This adds host-backed result references, bounded inspection,
+explicit release and native attachment while preserving native tool-chain
+execution, invocation authority, cancellation drain gates and Never-replay recovery.
+The SDK ABI/layout and published pin are unchanged. No install, deploy, production
+service/binary restart, merge or Web/ACP implementation is included.
 
-This documents the **implemented first increment**, not completion of the full
-parity plan. See the [status matrix](codemode-full-parity-matrix.md) for proven
-checks, Windows source-build qualification, and outstanding work.
+## Protocol and implementation map
 
-## Capability and final-result envelope
+| Layer | Current implementation |
+| --- | --- |
+| Native request/capabilities | `crates/rpi-agent/src/tool_program.rs`: action 30 / protocol v1, effective catalog, native execution, optional reference-mode starts and finalized accounting retention. |
+| Native reference store | `crates/rpi-agent/src/tool_program_results.rs`: invocation-owned native/serialized result, quota, byte reads, release and authoritative resolution. |
+| Native Done parser/drivers | `crates/rpi-extensions/src/tool.rs` and `tool/wake.rs`, plus invocation binding in `actions.rs`: resolve metadata-only attachment before destroy in both drivers. |
+| Package bridge | `packages/rpi-codemode/src/engine.rs` and `engine/references.rs`: strict manifests/chunks, materialization threshold, selection/lifetime checks, release and cleanup. |
+| Guest/final envelope | `src/guest.js`: private WeakMap identity, frozen lazy receipts and helpers. `src/lib.rs`: metadata-only reference envelope or bounded inline Done result. |
 
-- ToolProgram v1 `list` adds `capabilities: { resultEnvelope: 1, hostAccounting: 1, parentProgress: 1, losslessValues: 1 }`. The updated extension requires all four exact integer version-1 capabilities and fails closed before guest execution on an older action-30 host; it must not quietly emit an envelope into a legacy lenient parser.
-- Raw registration schema opts in with `"x-rpi-result-envelope": 1` (alongside existing Sequential marker).
-- Opted-in ABI Done payload: `{ "$rpiToolResult": 1, "isError": boolean, "result": { "content": [text/image blocks], "details": any, "terminate": boolean, "usage"?: Usage|null, "addedToolNames"?: string[] } }`.
-- Only opted-in tools use this parser; all legacy Done/Err behavior remains unchanged. Malformed opted-in envelopes fail closed. Parsing must preserve error + structured result simultaneously, via a native structured-tool-error variant handled by the existing loop before after hooks. No ABI slot/layout change. The SDK pin stays unchanged.
-- Extension ordinary script failures now use an isError Done envelope retaining the bounded summary in details/text, not only ABI Err strings. Unsupported binding/lifecycle infrastructure failures may still use ABI Err. If output is oversized, compact the error while preserving terminate; never turn an error into success.
+`list` advertises `{resultEnvelope:1,hostAccounting:1,parentProgress:1,
+losslessValues:1,resultReferences:1}`. The fifth native capability is additive;
+the current extension requires **all five exact integer version-1 capabilities**
+before execute/list output. Older/missing/mismatched hosts fail closed, not into
+legacy parsing, direct calls or subprocesses. The extension always starts with
+`resultMode:"reference"`; native clients omitting it retain their original
+inline result path. Native tools not opting into `x-rpi-result-envelope:1`
+retain legacy Done/Err behavior.
 
-## Host-owned accounting and execution controls
+Reference poll returns a manifest, not payload:
+`{requestId,status:"done",isError,resultReference:{version:1,id,byteLength,
+contentBlocks,isError,terminate}}`. `read_result` uses owning-invocation resultId,
+strict UTF-8 byte offset and integer limit **4..65536**, with a stable byteLength,
+validated cursor/EOF and response frame at most 1 MiB. At EOF data is empty and
+nextOffset null; invalid boundaries/past EOF fail. `release_result` frees only an
+owned retained result; request `dispose` is independent. See the
+[host contract](codemode-host-contract.md) for exact wire shapes.
 
-- The host retains finalized metadata for each direct nested request exactly once, independent of poll/dispose and script return values. Aggregate available finalized usage and added tool names after descendant drain, even if the script throws/cancels or ignores an already completed result.
-- Merge direct-child metadata into the containing native tool outcome (success or structured/ordinary error). Multi-level nesting must not double-count: each node rolls up its own direct children; the extension must NOT sum/re-emit child usage as its own usage.
-- Use checked accounting (including Usage optional fields/cost), bounded/deduplicated tool names and deterministic overflow/error behavior; do not panic or silently accept NaN/infinite totals. Existing after hooks remain authoritative as with direct native execution.
-- Finalized child termination is also retained on the host, including when result/frame encoding fails. Preserve the current termination admission latch and attach the available termination decision to the outer result even if the extension fails/compacts output.
-- Catalogs match native batch boundaries: each invocation uses its batch's effective tool snapshot; the extension freezes discovery for that execution. `addedToolNames` is metadata, not authorization, registry mutation or catalog refresh. Later invocations see legitimate native batch changes. Protected self/ancestor tools remain excluded, so this is not 100% full-toolset parity. Panic outcomes without finalized results remain lifecycle failures; no automatic retry/replay.
+## Small mutable results versus large read-only receipts
 
-## Lossless business JSON and output hygiene
+| Result | Guest behavior and exact selection |
+| --- | --- |
+| Nonterminal serialized result ≤1 MiB | Read into a normal mutable guest object; native reference released before guest delivery. `tools.result(r)` snapshots **current guest-mutated** supported content/details with captured native isError authority. Deleted/undefined details normalize to native null. |
+| Serialized result >1 MiB | Frozen lazy receipt with private WeakMap provenance. First field inspection reads bounded chunks, parses the whole JSON and deep-freezes it in the same 32 MiB guest heap. `tools.result(r)` attaches the original native result without materializing it, not guest-generated fields. |
+| Terminal child of either size | Do not resume JS. Cancel/dispose other requests and attach the original native receipt, preserving content/details/isError/terminate rather than substituting an extension summary. |
 
-- `losslessValues:1` removes the blanket recursive property-name blacklist.
-  Legitimate `runtimeKey`, `runtimeHandle`, `__rpi` and `__rpiRuntimeKey` properties
-  survive in business schemas/arguments/results and guest returns. The native
-  extension ABI still owns injected top-level `__rpi`, as with direct plugins.
-- An invocation-local host guard sanitizes actual injected metadata and credential
-  values in callbacks, Pending, legacy Done, envelope success/structured errors
-  and plain tool errors for polling and wake drivers. Ordinary serialized JSON,
-  aliases and credential-redaction collisions are covered. Ordinary bare numbers
-  are not blanket-redacted; business names alone do not trigger stripping.
-- This is output hygiene, not a sandbox against malicious native plugins.
-  Arbitrary encoding and direct plugin I/O are unguarded.
+`tools.result` returns undefined and selects exactly once. Native isError cannot
+be forged by setting a guest field, cloning or constructing an object. Exact
+selection injects neither a Code Mode summary into selected details nor synthetic
+error text. Repeated/fabricated/conflicting selection, tools.emit mixing, returning
+another content object or invalid serialization fails the program; selection
+misuse is sticky even if caught. Later throw, cancellation, timeout, OOM,
+lifecycle failure or terminal child takes precedence and discards prior selection.
 
-## Native content output
+`tools.release(r)` frees a large receipt and invalidates future reads/forwarding,
+including cached access; releasing an already selected receipt fails. For an
+authenticated small materialized result it is a native no-op. The helper is not
+a host tool call: a native tool named `release`, like `call/list/emit/result`,
+requires `tools.call(name,args)`.
 
-- JS receives the existing finalized result objects. Returning a native result object with a valid `content` array selects those blocks for outer native output. Ordinary JSON returns remain JSON summary data.
-- Add `tools.emit(resultOrContentArray)` for explicitly selecting native text/image blocks from intermediate results while returning some other JSON summary. This is output selection, NOT a host tool call, and does not affect usage or permissions.
-- Validate supported blocks, MIME/data shape and total count/encoded byte bounds. Text supports native optional `textSignature` (string/null); image supports `type`, `mimeType` and canonical standard-base64 `data`. Unsupported block properties are rejected explicitly rather than silently lost by typed native decoding. Emission serialization/validation/budget failures are sticky even when caught, including cyclic values and values that stringify to undefined. Do not auto-forward all intermediate images.
-- Keep selected image bytes in native outer content, not multiple JSON-string copies; summaries describe promoted content without duplicating its base64. For ordinary return/content emission, on script failure append a bounded native error-text block even if the selection is empty or image-only. This is not the exact-selection behavior below. Native image normalization handles structured errors too. The composition owns a descendant cancellation token so closing its binding cannot cancel containing-tool image postprocessing. No guessing nested arbitrary JSON fields as images.
+Examples (tool names/arguments must exist in the effective catalog):
 
-### Exact native result selection (new)
+```js
+// Forward a large native result without reading its content/details in JS.
+return tools.result(await tools.call('large_tool', {}));
+```
 
-`tools.result(nativeResultOrErrorResult)` selects a captured child result or
-caught `error.result`, returning `undefined`. A captured WeakMap ties object
-identity to authoritative native `isError`; cloned/fabricated inputs cannot forge
-it. Exactly one selection is allowed, without `tools.emit` or returning another
-content object. Invalid/conflicting/multiple selections and serialization misuse
-are sticky failures even if caught. This is object association, not an immutable
-snapshot of mutable guest content/details.
+```js
+// Inspect only what you need in JS, then release each large receipt.
+// Field access materializes the WHOLE receipt; this is not streaming inspection.
+for (let i = 0; i < 20; i++) {
+  const r = await tools.call('large_tool', {});
+  try {
+    print({blocks: r.content.length}); // bounded output, not the full payload
+  } finally {
+    tools.release(r);
+  }
+}
+return {released: 20};
+```
 
-Selection uses the current guest-mutated content/details snapshot, not an
-immutable copy. Missing selected `details` (including deletion or `undefined`)
-is normalized to native `null` in the required result-envelope field.
-Authoritative native `isError` remains independent of guest mutations.
+Ordinary returned-content promotion and tools.emit retain supported text/image
+validation (including optional textSignature and canonical image base64/MIME).
+Inline generated/emitted/small exact output stays **128 blocks / 1 MiB content**
+plus a separate **1 MiB final envelope**; errors compact rather than truncate or
+become success. Native attachment exempts payload from those inline bounds, not
+from retention quotas. Whole-large tools.emit/return-content, combining multiple
+large payloads, and mixed generated/large selections are intentionally unsupported.
+Use tools.result for one complete large receipt; do not treat this as full parity.
 
-On normal completion, exact selection preserves supported native content,
-text signatures, details and `isError`, without summary injection into selected
-details or synthetic error-text appending. Ordinary return/content emission is
-unchanged. Usage, added names and termination remain host-authoritative. Later
-throw, cancel, timeout, OOM, lifecycle failure or terminal child overrides the
-selection. Limits remain inline **128 blocks / 1 MiB content**, plus the 1 MiB
-final envelope; no large-result transport is implemented.
+## Storage, lifetime and host authority
 
-## Parent-associated progress
+- At most **16 retained references per program**, with a shared **64 MiB tree
+  quota** charged as `2*serialized_bytes + 4096 + 128*details_nodes +
+  256*content_blocks`. The quota implies serialized results below 32 MiB; the
+  engine independently rejects manifests above 32 MiB. Admission is not a
+  guarantee inspection fits the **32 MiB QuickJS allocation limit**.
+- This is **not a hard process RSS bound**: native clone/serialization may occur
+  before quota checks, and Rust JSON/bridge buffers lie outside the guest heap.
+- The opted-in Done attachment contains only
+  `{$rpiToolResult:1,isError,resultReference:{version:1,id}}`, mutually exclusive
+  with inline result. Both drivers resolve through their captured live owning
+  invocation **before destroy**, checking native error identity. Missing/foreign/
+  stale/released/cancelled IDs and mismatched error flags fail closed.
+- Attachment removes usage/added names; host merge retains finalized direct-child
+  metadata exactly once after descendant drain, even if JS throws or ignores a
+  completed result. Multi-level rollup is direct-child only, not duplicate sums.
+  Checked accounting/overflow rules and after-hook authority remain unchanged.
+- Finish cancels/drains and clears retained refs; release/dispose do not undo
+  side effects. Sequential outer admission, permits/gates through native cleanup,
+  panic drain and finalized termination latching are preserved. No new automatic
+  replay, retry or reconnect is introduced.
 
-- Host emits bounded progress via the existing outer native ToolExecutionUpdate callback, never ordinary nested ToolExecutionStart/MessageEnd/transcript tool results. Callback ownership/lifetime stays native; capture it in ToolProgram after constructing the normal parent update gate.
-- Include root/parent/request identity, tool name and lifecycle phase (started/progress/completed/failed). Minimum useful projection is lifecycle + update count; do NOT forward raw arguments, invocation capabilities, unfiltered partial details or images as progress. This preserves identity/privacy and requires no extension worker queue or frontend changes.
-- Bound updates and bytes across the invocation tree; discard/suppress late updates after cancellation/completion. Retained nested callbacks hold weak program references to avoid registry ownership cycles. Keep existing late-update and descendant drain invariants. Runtime action polling remains unchanged; progress does not require new SDK ABI.
+Business JSON keeps legitimate `runtimeKey/runtimeHandle/__rpi/__rpiRuntimeKey`
+properties; injected top-level native ABI `__rpi` remains host-owned. Both drivers'
+public-output guard matches actual injected metadata/credential values, not
+business names or bare numbers, across callbacks, Pending, legacy Done,
+structured successes/errors and plain errors, including aliases/serialized JSON/
+collisions. This is not a malicious-plugin sandbox; arbitrary encoding/direct
+plugin I/O are unguarded. Catalogs/hooks match native effective batch boundaries;
+added names neither authorize tools nor refresh the frozen guest catalog.
 
-## Validation checkpoint
+Bounded parent lifecycle/update counts and intent/finish markers remain the
+progress/history baseline, not original full child event/history snapshots.
+No nested assistant calls or separate transcript store are synthesized.
 
-- Package unit evidence: **72 passing tests**, including four-capability
-  negotiation, lossless business JSON, exact selection, sticky conflicts,
-  authoritative error identity and later failure/termination precedence.
-- Three new neutral-layer native differential tests prove direct/nested business
-  JSON and text signatures, hook rewrites/finalization and catalog batch behavior.
-  They are not real DLL/provider or Web/ACP qualification.
-**Current-increment local evidence:** fresh actual Windows host + Code Mode DLL,
-test-only fixture and permission gate passed **35 real smoke cases**: 20 base,
-14 fixture and one denial. Ten additions over the original 25 cover direct
-success/error baselines, exact success/error selection, deleted/undefined selected
-details normalized to native null, business JSON, actual binding success/error
-echoes and helper-name aliases (`call/list/emit/result` via `tools.call`).
-Final `results.json` reports PASSED for all 35 cases; `provenance.json` retains
-all four artifact SHA-256 values. Evidence directory: `pi-rust-codemode/target/codemode-full-parity-smoke-5/`.
-Earlier full-parity runs `-1/`, `-2/` and `-4/` failed; `-3/` passed 33 cases
-before the final missing-details fix. They are not the final qualification.
-A read-only review found that omitted selected details produced an invalid
-required-field envelope; engine/final-envelope normalization to null is covered
-by unit checks and two real cases in the final run.
+## Current evidence and its limits
 
-Host `cargo test --locked -p rpi-agent -p rpi-extensions -p rpi-plugin-sdk -p rpi-harness`
-passed **1109 tests, 6 ignored, 0 failed**; log: `pi-rust-codemode/target/codemode-full-parity-tests.log`.
-Host `cargo fmt --all -- --check` passed. Package evidence is **72 passing tests**
-and strict all-target Clippy passed with
-`cargo clippy --locked -p rpi-codemode --all-targets -- -D warnings`.
-This is Windows local source-build qualification, not deployment, installation,
-live-provider or Linux/macOS integration qualification, or a new CI-green claim.
+**Fresh Windows source-build smoke:**
+`pi-rust-codemode/target/codemode-reference-native-smoke-3/{results.json,provenance.json}`
+reports **PASSED, 46 cases, all true**. All four recorded hashes were verified
+against the actual host, Code Mode DLL, fixture and gate binaries; values are in
+the [matrix](codemode-full-parity-matrix.md). The first reference run (`-1`) failed
+an obsolete harness assertion expecting the old terminal summary. The current
+terminal path directly attaches the native receipt; `-1` is not passing evidence.
 
-## Outstanding full-plan work
+The 11 new cases comprise four direct baselines (2 MiB text, actual >1 MiB PNG,
+legacy plain error, terminal success), four corresponding composed forwards,
+lazy frozen inspection/mutation rejection, 20 inspect/release iterations with
+once-only accounting, and select-then-JS-throw discarding the receipt. They run
+in isolated sessions, compare canonical native end payload hashes to actual
+direct baselines (images may be normalized), validate image delivery in actual
+requests to the local fixture provider, and check streamed transcript markers
+plus bounded final snapshots. This is **not full get_messages large-history
+parity** or live-provider qualification. Legacy StepErr cannot carry terminate:
+a real large legacy terminal error remains uncovered; small structured terminal
+error is already covered.
 
-Host-backed references/chunks/attachments for values over 1 MiB; complete child
-progress and original native history snapshots/recovery; Web/ACP full child cards
-and reload/reconnect behavior; and explicit handling of protected self/ancestor
-exclusion remain outstanding. A third UI dev worktree was approved; no UI changes
-are implemented in this increment. Future acceptance and evidence requirements
-are in the [matrix](codemode-full-parity-matrix.md).
+Current local check checkpoint: **92 package tests**, strict all-target Clippy
+and fmt passed; native focused checks passed **33 agent tests**, **206 extension
+unit tests plus 5 integration tests (1 ignored)**. One new extension test exercises
+**22 scenarios across both drivers**, not 22 separate test functions. The complete
+default-parallel agent/extensions/harness/SDK suite passed **1,117 tests, 0 failed,
+6 ignored**, twice (`target/bridge-owner-all-parallel{,-repeat}.log`). A prior
+parallel attempt exposed unrelated-session bridge pinning; weak owner filtering
+before upgrade fixes it, with a deterministic red/green regression and no weakened
+immediate-drop assertion. Historical **35-case full-parity-smoke-5**
+and **1109 tests / 6 ignored** belong to the first increment, not current broad
+qualification. These local results are not an installed-binary, CI-green or
+Linux/macOS native integration claim.
 
-## Acceptance checks (not a claim all have passed)
+## Remaining full-plan acceptance
 
-- Opted-in success and isError structured result round-trip; legacy plugins unchanged; malformed/version-mismatched envelope rejection; old action-30 host fails capability negotiation.
-- Usage/name rollup for success, JS error, disposed/unawaited completed calls, cancel/drain, oversized terminal result, nested programs; no repeated-poll/double-counting and accounting-overflow panic.
-- Tiny real PNG returned by a native read becomes an outer image block; explicit emission/ordinary JSON/bad content/oversize cases; no automatic intermediate image forwarding.
-- Parent progress before final completion, root identity/no synthetic transcript calls, bounded updates, cancellation/late-update suppression and no runtime capability leaks.
-- Relevant package suites, strict extension Clippy, build actual native host/DLL and rerun isolated real native smoke. Retain provenance/results before claiming qualification; no deployment.
+Full parity remains **INCOMPLETE**: original native child events; bounded native
+history/query/replay/recovery with snapshot/live continuity; neutral extcore APIs
+and thin HTTP/ACP mappings; Web full child cards/reload/HMR in the approved third
+UI dev worktree; multiple/mixed large payload combination; explicit approved
+recursion/self/ancestor policy; Linux/macOS native integration, live providers
+and reload races. The current dev frontend remains untouched. Production assets,
+services and installed binaries are unchanged. The
+[matrix](codemode-full-parity-matrix.md) separates implemented, proven and remaining
+scope; source coverage and approval to work on UI are not UI qualification.

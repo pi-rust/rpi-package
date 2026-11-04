@@ -5,13 +5,14 @@ use rquickjs::{
 };
 use serde_json::{json, Value};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod content;
+mod references;
 
 pub(crate) type Action = dyn Fn(Value) -> Result<Value, String> + Send + Sync;
 pub(crate) const MAX_CODE: usize = 64 * 1024;
@@ -87,6 +88,7 @@ pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Valu
         "hostAccounting",
         "parentProgress",
         "losslessValues",
+        "resultReferences",
     ] {
         if page["capabilities"][capability].as_u64() != Some(1) {
             return Err(format!(
@@ -130,7 +132,7 @@ pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Valu
     }
     // Return only the public contract, never arbitrary host envelope fields.
     Ok(
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1},"tools":page["tools"],"nextOffset":page["nextOffset"]}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":page["tools"],"nextOffset":page["nextOffset"]}),
     )
 }
 
@@ -158,6 +160,10 @@ struct Bridge {
     emitted_bytes: usize,
     has_emission: bool,
     selected_result: Option<Value>,
+    references: HashMap<usize, references::Reference>,
+    selected_reference: Option<usize>,
+    terminal_reference: Option<usize>,
+    seen_ids: HashSet<String>,
 }
 impl Bridge {
     fn check(&self) -> Result<(), String> {
@@ -193,8 +199,10 @@ impl Bridge {
         self.started += 1;
         let token = self.started;
         let started = Instant::now();
-        let reply = (self.action)(json!({"op":"start","name":name,"arguments":args,
-            "timeoutMs":self.deadline.saturating_duration_since(Instant::now()).as_millis().clamp(1,120000) as u64}));
+        let reply = (self.action)(
+            json!({"op":"start","name":name,"arguments":args,"resultMode":"reference",
+            "timeoutMs":self.deadline.saturating_duration_since(Instant::now()).as_millis().clamp(1,120000) as u64}),
+        );
 
         let reply = match reply {
             Ok(r) => r,
@@ -216,13 +224,20 @@ impl Bridge {
                 .fail("host start returned no valid requestId; uncertain start not retried");
         };
         let id = id.to_owned();
+        if !self.seen_ids.insert(id.clone()) {
+            return self.fail("host reused request identity");
+        }
         self.pending.push(Call {
             id,
             token,
             name,
             started,
         });
-        if reply.get("status").and_then(Value::as_str) != Some("running") {
+        if reply.to_string().len() > MAX_JSON
+            || reply.get("result").is_some()
+            || reply.get("resultReference").is_some()
+            || reply.get("status").and_then(Value::as_str) != Some("running")
+        {
             return self.fail("invalid host start status");
         }
         Ok(token)
@@ -243,7 +258,7 @@ impl Bridge {
     }
     fn emit(&mut self, encoded: String) -> Result<(), String> {
         self.check()?;
-        if self.selected_result.is_some() {
+        if self.selected_result.is_some() || self.selected_reference.is_some() {
             return self.fail("tools.emit cannot be combined with tools.result");
         }
         if encoded.len() > MAX_JSON {
@@ -269,7 +284,8 @@ impl Bridge {
     }
     fn select_result(&mut self, encoded: String, is_error: bool) -> Result<(), String> {
         self.check()?;
-        if self.selected_result.is_some() || self.has_emission {
+        if self.selected_result.is_some() || self.selected_reference.is_some() || self.has_emission
+        {
             return self.fail(
                 "tools.result requires exactly one selection and cannot combine with tools.emit",
             );
@@ -281,8 +297,6 @@ impl Bridge {
             let value: Value = serde_json::from_str(&encoded)
                 .map_err(|_| "tools.result requires a finalized native result".to_owned())?;
             let blocks = content::blocks(value.get("content").cloned().unwrap_or(Value::Null))?;
-            // Inline only under the existing budget. Future large-value references
-            // must be host-backed; this bridge does not claim large-result support.
             // AgentToolResult always has details; JS can delete it or make it
             // undefined. Preserve the native default instead of emitting an
             // envelope the host would reject after guest execution completes.
@@ -300,6 +314,7 @@ impl Bridge {
         for call in self.pending.drain(..) {
             let _ = (self.action)(json!({"op":"cancel","requestId":call.id}));
             let _ = (self.action)(json!({"op":"dispose","requestId":call.id}));
+            let _ = (self.action)(json!({"op":"release_result","resultId":call.id}));
             self.calls.push(json!({"name":call.name,"status":"cancelled","durationMs":call.started.elapsed().as_millis() as u64}));
         }
     }
@@ -307,6 +322,7 @@ impl Bridge {
 impl Drop for Bridge {
     fn drop(&mut self) {
         self.cleanup();
+        self.cleanup_references(None);
     }
 }
 
@@ -362,6 +378,10 @@ pub(crate) fn execute(
         emitted_bytes: 0,
         has_emission: false,
         selected_result: None,
+        references: HashMap::new(),
+        selected_reference: None,
+        terminal_reference: None,
+        seen_ids: HashSet::new(),
     }));
     let result = run(code, &bridge, &cancelled, deadline);
     let mut state = bridge.borrow_mut();
@@ -398,7 +418,7 @@ pub(crate) fn execute(
     }
     let mut selected = std::mem::take(&mut state.emitted);
     let mut has_selection = state.has_emission;
-    if state.selected_result.is_some()
+    if (state.selected_result.is_some() || state.selected_reference.is_some())
         && status == "completed"
         && result
             .as_object()
@@ -408,7 +428,11 @@ pub(crate) fn execute(
         error = Some("returned native content conflicts with tools.result".into());
         result = Value::Null;
     }
-    if state.selected_result.is_none() && matches!(status, "completed" | "terminated") {
+    if state.selected_result.is_none()
+        && state.selected_reference.is_none()
+        && state.terminal_reference.is_none()
+        && matches!(status, "completed" | "terminated")
+    {
         match content::promote(&mut result) {
             Ok(Some(blocks)) => {
                 has_selection = true;
@@ -436,7 +460,19 @@ pub(crate) fn execute(
     } else {
         None
     };
-    let is_error = state.terminal_error
+    let handoff = if status == "terminated" {
+        state.terminal_reference
+    } else if status == "completed" {
+        state.selected_reference
+    } else {
+        None
+    };
+    let reference_error = handoff
+        .and_then(|t| state.references.get(&t))
+        .is_some_and(|r| r.is_error);
+    let native_reference = state.cleanup_references(handoff);
+    let is_error = reference_error
+        || state.terminal_error
         || exact.as_ref().is_some_and(|v| v["isError"] == true)
         || !matches!(status, "completed" | "terminated");
     if state.terminal_error && error.is_none() {
@@ -444,6 +480,9 @@ pub(crate) fn execute(
     }
     let mut summary = json!({"status":status,"result":result,"error":error,"logs":state.logs,"calls":state.calls,
         "durationMs":started.elapsed().as_millis() as u64,"terminate":terminate,"isError":is_error});
+    if let Some(reference) = native_reference {
+        summary["nativeResultReference"] = reference;
+    }
     if let Some(exact) = exact {
         summary["nativeResult"] = exact;
     }
@@ -558,12 +597,41 @@ fn run(
                         .map_err(|e| Exception::throw_message(&ctx, &e))
                 },
             )?;
+            let read_state = bridge.clone();
+            let read = Function::new(
+                ctx.clone(),
+                move |ctx: Ctx<'_>, token: usize, materialize: bool| {
+                    read_state
+                        .borrow_mut()
+                        .read_reference(token, materialize)
+                        .map_err(|e| Exception::throw_message(&ctx, &e))
+                },
+            )?;
+            let release_state = bridge.clone();
+            let release = Function::new(ctx.clone(), move |ctx: Ctx<'_>, token: usize| {
+                release_state
+                    .borrow_mut()
+                    .release_reference(token)
+                    .map_err(|e| Exception::throw_message(&ctx, &e))
+            })?;
+            let reference_state = bridge.clone();
+            let select_ref = Function::new(ctx.clone(), move |ctx: Ctx<'_>, token: usize| {
+                reference_state
+                    .borrow_mut()
+                    .select_reference(token)
+                    .map_err(|e| Exception::throw_message(&ctx, &e))
+            })?;
+            let reference_ops = rquickjs::Object::new(ctx.clone())?;
+            reference_ops.set("read", read)?;
+            reference_ops.set("release", release)?;
+            reference_ops.set("select", select_ref)?;
             let factory: Function = ctx.eval(include_str!("guest.js"))?;
             let settle: Function = factory.call((
                 start,
                 log,
                 emit,
                 select,
+                reference_ops,
                 serde_json::to_string(&catalog).unwrap_or_default(),
             ))?;
             let promise: Promise =
@@ -617,32 +685,45 @@ fn run(
                     if reply.to_string().len() > MAX_JSON { return Err(Exception::throw_message(&ctx,"host result exceeds 1 MiB")); }
                     if reply.get("requestId").and_then(Value::as_str) != Some(&call.id) { return Err(Exception::throw_message(&ctx,"host poll identity mismatch")); }
                     match reply.get("status").and_then(Value::as_str) {
-                        Some("running") => continue,
+                        Some("running") if reply.get("result").is_none() && reply.get("resultReference").is_none() => continue,
                         Some("done" | "failed") => {},
                         _ => return Err(Exception::throw_message(&ctx,"invalid host poll status")),
                     }
                     let failed = reply["status"] == "failed";
-                    let is_error = failed || reply.get("isError").and_then(Value::as_bool) == Some(true)
-                        || reply["result"]["isError"] == true;
-                    let result = reply.get("result").cloned().unwrap_or(Value::Null);
-                    if !failed && !result.is_object() { return Err(Exception::throw_message(&ctx,"host completed without finalized result")); }
+                    let call_id = call.id.clone();
+                    let token = call.token;
+                    if !failed {
+                        state.retain(token, &call_id, &reply).map_err(|e|Exception::throw_message(&ctx,&e))?;
+                    }
                     let call = state.pending.remove(i);
                     let disposal = (state.action)(json!({"op":"dispose","requestId":call.id}));
-                    state.calls.push(json!({"name":call.name,"status":if is_error {"error"} else {"done"},"isError":is_error,"durationMs":call.started.elapsed().as_millis() as u64}));
+                    let is_error = reply["isError"] == true;
+                    state.calls.push(json!({"name":call.name,"status":if failed || is_error {"error"} else {"done"},"isError":failed || is_error,"durationMs":call.started.elapsed().as_millis() as u64}));
                     disposal.map_err(|e|Exception::throw_message(&ctx,&format!("host dispose failed: {}",bounded(&e,4096))))?;
                     if failed { return Err(Exception::throw_message(&ctx,&format!("host lifecycle failed: {}",bounded(reply.get("error").and_then(Value::as_str).unwrap_or("host tool failed"),4096)))); }
-                    if result.get("terminate").and_then(Value::as_bool) == Some(true) { state.terminal_error = is_error; state.terminate = Some(result); return Ok(Some(Value::Null)); }
-                    let payload = if is_error {
-                        let message = result.get("content").and_then(Value::as_array)
-                            .and_then(|blocks| blocks.iter().find_map(|b| {
+                    let reference = &state.references[&token];
+                    if reference.terminate {
+                        state.terminal_error = is_error;
+                        state.terminal_reference = Some(token);
+                        state.terminate = Some(Value::Null);
+                        return Ok(Some(Value::Null));
+                    }
+                    let large = reference.bytes > MAX_JSON;
+                    let payload = if large { String::new() } else {
+                        let text = state.read_reference(token, true).map_err(|e|Exception::throw_message(&ctx,&e))?;
+                        state.release_reference(token).map_err(|e|Exception::throw_message(&ctx,&e))?;
+                        if is_error {
+                            let result: Value = serde_json::from_str(&text).map_err(|_|Exception::throw_message(&ctx,"invalid native JSON"))?;
+                            let message = result["content"].as_array().and_then(|blocks| blocks.iter().find_map(|b| {
                                 (b["type"] == "text").then(|| b["text"].as_str()).flatten()
                             })).unwrap_or("finalized tool error; inspect error.result");
-                        json!({"message":bounded(message,4096),"result":result}).to_string()
-                    } else { result.to_string() };
-                    ready.push((call.token,!is_error,payload));
+                            json!({"message":bounded(message,4096),"result":result}).to_string()
+                        } else { text }
+                    };
+                    ready.push((call.token,!is_error,payload,large));
                 }
             }
-            for (token,ok,payload) in ready { settle.call::<_,()>((token,ok,payload))?; }
+            for (token,ok,payload,large) in ready { settle.call::<_,()>((token,ok,payload,large))?; }
             Ok(None)
         }).map_err(|e| context.with(|ctx| js_error(&ctx,e)))?;
         if let Some(value) = outcome {
