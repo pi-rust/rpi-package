@@ -823,6 +823,59 @@ test("snapshot replay adds bounded metadata but uses the reconciled core observa
   await expect(page.getByText("Closed #3", { exact: true })).toBeVisible();
 });
 
+test("a full phase window refreshes instead of skipping an evicted continuation", async ({
+  page,
+}) => {
+  const f = await fixture(page);
+  await open(page);
+  const full: Json = snapshot();
+  full.page = { ...full.page, nextCursor: null, scanExhausted: true };
+  full.phases = [
+    {
+      ...full.phases[0],
+      phases: Array.from({ length: 8 }, (_, index) => ({
+        ...phase,
+        entryId: `phase-${index}`,
+        seq: 100 + index,
+        index,
+        phase: index === 7 ? "final" : "update",
+      })),
+      nextCursor: null,
+      scanExhausted: true,
+    },
+  ];
+  await page.evaluate(
+    (value) =>
+      (window as unknown as Bridge).emitChild(
+        "tool_program_child_snapshot",
+        value,
+      ),
+    full,
+  );
+  const appended = { ...phase, entryId: "phase-8", seq: 108, index: 8 };
+  const event = {
+    type: "tool_program_child_phase",
+    schemaVersion: 1,
+    sourceSessionId: "s",
+    lane: "main",
+    entryId: appended.entryId,
+    parentEntryId: "phase-7",
+    seq: appended.seq,
+    customType: "rpi.tool_program.child_phase.v1",
+    data: Object.fromEntries(
+      Object.entries(appended).filter(([key]) => !["entryId", "seq"].includes(key)),
+    ),
+  };
+  await page.evaluate(
+    (value) =>
+      (window as unknown as Bridge).emitChild("tool_program_child_update", value),
+    { type: "update", seq: 9, event, observation: null, disposition: "applied" },
+  );
+  await expect(page.getByText("Child feed stopped; refreshing a bounded snapshot…")).toBeVisible();
+  await expect.poll(() => f.count("tool-program/snapshot")).toBe(2);
+  await expect(page.getByText("More children exist outside this window.")).toBeVisible();
+});
+
 test("synthetic transcript row ID is not a native parent toolCallId", async ({
   page,
 }) => {

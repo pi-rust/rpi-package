@@ -154,10 +154,15 @@ function mergePhase(
       }
       return page;
     }
+    // Do not evict the oldest phase while keeping its continuation cursor:
+    // that would make the next explicit page skip the evicted phase. A bounded
+    // refresh re-establishes a coherent newest window and cursor instead.
+    if (page.phases.length >= 8)
+      throw new ChildResync("Child phase exceeds bounded page; refresh required");
     overlays.add(phase.entryId);
     return {
       ...page,
-      phases: [phase, ...page.phases].sort((a, b) => b.seq - a.seq).slice(0, 8),
+      phases: [phase, ...page.phases].sort((a, b) => b.seq - a.seq),
     };
   });
   // Keep only the bounded rendered window; pinned historical cursors/leaves do
