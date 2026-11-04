@@ -645,3 +645,37 @@ Old native hosts return unsupported (HTTP 501); malformed queries return 400,
 invalid host pages 502, and removed snapshot leaves 409. Existing `/api/v1`,
 legacy `get_messages`, snapshot/SSE replay boundaries and native ownership are
 unchanged. Installing/restarting matching runtime layers is a separate step.
+
+## Bounded native Code Mode child inspection
+
+`service::{child_summaries, child_phases, child_body}` and the named request,
+page, descriptor and cursor types in `service::tool_program_queries` expose
+read-only native child inspection on an **already live** host. They require the
+exact `toolProgramChildren` v1 profile plus all three advertised native commands.
+Missing/old/mismatched hosts return Unsupported without sending a new command,
+opening an executable session, or scanning a generic transcript.
+
+Begin pages return at most 32 authoritative summaries with `state: unknown`.
+Phase pages return at most 32 matching phases and scan at most 128 candidates;
+empty pages with continuation are valid. A complete data page is at most 128 KiB
+(no oversized-first exception), not a 128 KiB bound on the compatibility RPC
+frame's duplicated data/result. Bodies require exact native child/phase authority,
+use at most eight chunks / 64 KiB decoded bytes per page, and verify each returned
+chunk's SHA-256. Consumers must stream all pages to verify the aggregate body hash.
+
+Core validates source/leaf/direction/target cursor binding, ordered identities,
+descriptor shape, page and decoded budgets, canonical base64 and chunk checksums.
+Malformed host replies and unclassified native rejection/storage failures are
+sanitized HostUnavailable; request preflight failures remain InvalidInput. No
+retry, execution, parent settlement, adapter database or synthetic assistant
+message is introduced. `originVerification: forkCopy` preserves historical origin
+IDs without claiming a destination run checkpoint; missing final/close stays
+uncertain and scan exhaustion never means execution completed.
+
+Native now separately advertises bounded post-ACK child commit events and explicit
+resync-on-lag. This query module does not yet integrate those events with core
+snapshots or add HTTP/ACP/Web presentation. Native transcripts remain authoritative.
+Metadata ancestry/eager custom backends are not an RSS bound. See the
+[latest qualification checkpoint](../../docs/codemode-full-parity-matrix.md#latest-bounded-native-child-queries-commit-events-and-core-readers)
+for fixture tests, actual Windows native RPC recovery/event evidence and remaining
+work. No installation, production restart or deployment is performed.

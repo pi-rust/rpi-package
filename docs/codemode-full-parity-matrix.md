@@ -3,10 +3,76 @@
 Scope: companion host `D:/Projects/pi-rust-codemode` and package
 `D:/Projects/rpi-package-codemode`. **Third increment implemented; overall full
 parity INCOMPLETE.** No unrestricted full-toolset, source release, installation,
-deployment, production restart, merge or CI-green claim. Current dev frontend
-is untouched; approval for a third UI dev worktree does not prove UI work.
+deployment, production restart, merge or CI-green claim. This increment does not
+edit the frontend; existing dev-worktree edits are preserved and not included.
 
-## Latest installed native child journal (queries and UI still pending)
+## Latest bounded native child queries, commit events and core readers
+
+This increment adds actual native query/event implementation and neutral package
+readers, not just another codec or documentation checkpoint. Historical source
+checkpoints below remain historical. Native source:
+`4b75ea3a8f2937194b4ccb42c821ce12d199c195`. The package now includes core-reader
+runtime code, not only documentation; the Code Mode DLL itself remains unchanged.
+**Overall full parity remains incomplete.**
+
+| Surface | Implemented contract / boundary |
+| --- | --- |
+| Native read-only RPC | Exact `toolProgramChildren` v1; `get_tool_program_children`, `get_tool_program_child_phases`, `get_tool_program_child_body`. Strict mandatory count/byte/direction arguments, no generic history fallback. |
+| Summary/phase pages | At most 32 items / 128 KiB encoded data page, no oversized-first exception. Phase scans at most 128 exact-type metadata candidates; sparse empty continuation pages are valid. Summaries stay `unknown`; scan exhaustion is not lifecycle completion. |
+| Native authority / recovery | Real assistant tool-call-only slot, root Never checkpoint, bounded parent chain, phase and descriptor ancestry. Cursors bind destination session/lane/selected leaf/direction/target. Native fork entries without copied run records explicitly use `originVerification: forkCopy`; partial/mismatched checkpoint evidence fails closed. Destination copies only, no source fallback, repair or execution replay. |
+| Lazy body reads | Exact child/phase/descriptor authorization before existing 8-chunk / 64 KiB decoded pages. Returned chunk checksums validated; whole-body aggregate integrity requires streaming all pages. Summaries/phases do not read archival payloads. |
+| Native live events | Separate `toolProgramChildEvents` v1; genuine begin/phase metadata after append ACK, pinned source session and native entry ID/seq/parent, at most 32 KiB/event, no body/private-request-ID insertion or parent settlement. Bounded broadcast is best-effort with explicit resync-on-lag/oversize, not exactly-once delivery. |
+| Neutral package API | `rpi_extcore::service::{child_summaries, child_phases, child_body}` and named strict DTOs. Exact ready profile/all three commands required before sending; old hosts return Unsupported with zero new requests/scans. Existing live host owner/correlation/admission/timeouts, no new executable session. Count/bytes/cursors/order/descriptors/base64/chunk hashes validated. Unclassified native rejections are sanitized HostUnavailable, not presumed caller input errors. |
+| Remaining | Core snapshot/live reconciliation, bounded combined child-state projection, thin HTTP/ACP mappings, approved dev frontend cards/reload/reconnect/HMR. Raw native events surviving core replay alone is not this integration. No frontend source changed yet. |
+
+Qualification of the current source:
+
+- Native agent/extensions/harness/SDK **1,201 passed / 0 failed / 6 ignored,
+  twice**, 73 result summaries. Includes 10 new query tests and 2 native event
+  writer tests over the prior 1,189. CLI RPC **79 passed** (not the full CLI
+  suite); all-features query/journal focus **26 passed**.
+- Core package **288 passed / 0 failed / 3 ignored**, including **14 new reader
+  tests**. Core/HTTP/ACP/Web default-parallel regression repeat **527 passed /
+  0 failed / 3 ignored**. Initial broad adapter run failed the unchanged catalog
+  duplicate-header test (continuation instead of expected error); isolated
+  recheck and default full repeat passed. No unrelated test was changed.
+- Native workspace fmt, package extcore fmt, builds and diff checks pass.
+  Diagnostic native Clippy passes with 48 existing harness warnings; strict core
+  Clippy remains blocked by two existing durable.rs diagnostics. Broader package
+  fmt still reports existing rpi-voice pet.rs differences, untouched. No strict
+  native/core baseline-green or whole-workspace-format claim.
+- Fresh Windows host + unchanged Code Mode DLL/fixture/gate **59/59** differential
+  smoke. The read-only audit matched **406 live events** exactly to primary
+  entries (70 begins / 336 phases), including source, ID, seq, parent and data;
+  all per-session ordered, maximum observed event 834 bytes, no observed fixture
+  resyncs. Simulated actual broadcast lag explicitly requires resync in unit tests.
+- Real CLI reopen of **copied** fresh transcripts recovered **26 sessions /
+  70 children / 336 phases / 266 bodies / 101,830,803 decoded bytes**, through
+  **2,079 bounded RPC pages**, verifying per-chunk and aggregate hashes, with
+  **zero execution events** and original evidence files unchanged. This uses the
+  real native RPC commands, not the local audit as a replacement reader.
+- Evidence in native `target/codemode-native-query-events-smoke-1/` and
+  `target/codemode-query-recovery-final/`; native full tests
+  `target/codemode-query-events-full{,-repeat}.log`; package
+  `target/codemode-query-adapters-regression-repeat.log` and
+  `target/codemode-core-query-fix-results.md`.
+- Frozen Windows host SHA-256:
+  `0b7ec9871462d8a6b68367ccbe5e55358eef1a5f502eea67a3f8d733750d1a39`.
+  Code Mode DLL remains `5fccaaa062bdebb1fe74294a470d18816cbb59ffe8e79ad43196e220e8ebdd6f`,
+  fixture `27830e8fe1ca4a1f94918c1be51912472d34bba6ed3ace716dd933339eb23bac`,
+  gate `b52ce8ce8f10e032b701eb53cbca01e1abe04d567843aa96e2be9d880542cb34`.
+
+Core fixtures and native RPC qualification are separate: **no real-native core
+service-to-adapter/UI acceptance** yet. Metadata ancestry/eager custom storage
+are not RSS guarantees. No live-provider, Linux/macOS runtime, installed DLL,
+production binary replacement/restart, deployment, merge or full-parity claim.
+An early recovery-script attempt used the wrong native session directory layout
+and an early full-test invocation used the wrong SDK package name; both failed
+before qualification and are not passing evidence.
+
+<a id="latest-installed-native-child-journal-queries-and-ui-still-pending"></a>
+
+## Historical installed native child journal (before query/event APIs)
 
 Native source: `ccb342c8da18b3ddef9159acc06054ec71e1c090`. This package
 follow-up is documentation only; package runtime/DLL remain at `3db4122`.
