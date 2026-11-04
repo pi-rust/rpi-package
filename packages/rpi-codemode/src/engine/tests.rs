@@ -24,7 +24,7 @@ fn host(mode: &str) -> (Arc<Mutex<Fake>>, Arc<Action>) {
                     return Err("unknown runtime action 30".into());
                 }
                 Ok(
-                    json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{"name":"echo","description":"test","parameters":{"type":"object"}},{"name":"other","description":"test","parameters":{"type":"object"}}],"nextOffset":null}),
+                    json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},"tools":[{"name":"echo","description":"test","parameters":{"type":"object"}},{"name":"other","description":"test","parameters":{"type":"object"}}],"nextOffset":null}),
                 )
             }
             "start" => {
@@ -362,14 +362,14 @@ fn parser_is_strict_but_accepts_host_and_unknown_fields() {
 fn paginated_catalog_is_bounded_and_validated() {
     let action = |v: Value| {
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[],"nextOffset":if v["offset"]==0 {json!(32)} else {Value::Null}}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},"tools":[],"nextOffset":if v["offset"]==0 {json!(32)} else {Value::Null}}),
         )
     };
     assert_eq!(list_page(&action, 0, 32).unwrap()["nextOffset"], 32);
     for page in [
         json!({"protocolVersion":0,"tools":[],"nextOffset":null}),
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[],"nextOffset":0}),
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{}],"nextOffset":null}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},"tools":[],"nextOffset":0}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},"tools":[{}],"nextOffset":null}),
     ] {
         assert!(list_page(&move |_| Ok(page.clone()), 0, 32).is_err());
     }
@@ -414,7 +414,7 @@ fn paginated_execute_discovers_only_bounded_contract_entries() {
             vec![json!({"name":"b","description":"second","parameters":{}})]
         };
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":entries,"nextOffset":if offset==0 {json!(1)} else {Value::Null}}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},"tools":entries,"nextOffset":if offset==0 {json!(1)} else {Value::Null}}),
         )
     });
     let r = execute(
@@ -489,7 +489,7 @@ fn promise_job_exception_aborts_even_if_main_function_returned() {
 fn catalog_preserves_business_schema_properties() {
     let action = |_| {
         Ok(
-            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{"name":"schema","description":"test","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"ordinary":{"type":"string"}}}}],"nextOffset":null}),
+            json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},"tools":[{"name":"schema","description":"test","parameters":{"type":"object","properties":{"runtimeKey":{"type":"string"},"ordinary":{"type":"string"}}}}],"nextOffset":null}),
         )
     };
     let page = list_page(&action, 0, 32).unwrap();
@@ -567,7 +567,7 @@ fn native_host(result: Value, is_error: bool) -> Arc<Action> {
     Arc::new(move |v| {
         Ok(match v["op"].as_str().unwrap() {
             "list" => {
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},
             "tools":[{"name":"read","description":"fixture","parameters":{}}],"nextOffset":null})
             }
             "start" => json!({"requestId":"private","status":"running"}),
@@ -593,13 +593,14 @@ fn image_result() -> Value {
 }
 
 #[test]
-fn capabilities_require_all_five_exact_integer_versions_before_guest_execution() {
+fn capabilities_require_all_six_exact_integer_versions_before_guest_execution() {
     for key in [
         "resultEnvelope",
         "hostAccounting",
         "parentProgress",
         "losslessValues",
         "resultReferences",
+        "contentAttachments",
     ] {
         for invalid in [
             Value::Null,
@@ -609,7 +610,7 @@ fn capabilities_require_all_five_exact_integer_versions_before_guest_execution()
             json!(true),
             json!(1.0),
         ] {
-            let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1});
+            let mut caps = json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1});
             caps[key] = invalid;
             let a: Arc<Action> = Arc::new(move |v| {
                 assert_eq!(v["op"], "list", "guest must never start");
@@ -633,12 +634,12 @@ fn capabilities_require_all_five_exact_integer_versions_before_guest_execution()
 fn list_preserves_only_public_capabilities() {
     let a = |_| {
         Ok(json!({"protocolVersion":1,"tools":[],"nextOffset":null,
-        "capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"private":"hidden"},"private":"hidden"}))
+        "capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1,"private":"hidden"},"private":"hidden"}))
     };
     let page = list_page(&a, 0, 32).unwrap();
     assert_eq!(
         page["capabilities"],
-        json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1})
+        json!({"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1})
     );
     assert!(!page.to_string().contains("hidden"));
 }
@@ -947,7 +948,7 @@ fn business_property_names_survive_schemas_arguments_results_and_guest_returns()
     let action: Arc<Action> = Arc::new(move |v| {
         Ok(match v["op"].as_str().unwrap() {
             "list" => {
-                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":[{"name":"echo","description":"fixture","parameters":schema}],"nextOffset":null})
+                json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},"tools":[{"name":"echo","description":"fixture","parameters":schema}],"nextOffset":null})
             }
             "start" => {
                 assert_eq!(v["arguments"], expected_business);
@@ -1162,6 +1163,26 @@ fn reference_peer(tool: Arc<Action>) -> Arc<Action> {
     Arc::new(move |mut request| {
         let mut state = state.lock().unwrap();
         let op = request["op"].as_str().unwrap().to_owned();
+        if op == "measure_result_content" {
+            let id = request["resultId"].as_str().unwrap();
+            let result: Value =
+                serde_json::from_str(state.results.get(id).ok_or("unknown reference")?).unwrap();
+            let blocks = result["content"].as_array().unwrap();
+            let selected = match &request["indices"] {
+                Value::Null => blocks.iter().collect::<Vec<_>>(),
+                Value::Array(indices) => indices
+                    .iter()
+                    .map(|i| &blocks[i.as_u64().unwrap() as usize])
+                    .collect(),
+                _ => panic!("invalid measurement indices"),
+            };
+            let bytes = selected.iter().map(|b| b.to_string().len()).sum::<usize>();
+            if bytes > MEMORY {
+                return Err("native selected content exceeds 32 MiB".into());
+            }
+            return Ok(json!({"resultId":id,"contentBlocks":selected.len(),
+                "encodedBytes":bytes}));
+        }
         if op == "read_result" {
             let id = request["resultId"].as_str().unwrap();
             let text = state.results.get(id).ok_or("unknown reference")?;
@@ -1781,10 +1802,9 @@ fn lifecycle_read_release_and_dispose_errors_are_not_replayed_or_caught_as_succe
     }
 }
 #[test]
-fn large_receipts_do_not_widen_arbitrary_return_or_explicit_emission_limits() {
+fn large_receipts_do_not_widen_arbitrary_return_limits() {
     for tail in [
         "return r;",
-        "tools.emit(r); return 42;",
         "return r.details;",
         "return 'x'.repeat(1048577);",
     ] {
@@ -1795,5 +1815,1033 @@ fn large_receipts_do_not_widen_arbitrary_return_or_explicit_emission_limits() {
         assert_eq!(r["status"], "error", "{tail}: {r}");
         assert!(r.get("nativeResultReference").is_none());
         assert_eq!(count(&events, "release_result"), 1);
+    }
+}
+
+fn resolved_parts(action: &Arc<Action>, parts: &Value) -> Vec<Value> {
+    let mut output = Vec::new();
+    for part in parts.as_array().unwrap() {
+        if let Some(blocks) = part["content"].as_array() {
+            output.extend(blocks.iter().cloned());
+        } else {
+            let result = resolve_fixture(action, &part["reference"]);
+            let blocks = result["content"].as_array().unwrap();
+            match &part["indices"] {
+                Value::Null => output.extend(blocks.iter().cloned()),
+                Value::Array(indices) => output.extend(
+                    indices
+                        .iter()
+                        .map(|i| blocks[i.as_u64().unwrap() as usize].clone()),
+                ),
+                _ => panic!("invalid selected indices"),
+            }
+        }
+    }
+    output
+}
+
+#[test]
+fn whole_large_emit_is_measured_without_reading_or_serializing_receipt() {
+    let original = large_result();
+    let (base, events) = recorded_reference(original.clone(), false);
+    let action: Arc<Action> = Arc::new(move |v| {
+        assert_ne!(v["op"], "read_result", "emission must not materialize");
+        base(v)
+    });
+    let r = direct(
+        "tools.emit(await tools.read({})); return {ok:true};",
+        action,
+    );
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["result"], json!({"ok":true}));
+    assert_eq!(
+        r["nativeContentParts"],
+        json!([{"reference":{"version":1,"id":"receipt-1"},"indices":null}])
+    );
+    assert_eq!(count(&events, "start"), 1);
+    assert_eq!(count(&events, "measure_result_content"), 1);
+    assert_eq!(count(&events, "read_result"), 0);
+    assert_eq!(count(&events, "release_result"), 0);
+    let encoded: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert_eq!(encoded["isError"], false);
+    assert!(encoded["result"].get("content").is_none());
+    assert!(encoded["result"]["details"]
+        .get("nativeContentParts")
+        .is_none());
+    assert!(encoded["result"]["details"].get("nativeContent").is_none());
+    assert!(!encoded.to_string().contains(PNG));
+}
+
+#[test]
+fn two_large_images_mix_with_inline_and_returned_content_in_exact_order() {
+    let original = json!({"content":[{"type":"text","text":"signed","textSignature":"native-signature"},
+        {"type":"image","mimeType":"image/png","data":"AAAA".repeat(300_000)}],"details":null});
+    let (action, events) = recorded_reference(original.clone(), false);
+    let r = direct("const a=await tools.read({}); const b=await tools.read({}); tools.emit([{type:'text',text:'before',textSignature:null}]); tools.emit(a); tools.emit([{type:'text',text:'between'}]); tools.emit(b,[1,0,1]); tools.emit([{type:'text',text:'after'}]); return {content:[{type:'text',text:'returned'}],ok:true};", action.clone());
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["result"]["content"], json!({"promoted":true,"count":1}));
+    let encoded = crate::tool_result(r);
+    assert!(encoded.len() < 4096);
+    assert!(!encoded.contains("AAAA"));
+    let envelope: Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(envelope["contentParts"].as_array().unwrap().len(), 6);
+    let blocks = resolved_parts(&action, &envelope["contentParts"]);
+    assert_eq!(
+        blocks,
+        vec![
+            json!({"type":"text","text":"before","textSignature":null}),
+            original["content"][0].clone(),
+            original["content"][1].clone(),
+            json!({"type":"text","text":"between"}),
+            original["content"][1].clone(),
+            original["content"][0].clone(),
+            original["content"][1].clone(),
+            json!({"type":"text","text":"after"}),
+            json!({"type":"text","text":"returned"})
+        ]
+    );
+    assert_eq!(count(&events, "start"), 2);
+    assert_eq!(count(&events, "measure_result_content"), 2);
+    assert_eq!(count(&events, "release_result"), 0);
+    assert!(envelope["result"].get("usage").is_none());
+    assert!(envelope["result"].get("addedToolNames").is_none());
+}
+
+#[test]
+fn large_emit_selections_support_null_empty_reordering_duplicates_and_repeated_receipt() {
+    for (selection, indices) in [
+        ("", Value::Null),
+        (",undefined", Value::Null),
+        (",null", Value::Null),
+        (",[]", json!([])),
+        (",[1,0,1]", json!([1, 0, 1])),
+    ] {
+        let (action, events) = recorded_reference(large_result(), false);
+        let r = direct(&format!("const r=await tools.read({{}}); tools.emit(r{selection}); tools.emit(r,[]); return 9;"), action.clone());
+        assert_eq!(r["status"], "completed", "{selection}: {r}");
+        assert_eq!(r["nativeContentParts"][0]["indices"], indices);
+        assert_eq!(r["nativeContentParts"][1]["indices"], json!([]));
+        assert_eq!(count(&events, "measure_result_content"), 2);
+        assert_eq!(count(&events, "start"), 1);
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 0);
+        let blocks = resolved_parts(&action, &r["nativeContentParts"]);
+        assert_eq!(
+            blocks.len(),
+            if indices.is_null() {
+                2
+            } else {
+                indices.as_array().unwrap().len()
+            }
+        );
+    }
+}
+
+#[test]
+fn small_mutable_index_selection_and_captured_intrinsics_preserve_inline_path() {
+    let r = native_run("const r=await tools.read({}); r.content[0].text='mutated'; Array.isArray=()=>false; Number.isInteger=()=>false; Object.defineProperty=()=>{throw Error('poison')}; JSON.stringify=()=>{throw Error('poison')}; tools.emit(r,[1,0,0]); tools.emit(r.content,[]); return 7;", image_result(), false);
+    assert_eq!(r["status"], "completed", "{r}");
+    assert!(r.get("nativeContentParts").is_none());
+    assert_eq!(r["nativeContent"][0], image_result()["content"][1]);
+    assert_eq!(r["nativeContent"][1]["text"], "mutated");
+    assert_eq!(r["nativeContent"][2]["text"], "mutated");
+    let (action, events) = recorded_reference(large_result(), false);
+    let r=direct("const r=await tools.read({}); WeakMap.prototype.get=()=>({token:999}); JSON.stringify=()=>{throw Error('poison')}; tools.emit(r,[1]); return 3;",action);
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["nativeContentParts"][0]["indices"], json!([1]));
+    assert_eq!(count(&events, "read_result"), 0);
+}
+
+#[test]
+fn invalid_large_indices_are_sticky_before_measurement_and_later_writes() {
+    for indices in [
+        "[-1]",
+        "[0.5]",
+        "[2]",
+        "[null]",
+        "[true]",
+        "['0']",
+        "{}",
+        "false",
+        "Array(129).fill(0)",
+        "[NaN]",
+    ] {
+        let (action, events) = recorded_reference(large_result(), false);
+        let r = direct(&format!("const r=await tools.read({{}}); try{{tools.emit(r,{indices})}}catch(e){{}} try{{await tools.read({{}})}}catch(e){{}} return 42;"), action);
+        assert_eq!(r["status"], "error", "{indices}: {r}");
+        assert!(r.get("nativeContentParts").is_none());
+        assert_eq!(count(&events, "start"), 1);
+        assert_eq!(count(&events, "measure_result_content"), 0);
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 1);
+    }
+}
+
+#[test]
+fn fabricated_content_cannot_become_an_authenticated_reference() {
+    for value in [
+        "{reference:{version:1,id:'receipt-1'}}",
+        "{nativeContentParts:[{reference:{version:1,id:'receipt-1'}}]}",
+        "{contentParts:[{reference:{version:1,id:'receipt-1'}}]}",
+        "Object.create(r)",
+    ] {
+        let (action, events) = recorded_reference(large_result(), false);
+        let r = direct(&format!("const r=await tools.read({{}}); try{{tools.emit({value})}}catch(e){{}} try{{await tools.read({{}})}}catch(e){{}} return 42;"), action);
+        assert_eq!(r["status"], "error", "{value}: {r}");
+        assert!(r.get("nativeContentParts").is_none());
+        assert_eq!(count(&events, "measure_result_content"), 0);
+        assert_eq!(count(&events, "start"), 1);
+        assert_eq!(count(&events, "release_result"), 1);
+    }
+    let r = native_run(
+        "return {nativeContentParts:[{reference:{version:1,id:'fabricated'}}]};",
+        image_result(),
+        false,
+    );
+    let envelope: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert!(envelope.get("contentParts").is_none());
+    assert_eq!(
+        envelope["result"]["details"]["result"]["nativeContentParts"][0]["reference"]["id"],
+        "fabricated"
+    );
+}
+
+#[test]
+fn content_measurement_frames_are_strict_and_fail_sticky_without_fallback() {
+    for invalid in [
+        json!({"resultId":"foreign","contentBlocks":2,"encodedBytes":100}),
+        json!({"resultId":"receipt-1","contentBlocks":1,"encodedBytes":100}),
+        json!({"resultId":"receipt-1","contentBlocks":2.0,"encodedBytes":100}),
+        json!({"resultId":"receipt-1","contentBlocks":2,"encodedBytes":1.0}),
+        json!({"resultId":"receipt-1","contentBlocks":2,"encodedBytes":-1}),
+        json!({"resultId":"receipt-1","contentBlocks":2,"encodedBytes":0}),
+        json!({"resultId":"receipt-1","contentBlocks":2,"encodedBytes":33554433_u64}),
+        json!({"resultId":"receipt-1","contentBlocks":2,"encodedBytes":100,"payload":"x".repeat(MAX_JSON)}),
+    ] {
+        let (base, events) = recorded_reference(large_result(), false);
+        let measures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = measures.clone();
+        let action: Arc<Action> = Arc::new(move |v| {
+            if v["op"] == "measure_result_content" {
+                calls.fetch_add(1, Ordering::AcqRel);
+                return Ok(invalid.clone());
+            }
+            base(v)
+        });
+        let r=direct("const r=await tools.read({}); try{tools.emit(r)}catch(e){} try{await tools.read({})}catch(e){} return 42;",action);
+        assert_eq!(r["status"], "error", "{r}");
+        assert!(r.get("nativeContentParts").is_none());
+        assert_eq!(measures.load(Ordering::Acquire), 1);
+        assert_eq!(count(&events, "start"), 1);
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 1);
+    }
+}
+
+#[test]
+fn emitted_receipt_release_is_sticky_and_never_deletes_selected_storage() {
+    let (action, events) = recorded_reference(large_result(), false);
+    let r=direct("const r=await tools.read({}); tools.emit(r); try{tools.release(r)}catch(e){} try{await tools.read({})}catch(e){} return 42;",action.clone());
+    assert_eq!(r["status"], "error", "{r}");
+    assert_eq!(count(&events, "release_result"), 0);
+    assert_eq!(count(&events, "start"), 1);
+    assert_eq!(
+        resolved_parts(&action, &r["nativeContentParts"]),
+        large_result()["content"].as_array().unwrap().clone()
+    );
+    let envelope: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert_eq!(envelope["isError"], true);
+    assert_eq!(envelope["contentParts"].as_array().unwrap().len(), 2);
+    assert!(envelope["contentParts"][1]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("cannot be released"));
+}
+
+#[test]
+fn emission_pins_only_selected_refs_and_released_receipts_cannot_emit() {
+    let (action, events) = recorded_reference(large_result(), false);
+    let r=direct("const a=await tools.read({}); const b=await tools.read({}); const c=await tools.read({}); tools.emit(b,[]);",action.clone());
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(count(&events, "release_result"), 2);
+    assert_eq!(r["nativeContentParts"][0]["reference"]["id"], "receipt-2");
+    for id in ["receipt-1", "receipt-3"] {
+        assert!(
+            action(json!({"op":"measure_result_content","resultId":id,"indices":null})).is_err()
+        );
+    }
+    let (action, events) = recorded_reference(large_result(), false);
+    let r=direct("const r=await tools.read({}); tools.release(r); try{tools.emit(r)}catch(e){} try{await tools.read({})}catch(e){} return 1;",action);
+    assert_eq!(r["status"], "error", "{r}");
+    assert_eq!(count(&events, "release_result"), 1);
+    assert_eq!(count(&events, "measure_result_content"), 0);
+    assert_eq!(count(&events, "start"), 1);
+}
+
+#[test]
+fn recovered_large_error_emission_does_not_force_outer_error() {
+    let (action, events) = recorded_reference(large_result(), true);
+    let r = direct(
+        "try{await tools.read({})}catch(e){tools.emit(e.result,[1])} return {recovered:true};",
+        action,
+    );
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(r["isError"], false);
+    assert_eq!(r["calls"][0]["isError"], true);
+    assert_eq!(r["result"], json!({"recovered":true}));
+    assert_eq!(count(&events, "read_result"), 0);
+    let envelope: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert_eq!(envelope["isError"], false);
+    assert_eq!(envelope["contentParts"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn large_emits_survive_later_throw_deadline_and_oom_with_last_error_block() {
+    for tail in [
+        "throw Error('later');",
+        "for(;;){}",
+        "try{const a=[];for(;;)a.push(new Array(10000).fill('x'));}catch(e){}",
+    ] {
+        let (action, events) = recorded_reference(large_result(), false);
+        let r = super::execute(
+            &format!("tools.emit(await tools.read({{}})); {tail}"),
+            if tail == "for(;;){}" { 2000 } else { 5000 },
+            action.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(
+            matches!(r["status"].as_str(), Some("error" | "timed_out")),
+            "{r}"
+        );
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 0);
+        let envelope: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        assert_eq!(envelope["isError"], true);
+        let blocks = resolved_parts(&action, &envelope["contentParts"]);
+        assert_eq!(&blocks[..2], large_result()["content"].as_array().unwrap());
+        assert!(blocks.last().unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("codemode error:"));
+    }
+}
+
+#[test]
+fn mixed_content_block_part_and_inline_byte_quotas_are_sticky() {
+    for (tail, expected_parts) in [
+        ("for(let i=0;i<64;i++)tools.emit(r); try{tools.emit([{type:'text',text:'overflow'}])}catch(e){}",64),
+        ("for(let i=0;i<128;i++)tools.emit(r,[]); try{tools.emit(r,[])}catch(e){}",128),
+        ("tools.emit(r,[]); tools.emit([{type:'text',text:'x'.repeat(600000)}]); try{tools.emit([{type:'text',text:'x'.repeat(600000)}])}catch(e){}",2),
+    ] {
+        let (action,events)=recorded_reference(large_result(),false);
+        let r=direct(&format!("const r=await tools.read({{}}); {tail} try{{await tools.read({{}})}}catch(e){{}} return 42;"),action);
+        assert_eq!(r["status"],"error","{r}");
+        // Repeated whole-large content can hit the 32 MiB byte budget first.
+        let parts=r["nativeContentParts"].as_array().unwrap();
+        if expected_parts==64 { assert!(parts.len()<64); } else { assert_eq!(parts.len(),expected_parts); }
+        assert_eq!(count(&events,"start"),1);
+        assert_eq!(count(&events,"read_result"),0);
+        assert_eq!(count(&events,"release_result"),0);
+    }
+    // 128 selected native blocks succeed, including repeated selections.
+    let (action, events) = recorded_reference(large_result(), false);
+    let r=direct("const r=await tools.read({}); tools.emit(r,Array(128).fill(1)); try{tools.emit(r,[1])}catch(e){} try{await tools.read({})}catch(e){} return 42;",action);
+    assert_eq!(r["status"], "error", "{r}");
+    assert_eq!(r["nativeContentParts"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        r["nativeContentParts"][0]["indices"]
+            .as_array()
+            .unwrap()
+            .len(),
+        128
+    );
+    assert_eq!(count(&events, "start"), 1);
+}
+
+#[test]
+fn mixed_content_array_budget_counts_brackets_commas_and_inline_bytes() {
+    for (bytes, inline, success) in [
+        (MEMORY - OUTPUT_DIAGNOSTIC_RESERVE - 2, false, true),
+        (MEMORY - OUTPUT_DIAGNOSTIC_RESERVE - 1, false, false),
+        (MEMORY - OUTPUT_DIAGNOSTIC_RESERVE - 2, true, false),
+        (MEMORY - 2, false, false),
+    ] {
+        let (base, events) = recorded_reference(large_result(), false);
+        let action: Arc<Action> = Arc::new(move |v| {
+            if v["op"] == "measure_result_content" {
+                return Ok(
+                    json!({"resultId":v["resultId"],"contentBlocks":1,"encodedBytes":bytes}),
+                );
+            }
+            base(v)
+        });
+        let r=direct(&format!("const r=await tools.read({{}}); {} try{{tools.emit(r,[1])}}catch(e){{}} try{{await tools.read({{}})}}catch(e){{}} return 42;",if inline {"tools.emit([{type:'text',text:'x'}]);"} else {""}),action);
+        assert_eq!(
+            r["status"],
+            if success { "completed" } else { "error" },
+            "{r}"
+        );
+        assert_eq!(count(&events, "start"), if success { 2 } else { 1 });
+        assert_eq!(r.get("nativeContentParts").is_some(), success);
+        assert_eq!(count(&events, "read_result"), 0);
+    }
+    // Two measured bytesums fit alone but not with their comma and brackets.
+    let (base, events) = recorded_reference(large_result(), false);
+    let action: Arc<Action> = Arc::new(move |v| {
+        if v["op"] == "measure_result_content" {
+            return Ok(
+                json!({"resultId":v["resultId"],"contentBlocks":1,"encodedBytes":MEMORY/2-1}),
+            );
+        }
+        base(v)
+    });
+    let r=direct("const r=await tools.read({}); tools.emit(r,[1]); try{tools.emit(r,[1])}catch(e){} try{await tools.read({})}catch(e){}",action);
+    assert_eq!(r["status"], "error", "{r}");
+    assert_eq!(r["nativeContentParts"].as_array().unwrap().len(), 1);
+    assert_eq!(count(&events, "start"), 1);
+}
+
+#[test]
+fn large_emission_and_full_result_selection_conflicts_stay_sticky() {
+    for tail in [
+        "tools.emit(r,[]); try{tools.result(r)}catch(e){}",
+        "tools.result(r); try{tools.emit(r,[])}catch(e){}",
+    ] {
+        let (action, events) = recorded_reference(large_result(), false);
+        let r=direct(&format!("const r=await tools.read({{}}); {tail} try{{await tools.read({{}})}}catch(e){{}} return 42;"),action);
+        assert_eq!(r["status"], "error", "{r}");
+        assert!(r.get("nativeResultReference").is_none());
+        assert_eq!(count(&events, "start"), 1);
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(
+            count(&events, "release_result"),
+            if tail.starts_with("tools.result") {
+                1
+            } else {
+                0
+            }
+        );
+    }
+}
+
+#[test]
+fn terminal_reference_overrides_two_emitted_refs_and_releases_other_storage() {
+    for error in [false, true] {
+        let mut terminal = large_result();
+        terminal["terminate"] = json!(true);
+        let expected = terminal.clone();
+        let base = native_host(large_result(), false);
+        let polls = std::sync::atomic::AtomicUsize::new(0);
+        let tool: Arc<Action> = Arc::new(move |v| {
+            if v["op"] == "poll" && polls.fetch_add(1, Ordering::AcqRel) >= 2 {
+                return Ok(
+                    json!({"requestId":"private","status":"done","isError":error,"result":terminal}),
+                );
+            }
+            base(v)
+        });
+        let peer = reference_peer(tool);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let shared = events.clone();
+        let action: Arc<Action> = Arc::new(move |v| {
+            shared.lock().unwrap().push(v.clone());
+            peer(v)
+        });
+        let r=direct("const a=await tools.read({}); const b=await tools.read({}); tools.emit(a); tools.emit(b,[1]); tools.emit([{type:'text',text:'discard'}]); await tools.read({}); throw Error('resumed');",action.clone());
+        assert_eq!(r["status"], "terminated", "{r}");
+        assert_eq!(r["isError"], error);
+        assert!(r.get("nativeContentParts").is_none());
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 2);
+        let envelope: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+        assert!(envelope.get("contentParts").is_none());
+        assert!(envelope.get("result").is_none());
+        assert_eq!(envelope["resultReference"]["id"], "receipt-3");
+        assert_eq!(
+            resolve_fixture(&action, &envelope["resultReference"]),
+            expected
+        );
+    }
+}
+
+#[test]
+fn cancellation_during_or_after_measurement_never_hands_off_emitted_refs() {
+    for cancel_at in [1, 2] {
+        let (base, events) = recorded_reference(large_result(), false);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let token = cancel.clone();
+        let measurements = std::sync::atomic::AtomicUsize::new(0);
+        let action: Arc<Action> = Arc::new(move |v| {
+            let measure = v["op"] == "measure_result_content";
+            let reply = base(v)?;
+            if measure && measurements.fetch_add(1, Ordering::AcqRel) + 1 == cancel_at {
+                token.store(true, Ordering::Release);
+            }
+            Ok(reply)
+        });
+        let r = super::execute(
+            "const r=await tools.read({}); tools.emit(r); tools.emit(r,[]); return 42;",
+            5000,
+            action,
+            cancel,
+        );
+        assert_eq!(r["status"], "cancelled", "{r}");
+        assert_eq!(r["isError"], true);
+        assert!(r.get("nativeContentParts").is_none());
+        assert_eq!(count(&events, "release_result"), 1);
+        assert_eq!(count(&events, "read_result"), 0);
+    }
+}
+
+#[test]
+fn lost_binding_host_measurement_and_lifecycle_errors_suppress_all_attachments() {
+    for op in ["measure_result_content", "start", "poll", "dispose"] {
+        let (base, events) = recorded_reference(large_result(), false);
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = attempts.clone();
+        let expired = AtomicBool::new(false);
+        let action: Arc<Action> = Arc::new(move |v| {
+            if expired.load(Ordering::Acquire)
+                || (v["op"] == op && seen.fetch_add(1, Ordering::AcqRel) > 0)
+            {
+                expired.store(true, Ordering::Release);
+                return Err("lost native invocation binding".into());
+            }
+            base(v)
+        });
+        let r=direct("const r=await tools.read({}); tools.emit(r); try{tools.emit(r,[]); await tools.read({})}catch(e){} return 42;",action);
+        assert_eq!(r["status"], "error", "{op}: {r}");
+        assert!(r.get("nativeContentParts").is_none(), "{op}: {r}");
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(
+            count(&events, "release_result"),
+            0,
+            "expired owner rejects cleanup too"
+        );
+    }
+}
+
+#[test]
+fn large_emission_error_framing_can_drop_plan_but_keeps_bounded_explicit_error() {
+    let (action, events) = recorded_reference(large_result(), false);
+    let r = direct(
+        "tools.emit(await tools.read({}),[]); return 'x'.repeat(1048000);",
+        action,
+    );
+    assert_eq!(r["status"], "completed", "{r}");
+    assert_eq!(
+        count(&events, "release_result"),
+        0,
+        "handoff retained until native finish, not plugin destroy"
+    );
+    let text = crate::tool_result(r);
+    assert!(text.len() <= MAX_JSON);
+    let envelope: Value = serde_json::from_str(&text).unwrap();
+    // Increase the diagnostic metadata explicitly to exercise the independent
+    // Done-frame fallback, not guest or attachment payload truncation.
+    let text = crate::tool_result(
+        json!({"status":"completed","isError":false,"result":"x".repeat(MAX_JSON),"nativeContentParts":envelope["contentParts"],"logs":[],"calls":[],"terminate":false}),
+    );
+    assert!(text.len() <= MAX_JSON);
+    let envelope: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(envelope["isError"], true);
+    assert!(envelope.get("contentParts").is_none());
+    assert!(envelope["result"]["details"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("exceeds 1 MiB"));
+}
+
+#[test]
+fn emitted_reference_survives_throw_while_pending_calls_are_cancelled_and_disposed() {
+    let (base, events) = recorded_reference(large_result(), false);
+    let action: Arc<Action> = Arc::new(move |v| {
+        // No finalized storage exists for the unawaited second child. Its
+        // best-effort release is expected to fail, not invalidate receipt-1.
+        base(v)
+    });
+    let r=direct("tools.emit(await tools.read({})); tools.read({}); throw Error('later with pending child');",action.clone());
+    assert_eq!(r["status"], "error", "{r}");
+    assert_eq!(r["nativeContentParts"][0]["reference"]["id"], "receipt-1");
+    assert_eq!(count(&events, "cancel"), 1);
+    assert_eq!(count(&events, "dispose"), 2);
+    assert_eq!(count(&events, "release_result"), 1);
+    assert_eq!(count(&events, "read_result"), 0);
+    assert_eq!(
+        resolved_parts(&action, &r["nativeContentParts"]),
+        large_result()["content"].as_array().unwrap().clone()
+    );
+}
+
+#[test]
+fn lost_owner_during_unselected_reference_cleanup_cannot_emit_success() {
+    let (base, events) = recorded_reference(large_result(), false);
+    let action: Arc<Action> = Arc::new(move |v| {
+        if v["op"] == "release_result" {
+            return Err("owner expired".into());
+        }
+        base(v)
+    });
+    let r = direct(
+        "const a=await tools.read({}); const b=await tools.read({}); tools.emit(a); return 42;",
+        action,
+    );
+    assert_eq!(r["status"], "error", "{r}");
+    assert_eq!(r["isError"], true);
+    assert!(r.get("nativeContentParts").is_none());
+    assert_eq!(count(&events, "start"), 2);
+    assert_eq!(count(&events, "read_result"), 0);
+}
+
+#[test]
+fn small_invalid_indices_and_large_indices_serialization_fail_sticky() {
+    for indices in ["[-1]", "[2]", "[0.25]", "{}", "'0'", "Array(129).fill(0)"] {
+        let r=native_run(&format!("const r=await tools.read({{}}); try{{tools.emit(r,{indices})}}catch(e){{}} try{{await tools.read({{}})}}catch(e){{}} return 42;"),image_result(),false);
+        assert_eq!(r["status"], "error", "{indices}: {r}");
+        assert_eq!(r["calls"].as_array().unwrap().len(), 1);
+        assert!(r.get("nativeContentParts").is_none());
+    }
+    for indices in [
+        "[1n]",
+        "(()=>{const a=[];a.push(a);return a})()",
+        "{toJSON(){throw Error('indices')}}",
+    ] {
+        let (action, events) = recorded_reference(large_result(), false);
+        let r=direct(&format!("const r=await tools.read({{}}); try{{tools.emit(r,{indices})}}catch(e){{}} try{{await tools.read({{}})}}catch(e){{}} return 42;"),action);
+        assert_eq!(r["status"], "error", "{indices}: {r}");
+        assert_eq!(count(&events, "start"), 1);
+        assert_eq!(count(&events, "measure_result_content"), 0);
+        assert_eq!(count(&events, "read_result"), 0);
+        assert_eq!(count(&events, "release_result"), 1);
+    }
+}
+
+fn overflow_result() -> Value {
+    json!({"content":[{"type":"text","text":"x".repeat(1_800_000)},
+        {"type":"image","mimeType":"image/png","data":"AAAA".repeat(300_000)}],"details":null})
+}
+
+fn recorded_overflow() -> (Arc<Action>, Arc<Mutex<Vec<Value>>>) {
+    let (base, events) = recorded_reference(overflow_result(), false);
+    let action: Arc<Action> = Arc::new(move |v| {
+        let list = v["op"] == "list";
+        let mut reply = base(v)?;
+        if list {
+            reply["tools"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name":"write","description":"fixture mutation","parameters":{}}));
+        }
+        Ok(reply)
+    });
+    (action, events)
+}
+
+const EMIT_THEN_OVERFLOW: &str = "const a=await tools.read({}); const b=await tools.read({}); const c=await tools.read({}); const d=await tools.read({}); tools.emit(a,[1]); tools.emit(a,[1]); tools.emit(b,[1]); try{tools.emit(c,Array(20).fill(0))}catch(e){} try{await tools.write({})}catch(e){} try{tools.result(a)}catch(e){} return 42;";
+
+#[test]
+fn ordinary_native_measure_quota_error_recovers_only_distinct_pinned_receipts() {
+    let original = overflow_result();
+    let (action, events) = recorded_overflow();
+    let r = direct(EMIT_THEN_OVERFLOW, action.clone());
+    assert_eq!(r["status"], "error", "{r}");
+    assert!(r["error"].as_str().unwrap().contains("32 MiB"));
+    assert!(r.get("nativeResultReference").is_none());
+    assert_eq!(r["nativeContentParts"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        count(&events, "start"),
+        4,
+        "sticky error blocks later writes"
+    );
+    assert_eq!(count(&events, "read_result"), 0);
+    assert_eq!(
+        count(&events, "release_result"),
+        2,
+        "all and only unselected refs"
+    );
+    let recorded = events.lock().unwrap();
+    let probes = recorded
+        .iter()
+        .filter(|v| v["op"] == "measure_result_content" && v["indices"] == json!([]))
+        .collect::<Vec<_>>();
+    assert_eq!(probes.len(), 2);
+    let ids: HashSet<_> = probes
+        .iter()
+        .map(|v| v["resultId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, HashSet::from(["receipt-1", "receipt-2"]));
+    let first_probe = recorded
+        .iter()
+        .position(|v| v["op"] == "measure_result_content" && v["indices"] == json!([]))
+        .unwrap();
+    assert_eq!(
+        recorded[..first_probe]
+            .iter()
+            .filter(|v| v["op"] == "release_result")
+            .count(),
+        2
+    );
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|v| v["op"] == "measure_result_content"
+                && v["indices"].as_array().is_some_and(|a| a.len() == 20))
+            .count(),
+        1,
+        "failed selection is never replayed"
+    );
+    drop(recorded);
+    let envelope: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    assert_eq!(envelope["isError"], true);
+    let parts = envelope["contentParts"].as_array().unwrap();
+    assert_eq!(parts.len(), 4);
+    assert!(parts[3]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("codemode error:"));
+    let blocks = resolved_parts(&action, &envelope["contentParts"]);
+    assert_eq!(&blocks[..3], &vec![original["content"][1].clone(); 3]);
+}
+
+#[test]
+fn emitted_liveness_probe_requires_exact_bounded_zero_measurements_for_every_owner() {
+    for invalid in [
+        None,
+        Some(json!({"resultId":"foreign","contentBlocks":0,"encodedBytes":0})),
+        Some(json!({"resultId":"receipt-2","contentBlocks":1,"encodedBytes":0})),
+        Some(json!({"resultId":"receipt-2","contentBlocks":0,"encodedBytes":1})),
+        Some(json!({"resultId":"receipt-2","contentBlocks":0.0,"encodedBytes":0})),
+        Some(json!({"resultId":"receipt-2","contentBlocks":0,"encodedBytes":0.0})),
+        Some(json!({"resultId":"receipt-2","contentBlocks":0,"encodedBytes":0,"extra":true})),
+        Some(
+            json!({"resultId":"receipt-2","contentBlocks":0,"encodedBytes":0,"extra":"x".repeat(MAX_JSON)}),
+        ),
+        Some(json!({"resultId":"receipt-2","contentBlocks":0,"encodedBytes":0,"status":"failed"})),
+    ] {
+        let (base, events) = recorded_overflow();
+        let probes = Arc::new(Mutex::new(Vec::new()));
+        let seen = probes.clone();
+        let action: Arc<Action> = Arc::new(move |v| {
+            if v["op"] == "measure_result_content" && v["indices"] == json!([]) {
+                seen.lock().unwrap().push(v["resultId"].clone());
+                if v["resultId"] == "receipt-2" {
+                    return invalid
+                        .clone()
+                        .ok_or_else(|| "expired owning invocation".into());
+                }
+            }
+            base(v)
+        });
+        let r = direct(EMIT_THEN_OVERFLOW, action);
+        assert_eq!(r["status"], "error", "{r}");
+        assert!(r.get("nativeContentParts").is_none(), "{r}");
+        assert!(r.get("nativeResultReference").is_none());
+        let seen = probes.lock().unwrap();
+        assert!(seen.contains(&json!("receipt-2")));
+        assert_eq!(seen.iter().collect::<HashSet<_>>().len(), seen.len());
+        assert_eq!(count(&events, "start"), 4);
+        assert_eq!(count(&events, "release_result"), 4);
+        assert_eq!(count(&events, "read_result"), 0);
+    }
+}
+
+#[test]
+fn cancellation_never_recovers_emitted_receipts_even_during_liveness_probe() {
+    for cancel_on_probe in [false, true] {
+        let (base, events) = recorded_overflow();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let token = cancel.clone();
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = probes.clone();
+        let action: Arc<Action> = Arc::new(move |v| {
+            let probe = v["op"] == "measure_result_content" && v["indices"] == json!([]);
+            let overflow = v["indices"].as_array().is_some_and(|a| a.len() == 20);
+            let reply = base(v);
+            if probe {
+                seen.fetch_add(1, Ordering::AcqRel);
+            }
+            if (cancel_on_probe && probe) || (!cancel_on_probe && overflow) {
+                token.store(true, Ordering::Release);
+            }
+            reply
+        });
+        let r = super::execute(EMIT_THEN_OVERFLOW, 5000, action, cancel);
+        assert_ne!(r["status"], "completed", "{r}");
+        assert!(r.get("nativeContentParts").is_none());
+        assert_eq!(probes.load(Ordering::Acquire), usize::from(cancel_on_probe));
+        assert_eq!(count(&events, "release_result"), 4);
+        assert_eq!(count(&events, "read_result"), 0);
+    }
+}
+
+#[test]
+fn known_unselected_cleanup_failure_forbids_liveness_recovery() {
+    for (failed_reply, explicit_release) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let (base, events) = recorded_overflow();
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = probes.clone();
+        let action: Arc<Action> = Arc::new(move |v| {
+            if v["op"] == "measure_result_content" && v["indices"] == json!([]) {
+                seen.fetch_add(1, Ordering::AcqRel);
+            }
+            if v["op"] == "release_result" && v["resultId"] == "receipt-3" {
+                return if failed_reply {
+                    Ok(json!({"resultId":"receipt-3","status":"failed"}))
+                } else {
+                    Err("uncertain cleanup".into())
+                };
+            }
+            base(v)
+        });
+        let code = if explicit_release {
+            EMIT_THEN_OVERFLOW.replace(
+                "try{tools.emit(c,Array(20).fill(0))}",
+                "try{tools.release(c)}",
+            )
+        } else {
+            EMIT_THEN_OVERFLOW.to_owned()
+        };
+        let r = direct(&code, action);
+        assert_eq!(r["status"], "error", "{r}");
+        assert!(r.get("nativeContentParts").is_none());
+        assert_eq!(probes.load(Ordering::Acquire), 0);
+        assert_eq!(
+            count(&events, "release_result"),
+            3,
+            "other unselected and both pinned refs cleaned"
+        );
+        assert_eq!(count(&events, "read_result"), 0);
+    }
+}
+
+#[test]
+fn diagnostic_reserve_keeps_near_native_limit_content_and_escaped_error_in_budget() {
+    // Measurement metadata models a content array right at the engine bound;
+    // payload stays native, so this test need not allocate a 32 MiB guest value.
+    let bytes = MEMORY - OUTPUT_DIAGNOSTIC_RESERVE - 2;
+    let (base, events) = recorded_reference(large_result(), false);
+    let action: Arc<Action> = Arc::new(move |v| {
+        if v["op"] == "measure_result_content" {
+            return Ok(json!({"resultId":v["resultId"],"contentBlocks":1,"encodedBytes":bytes}));
+        }
+        base(v)
+    });
+    let r = direct(
+        "tools.emit(await tools.read({}),[1]); throw Error(String.fromCharCode(1).repeat(512));",
+        action,
+    );
+    assert_eq!(r["status"], "error", "{r}");
+    assert!(r.get("nativeContentParts").is_some());
+    assert_eq!(count(&events, "read_result"), 0);
+    let envelope: Value = serde_json::from_str(&crate::tool_result(r)).unwrap();
+    let parts = envelope["contentParts"].as_array().unwrap();
+    assert_eq!(parts.len(), 2);
+    let diagnostic = &parts[1]["content"][0];
+    assert_eq!(
+        diagnostic["text"].as_str().unwrap(),
+        format!(
+            "codemode error: {}",
+            char::from(1u8).to_string().repeat(512)
+        )
+    );
+    assert!(diagnostic.to_string().len() > 3072);
+    assert!(bytes + 1 + diagnostic.to_string().len() + 2 <= MEMORY);
+}
+
+// Use the same recorded bridge for both representations and include a real
+// mutating tool, so catching a bad directive must not admit a later start.
+fn indices_fixture(large: bool) -> (Arc<Action>, Arc<Mutex<Vec<Value>>>) {
+    let (base, events) = recorded_reference(
+        if large {
+            large_result()
+        } else {
+            image_result()
+        },
+        false,
+    );
+    let action: Arc<Action> = Arc::new(move |v| {
+        let list = v["op"] == "list";
+        let mut reply = base(v)?;
+        if list {
+            reply["tools"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name":"write","description":"mutation","parameters":{}}));
+        }
+        Ok(reply)
+    });
+    (action, events)
+}
+
+#[test]
+fn raw_emit_indices_reject_coercion_holes_and_invalid_values_sticky() {
+    for large in [false, true] {
+        for indices in [
+            "NaN",
+            "Infinity",
+            "-Infinity",
+            "0.5",
+            "0",
+            "true",
+            "'0'",
+            "new Number(0)",
+            "new Number(NaN)",
+            "{toJSON(){return null}}",
+            "{toJSON(){return [1]}}",
+            "{toJSON(){tools.write({});return null}}",
+            "Object.create({toJSON(){return [1]}})",
+            "{toJSON(){throw Error('must not serialize')}}",
+            "Array(1)",
+            "[undefined]",
+            "[null]",
+            "[NaN]",
+            "[Infinity]",
+            "[-Infinity]",
+            "[0.5]",
+            "[-1]",
+            "[new Number(0)]",
+            "[{toJSON(){return 0}}]",
+            "[1n]",
+            "[Symbol('index')]",
+            "Array(129).fill(0)",
+            "Object.assign([NaN],{toJSON(){return [0]}})",
+            "Object.assign([2],{toJSON(){return [0]}})",
+            "new Proxy([],{get(t,k){return k==='length' ? NaN : 0}})",
+            "new Proxy([],{get(t,k){return k==='length' ? -1 : 0}})",
+            "new Proxy([],{get(t,k){return k==='length' ? 0.5 : 0}})",
+            "new Proxy([],{get(t,k){return k==='length' ? Infinity : 0}})",
+            "new Proxy([0],{get(t,k){if(k==='0')throw Error('index getter');return t[k]}})",
+        ] {
+            let (action, events) = indices_fixture(large);
+            let r = direct(&format!("const r=await tools.read({{}}); try{{tools.emit(r,{indices})}}catch(e){{}} try{{await tools.write({{}})}}catch(e){{}} return 42;"), action);
+            assert_eq!(r["status"], "error", "large={large}, {indices}: {r}");
+            assert_eq!(r["result"], Value::Null);
+            assert!(r.get("nativeContentParts").is_none(), "{r}");
+            assert!(r.get("nativeContent").is_none(), "no blocks may leak: {r}");
+            assert_eq!(count(&events, "start"), 1, "large={large}, {indices}");
+            assert_eq!(count(&events, "measure_result_content"), 0);
+            assert_eq!(count(&events, "release_result"), 1);
+            assert!(!events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e["op"] == "start" && e["name"] == "write"));
+        }
+    }
+}
+
+#[test]
+fn emit_indices_ignore_caller_array_to_json_and_arbitrary_metadata() {
+    for large in [false, true] {
+        for setup in [
+            "indices.toJSON=()=>null;",
+            "indices.toJSON=()=>[0];",
+            "Object.defineProperty(indices,'toJSON',{get(){throw Error('toJSON read')}});",
+            "Object.defineProperty(indices,'metadata',{get(){throw Error('metadata read')}});",
+            "indices.toJSON=()=>{tools.write({});return null};",
+        ] {
+            let (action, events) = indices_fixture(large);
+            let r = direct(&format!("const r=await tools.read({{}}); const indices=[1,1]; {setup} tools.emit(r,indices); return 9;"), action.clone());
+            assert_eq!(r["status"], "completed", "large={large}, {setup}: {r}");
+            let expected = if large {
+                large_result()
+            } else {
+                image_result()
+            };
+            let blocks = if large {
+                assert_eq!(r["nativeContentParts"][0]["indices"], json!([1, 1]));
+                resolved_parts(&action, &r["nativeContentParts"])
+            } else {
+                r["nativeContent"].as_array().unwrap().clone()
+            };
+            assert_eq!(blocks, vec![expected["content"][1].clone(); 2]);
+            assert_eq!(count(&events, "start"), 1);
+            assert_eq!(count(&events, "measure_result_content"), usize::from(large));
+        }
+    }
+}
+
+#[test]
+fn emit_indices_snapshot_proxy_length_and_each_index_exactly_once() {
+    for large in [false, true] {
+        let (action, events) = indices_fixture(large);
+        let r = direct("const r=await tools.read({}); let lengths=0, reads=0; const indices=new Proxy([1],{get(t,k){if(k==='length'){if(++lengths>1)throw Error('length reread');return 1} if(k==='0'){if(++reads>1)throw Error('index reread');return 1} throw Error('unexpected property '+String(k))}}); tools.emit(r,indices); return {lengths,reads};", action.clone());
+        assert_eq!(r["status"], "completed", "large={large}: {r}");
+        assert_eq!(r["result"], json!({"lengths":1,"reads":1}));
+        let expected = if large {
+            large_result()
+        } else {
+            image_result()
+        };
+        if large {
+            assert_eq!(r["nativeContentParts"][0]["indices"], json!([1]));
+            assert_eq!(
+                resolved_parts(&action, &r["nativeContentParts"]),
+                vec![expected["content"][1].clone()]
+            );
+        } else {
+            assert_eq!(r["nativeContent"], json!([expected["content"][1]]));
+        }
+        assert_eq!(count(&events, "start"), 1);
+    }
+}
+
+#[test]
+fn emit_indices_normalization_uses_captured_intrinsics_and_safe_array_prototypes() {
+    for large in [false, true] {
+        let boundary = format!("[{}]", vec!["1"; 128].join(","));
+        for selection in ["[]", "[1]", "[1,0,1]", &boundary] {
+            let (action, events) = indices_fixture(large);
+            let r = direct(&format!("const r=await tools.read({{}}); const indices={selection}; const define=Object.defineProperty; const descriptor=Object.create(null); descriptor.set=()=>{{throw Error('array setter')}}; descriptor.configurable=true; define(Array.prototype,{},descriptor); Array.prototype.toJSON=()=>null; Number.prototype.toJSON=()=>null; Number.isInteger=()=>false; Array.isArray=()=>false; Object.setPrototypeOf=Object.freeze=Object.create=Object.defineProperty=()=>{{throw Error('poison')}}; JSON.stringify=()=>null; tools.emit(r,indices); return 9;", if large { 0 } else { 127 }), action.clone());
+            assert_eq!(r["status"], "completed", "large={large}, {selection}: {r}");
+            let indices: Value = serde_json::from_str(selection).unwrap();
+            let expected = if large {
+                large_result()
+            } else {
+                image_result()
+            };
+            let expected: Vec<Value> = indices
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| expected["content"][i.as_u64().unwrap() as usize].clone())
+                .collect();
+            if large {
+                assert_eq!(r["nativeContentParts"][0]["indices"], indices);
+                assert_eq!(count(&events, "read_result"), 0);
+                assert_eq!(resolved_parts(&action, &r["nativeContentParts"]), expected);
+            } else {
+                assert_eq!(r["nativeContent"], json!(expected));
+            }
+            assert_eq!(count(&events, "start"), 1);
+        }
+    }
+}
+
+#[test]
+fn small_emit_indices_keep_all_empty_subset_duplicates_and_raw_mutation_semantics() {
+    for raw in [false, true] {
+        for (selection, indices) in [
+            ("", vec![0, 1]),
+            (",undefined", vec![0, 1]),
+            (",null", vec![0, 1]),
+            (",[]", vec![]),
+            (",[1,0,1]", vec![1, 0, 1]),
+        ] {
+            let (action, events) = indices_fixture(false);
+            let source = if raw { "r.content" } else { "r" };
+            let r = direct(&format!("const r=await tools.read({{}}); r.content[0].text='mutated'; tools.emit({source}{selection}); return 9;"), action);
+            assert_eq!(r["status"], "completed", "raw={raw}, {selection}: {r}");
+            let mut expected = image_result();
+            expected["content"][0]["text"] = json!("mutated");
+            let blocks: Vec<Value> = indices
+                .into_iter()
+                .map(|i| expected["content"][i].clone())
+                .collect();
+            assert_eq!(r["nativeContent"], json!(blocks));
+            assert_eq!(count(&events, "start"), 1);
+        }
     }
 }

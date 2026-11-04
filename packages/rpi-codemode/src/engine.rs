@@ -22,6 +22,10 @@ const MAX_LOG_ENTRIES: usize = 256;
 const MAX_CALLS: usize = 128;
 const MAX_ACTIVE: usize = 8;
 const MEMORY: usize = 32 * 1024 * 1024;
+// Leave room inside the native 32 MiB content-array limit for tool_result's
+// diagnostic: at most 512 UTF-8 bytes, worst-case 6x JSON escaping plus framing.
+// This is an output encoding reserve, not a guest heap or process RSS limit.
+const OUTPUT_DIAGNOSTIC_RESERVE: usize = 4096;
 const STACK: usize = 256 * 1024;
 
 #[derive(Debug)]
@@ -89,6 +93,7 @@ pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Valu
         "parentProgress",
         "losslessValues",
         "resultReferences",
+        "contentAttachments",
     ] {
         if page["capabilities"][capability].as_u64() != Some(1) {
             return Err(format!(
@@ -132,7 +137,7 @@ pub(crate) fn list_page(action: &Action, offset: u64, limit: u64) -> Result<Valu
     }
     // Return only the public contract, never arbitrary host envelope fields.
     Ok(
-        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1},"tools":page["tools"],"nextOffset":page["nextOffset"]}),
+        json!({"protocolVersion":1,"capabilities":{"resultEnvelope":1,"hostAccounting":1,"parentProgress":1,"losslessValues":1,"resultReferences":1,"contentAttachments":1},"tools":page["tools"],"nextOffset":page["nextOffset"]}),
     )
 }
 
@@ -144,6 +149,8 @@ struct Call {
 }
 struct Bridge {
     action: Arc<Action>,
+    host_live: Arc<AtomicBool>,
+    reference_cleanup_failed: bool,
     names: HashSet<String>,
     pending: Vec<Call>,
     calls: Vec<Value>,
@@ -157,6 +164,9 @@ struct Bridge {
     terminate: Option<Value>,
     terminal_error: bool,
     emitted: Vec<Value>,
+    output_parts: Vec<references::OutputPart>,
+    output_blocks: usize,
+    output_bytes: usize,
     emitted_bytes: usize,
     has_emission: bool,
     selected_result: Option<Value>,
@@ -273,10 +283,23 @@ impl Bridge {
         };
         let bytes = selected.iter().map(|v| v.to_string().len()).sum::<usize>();
         if self.emitted.len().saturating_add(selected.len()) > content::MAX_BLOCKS
-            || self.emitted_bytes.saturating_add(bytes) > MAX_JSON
+            || self
+                .emitted_bytes
+                .saturating_add(bytes)
+                .saturating_add(
+                    self.emitted
+                        .len()
+                        .saturating_add(selected.len())
+                        .saturating_sub(1),
+                )
+                .saturating_add(2)
+                > MAX_JSON
         {
             return self.fail("native emitted content budget exceeded (128 blocks / 1 MiB)");
         }
+        self.output_budget(selected.len(), bytes)?;
+        self.output_parts
+            .push(references::OutputPart::Inline(selected.clone()));
         self.emitted_bytes += bytes;
         self.has_emission = true;
         self.emitted.extend(selected);
@@ -359,9 +382,24 @@ pub(crate) fn execute(
     cancelled: Arc<AtomicBool>,
 ) -> Value {
     let started = Instant::now();
+    // An uncertain/lost native binding must never become an attachment backdoor.
+    let host_live = Arc::new(AtomicBool::new(true));
+    let live = host_live.clone();
+    let action: Arc<Action> = Arc::new(move |request| {
+        // Pending-call cleanup may legitimately release a result that never
+        // finalized. Known retained-reference release errors are latched below.
+        let release = request["op"] == "release_result";
+        let reply = action(request);
+        if !release && !reply.as_ref().is_ok_and(|r| r["status"] != "failed") {
+            live.store(false, Ordering::Release);
+        }
+        reply
+    });
     let deadline = started + Duration::from_millis(timeout_ms);
     let bridge = Rc::new(RefCell::new(Bridge {
         action,
+        host_live: host_live.clone(),
+        reference_cleanup_failed: false,
         names: HashSet::new(),
         pending: Vec::new(),
         calls: Vec::new(),
@@ -375,6 +413,9 @@ pub(crate) fn execute(
         terminate: None,
         terminal_error: false,
         emitted: Vec::new(),
+        output_parts: Vec::new(),
+        output_blocks: 0,
+        output_bytes: 0,
         emitted_bytes: 0,
         has_emission: false,
         selected_result: None,
@@ -436,7 +477,32 @@ pub(crate) fn execute(
         match content::promote(&mut result) {
             Ok(Some(blocks)) => {
                 has_selection = true;
-                selected.extend(blocks);
+                let bytes = blocks.iter().map(|b| b.to_string().len()).sum();
+                let inline_bytes = state
+                    .emitted_bytes
+                    .saturating_add(bytes)
+                    .saturating_add(
+                        selected
+                            .len()
+                            .saturating_add(blocks.len())
+                            .saturating_sub(1),
+                    )
+                    .saturating_add(2);
+                let budget = if inline_bytes > MAX_JSON {
+                    Err("native selected content budget exceeded (128 blocks / 1 MiB)".into())
+                } else {
+                    state.output_budget(blocks.len(), bytes)
+                };
+                if let Err(e) = budget {
+                    status = "error";
+                    result = Value::Null;
+                    error = Some(e);
+                } else {
+                    state
+                        .output_parts
+                        .push(references::OutputPart::Inline(blocks.clone()));
+                    selected.extend(blocks);
+                }
             }
             Ok(None) => {}
             Err(e) => {
@@ -470,7 +536,27 @@ pub(crate) fn execute(
     let reference_error = handoff
         .and_then(|t| state.references.get(&t))
         .is_some_and(|r| r.is_error);
+    let may_keep_emits = state
+        .output_parts
+        .iter()
+        .any(|part| matches!(part, references::OutputPart::Reference { .. }))
+        && handoff.is_none()
+        && exact.is_none()
+        && state.selected_reference.is_none()
+        && state.terminal_reference.is_none()
+        && !terminate
+        && !cancelled.load(Ordering::Acquire);
+    let keep_emits = may_keep_emits && state.prepare_emitted_handoff();
+    let native_parts = state.handoff_content_parts(keep_emits);
     let native_reference = state.cleanup_references(handoff);
+    // Cleanup of unselected storage can also discover a lost native binding.
+    let attachment_live = !cancelled.load(Ordering::Acquire) && host_live.load(Ordering::Acquire);
+    if (native_parts.is_some() || (may_keep_emits && !keep_emits)) && !attachment_live {
+        status = "error";
+        result = Value::Null;
+        error = Some("native attachment owner unavailable after cleanup".into());
+    }
+    let native_parts = native_parts.filter(|_| attachment_live);
     let is_error = reference_error
         || state.terminal_error
         || exact.as_ref().is_some_and(|v| v["isError"] == true)
@@ -486,7 +572,9 @@ pub(crate) fn execute(
     if let Some(exact) = exact {
         summary["nativeResult"] = exact;
     }
-    if has_selection {
+    if let Some(parts) = native_parts {
+        summary["nativeContentParts"] = parts;
+    } else if has_selection {
         summary["nativeContent"] = Value::Array(selected);
     }
     summary
@@ -621,7 +709,18 @@ fn run(
                     .select_reference(token)
                     .map_err(|e| Exception::throw_message(&ctx, &e))
             })?;
+            let emission_state = bridge.clone();
+            let emit_ref = Function::new(
+                ctx.clone(),
+                move |ctx: Ctx<'_>, token: usize, indices: String| {
+                    emission_state
+                        .borrow_mut()
+                        .emit_reference(token, indices)
+                        .map_err(|e| Exception::throw_message(&ctx, &e))
+                },
+            )?;
             let reference_ops = rquickjs::Object::new(ctx.clone())?;
+            reference_ops.set("emit", emit_ref)?;
             reference_ops.set("read", read)?;
             reference_ops.set("release", release)?;
             reference_ops.set("select", select_ref)?;

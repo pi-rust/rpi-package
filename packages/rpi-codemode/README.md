@@ -3,7 +3,7 @@
 Native `codemode` executes one bounded JavaScript **async function body** against
 the tools already active in the calling invocation. No extra model turn, MCP
 server, subprocess interpreter or TypeScript compiler. Ordinary tools remain
-visible and usable normally. The **second full-parity increment is implemented;
+visible and usable normally. The **third full-parity increment is implemented;
 overall full parity remains INCOMPLETE**. See the
 [status matrix](../../docs/codemode-full-parity-matrix.md) for evidence and gaps.
 
@@ -11,9 +11,9 @@ overall full parity remains INCOMPLETE**. See the
 
 This is source-only functionality, not an advertised published/prebuilt release.
 It requires the companion native host's ToolProgram action **30**, protocol v1,
-with all **five exact integer version-1 capabilities**:
+with all **six exact integer version-1 capabilities**:
 `resultEnvelope`, `hostAccounting`, `parentProgress`, `losslessValues`, and
-`resultReferences`. Authentication uses injected per-invocation
+`resultReferences`, and `contentAttachments`. Authentication uses injected per-invocation
 `runtimeHandle/runtimeKey`; these credentials are never guest/model APIs.
 An older/missing/mismatched host fails before guest execution or list output.
 There is **no direct-call, subprocess or legacy-parser fallback**.
@@ -46,7 +46,7 @@ deploy, merge or restart production services/binaries.
 ```
 
 Returns `{protocolVersion:1,capabilities:{resultEnvelope:1,hostAccounting:1,
-parentProgress:1,losslessValues:1,resultReferences:1},tools:[{name,description,
+parentProgress:1,losslessValues:1,resultReferences:1,contentAttachments:1},tools:[{name,description,
 parameters}],nextOffset:number|null}` in the result summary's structured details.
 Follow nextOffset for another page. Only the effective current invocation catalog
 is visible, not the root registry. Self/ancestor tools are excluded; changing
@@ -79,8 +79,10 @@ configuration/authority. Reserved fields are not business schema properties.
   addedToolNames and usage where supplied. Small results are mutable; large
   receipts are read-only, as described below.
 - `tools.list()` returns a fresh JSON copy of the bounded frozen catalog.
-- `tools.emit(resultOrContentArray)` explicitly selects inline native text/image
-  blocks while returning another summary. It is not a host call.
+- `tools.emit(resultOrContentArray, indices?)` selects ordered inline or genuine
+  large-receipt text/image content while returning another summary. Large receipt
+  emission needs no JS payload read or native-payload FFI transport; small ordinary
+  values remain mutable inline. It is not a tool execution.
 - `tools.result(nativeResultOrErrorResult)` selects exactly one native child
   result with authoritative isError; returns undefined, not another tool result.
 - `tools.release(nativeResult)` releases a large receipt; it is a native no-op
@@ -170,7 +172,7 @@ return {released: 20};
 ```
 
 Release invalidates large receipts, including cached reading/forwarding.
-Releasing an already selected receipt fails. A genuine small result needs no
+Releasing a selected or emitted/pinned receipt fails before native free. A genuine small result needs no
 native release and the helper is a native no-op. Use `tools.call('release',args)`
 for a native tool of that name. Release does not undo effects/accounting. Native
 storage admission does not guarantee inspection fits the guest heap.
@@ -204,13 +206,101 @@ Promoted summary content becomes `{promoted:true,count:N}`, avoiding duplicate
 image base64; explicit raw copies elsewhere remain ordinary caller JSON.
 
 Native attachment bypasses **inline payload bounds, not retention quotas**.
-Whole-large tools.emit/return-content, mixing generated and large payloads, and
-multiple full-receipt selections remain intentionally unsupported. Use
-`tools.result(receipt)` for one complete large output. This is not full parity.
+Multiple large receipts and inline content can now be emitted in order.
+Multiple **whole-result** selections and mixing tools.result with tools.emit
+remain unsupported. Use tools.result for one authoritative native content/details/
+error outcome, or tools.emit for ordered content composition; not full parity.
+
+## Ordered native content attachments (third increment)
+
+```js
+// Tool names must exist in the effective invocation catalog.
+const first = await tools.call('large_tool', {});
+tools.emit([{type:'text',text:'before'}]);
+tools.emit(first);             // all native blocks, without inspecting in JS
+const second = await tools.call('another_large_tool', {});
+tools.emit([{type:'text',text:'between'}]);
+tools.emit(second, [2, 1, 0, 1]); // range must be valid; repeat is intentional
+return {processed: 2};
+```
+
+
+`tools.emit(value, indices?)` accepts a genuine large WeakMap receipt without
+reading content/details into JS or transporting its native payload through FFI.
+Captured native operations measure the selected content, then retain ordered
+metadata-only parts. Small ordinary values remain mutable and emit inline.
+Multiple large receipts and generated inline blocks can interleave; subset,
+reorder, repeated indices and empty selection are valid. Repeated emission of
+one receipt still represents **one executed direct child**, not extra accounting.
+There is no public/private ID-based authority forgery.
+
+```json
+{"$rpiToolResult":1,"isError":false,"result":{"details":{"status":"completed"},"terminate":false},"contentParts":[{"content":[{"type":"text","text":"before"}]},{"reference":{"version":1,"id":"host-owned-id"},"indices":[2,1,0,1]}]}
+```
+
+Here `result.details` is the bounded **engineSummary**, not child-native details;
+native content/base64 and private attachment parts are not duplicated into it.
+With `contentParts`, `result.content` is forbidden and whole `resultReference`
+is mutually exclusive. Inline parts allow only `content`; reference parts allow
+only `reference` and optional `indices`, with exact reference keys `version:1`
+and nonempty `id`. Omitted/null indices select all; `[]` selects no blocks.
+The parser produces typed inline/reference parts and resolves them in order
+through the captured **live ActionBridge before destroy in both drivers**.
+Cancelled, expired, foreign, released or otherwise unverifiable bindings/IDs
+fail closed. Native owner/range/cancellation checks run again at final resolution.
+
+Unlike `tools.result`, content emission does **not** select native error/details
+authority. Emitting a caught native error's content can complete with outer
+`isError:false`; native error accounting is still retained once. `tools.result`
+continues to select exactly **one** authoritative native content/details/error
+outcome, cannot mix with emit, and is discarded on later failure.
+
+### Indices and bounds
+
+Both large-reference and inline guest paths validate raw indices **before
+serialization**: undefined/null means all; otherwise an array of at most **128
+nonnegative integer primitives** is required. Length and each index are read
+once into a new frozen null-prototype snapshot. Captured intrinsics, property
+definition and JSON primitive-number encoding avoid Array prototype setters.
+Custom toJSON, NaN/Infinity, scalar or boxed objects cannot widen selection to
+all. Native selection also validates range. Invalid directives latch failure,
+even when JS catches the exception; no subsequent tool start is permitted.
+
+Native attachment limits are **256 parts / 256 blocks** and **32 MiB final
+serialized content array**, checking each block's serialized cost **before each
+clone**, including duplicates. Measurement excludes array punctuation; final
+budgeting includes brackets/commas. The extension is stricter: **128 selected
+parts / blocks** and a combined **32 MiB array including 4096 reserved bytes**
+for a final diagnostic block (reason bounded to **512 UTF-8 bytes**, including
+worst-case JSON escaping in the reserve). Inline-generated output remains
+**128 blocks / 1 MiB** and the final metadata envelope separately stays **1 MiB**.
+Native payload is not an inline frame. The unchanged 16-reference / shared
+64 MiB retention quota and charge above still apply; these are **not RSS caps**.
+
+### Failure, pins and handoff
+
+Explicit emitted receipts are **pinned**: release attempts latch failure before
+native free. Eligible explicit parts survive JS throw, OOM or deadline with
+outer error and a compact **last** diagnostic, only while their owning native
+binding remains live. Cancellation/expiry/unverifiable ownership cannot attach.
+A terminal child overrides **all** emits and whole selection, releases unrelated
+receipts, and attaches its original native outcome without resuming JS.
+
+An ordinary host budget/action error is not necessarily owner expiry. After
+cleanup, an uncertain binding can regain **attachment eligibility only** by
+exact read-only `measure_result_content` requests with `indices:[]` for **every
+distinct already-emitted receipt** (at most 16). Every reply must have exactly
+matching resultId, contentBlocks:0, encodedBytes:0 and bounded frame shape/size.
+All probes must pass; sticky failure and the original root error remain.
+This does **not** retry the failed operation, start tools, read payloads, replay
+effects or grant new authority. Cancellation, whole-result selection, terminal
+handoff and known retained-reference cleanup failure never use this recovery.
+Native final decoding checks live ownership again.
 
 ## Host transport, ownership and bounds
 
-The fifth native capability is additive, but required by this extension. It
+The sixth native capability, contentAttachments:1, is additive, but required
+by this extension (all six must be exact integer v1). It
 always starts with `resultMode:'reference'`; native clients omitting that option
 retain their original inline path. Reference poll manifests contain
 version/id/byteLength/contentBlocks/isError/terminate. read_result uses strict
@@ -244,7 +334,8 @@ remains uncovered because StepErr cannot carry terminate.
 | Catalog | 1024 entries / 1 MiB; pages 1..128 (native allows 4096) |
 | Logs | 256 entries / 64 KiB text total |
 | Starts | 128/tree total / 8 active; 16 retained requests/program |
-| Error text | 4096 UTF-8 bytes |
+| Error text | 4096 UTF-8 bytes in summary; appended content diagnostic reason bounded to 512 UTF-8 bytes |
+| Selected native content | Engine 128 parts/blocks, 32 MiB array including 4096-byte diagnostic reserve; native 256 parts/blocks, 32 MiB array |
 
 Native retention is charged as
 `2*serialized_bytes + 4096 + 128*details_nodes + 256*content_blocks`.
@@ -271,8 +362,8 @@ cancelled and may never finalize.
 Each invocation owns fresh JS state and a worker. ABI execute starts it, poll is
 nonblocking, cancel signals, destroy cancels/joins. On every exit pending calls
 are cancelled/disposed; completed requests dispose before guest delivery,
-independently of retained receipts. Nonselected refs release; only a valid final
-selection/terminal receipt hands off. Native finish cancels/drains/clears refs.
+independently of retained receipts. Nonselected/unemitted refs release; only a valid final
+selection, eligible emitted parts or terminal receipt hands off. Native finish cancels/drains/clears refs.
 Permits/gates outlive settling native workers; noncooperative code may delay
 cleanup rather than permit unsafe overlap or DLL unload. A failed/uncertain host
 operation is **never automatically retried/replayed**; cleanup depends on a
@@ -300,8 +391,9 @@ retry/replay, catalog refresh, cross-invocation cache or TypeScript compilation.
 
 Remaining full-plan work: native full child events; bounded native history/query/
 replay/recovery with snapshot/live continuity; neutral extcore and thin HTTP/ACP
-mappings; Web child cards/reload/HMR in the approved third UI dev worktree;
-multiple/mixed large output; approved protected recursion/self/ancestor policy;
+mappings; Web child cards/reload/reconnect/HMR in the approved
+`D:/Projects/rpi-package-dev` worktree on `dev/web-hmr`;
+approved protected recursion/self/ancestor policy;
 Linux/macOS real native execution, live providers and reload races. Current dev
 frontend, production assets/services and installed binaries remain untouched.
 
@@ -320,7 +412,34 @@ accounting in heap.rs on upgrades. Tests cover Promise-species exceptions,
 concurrency, cancellation/OOM/regex/budgets, catalog/authority, output selection,
 reference chunks/lifetime/immutability/quota and both normal/error cleanup.
 
-Current checkpoint: **92 package tests**, strict all-target Clippy and fmt passed.
+### Current third-increment qualification
+
+
+| Evidence | Proven scope / limits |
+| --- | --- |
+| Fresh Windows host + Code Mode DLL + fixture + gate | `pi-rust-codemode/target/codemode-content-parts-native-smoke-2/results.json`: **PASSED, 59 cases, all true**. All four provenance hashes below verified against actual local artifacts. |
+| 13 new native smoke cases; previous 46 retained | Direct mixed baseline; large text/image emit; two separate large calls interleaved with inline; subset `[2,1,0,1]` (same image twice, one execution); caught large error content with completed outer result; emit then JS throw; pinned release; 32 MiB measurement overflow preserving first PNG; negative indices; NaN scalar sticky failure with no subsequent write; toJSON/prototype resistance; terminal overrides earlier PNG with two child executions. |
+| Payload / history proof boundary | Provider validates actual image bytes for **each copy**, including the two-image case, before normalized direct-baseline comparisons. Exact native end ordering/hashes, engineSummary without base64/private attachment parts, intent/finish lifecycle and bounded final snapshots checked. **Not full native history parity** or live-provider qualification. |
+| Package checks | **124 passed, 0 failed, 0 ignored**; strict all-target Clippy and fmt passed. Logs: package `target/codemode-content-parts-{tests,clippy}.log`. |
+| Broad native regression | Default-parallel SDK/agent/extensions/harness: **1,123 passed, 0 failed, 6 ignored**, twice. Native `target/codemode-content-parts-tests.log` and `target/codemode-content-parts-tests-repeat.log`. Existing both-driver full-reference 22-scenario test and new content-parts scenario test are **test functions**, not separate extra scenario counts. |
+| Failed content-parts attempt | `codemode-content-parts-native-smoke-1` **FAILED after 53 cases, before overflow**: masking numeric handle 3 corrupted the real `32 MiB` diagnostic. Implementation fixed; expected needle not weakened. Never cite `-1` as passing. |
+
+Current evidence files:
+`pi-rust-codemode/target/codemode-content-parts-native-smoke-2/{results.json,provenance.json}`.
+
+| Windows artifact recorded in current provenance | Recorded SHA-256 |
+| --- | --- |
+| Host `pi-rust-codemode/target/debug/rpi.exe` | `5dba0fa76a699b79f9b286721cd8b2ab1e21b79f3f30536090d086d76d2dc7c7` |
+| Code Mode `rpi-package-codemode/target/debug/rpi_codemode.dll` | `5fccaaa062bdebb1fe74294a470d18816cbb59ffe8e79ad43196e220e8ebdd6f` |
+| Fixture `pi-rust-codemode/target/codemode-parity-fixture/debug/codemode_parity_fixture.dll` | `27830e8fe1ca4a1f94918c1be51912472d34bba6ed3ace716dd933339eb23bac` |
+| Gate `rpi-package-codemode/target/debug/rpi_permission_gate.dll` | `b52ce8ce8f10e032b701eb53cbca01e1abe04d567843aa96e2be9d880542cb34` |
+
+These are recorded local checkpoints, not source-review/commit approval, release,
+installed-binary, deployment, CI-green, Linux/macOS or full-plan completion claim.
+
+### Historical second-increment checkpoint (not current qualification)
+
+**92 package tests**, strict all-target Clippy and fmt passed.
 Focused native checks: **33 agent**, **206 extension unit + 5 integration tests
 (1 ignored)** passed. One new native test covers **22 scenarios across both
 drivers**, not 22 separate tests. The complete default-parallel agent/extensions/

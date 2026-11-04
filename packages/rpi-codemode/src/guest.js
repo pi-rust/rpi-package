@@ -2,10 +2,12 @@
   "use strict";
   // Capture bridge dependencies before guest code can replace their globals or
   // prototypes. Native closures and request tokens stay inside this lexical scope.
+  const emitRef = referenceOps.emit;
   const read = referenceOps.read, release = referenceOps.release, selectRef = referenceOps.select;
   const parse = JSON.parse, stringify = JSON.stringify, String_ = String;
   const Error_ = Error, Promise_ = Promise, isArray = Array.isArray;
-  const freeze = Object.freeze, define = Object.defineProperty;
+  const isInteger = Number.isInteger;
+  const freeze = Object.freeze, define = Object.defineProperty, setPrototypeOf = Object.setPrototypeOf;
   const keys = Object.keys, create = Object.create;
   const pending = new Map();
   const get = pending.get.bind(pending), set = pending.set.bind(pending);
@@ -62,9 +64,69 @@
     set(token, {resolve, reject});
   }));
   tools.call = call;
-  tools.emit = freeze(value => {
-    let encoded;
-    try { encoded = stringify(value); }
+  // Never serialize the caller's directive: toJSON can change even an array's
+  // meaning to null (all blocks). Snapshot once into a prototype-free array so
+  // inherited setters/toJSON cannot intercept either construction or encoding.
+  const normalizeIndices = indices => {
+    if (indices === undefined || indices === null) return null;
+    if (!isArray(indices)) throw new Error_("indices must be an array");
+    const length = indices.length;
+    if (!isInteger(length) || length < 0 || length > 128)
+      throw new Error_("indices require at most 128 integers");
+    const normalized = setPrototypeOf([], null);
+    for (let i = 0; i < length; i++) {
+      const index = indices[i];
+      if (!isInteger(index) || index < 0) throw new Error_("invalid content index");
+      const descriptor = create(null);
+      descriptor.value = index;
+      descriptor.writable = descriptor.enumerable = descriptor.configurable = true;
+      define(normalized, i, descriptor);
+    }
+    return freeze(normalized);
+  };
+  tools.emit = freeze((value, indices) => {
+    const provenance = nativeError(value);
+    let encoded, normalized;
+    try { normalized = normalizeIndices(indices); }
+    catch (error) {
+      if (provenance !== undefined && provenance.token)
+        emitRef(provenance.token, "invalid emitted indices");
+      else emit("invalid emitted indices");
+      throw error;
+    }
+    if (provenance !== undefined && provenance.token) {
+      // QuickJS stringify uses an internal array stack, which can encounter
+      // guest prototype setters. Only stringify primitive numbers here.
+      encoded = "null";
+      if (normalized !== null) {
+        encoded = "[";
+        for (let i = 0; i < normalized.length; i++) {
+          if (i) encoded += ",";
+          encoded += stringify(normalized[i]);
+        }
+        encoded += "]";
+      }
+      return emitRef(provenance.token, encoded);
+    }
+    try {
+      if (normalized !== null) {
+        const source = isArray(value) ? value : value.content;
+        if (!isArray(source))
+          throw new Error_("indices require a content array");
+        const selected = setPrototypeOf([], null);
+        for (let i = 0; i < normalized.length; i++) {
+          const index = normalized[i];
+          if (index >= source.length)
+            throw new Error_("invalid content index");
+          const descriptor = create(null);
+          descriptor.value = source[index];
+          descriptor.writable = descriptor.enumerable = descriptor.configurable = true;
+          define(selected, i, descriptor);
+        }
+        value = selected;
+      }
+      encoded = stringify(value);
+    }
     catch (error) {
       // Latch the native fatal path using only a fixed string, never the value
       // that failed serialization. Catching this exception cannot restore success.
