@@ -1,0 +1,93 @@
+.tool-program {
+  margin: -2px 0 10px 24px;
+  font-size: 12px;
+  min-width: 0;
+}
+.tool-program button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  padding: 5px 8px;
+  margin: 3px 5px 3px 0;
+}
+.tool-program button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.tool-program .tool-program-toggle {
+  border: 0;
+  opacity: 0.75;
+  padding-left: 0;
+}
+.tool-program-window {
+  padding: 8px 10px;
+  border-left: 2px solid var(--border);
+  min-width: 0;
+}
+.tool-program-children,
+.tool-program-phases {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+}
+.tool-program-children > li {
+  margin: 8px 0;
+}
+.tool-program-child {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.tool-program-child > summary {
+  cursor: pointer;
+  padding: 9px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.tool-program-child > summary::before {
+  content: "›";
+}
+.tool-program-child[open] > summary::before {
+  content: "⌄";
+}
+.tool-program-child-detail {
+  padding: 0 10px 10px;
+}
+.tool-program-child dl {
+  margin: 8px 0;
+}
+.tool-program-child dd {
+  margin: 2px 0 8px;
+  overflow-wrap: anywhere;
+}
+.tool-program-warning {
+  border-left: 2px solid currentColor;
+  padding-left: 8px;
+}
+.tool-program-phases > li {
+  border-top: 1px solid var(--border);
+  padding: 7px 0;
+}
+.tool-program-body pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+}
+.tool-program [role="alert"] {
+  color: var(--error, #d65757);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 767px) {
+  .tool-program {
+    margin-left: 10px;
+  }
+  .tool-program-window {
+    padding: 6px;
+  }
+}

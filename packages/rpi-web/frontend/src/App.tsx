@@ -50,7 +50,7 @@ import {
 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
-import { SessionIssueBadge } from "./SessionIssueBadge";
+import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
 import { ProviderManager } from "./ProviderManager";
 import { useTheme } from "./useTheme";
@@ -95,6 +95,8 @@ import { useRunTimings, timingByRow } from "./useRunTimings";
 import { groupTodoUpdates, isTodoTool } from "./todoGroups";
 import { RunElapsed } from "./RunElapsed";
 import { ExecutionTrace } from "./ExecutionTracePanel";
+import { ToolProgramChildren, ToolProgramProvider } from "./ToolProgramChildren";
+import { parentToolCallId } from "./toolProgram";
 import { useExecutionTrace } from "./useExecutionTrace";
 import { traceView } from "./executionTrace";
 import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
@@ -945,9 +947,11 @@ export default function App() {
   const sidebarSessions = useMemo(
     () =>
       sessions.map((entry) =>
-        entry.sessionId === sessionId ? { ...entry, status } : entry,
+        entry.sessionId === sessionId
+          ? { ...entry, status: dialog ? "awaiting_input" : status }
+          : entry,
       ),
-    [sessions, sessionId, status],
+    [sessions, sessionId, status, dialog],
   );
   const mobileSessionResults = useMemo(() => {
     const query = mobileSessionQuery.trim().toLowerCase();
@@ -1265,6 +1269,7 @@ export default function App() {
         case "tool_execution_start":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               args: event.args,
               timing: toolTiming(event.webTiming),
@@ -1275,6 +1280,7 @@ export default function App() {
         case "tool_execution_update":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               args: event.args,
               result: event.partialResult,
@@ -1287,6 +1293,7 @@ export default function App() {
         case "tool_execution_end":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               result: event.result,
               images: imageBlocksOf(event.result),
@@ -3593,8 +3600,8 @@ export default function App() {
                 <small>{project?.name ?? "rpi"}</small>
                 <strong>{current?.title ?? t("newSession")}</strong>
                 {activeSessionRunning && (
-                  <small className="mobile-session-status">
-                    <span className="status-dot" /> {t("running")}
+                  <small className={`mobile-session-status${activeSession?.status === "awaiting_input" ? " awaiting-input" : ""}`}>
+                    <span className="status-dot" /> {t(activeSession?.status === "awaiting_input" ? "sessionAwaitingAnswer" : "running")}
                   </small>
                 )}
               </span>
@@ -3729,11 +3736,8 @@ export default function App() {
                       (item) => item.id === entry.projectId,
                     );
                     const selected = entry.sessionId === sessionId;
-                    const entryRunning = [
-                      "running",
-                      "starting",
-                      "awaiting_input",
-                    ].includes(entry.status ?? "");
+                    const entryAwaitingAnswer = entry.status === "awaiting_input";
+                    const entryRunning = ["running", "starting"].includes(entry.status ?? "");
                     return (
                       <button
                         type="button"
@@ -3745,7 +3749,7 @@ export default function App() {
                         }}
                       >
                         <span
-                          className={`mobile-session-option-status${entryRunning ? " running" : ""}`}
+                          className={`mobile-session-option-status${entryAwaitingAnswer ? " awaiting-input" : entryRunning ? " running" : ""}`}
                         />
                         <span className="mobile-session-option-copy">
                           <strong>{entry.title || t("newSession")}</strong>
@@ -3754,6 +3758,7 @@ export default function App() {
                             {entryRunning && ` · ${t("running")}`}
                           </small>
                         </span>
+                        <SessionAnswerBadge session={entry} language={language} />
                         <SessionIssueBadge session={entry} language={language} />
                         {selected && <Check size={15} />}
                       </button>
@@ -3996,6 +4001,7 @@ export default function App() {
 
                 <ProjectImageContext.Provider value={project}>
                   <ToolNameModeContext.Provider value={toolNameMode}>
+                    <ToolProgramProvider key={`${traceBinding}:${historical.active}:${historical.target?.entryId ?? ""}:${historical.page?.firstId ?? ""}`} sessionId={sessionId} enabled={!loadingSession && !connectionFailed}>
                     {displayedRows.map((row) => {
                       // A historical window may begin mid-run, without all run
                       // boundaries. Keep every update visible instead of folding
@@ -4014,12 +4020,16 @@ export default function App() {
                               language={language}
                             />
                           )}
+                          {group !== null && row.kind === "tool" && parentToolCallId(row) && (
+                            <ToolProgramChildren rootCallId={parentToolCallId(row)!} rootToolName={row.name} language={language} />
+                          )}
                           {runFooters.get(row.id)?.map((timing) => (
                             <RunElapsed key={timing.runId} timing={timing} language={language} />
                           ))}
                         </div>
                       );
                     })}
+                    </ToolProgramProvider>
                   </ToolNameModeContext.Provider>
                 </ProjectImageContext.Provider>
 

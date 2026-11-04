@@ -32,6 +32,38 @@ Completed conversation runs also show a compact **Worked for … / 已用时 …
 
 Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
 
+## Code Mode child inspection
+
+Native-identified tool rows offer **Inspect child calls / 查看子调用**. Opening it
+requests a separate bounded, read-only child snapshot/feed and groups children
+only by the exact native parent call ID and tool name. Synthetic row IDs are not
+native identity. One visible session scope owns the feed and aborts it on
+navigation; ordinary transcript messages, timings and SSE stay unchanged.
+
+The window holds at most eight children / eight phases each. Earlier child and
+phase pages are explicit, pinned replacements, not an automatic history scan.
+Outcomes come from core observations; unknown, final-only and historical fork
+copies remain distinct from established completion or destination execution.
+Bodies are never fetched automatically. **Read body page** requests at most two
+chunks / 64 KiB; each subsequent page replaces the prior byte fragment. This is
+not whole-body decoding/integrity verification or an image/result reconstruction.
+Live/replayed phases do not borrow an older page's leaf: their first explicit
+body read independently pins the current native branch; body continuations keep
+that returned leaf without rebasing historical cursors.
+
+A dedicated SSE snapshot wins its own handoff. Resync/disconnection retires the
+old feed before fresh bounded recovery; transcript `Last-Event-ID` is never used
+for child replay. Retries are bounded, auth failures stop, and unsupported/error
+states never become a successful empty child list or erase ordinary tool output.
+Refresh/reload does not execute or replay a tool.
+
+This frontend requires matching core/HTTP/native layers. Local and public-dev
+browser fixtures exercise rendering, pagination, reconnect/reload, cancellation,
+errors and new-leaf body reads; public CSS HMR was observed and restored. Those
+fixtures mock the API: they do **not** qualify real-native ongoing Web overlap or
+upgrade the shared Rust backend. No backend installation/restart/deployment is
+performed. See [qualification](../../docs/codemode-full-parity-matrix.md#current-child-adapter-and-web-increment).
+
 ## Message links and branding
 
 Project-contained Markdown file links and explicit inline-code paths open an authenticated, read-only code preview on click. Relative paths and project-contained absolute Windows/Unix paths support `:12` and `#L12-L20` line references. The preview highlights source and target lines, offers path/code copy, retry and Escape/Close with focus restoration, and aborts stale reads on close or project/session navigation. It reuses the existing bounded project file API; no file is read before a click, and core remains responsible for sensitive-file and symlink boundaries. Fenced code is not linkified. HTTP(S) links open a separate browser tab with `noopener noreferrer`; unsafe schemes, traversal, UNC paths and files outside the project stay inert.

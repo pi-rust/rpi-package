@@ -9261,6 +9261,287 @@ test.describe("session issue badges", () => {
   });
 });
 
+test.describe("session answer badges", () => {
+  type Summary = import("../src/api").SessionSummary;
+  const background = "Background question with a deliberately long conversation title";
+  const row = (page: Page, title: string) => page.locator(".project-session")
+    .filter({ has: page.locator(".session-title", { hasText: title }) });
+  const pending = (requestId: string, permission = false) => ({
+    type: "ui_dialog_request", requestId, ui: {
+      ...(permission ? { purpose: "permission" } : { kind: "selector" }),
+      question: `Question ${requestId}`, options: [{ title: "Answer now", value: "answer" }],
+    },
+  });
+  async function setup(page: Page) {
+    await mockHost(page);
+    const state = {
+      sessions: [{ ...session }, { ...session, sessionId: "answer-background", title: background, tags: [],
+        status: "awaiting_input", error: "PRIVATE_OLD_FAILURE", latestSettlement: { outcome: "failed", pendingResume: true } },
+      ...["running", "starting", "ready", "offline", "closed"].map(status => ({ ...session,
+        sessionId: `answer-${status}`, title: `Control ${status}`, tags: [], status }))] as Summary[],
+      listReads: 0, reads: [] as string[],
+    };
+    await page.route(url => url.pathname === "/api/v1/sessions", route => {
+      if (route.request().method() !== "GET") return route.fallback();
+      state.listReads++;
+      return route.fulfill({ json: { sessions: state.sessions } });
+    });
+    page.on("request", request => {
+      const path = new URL(request.url()).pathname;
+      if (/^\/api\/v1\/sessions\/[^/]+\/(snapshot|events|open)$/.test(path)) state.reads.push(path);
+    });
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "ready", messages: [], events: [], lastSeq: 4, hasMore: false,
+    } }));
+    return state;
+  }
+  async function waiting(target: ReturnType<Page["locator"]>, language: "en" | "zh" = "en", mobile = false) {
+    const label = language === "zh" ? "等待回答" : "Waiting for answer";
+    const badge = target.locator(".session-answer-badge");
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveText(label);
+    await expect(badge).toHaveAttribute("title", language === "zh" ? /回答|问题|权限/ : /answer|question|permission/i);
+    await expect(badge).toHaveAccessibleName(`${label}. ${await badge.getAttribute("title")}`);
+    await expect(target.locator(".session-issue, .session-running-dot")).toHaveCount(0);
+    const dot = target.locator(mobile ? ".mobile-session-option-status" : ".session-answer-dot");
+    await expect(dot).toBeVisible();
+    await expect(dot).toHaveCSS("animation-name", "none");
+    if (mobile) {
+      await expect(dot).toHaveClass(/awaiting-input/);
+      await expect(dot).not.toHaveClass(/running/);
+      await expect(target.locator("small")).not.toContainText(language === "zh" ? "运行中" : /working/i);
+    } else {
+      await expect(dot).toHaveAttribute("title", label);
+      await expect(target.locator(".session-title + .session-answer-badge")).toHaveCount(1);
+    }
+  }
+  async function bounds(target: ReturnType<Page["locator"]>) {
+    await target.scrollIntoViewIfNeeded();
+    const geometry = await target.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const badge = element.querySelector(".session-answer-badge")!.getBoundingClientRect();
+      return { left: box.left, right: box.right, badgeLeft: badge.left, badgeRight: badge.right,
+        width: badge.width, viewport: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    expect(geometry.left).toBeGreaterThanOrEqual(0);
+    expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
+    expect(geometry.width).toBeGreaterThan(0);
+    expect(geometry.badgeLeft).toBeGreaterThanOrEqual(geometry.left);
+    expect(geometry.badgeRight).toBeLessThanOrEqual(geometry.right + 1);
+    expect(geometry.overflow).toBe(false);
+  }
+
+  test("unopened desktop summaries show waiting, not old failures, without opening background sessions", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    await page.goto("/");
+    await waiting(row(page, background));
+    await expect(page.locator(".project-tree .session-answer-badge")).toHaveCount(1);
+    for (const status of ["running", "starting", "ready", "offline", "closed"]) {
+      const control = row(page, `Control ${status}`);
+      await expect(control.locator(".session-answer-badge, .session-answer-dot")).toHaveCount(0);
+      await expect(control.locator(".session-running-dot")).toHaveCount(["running", "starting"].includes(status) ? 1 : 0);
+    }
+    await expect(page.locator("body")).not.toContainText("PRIVATE_OLD_FAILURE");
+    expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
+  });
+
+  for (const language of ["en", "zh"] as const) {
+    test(`desktop and 320/390px picker waiting labels are localized, accessible and bounded in ${language}`, async ({ page }) => {
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      const state = await setup(page);
+      for (const width of [1280, 320, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.goto("/");
+        if (width === 1280) {
+          await waiting(row(page, background), language);
+          await bounds(row(page, background).locator(".project-session-link"));
+        } else {
+          await page.getByRole("button", { name: language === "zh" ? "切换会话" : "Switch session", exact: true }).click();
+          const picker = page.locator(".mobile-session-sheet");
+          const target = picker.locator(".mobile-session-option").filter({ hasText: background });
+          await waiting(target, language, true);
+          await bounds(target);
+          await expect(target).toHaveAccessibleName(new RegExp(language === "zh" ? "等待回答" : "Waiting for answer"));
+          await expect(picker.locator(".session-answer-badge")).toHaveCount(1);
+          for (const status of ["running", "starting"]) {
+            const control = picker.locator(".mobile-session-option").filter({ hasText: `Control ${status}` });
+            await expect(control.locator(".mobile-session-option-status")).toHaveClass(/running/);
+            await expect(control.locator("small")).toContainText(language === "zh" ? "运行中" : "working");
+          }
+          await expect(picker).not.toContainText("PRIVATE_OLD_FAILURE");
+        }
+      }
+      expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
+    });
+  }
+
+  for (const [status, field] of [["ready", "pendingDialog"], ["running", "pendingDialogs"]] as const) {
+    test(`current ${field} overrides stale ${status} snapshot and reconnecting transport`, async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await setup(page);
+      const dialog = pending("snapshot", field === "pendingDialog");
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status, messages: [], events: [], lastSeq: 4,
+        [field]: field === "pendingDialogs" ? [dialog] : dialog,
+      } }));
+      await page.goto("/");
+      await expect(page.getByRole("heading", { name: "Question snapshot", exact: true })).toBeVisible();
+      // A finite mock SSE response disconnects; the actual dialog must still win.
+      await waiting(row(page, "Mock session"));
+    });
+  }
+
+  test("live question and permission requests stay waiting after reply until the last authoritative close", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await setup(page);
+    const dialogs = [pending("live-question"), pending("live-permission", true)];
+    const frames = [dialogs, ...dialogs.map(dialog => [{ type: "ui_dialog_closed", requestId: dialog.requestId }])];
+    const releases: Array<() => void> = [];
+    const gates = frames.map(() => new Promise<void>(resolve => releases.push(resolve)));
+    let connection = 0;
+    let seq = 4;
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+      const index = connection++;
+      if (index >= gates.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      await gates[index];
+      return route.fulfill({ contentType: "text/event-stream", body: "retry: 10\n" + frames[index]
+        .map(event => `id: ${++seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("") });
+    });
+    const answers: unknown[] = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "ui_dialog_response") return route.fallback();
+      answers.push(body);
+      return route.fulfill({ json: response({ accepted: true }, body.type) });
+    });
+    try {
+      await page.goto("/");
+      await expect(row(page, "Mock session").locator(".session-answer-badge")).toHaveCount(0);
+      releases[0]();
+      await expect(page.getByRole("heading", { name: "Question live-question", exact: true })).toBeVisible();
+      await waiting(row(page, "Mock session"));
+      await page.getByRole("dialog").getByRole("button", { name: "Answer now", exact: true }).click();
+      await expect.poll(() => answers.length).toBe(1);
+      await waiting(row(page, "Mock session"));
+      releases[1]();
+      await expect(page.getByRole("heading", { name: "Question live-permission", exact: true })).toBeVisible();
+      await waiting(row(page, "Mock session"));
+      releases[2]();
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(row(page, "Mock session").locator(".session-answer-badge, .session-answer-dot")).toHaveCount(0);
+    } finally { releases.forEach(release => release()); }
+  });
+
+  test("host_closed clears a pending dialog and its waiting badge and dot", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("host-close", true),
+    } }));
+    let releaseClose!: () => void;
+    const close = new Promise<void>(resolve => { releaseClose = resolve; });
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+      await close;
+      return route.fulfill({ contentType: "text/event-stream",
+        body: 'retry: 60000\nid: 5\nevent: host_closed\ndata: {"type":"host_closed"}\n\n' });
+    });
+    try {
+      await page.goto("/");
+      await expect(page.getByRole("heading", { name: "Question host-close", exact: true })).toBeVisible();
+      const target = row(page, "Mock session");
+      await waiting(target);
+      state.sessions[0] = { ...state.sessions[0], status: "closed" };
+      releaseClose();
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(target.locator(".session-answer-badge, .session-answer-dot, .session-running-dot")).toHaveCount(0);
+    } finally { releaseClose(); }
+  });
+
+  for (const [language, theme] of [["en", "dark"], ["zh", "light"]] as const) {
+    test(`mobile active header shows a static waiting status with a pending dialog in ${language}/${theme}`, async ({ page }) => {
+      await page.setViewportSize({ width: 320, height: 844 });
+      await page.addInitScript(({ language, theme }) => {
+        localStorage.setItem("rpi-web-language", language);
+        localStorage.setItem("rpi-theme", theme);
+      }, { language, theme });
+      await setup(page);
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("mobile-header"),
+      } }));
+      await page.goto("/");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.getByRole("heading", { name: "Question mobile-header", exact: true })).toBeVisible();
+      // The pending native modal intercepts picker clicks, but the header remains visible.
+      const header = page.locator(".mobile-session-switcher");
+      const status = header.locator(".mobile-session-status");
+      await expect(status).toBeVisible();
+      await expect(status).toHaveClass(/awaiting-input/);
+      await expect(status).toHaveText(language === "zh" ? "等待回答" : "Waiting for answer");
+      await expect(status).not.toContainText(language === "zh" ? "运行中" : /working/i);
+      await expect(status.locator(".status-dot")).toBeVisible();
+      await expect(status.locator(".status-dot")).toHaveCSS("animation-name", "none");
+      await expect(header).toHaveAttribute("aria-expanded", "false");
+      await expect(page.locator(".mobile-session-sheet")).toHaveCount(0);
+    });
+  }
+
+  test("a rejected permission answer retains the waiting badge and static dot for retry", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await setup(page);
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("rejected", true),
+    } }));
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "ui_dialog_response") return route.fallback();
+      return route.fulfill({ json: { ...response({}, body.type), success: false, error: "Answer rejected; retry" } });
+    });
+    await page.goto("/");
+    await waiting(row(page, "Mock session"));
+    await page.getByRole("button", { name: "Answer now", exact: true }).click();
+    await expect(page.locator(".error-banner")).toContainText("Answer rejected; retry");
+    await expect(page.getByRole("button", { name: "Answer now", exact: true })).toBeEnabled();
+    await waiting(row(page, "Mock session"));
+  });
+
+  test("switching away and back preserves a still-pending background summary", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    state.sessions[0] = { ...state.sessions[0], status: "awaiting_input" };
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "awaiting_input", messages: [], events: [], lastSeq: 4, pendingDialog: pending("switch", true),
+    } }));
+    await page.goto("/");
+    await waiting(row(page, "Mock session"));
+    // Exercise selection directly while the native modal intercepts pointers.
+    await row(page, "Control ready").locator(".project-session-link").dispatchEvent("click");
+    await expect(row(page, "Control ready")).toHaveClass(/active/);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await waiting(row(page, "Mock session"));
+    await row(page, "Mock session").locator(".project-session-link").click();
+    await expect(page.getByRole("heading", { name: "Question switch", exact: true })).toBeVisible();
+    await waiting(row(page, "Mock session"));
+  });
+
+  test("the existing five-second summary poll clears background waiting without opening it", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.clock.install();
+    const state = await setup(page);
+    await page.goto("/");
+    const target = row(page, background);
+    await waiting(target);
+    const reads = state.listReads;
+    state.sessions[1] = { ...state.sessions[1], status: "running" };
+    await page.clock.runFor(5100);
+    await expect.poll(() => state.listReads).toBeGreaterThan(reads);
+    await expect(target.locator(".session-answer-badge, .session-answer-dot, .session-issue")).toHaveCount(0);
+    await expect(target.locator(".session-running-dot")).toBeVisible();
+    expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
+    expect(state.reads.filter(path => path.endsWith("/snapshot"))).toEqual([`/api/v1/sessions/${sessionId}/snapshot`]);
+  });
+});
+
 test.describe("tool name display preference", () => {
   const key = "rpi-web-tool-name-mode";
   const tools = [

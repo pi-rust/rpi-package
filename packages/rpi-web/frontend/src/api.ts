@@ -270,6 +270,144 @@ export interface SnapshotFrame {
   events: { seq: number; event: SeqEvent }[];
 }
 
+export type ToolProgramDirection = "oldestFirst" | "newestFirst";
+export interface ToolProgramCursor {
+  sessionId: string;
+  lane: string;
+  leafId: string;
+  direction: ToolProgramDirection;
+  childId?: string | null;
+  afterEntryId: string;
+  afterSeq: number;
+}
+export interface ToolProgramChildSummary {
+  version: number;
+  childId: string;
+  seq: number;
+  origin: {
+    runId: string;
+    assistantEntryId: string;
+    toolIndex: number;
+  };
+  originVerification: "nativeCheckpoint" | "forkCopy";
+  rootCallId: string;
+  rootToolName: string;
+  toolName: string;
+  ordinal: number;
+  parentChildId?: string | null;
+  state: "unknown";
+}
+export type ToolProgramPhaseKind =
+  | "requested"
+  | "prepared"
+  | "update"
+  | "final"
+  | "closed";
+export interface ToolProgramBodyDescriptor {
+  descriptorId: string;
+  version: number;
+  bodyId: string;
+  childId: string;
+  kind: "requested" | "prepared" | "update" | "final";
+  codec: string;
+  encoding: "base64";
+  byteLength: number;
+  chunkBytes: number;
+  chunks: number;
+  sha256: string;
+}
+export interface ToolProgramPhase {
+  entryId: string;
+  seq: number;
+  version: number;
+  childId: string;
+  index: number;
+  phase: ToolProgramPhaseKind;
+  descriptor?: ToolProgramBodyDescriptor | null;
+  isError?: boolean | null;
+  cancelled?: boolean | null;
+  failed?: boolean | null;
+  interrupted?: boolean | null;
+}
+export interface ToolProgramPhasePage {
+  leafId: string;
+  childId: string;
+  phases: ToolProgramPhase[];
+  nextCursor?: ToolProgramCursor | null;
+  scanned: number;
+  scanExhausted: boolean;
+  state: "unknown";
+}
+export interface ToolProgramObservation {
+  childId: string;
+  latestPhase?: ToolProgramPhaseKind | null;
+  finalPhase?: ToolProgramPhase | null;
+  closedPhase?: ToolProgramPhase | null;
+  outcome:
+    | "unknown"
+    | "finalObserved"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "interrupted";
+}
+export interface ToolProgramSnapshot {
+  sessionId: string;
+  lane: string;
+  page: {
+    leafId?: string | null;
+    children: ToolProgramChildSummary[];
+    nextCursor?: ToolProgramCursor | null;
+    scanExhausted: boolean;
+  };
+  phases: ToolProgramPhasePage[];
+  observations: ToolProgramObservation[];
+  startSeq: number;
+  lastSeq: number;
+  events: unknown[];
+  resyncRequired: boolean;
+}
+export interface ToolProgramBodyChunk {
+  index: number;
+  byteOffset: number;
+  byteLength: number;
+  data: string;
+  sha256: string;
+}
+export interface ToolProgramBodyPage {
+  descriptor: ToolProgramBodyDescriptor;
+  leafId: string;
+  byteOffset: number;
+  byteLength: number;
+  totalBytes: number;
+  chunks: ToolProgramBodyChunk[];
+  nextCursor?: ToolProgramBodyCursor["body"] | null;
+}
+export interface ToolProgramBodyCursor {
+  direction: "oldestFirst";
+  childId: string;
+  phaseEntryId: string;
+  body: { sessionId: string; lane: string; leafId: string; descriptorId: string; nextIndex: number };
+}
+export interface ToolProgramBodyResponse {
+  childId: string;
+  phaseEntryId: string;
+  body: ToolProgramBodyPage;
+  nextCursor?: ToolProgramBodyCursor | null;
+}
+export interface ToolProgramChildEvent {
+  type: "tool_program_child_begin" | "tool_program_child_phase" | "tool_program_child_resync_required";
+  [key: string]: unknown;
+}
+export interface ToolProgramStreamItem {
+  type: "update" | "resyncRequired";
+  seq: number;
+  event?: ToolProgramChildEvent;
+  observation?: ToolProgramObservation | null;
+  disposition?: "applied" | "duplicate" | "outsideWindow" | "resyncRequired";
+  reason?: string;
+}
+
 export interface SeqEvent {
   seq: number;
   type: string;
@@ -480,6 +618,105 @@ export const api = {
       if (params[key]) query.set(key, params[key]);
     return request<MessageWindowPage>(`/sessions/${id}/message-window?${query}`, { signal });
   },
+  toolProgramChildren: (
+    id: string,
+    query: {
+      leafId?: string;
+      cursor?: ToolProgramCursor;
+      direction?: ToolProgramDirection;
+      limit?: number;
+      maxBytes?: number;
+    } = {},
+    signal?: AbortSignal,
+  ) =>
+    request<ToolProgramSnapshot["page"]>(
+      `/sessions/${id}/tool-program/children/query`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          leafId: query.leafId ?? null,
+          cursor: query.cursor ?? null,
+          direction: query.direction ?? "newestFirst",
+          limit: query.limit ?? 8,
+          maxBytes: query.maxBytes ?? 32768,
+        }),
+        signal,
+      },
+    ),
+  toolProgramPhases: (
+    id: string,
+    query: {
+      childId: string;
+      leafId?: string;
+      cursor?: ToolProgramCursor;
+      direction?: ToolProgramDirection;
+      limit?: number;
+      maxBytes?: number;
+    },
+    signal?: AbortSignal,
+  ) =>
+    request<ToolProgramPhasePage>(
+      `/sessions/${id}/tool-program/phases/query`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ...query,
+          leafId: query.leafId ?? null,
+          cursor: query.cursor ?? null,
+          direction: query.direction ?? "newestFirst",
+          limit: query.limit ?? 8,
+          maxBytes: query.maxBytes ?? 32768,
+        }),
+        signal,
+      },
+    ),
+  toolProgramBody: (
+    id: string,
+    query: {
+      childId: string;
+      phaseEntryId: string;
+      descriptorId: string;
+      leafId?: string;
+      cursor?: ToolProgramBodyCursor;
+      limit?: number;
+      maxBytes?: number;
+    },
+    signal?: AbortSignal,
+  ) =>
+    request<ToolProgramBodyResponse>(
+      `/sessions/${id}/tool-program/body/query`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ...query,
+          leafId: query.leafId ?? null,
+          cursor: query.cursor ?? null,
+          limit: query.limit ?? 8,
+          maxBytes: query.maxBytes ?? 65536,
+        }),
+        signal,
+      },
+    ),
+  toolProgramSnapshot: (
+    id: string,
+    signal?: AbortSignal,
+  ) =>
+    request<ToolProgramSnapshot>(`/sessions/${id}/tool-program/snapshot`, {
+      method: "POST",
+      body: JSON.stringify({
+        children: {
+          leafId: null,
+          cursor: null,
+          direction: "newestFirst",
+          limit: 8,
+          maxBytes: 131072,
+        },
+        phaseLimit: 8,
+      }),
+      signal,
+    }),
+  toolProgramEventsUrl: (id: string) =>
+    `/api/v1/sessions/${id}/tool-program/events`,
   messages: (id: string, params: { beforeId?: string; limit?: number }) =>
     commandData<{
       messages: unknown[];
