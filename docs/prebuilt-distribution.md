@@ -40,9 +40,10 @@ After crate publishing, `release-assets.yml` automatically builds Windows x64,
 Linux x64/ARM64, and macOS Intel/Apple Silicon binaries from the exact release
 commit. Each package Release receives individual extension archives and an
 `rpi-extension.json` manifest with download URLs, SHA-256 hashes, target triples,
-library names and SDK ABI. A separate bundle Release contains the full
-collection, installer and standalone ACP bridge. The existing
-`release-unix.yml` manual entry point now uses the same five-platform pipeline.
+library names and SDK ABI. A separate bundle Release contains the catalog
+collection, installer and standalone ACP bridge; archived host-owned packages
+are intentionally omitted. The existing `release-unix.yml` manual entry point
+now uses the same five-platform pipeline.
 
 Host developers can implement prebuilt installation using the discovery
 protocol below and its [JSON schema](rpi-extension.schema.json). Discover the
