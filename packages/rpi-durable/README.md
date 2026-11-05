@@ -1,5 +1,10 @@
 # rpi-durable
 
+> **Archived:** Durable workflow support is now provided by the native `rpi`
+> host. Version `0.3.1` is the final extension release; this package will not
+> receive new versions or prebuilt releases. Keep this source only for
+> historical compatibility and tests.
+
 Durable, resumable workflow checkpoints for the `rpi` Rust agent.
 
 `rpi-durable` stores the current workflow as a native session-branch custom
@@ -231,8 +236,6 @@ Use the platform's `.so`/`.dylib` path on Linux/macOS. The check covers modern
 queries, retired query rejection, snapshot/delta writes, and restoration after
 restarting the native host. It does not install or replace the running agent.
 
-Install from this workspace during development:
-
-```bash
-rpi install rpi-durable --path packages/rpi-durable
-```
+The package is no longer included in the catalog or release bundles and
+should not be installed into a host that already provides durable support.
+Build the archived source only when running its compatibility tests.

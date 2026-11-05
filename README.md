@@ -17,7 +17,6 @@ parameter schemas, and regression checks.
 | [rpi-mcp-adapter](packages/rpi-mcp-adapter/README.md) | Discover/call tools and manage resources with `mcp_list`, `mcp_call`, `mcp_resource`; raw diagnostics with `mcp_request` |
 | [rpi-subagents](packages/rpi-subagents/README.md) | Delegate work with `delegate_task` |
 | [rpi-orchestrator](packages/rpi-orchestrator/README.md) | Bounded child agents and task graphs with `subagent`, `plan` and `dispatch` |
-| [rpi-durable](packages/rpi-durable/README.md) | Persist and resume workflow checkpoints with `durable` |
 | [rpi-lens](packages/rpi-lens/README.md) | Inspect code with `code_lens` |
 | [rpi-codegraph](packages/rpi-codegraph/README.md) | Query indexed symbols, source, and relationships with `codegraph_*` (automatically initializes/syncs the index) |
 | [rpi-todo](packages/rpi-todo/README.md) | Track tasks with `todo` |
@@ -38,6 +37,10 @@ parameter schemas, and regression checks.
 | [rpi-acp](packages/rpi-acp/README.md) | Connect ACP clients, including Zed and Open WebUI Computer |
 | [rpi-ui-adapter](packages/rpi-ui-adapter/README.md) | Connect Open WebUI directly through `--webui=openwebui` |
 | [rpi-edit-diagnostics](packages/rpi-edit-diagnostics/README.md) | Replace `edit` with exact matching and compiler-style failure reports |
+
+`rpi-durable` and `rpi-durable-core` are archived. Durable workflow state is now
+provided by the native host, so the old packages remain only for historical
+source/tests and will not receive new versions or prebuilt releases.
 
 Extensions inspired by Pi packages are independent Rust implementations, not
 ports of upstream source code, except the candidate search in
@@ -266,7 +269,8 @@ determine which packages need a release.
 When package releases are available, CI builds Windows x64, Linux x64/ARM64 and
 macOS Intel/Apple Silicon assets. The matching package Releases receive native
 libraries and a versioned `rpi-extension.json` manifest. A separate bundle Release
-contains all workspace extensions, the installer and the standalone ACP bridge.
+contains all catalog extensions, the installer and the standalone ACP bridge;
+archived host-owned packages are intentionally omitted.
 The full workspace build does not mean every extension gets a new version.
 
 The workflow can also be run manually on `main` to retry a release.
