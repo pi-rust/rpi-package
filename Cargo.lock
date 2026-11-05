@@ -2499,7 +2499,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-codemode"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "rquickjs",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2655,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-orchestrator"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
