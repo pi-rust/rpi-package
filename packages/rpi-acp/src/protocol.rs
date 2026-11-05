@@ -459,6 +459,7 @@ impl Writer {
 
     /// Route a client response (an object with `id` and no `method`) to the
     /// request that produced it.
+    #[cfg(test)]
     pub(crate) async fn resolve(&self, id: u64, result: Value) {
         self.resolve_checked(id, Ok(result));
     }

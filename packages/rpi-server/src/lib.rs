@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod server;
-mod transport;
+pub mod transport;
 
 use rpi_plugin_sdk::handles::ToolHandles;
 use rpi_plugin_sdk::{
