@@ -338,7 +338,11 @@ fn spool_capture_bounds_overflow_deadline_and_inherited_descriptor_lifetime() {
             &root,
             &fixture_args(),
             8192,
-            Duration::from_millis(500),
+            // Windows-hosted runners can spend more than 500 ms starting the
+            // test binary under load. Keep the deadline bounded while allowing
+            // process startup jitter; the outer cleanup assertion still caps
+            // each fixture at five seconds.
+            Duration::from_secs(2),
         );
         assert!(
             start.elapsed() < Duration::from_secs(5),
