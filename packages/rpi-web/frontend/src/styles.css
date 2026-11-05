@@ -242,6 +242,69 @@ code {
     transform: rotate(360deg);
   }
 }
+.session-notification-stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 100;
+  display: grid;
+  width: min(360px, calc(100vw - 32px));
+  gap: 8px;
+  pointer-events: none;
+}
+.session-notification {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+.session-notification-main {
+  min-width: 0;
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 10px 12px 13px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.session-notification-main:hover:not(:disabled) {
+  background: var(--hover);
+}
+.session-notification-main > svg {
+  margin-top: 2px;
+  color: var(--green);
+}
+.session-notification-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  line-height: 1.35;
+}
+.session-notification-copy strong,
+.session-notification-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-notification-copy strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.session-notification-copy span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.session-notification-close {
+  align-self: start;
+  margin: 5px;
+}
 .workspace {
   height: 100dvh;
   min-height: 360px;
