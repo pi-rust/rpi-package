@@ -16,7 +16,7 @@ parameter schemas, and regression checks.
 | --- | --- |
 | [rpi-mcp-adapter](packages/rpi-mcp-adapter/README.md) | Discover/call tools and manage resources with `mcp_list`, `mcp_call`, `mcp_resource`; raw diagnostics with `mcp_request` |
 | [rpi-subagents](packages/rpi-subagents/README.md) | Delegate work with `delegate_task` |
-| [rpi-codemode](packages/rpi-codemode/README.md) | Compose native tools with bounded JavaScript, lossless business JSON and explicit exact native-result selection within inline limits; source-only, requires all four companion ToolProgram v1 capabilities |
+| [rpi-codemode](packages/rpi-codemode/README.md) | Compose native tools with bounded JavaScript, lossless business JSON and explicit exact native-result selection within inline limits; published/prebuilt extension, requires the companion ToolProgram v1 capabilities |
 | [rpi-orchestrator](packages/rpi-orchestrator/README.md) | Bounded child agents and task graphs with `subagent`, `plan` and `dispatch` |
 | [rpi-lens](packages/rpi-lens/README.md) | Inspect code with `code_lens` |
 | [rpi-codegraph](packages/rpi-codegraph/README.md) | Query indexed symbols, source, and relationships with `codegraph_*` (automatically initializes/syncs the index) |

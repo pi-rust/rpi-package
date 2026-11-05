@@ -71,9 +71,23 @@ for hashes, logs, focused codec checks and native lint blockers. The earlier
 third-increment 59-case / 1,123-test evidence and `5dba…` host hash are
 historical, not qualification of the rebuilt host.
 
-## Compatibility and installation from source
+## Compatibility and installation
 
-This is source-only functionality, not an advertised published/prebuilt release.
+This extension is published and distributed through the package catalog and
+per-platform GitHub Release assets. After the matching native host is installed,
+install it with:
+
+```sh
+rpi install rpi-codemode
+```
+
+For a local build or an unpublished checkout, use the source path instead:
+
+```sh
+cargo build --locked -p rpi-codemode --release
+rpi install rpi-codemode --path packages/rpi-codemode --force
+```
+
 It requires the companion native host's ToolProgram action **30**, protocol v1,
 with all **six exact integer version-1 capabilities**:
 `resultEnvelope`, `hostAccounting`, `parentProgress`, `losslessValues`, and
