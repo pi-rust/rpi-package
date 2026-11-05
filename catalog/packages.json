@@ -23,36 +23,36 @@
   },
   {
     "name": "rpi-subagents",
-    "version": "0.1.12",
+    "version": "0.1.13",
     "type": "extension",
     "tool": "delegate_task",
     "inspiredBy": "pi-subagents",
     "sourceDownloadsPerMonth": 362483,
     "install": "rpi install rpi-subagents",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-subagents-v0.1.12/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-subagents-v0.1.13/rpi-extension.json"
   },
   {
     "name": "rpi-codemode",
-    "version": "0.1.12",
+    "version": "0.1.13",
     "type": "extension",
     "tool": "codemode",
     "inspiredBy": "Bounded native JavaScript tool programs",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-codemode",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-codemode-v0.1.12/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-codemode-v0.1.13/rpi-extension.json"
   },
   {
     "name": "rpi-orchestrator",
-    "version": "0.1.12",
+    "version": "0.1.13",
     "type": "extension",
     "tool": "subagent + plan + dispatch",
     "inspiredBy": "DAG subagent orchestration",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-orchestrator",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-orchestrator-v0.1.12/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-orchestrator-v0.1.13/rpi-extension.json"
   },
   {
     "name": "rpi-btw",
@@ -67,14 +67,14 @@
   },
   {
     "name": "rpi-lens",
-    "version": "0.1.12",
+    "version": "0.1.13",
     "type": "extension",
     "tool": "code_lens",
     "inspiredBy": "pi-lens",
     "sourceDownloadsPerMonth": 65476,
     "install": "rpi install rpi-lens",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-lens-v0.1.12/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-lens-v0.1.13/rpi-extension.json"
   },
   {
     "name": "rpi-todo",
