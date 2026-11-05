@@ -124,8 +124,6 @@ mod recorder;
 mod spoken_style;
 mod whisper;
 
-#[cfg(test)]
-use rpi_plugin_sdk::StablePluginEvent;
 use rpi_plugin_sdk::{EventTag, PluginApi, RuntimeActionId, StbString, StbStringRef};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
