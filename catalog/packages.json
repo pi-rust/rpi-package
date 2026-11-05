@@ -33,6 +33,17 @@
     "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-subagents-v0.1.12/rpi-extension.json"
   },
   {
+    "name": "rpi-codemode",
+    "version": "0.1.12",
+    "type": "extension",
+    "tool": "codemode",
+    "inspiredBy": "Bounded native JavaScript tool programs",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-codemode",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-codemode-v0.1.12/rpi-extension.json"
+  },
+  {
     "name": "rpi-orchestrator",
     "version": "0.1.12",
     "type": "extension",
