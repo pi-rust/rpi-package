@@ -3350,53 +3350,55 @@ export default function App() {
         } as CSSProperties
       }
     >
-      {sessionNotifications.length > 0 && (
-        <div
-          className="session-notification-stack"
-          aria-label={t("sessionCompleted")}
-          aria-live="polite"
-        >
-          {sessionNotifications.map((notification) => (
-            <div className="session-notification" key={notification.id}>
-              <button
-                type="button"
-                className="session-notification-main"
-                aria-label={`${t("sessionCompleted")}: ${notification.title || t("newSession")}`}
-                onClick={() => {
-                  select(notification.sessionId);
-                  setSessionNotifications((previous) =>
-                    previous.filter((item) => item.id !== notification.id),
-                  );
-                }}
-              >
-                <Check size={16} aria-hidden="true" />
-                <span className="session-notification-copy">
-                  <strong>{notification.title || t("newSession")}</strong>
-                  <span>{t("sessionCompleted")}</span>
-                  <span>
-                    {t("sessionCompletedOutcome", {
-                      outcome: notification.outcome,
-                    })}
+      {sessionNotifications.length > 0 &&
+        createPortal(
+          <div
+            className="session-notification-stack"
+            aria-label={t("sessionCompleted")}
+            aria-live="polite"
+          >
+            {sessionNotifications.map((notification) => (
+              <div className="session-notification" key={notification.id}>
+                <button
+                  type="button"
+                  className="session-notification-main"
+                  aria-label={`${t("sessionCompleted")}: ${notification.title || t("newSession")}`}
+                  onClick={() => {
+                    select(notification.sessionId);
+                    setSessionNotifications((previous) =>
+                      previous.filter((item) => item.id !== notification.id),
+                    );
+                  }}
+                >
+                  <Check size={16} aria-hidden="true" />
+                  <span className="session-notification-copy">
+                    <strong>{notification.title || t("newSession")}</strong>
+                    <span>{t("sessionCompleted")}</span>
+                    <span>
+                      {t("sessionCompletedOutcome", {
+                        outcome: notification.outcome,
+                      })}
+                    </span>
                   </span>
-                </span>
-              </button>
-              <button
-                type="button"
-                className="icon-button session-notification-close"
-                aria-label={t("closeNotification")}
-                title={t("closeNotification")}
-                onClick={() =>
-                  setSessionNotifications((previous) =>
-                    previous.filter((item) => item.id !== notification.id),
-                  )
-                }
-              >
-                <X size={15} aria-hidden="true" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button session-notification-close"
+                  aria-label={t("closeNotification")}
+                  title={t("closeNotification")}
+                  onClick={() =>
+                    setSessionNotifications((previous) =>
+                      previous.filter((item) => item.id !== notification.id),
+                    )
+                  }
+                >
+                  <X size={15} aria-hidden="true" />
+                </button>
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
       {dialog && (
         <DialogOverlay
           key={dialog.requestId}
