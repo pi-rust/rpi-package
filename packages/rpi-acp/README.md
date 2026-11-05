@@ -911,10 +911,10 @@ Images needing orientation transforms must be normalized by the client; this
 path does not silently resize, re-encode, drop, or replace images with text.
 
 The ordered native profile permits 1..64 content blocks, at most 4 images,
-256 KiB decoded per image (349,528 base64 bytes), 512 KiB decoded images total,
+1 MiB decoded per image (1,398,104 base64 bytes), 2 MiB decoded images total,
 and 32 KiB aggregate UTF-8 text. The complete serialized native prompt command,
-including correlation ID, escaping and LF, is limited to 768 KiB. Native caps
-images at 2000 pixels per side / 4,000,000 pixels and advertises a 32 MiB
+including correlation ID, escaping and LF, is limited to 3 MiB. Native caps
+images at 2000 pixels per side / 4,000,000 pixels and advertises a 64 MiB
 **best-effort decoder allocation budget**, not a process-wide heap/RSS limit
 (JPEG scratch allocations are not all accounted). Native inbound frames remain
 limited to 1 MiB.
@@ -969,7 +969,7 @@ not copied into a new bridge-owned filesystem or history database.
 
 At most 64 requests are pending; text is limited to 256 KiB UTF-8, independently
 of the 768 KiB encoded JSON payload limit (escaping can reach that first).
-Native inbound frames are bounded to 1 MiB. Native waits up to 60 seconds;
+Native inbound frames are bounded to 4 MiB. Native waits up to 60 seconds;
 core gives handlers 50 seconds including queue time and separately bounds native
 response dispatch to 5 seconds; ACP gives each client operation 45 seconds
 including queued frame writing. These layered deadlines are not a global hard

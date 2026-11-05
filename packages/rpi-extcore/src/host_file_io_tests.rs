@@ -337,9 +337,9 @@ mod file_io_runtime_tests {
 
     fn prompt_profile() -> Value {
         json!({"contentBlocksVersion":1,"image":true,"imageMimeTypes":["image/png","image/jpeg"],
-            "maxImages":4,"maxImageBytes":262144,"maxTotalImageBytes":524288,"maxImageBase64Bytes":349528,
-            "maxPromptBytes":786432,"maxTextBytes":32768,"maxContentBlocks":64,"maxImageSide":2000,
-            "maxImagePixels":4000000,"imageDecodeAllocBudgetBytes":33554432,"frameBytes":1048576})
+            "maxImages":4,"maxImageBytes":1048576,"maxTotalImageBytes":2097152,"maxImageBase64Bytes":1398104,
+            "maxPromptBytes":3145728,"maxTextBytes":32768,"maxContentBlocks":64,"maxImageSide":2000,
+            "maxImagePixels":4000000,"imageDecodeAllocBudgetBytes":67108864,"frameBytes":4194304})
     }
 
     #[tokio::test]

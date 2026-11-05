@@ -183,6 +183,8 @@ export interface ModelDescriptor {
   provider: string;
   reasoning?: boolean;
   api?: string;
+  baseUrl?: string;
+  input?: string[];
   contextWindow?: number;
   maxTokens?: number;
 }
@@ -744,6 +746,79 @@ export const api = {
       { provider, apiKey },
       signal,
     ),
+  getProviderModels: (
+    id: string,
+    input: { api: string; baseUrl: string; apiKey: string },
+    signal?: AbortSignal,
+  ) =>
+    commandData<{
+      models: Array<{
+        id: string;
+        ownedBy?: string | null;
+        contextWindow?: number | null;
+        maxTokens?: number | null;
+        supportsImages?: boolean | null;
+      }>;
+    }>(id, "get_provider_models", input, signal),
+  testProviderConfig: (
+    id: string,
+    input: { api: string; baseUrl: string; apiKey: string },
+    signal?: AbortSignal,
+  ) =>
+    commandData<{
+      ok: boolean;
+      status: number;
+      latencyMs: number;
+      modelCount?: number | null;
+    }>(id, "test_provider_config", input, signal),
+  updateProviderConfig: (
+    id: string,
+    input: {
+      provider: string;
+      api: string;
+      baseUrl: string;
+      apiKey?: string;
+      modelId: string;
+      modelName?: string;
+      contextWindow?: number;
+      maxOutputTokens?: number;
+      supportsImages: boolean;
+    },
+    signal?: AbortSignal,
+  ) =>
+    commandData<{
+      provider: string;
+      modelId: string;
+      requiresRestart: boolean;
+    }>(id, "update_provider_config", input, signal),
+  deleteProviderConfig: (id: string, provider: string, signal?: AbortSignal) =>
+    commandData<{ provider: string; requiresRestart: boolean }>(
+      id,
+      "delete_provider_config",
+      { provider },
+      signal,
+    ),
+  setProviderConfig: (
+    id: string,
+    input: {
+      provider: string;
+      api: string;
+      baseUrl: string;
+      apiKey: string;
+      modelId: string;
+      modelName?: string;
+      contextWindow?: number;
+      maxOutputTokens?: number;
+      supportsImages?: boolean;
+    },
+    signal?: AbortSignal,
+  ) =>
+    commandData<{
+      provider: string;
+      modelId: string;
+      api: string;
+      requiresRestart: boolean;
+    }>(id, "set_provider_config", input, signal),
 
   queue: (id: string, includeCompleted = false, signal?: AbortSignal) =>
     commandData<{ items: QueueItem[]; count: number }>(id, "get_queue", {

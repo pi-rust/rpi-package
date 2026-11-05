@@ -133,13 +133,13 @@ transcripts; core provides neutral validation, correlation and lifecycle.
   `begin_prompt(String)` remains the unchanged legacy path. Constructors check
   aggregate blocks; the writer separately checks the final correlated command,
   including JSON escaping, envelope and LF.
-- The v1 ordered profile caps blocks at 64, images at 4, each image at 256 KiB
-  decoded / 349,528 base64 bytes, all images at 512 KiB decoded, aggregate text
-  at 32 KiB UTF-8 and the complete prompt frame at 768 KiB. Native allows at
-  most 2000 pixels per side / 4,000,000 pixels and a 32 MiB best-effort decoder
+- The v1 ordered profile caps blocks at 64, images at 4, each image at 1 MiB
+  decoded / 1,398,104 base64 bytes, all images at 2 MiB decoded, aggregate text
+  at 32 KiB UTF-8 and the complete prompt frame at 3 MiB. Native allows at
+  most 2000 pixels per side / 4,000,000 pixels and a 64 MiB best-effort decoder
   allocation budget, not a hard total heap limit. URI/path input and fetching,
   data URLs, APNG, JPEG-XT, orientation transforms and lossy text fallback are
-  not provided by this API. Native inbound frames remain 1 MiB.
+  not provided by this API. Native inbound frames remain 4 MiB.
 - `file_io::{FileIOCapabilities, FileIOHandler, FileIORequest, FileIOResponse,
   FileIOCancellation}` and `HostSession::configure_file_io` install one
   session-owned neutral text handler while idle under the run lease. The exact

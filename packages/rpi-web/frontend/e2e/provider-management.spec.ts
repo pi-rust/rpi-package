@@ -95,6 +95,10 @@ class ProviderHost {
   unexpected: string[] = [];
   models = models.map((model) => ({ ...model }));
   providers = [auth("alpha"), auth("auth-only")];
+  enableProviderEditing() {
+    for (const command of ["update_provider_config", "delete_provider_config"])
+      if (!this.commands.includes(command)) this.commands.push(command);
+  }
   commands = [
     "get_state",
     "get_messages",
@@ -102,6 +106,9 @@ class ProviderHost {
     "get_auth_status",
     "set_model",
     "set_api_key",
+    "set_provider_config",
+    "get_provider_models",
+    "test_provider_config",
   ];
   actions = ["projects", "provider_auth"];
   states: Record<string, Json> = {
@@ -138,10 +145,15 @@ class ProviderHost {
   }
   get writes() {
     return this.calls.filter((call) =>
-      ["set_model", "set_api_key"].includes(call.type),
+      ["set_model", "set_api_key", "set_provider_config"].includes(
+        call.type,
+      ),
     );
   }
-  permit(type: "set_model" | "set_api_key", session = A) {
+  permit(
+    type: "set_model" | "set_api_key" | "set_provider_config",
+    session = A,
+  ) {
     const key = `${session}:${type}`;
     this.permits.set(key, (this.permits.get(key) ?? 0) + 1);
   }
@@ -237,11 +249,22 @@ class ProviderHost {
         "get_messages",
         "get_available_models",
         "get_auth_status",
+        "get_provider_models",
+        "test_provider_config",
       ];
       if (endpoint === "commands" && !reads.includes(type)) {
         const key = `${session}:${type}`;
         const permitted = this.permits.get(key) ?? 0;
-        if (!["set_model", "set_api_key"].includes(type) || permitted === 0)
+        if (
+          ![
+            "set_model",
+            "set_api_key",
+            "set_provider_config",
+            "update_provider_config",
+            "delete_provider_config",
+          ].includes(type) ||
+          permitted === 0
+        )
           return this.reject(route, `unpermitted mutation ${session}:${type}`);
         this.permits.set(key, permitted - 1);
       }
@@ -311,6 +334,45 @@ class ProviderHost {
               provider: body.provider,
               ready: true,
               requiresRestart: true,
+            },
+            set_provider_config: {
+              provider: body.provider,
+              modelId: body.modelId,
+              api: body.api,
+              requiresRestart: true,
+            },
+            update_provider_config: {
+              provider: body.provider,
+              modelId: body.modelId,
+              requiresRestart: true,
+            },
+            delete_provider_config: {
+              provider: body.provider,
+              requiresRestart: true,
+            },
+            get_provider_models: {
+              models: [
+                {
+                  id: "model-a",
+                  ownedBy: "fixture",
+                  contextWindow: 128000,
+                  maxTokens: 4096,
+                  supportsImages: false,
+                },
+                {
+                  id: "model-b",
+                  ownedBy: "fixture",
+                  contextWindow: 256000,
+                  maxTokens: 8192,
+                  supportsImages: true,
+                },
+              ],
+            },
+            test_provider_config: {
+              ok: true,
+              status: 200,
+              latencyMs: 23,
+              modelCount: 2,
             },
           };
           await route.fulfill({ json: envelope(type, data[type]) });
@@ -545,7 +607,7 @@ test("empty catalogs explain the empty state and Add connection opens a blank dr
   );
   await expect(modal.getByLabel("API Key", { exact: true })).toHaveValue("");
   await expect(
-    modal.getByRole("button", { name: "Save API Key", exact: true }),
+    modal.getByRole("button", { name: "Save provider", exact: true }),
   ).toBeDisabled();
   expect(host.writes).toEqual([]);
 });
@@ -615,6 +677,125 @@ test("same-name model selection sends the exact provider/id and then reads autho
   expect(order.lastIndexOf("get_state")).toBeGreaterThan(
     order.indexOf("set_model"),
   );
+});
+
+test("adding a provider collects protocol and model and submits the full configuration", async ({
+  page,
+  host,
+}) => {
+  await start(page);
+  await openManager(page);
+  await manager(page)
+    .getByRole("button", { name: "Add connection", exact: true })
+    .click();
+  const modal = dialog(page);
+  await modal.getByLabel("Provider ID", { exact: true }).fill("gateway");
+  await modal.getByLabel("Protocol", { exact: true }).selectOption(
+    "openai-responses",
+  );
+  await modal
+    .getByLabel("Base URL", { exact: true })
+    .fill("https://api.example.test/v1");
+  await modal.getByLabel("Model ID", { exact: true }).fill("model-a");
+  await modal.getByLabel("Model name (optional)", { exact: true }).fill("Model A");
+  await modal.getByLabel("API Key", { exact: true }).fill("fixture-provider-key");
+  await modal.getByRole("button", { name: "Fetch models", exact: true }).click();
+  await expect(modal.getByLabel("Available models", { exact: true })).toHaveValue(
+    "model-a",
+  );
+  await modal.getByLabel("Available models", { exact: true }).selectOption("model-b");
+  await expect(modal.getByLabel("Model ID", { exact: true })).toHaveValue("model-b");
+  await expect(
+    modal.getByLabel("Context window (tokens, optional)", { exact: true }),
+  ).toHaveValue("256000");
+  await expect(
+    modal.getByLabel("Max output tokens (optional)", { exact: true }),
+  ).toHaveValue("8192");
+  await expect(modal.getByLabel("Supports image input", { exact: true })).toBeChecked();
+  await modal.getByRole("button", { name: "Test connection", exact: true }).click();
+  await expect(modal).toContainText("23 ms");
+  expect(host.count("get_provider_models")).toBe(1);
+  expect(host.count("test_provider_config")).toBe(1);
+  host.permit("set_provider_config");
+  const write = host.hold("set_provider_config", {
+    json: envelope("set_provider_config", {
+      provider: "gateway",
+      modelId: "model-a",
+      api: "openai-responses",
+      requiresRestart: true,
+    }),
+  });
+  await modal
+    .getByRole("button", { name: "Save provider", exact: true })
+    .click();
+  await write.arrived;
+  expect(host.writes.map((call) => call.body)).toEqual([
+    {
+      type: "set_provider_config",
+      provider: "gateway",
+      api: "openai-responses",
+      baseUrl: "https://api.example.test/v1",
+      apiKey: "fixture-provider-key",
+      modelId: "model-b",
+      modelName: "Model A",
+      contextWindow: 256000,
+      maxOutputTokens: 8192,
+      supportsImages: true,
+    },
+  ]);
+  write.release();
+  await write.finished;
+  await expect(modal).toContainText("models.json");
+  await expect(modal.getByLabel("API Key", { exact: true })).toHaveValue("");
+  await noSecretEcho(page, "fixture-provider-key");
+});
+
+test("a configured provider can be edited without echoing its key and deleted", async ({
+  page,
+  host,
+}) => {
+  host.enableProviderEditing();
+  host.models[0] = {
+    ...host.models[0],
+    baseUrl: "https://api.example.test/v1",
+    api: "openai-completions",
+    maxTokens: 4096,
+    input: ["text", "image"],
+  };
+  await start(page);
+  await openManager(page);
+  await connection(page, "alpha");
+  const modal = dialog(page);
+  await expect(modal.getByLabel("Base URL", { exact: true })).toHaveValue(
+    "https://api.example.test/v1",
+  );
+  await modal.getByLabel("Model ID", { exact: true }).fill("updated-model");
+  await modal
+    .getByLabel("Model name (optional)", { exact: true })
+    .fill("Updated model");
+  host.permit("update_provider_config");
+  await modal.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect
+    .poll(() => host.count("update_provider_config"))
+    .toBe(1);
+  expect(
+    host.calls.find((call) => call.type === "update_provider_config")?.body,
+  ).toMatchObject({
+    provider: "alpha",
+    modelId: "updated-model",
+    modelName: "Updated model",
+    apiKey: "",
+    supportsImages: true,
+  });
+  await expect(modal).toContainText(/restart/i);
+  page.once("dialog", (dialog) => void dialog.accept());
+  host.permit("delete_provider_config");
+  await modal
+    .getByRole("button", { name: "Delete provider", exact: true })
+    .click();
+  await expect.poll(() => host.count("delete_provider_config")).toBe(1);
+  await expect(modal).not.toBeVisible();
+  await noSecretEcho(page, "fixture-provider-key");
 });
 
 test("API key is password-only, saved only on explicit click, cleared, and restart is explained without echo", async ({
