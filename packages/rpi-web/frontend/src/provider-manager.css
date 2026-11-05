@@ -189,6 +189,21 @@
   font-size: 16px;
 }
 
+.provider-manager-dialog input[type="checkbox"] {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+  accent-color: var(--blue-text);
+}
+
+.provider-manager-dialog label:has(input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .provider-manager-dialog label {
   font-weight: 600;
 }
