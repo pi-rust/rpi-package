@@ -420,7 +420,7 @@ impl QueryOwner<'_> {
         }
     }
 }
-async fn read<Q: Serialize, P: DeserializeOwned>(
+pub(super) async fn read<Q: Serialize, P: DeserializeOwned>(
     owner: QueryOwner<'_>,
     id: &str,
     command: &str,

@@ -288,7 +288,7 @@ pub async fn child_snapshot_for_host(
     snapshot_for_access(&access, request).await
 }
 
-fn validate_request(id: &str, request: &ChildSnapshotQuery) -> ServiceResult<()> {
+pub(super) fn validate_request(id: &str, request: &ChildSnapshotQuery) -> ServiceResult<()> {
     let q = &request.children;
     if !query::valid_id(id)
         || !(1..=MAX_CHILDREN).contains(&q.limit)

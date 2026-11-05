@@ -18,8 +18,9 @@ fn ready() -> Value {
         "maxCount":32,"maxPhaseCandidates":128,"maxResponseBytes":131072,"responseBytesScope":"pageBytes",
         "maxBodyDecodedBytes":65536,"summaryState":"unknown","recovery":"readOnly"},
         "toolProgramChildEvents":rpi_extcore::service::tool_program_events::profile(),
+        "toolProgramBranch":{"version":1,"command":"get_tool_program_branch","identity":"bindingAndLaneGeneration"},
         "supportedEvents":["tool_program_child_begin","tool_program_child_phase","tool_program_child_resync_required"],
-        "supportedCommands":["get_tool_program_children","get_tool_program_child_phases","get_tool_program_child_body"]})
+        "supportedCommands":["get_tool_program_branch","get_tool_program_children","get_tool_program_child_phases","get_tool_program_child_body"]})
 }
 fn page_query() -> Value {
     json!({"leafId":null,"cursor":null,"direction":"newestFirst","limit":8,"maxBytes":32768})
@@ -81,6 +82,8 @@ impl Fixture {
                         "error":"SECRET C:/private/native-debug.txt\ninternal error"})
                 } else {
                     let data = match request["type"].as_str().unwrap() {
+                        "get_tool_program_branch" => json!({"sessionId":SESSION,"lane":"main",
+                            "bindingId":"44444444-4444-4444-8444-444444444444","generation":0,"leafId":"leaf"}),
                         "get_tool_program_children" => {
                             let mut page = summary_page();
                             if request["limit"] == 1 {
@@ -274,7 +277,7 @@ async fn live_child_subscription_is_snapshot_first_and_unsubscribes_cleanly() {
             .send_projected(json!({
                 "type":"tool_program_child_begin", "schemaVersion":1,
                 "sourceSessionId":SESSION, "lane":"main", "entryId":CHILD,
-                "parentEntryId":null, "seq":10,
+                "parentEntryId":"assistant", "seq":10,
                 "customType":"rpi.tool_program.child_begin.v1",
                 "data":{"version":1, "childId":CHILD,
                     "origin":{"runId":"run","assistantEntryId":"assistant","toolIndex":0},
@@ -293,7 +296,10 @@ async fn live_child_subscription_is_snapshot_first_and_unsubscribes_cleanly() {
             tool_program_live::NOTIFICATION_METHOD
         );
         assert_eq!(notification["params"]["subscriptionId"], "sub-1");
-        assert!(notification["params"]["update"].is_object());
+        assert_eq!(
+            notification["params"]["update"]["type"], "update",
+            "{notification}"
+        );
 
         let unsubscribed = client
             .request(

@@ -2,6 +2,7 @@
 pub use crate::run_timing::RunTimingsQuery;
 mod message_queries;
 mod tool_program_access;
+mod tool_program_branch;
 pub mod tool_program_events;
 pub mod tool_program_live;
 pub use tool_program_live::{child_subscription, child_subscription_for_host};
