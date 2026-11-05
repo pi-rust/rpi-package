@@ -755,6 +755,7 @@ export const api = {
         ownedBy?: string | null;
         contextWindow?: number | null;
         maxTokens?: number | null;
+        supportsImages?: boolean | null;
       }>;
     }>(id, "get_provider_models", input, signal),
   testProviderConfig: (
@@ -779,6 +780,7 @@ export const api = {
       modelName?: string;
       contextWindow?: number;
       maxOutputTokens?: number;
+      supportsImages?: boolean;
     },
     signal?: AbortSignal,
   ) =>

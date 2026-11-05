@@ -45,6 +45,7 @@ const copy = {
     modelName: "Model name (optional)",
     contextWindow: "Context window (tokens, optional)",
     maxOutputTokens: "Max output tokens (optional)",
+    supportsImages: "Supports image input",
     availableModels: "Available models",
     draftNote:
       "Base URL changes and provider deletion are not supported by the node. This URL is a page-local draft only; it is never sent or persisted.",
@@ -133,6 +134,7 @@ const copy = {
     modelName: "模型名称（可选）",
     contextWindow: "上下文大小（tokens，可选）",
     maxOutputTokens: "最大输出 tokens（可选）",
+    supportsImages: "支持图片输入",
     availableModels: "可用模型",
     draftNote:
       "节点暂不支持修改 Base URL 或删除供应商。此地址仅为当前页面草稿，不会发送或持久化。",
@@ -285,12 +287,14 @@ export function ProviderManager({
   const [modelName, setModelName] = useState("");
   const [contextWindow, setContextWindow] = useState("");
   const [maxOutputTokens, setMaxOutputTokens] = useState("");
+  const [supportsImages, setSupportsImages] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<
     Array<{
       id: string;
       ownedBy?: string | null;
       contextWindow?: number | null;
       maxTokens?: number | null;
+      supportsImages?: boolean | null;
     }>
   >([]);
   const [providerProbePending, setProviderProbePending] = useState(false);
@@ -409,6 +413,7 @@ export function ProviderManager({
     setModelName("");
     setContextWindow("");
     setMaxOutputTokens("");
+    setSupportsImages(false);
     setSavePending(false);
     setSaveError(null);
     setSaveNotice(null);
@@ -456,6 +461,7 @@ export function ProviderManager({
     setModelName(isNew ? "" : firstModel?.name || "");
     setContextWindow("");
     setMaxOutputTokens("");
+    setSupportsImages(false);
     setFetchedModels([]);
     setProviderProbeError(false);
     setConnectionError(false);
@@ -477,6 +483,7 @@ export function ProviderManager({
     setModelName("");
     setContextWindow("");
     setMaxOutputTokens("");
+    setSupportsImages(false);
     setFetchedModels([]);
     setProviderProbeError(false);
     setConnectionError(false);
@@ -576,6 +583,8 @@ export function ProviderManager({
         setContextWindow(String(result.models[0].contextWindow));
       if (!maxOutputTokens.trim() && result.models[0]?.maxTokens)
         setMaxOutputTokens(String(result.models[0].maxTokens));
+      if (result.models[0]?.supportsImages != null)
+        setSupportsImages(result.models[0].supportsImages);
     } catch {
       if (current()) setProviderProbeError(true);
     } finally {
@@ -681,6 +690,7 @@ export function ProviderManager({
       ...(parsedMaxOutputTokens !== undefined
         ? { maxOutputTokens: parsedMaxOutputTokens }
         : {}),
+      supportsImages,
     };
     setSecret("");
     if (
@@ -1059,6 +1069,8 @@ export function ProviderManager({
                           setContextWindow(String(selected.contextWindow));
                         if (selected?.maxTokens)
                           setMaxOutputTokens(String(selected.maxTokens));
+                        if (selected?.supportsImages != null)
+                          setSupportsImages(selected.supportsImages);
                       }}
                     >
                       <option value="">{t.availableModels}</option>
@@ -1126,6 +1138,18 @@ export function ProviderManager({
                     setMaxOutputTokens(event.target.value);
                   }}
                 />
+                <label htmlFor={`${id}-supports-images`}>
+                  <input
+                    id={`${id}-supports-images`}
+                    type="checkbox"
+                    checked={supportsImages}
+                    onChange={(event) => {
+                      invalidateDraft();
+                      setSupportsImages(event.target.checked);
+                    }}
+                  />{" "}
+                  {t.supportsImages}
+                </label>
               </>
             )}
             {!configIsNew && (

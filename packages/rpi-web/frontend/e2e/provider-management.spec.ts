@@ -338,12 +338,14 @@ class ProviderHost {
                   ownedBy: "fixture",
                   contextWindow: 128000,
                   maxTokens: 4096,
+                  supportsImages: false,
                 },
                 {
                   id: "model-b",
                   ownedBy: "fixture",
                   contextWindow: 256000,
                   maxTokens: 8192,
+                  supportsImages: true,
                 },
               ],
             },
@@ -690,6 +692,7 @@ test("adding a provider collects protocol and model and submits the full configu
   await expect(
     modal.getByLabel("Max output tokens (optional)", { exact: true }),
   ).toHaveValue("8192");
+  await expect(modal.getByLabel("Supports image input", { exact: true })).toBeChecked();
   await modal.getByRole("button", { name: "Test connection", exact: true }).click();
   await expect(modal).toContainText("23 ms");
   expect(host.count("get_provider_models")).toBe(1);
@@ -718,6 +721,7 @@ test("adding a provider collects protocol and model and submits the full configu
       modelName: "Model A",
       contextWindow: 256000,
       maxOutputTokens: 8192,
+      supportsImages: true,
     },
   ]);
   write.release();
