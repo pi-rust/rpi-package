@@ -98,6 +98,8 @@ class MockHost {
   unexpected: string[] = [];
   snapshots: Record<string, Json> = { [A]: snapshot(A), [B]: snapshot(B) };
   snapshotFailure: Reply | undefined;
+  sessionSettlements: Record<string, Json | null> = { [A]: null, [B]: null };
+  sessionLastSeq: Record<string, number> = { [A]: 10, [B]: 10 };
   states: Record<string, Json> = { [A]: state(A), [B]: state(B) };
   commands = [
     "get_state",
@@ -180,9 +182,9 @@ class MockHost {
         status: "ready",
         createdAt: 1_700_000_000_000,
         updatedAt: 1_700_000_000_100,
-        lastSeq: 10,
+        lastSeq: this.sessionLastSeq[id] ?? 10,
         error: null,
-        latestSettlement: null,
+        latestSettlement: this.sessionSettlements[id] ?? null,
         pinned: false,
         archived: false,
       });
@@ -603,6 +605,25 @@ test("live settlement is not resurrected by stale hydration or replaced with sta
   await expect(send(page)).toBeEnabled();
   await expect(abort(page)).toHaveCount(0);
   await expect(model(page)).toContainText("settled-model");
+});
+
+test("live and polled settlement updates create one notification without a run ID", async ({
+  page,
+  host,
+}) => {
+  await start(page, host);
+  await received(host, A, "events");
+  host.sessionSettlements[A] = { outcome: "completed" };
+  host.sessionLastSeq[A] = 11;
+  host.emit(A, [
+    { seq: 11, event: { type: "agent_settled", outcome: "completed" } },
+  ]);
+
+  const notification = page.getByRole("button", {
+    name: "Session completed: Loading Alpha",
+    exact: true,
+  });
+  await expect(notification).toHaveCount(1);
 });
 
 test("settled sessions create clickable dismissible notifications", async ({
