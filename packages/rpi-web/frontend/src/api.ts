@@ -754,6 +754,7 @@ export const api = {
         id: string;
         ownedBy?: string | null;
         contextWindow?: number | null;
+        maxTokens?: number | null;
       }>;
     }>(id, "get_provider_models", input, signal),
   testProviderConfig: (
@@ -777,6 +778,7 @@ export const api = {
       modelId: string;
       modelName?: string;
       contextWindow?: number;
+      maxOutputTokens?: number;
     },
     signal?: AbortSignal,
   ) =>

@@ -44,6 +44,7 @@ const copy = {
     modelId: "Model ID",
     modelName: "Model name (optional)",
     contextWindow: "Context window (tokens, optional)",
+    maxOutputTokens: "Max output tokens (optional)",
     availableModels: "Available models",
     draftNote:
       "Base URL changes and provider deletion are not supported by the node. This URL is a page-local draft only; it is never sent or persisted.",
@@ -75,6 +76,7 @@ const copy = {
     providerSaveError:
       "Provider configuration failed. Check the node connection and configuration values, then try again.",
     contextWindowError: "Context window must be a positive whole number.",
+    maxOutputTokensError: "Max output tokens must be a positive whole number.",
     restart:
       "The node requires a runtime restart for this change. Restart on the node, then refresh; this page will not restart it automatically.",
     modelSaved: "Model selection submitted and runtime state read back.",
@@ -130,6 +132,7 @@ const copy = {
     modelId: "模型 ID",
     modelName: "模型名称（可选）",
     contextWindow: "上下文大小（tokens，可选）",
+    maxOutputTokens: "最大输出 tokens（可选）",
     availableModels: "可用模型",
     draftNote:
       "节点暂不支持修改 Base URL 或删除供应商。此地址仅为当前页面草稿，不会发送或持久化。",
@@ -157,6 +160,7 @@ const copy = {
     providerSaveError:
       "服务商配置失败，请检查节点连接和配置内容后重试。",
     contextWindowError: "上下文大小必须是大于 0 的整数。",
+    maxOutputTokensError: "最大输出 tokens 必须是大于 0 的整数。",
     restart:
       "节点要求重启运行时后生效。请在节点端重启，然后刷新检测；此页面不会自动重启。",
     modelSaved: "模型选择已提交并回读运行状态。",
@@ -280,11 +284,13 @@ export function ProviderManager({
   const [modelId, setModelId] = useState("");
   const [modelName, setModelName] = useState("");
   const [contextWindow, setContextWindow] = useState("");
+  const [maxOutputTokens, setMaxOutputTokens] = useState("");
   const [fetchedModels, setFetchedModels] = useState<
     Array<{
       id: string;
       ownedBy?: string | null;
       contextWindow?: number | null;
+      maxTokens?: number | null;
     }>
   >([]);
   const [providerProbePending, setProviderProbePending] = useState(false);
@@ -402,6 +408,7 @@ export function ProviderManager({
     setModelId("");
     setModelName("");
     setContextWindow("");
+    setMaxOutputTokens("");
     setSavePending(false);
     setSaveError(null);
     setSaveNotice(null);
@@ -448,6 +455,7 @@ export function ProviderManager({
     setModelId(isNew ? "" : firstModel?.id || "");
     setModelName(isNew ? "" : firstModel?.name || "");
     setContextWindow("");
+    setMaxOutputTokens("");
     setFetchedModels([]);
     setProviderProbeError(false);
     setConnectionError(false);
@@ -468,6 +476,7 @@ export function ProviderManager({
     setModelId("");
     setModelName("");
     setContextWindow("");
+    setMaxOutputTokens("");
     setFetchedModels([]);
     setProviderProbeError(false);
     setConnectionError(false);
@@ -565,6 +574,8 @@ export function ProviderManager({
       if (!modelId.trim() && result.models[0]) setModelId(result.models[0].id);
       if (!contextWindow.trim() && result.models[0]?.contextWindow)
         setContextWindow(String(result.models[0].contextWindow));
+      if (!maxOutputTokens.trim() && result.models[0]?.maxTokens)
+        setMaxOutputTokens(String(result.models[0].maxTokens));
     } catch {
       if (current()) setProviderProbeError(true);
     } finally {
@@ -640,11 +651,21 @@ export function ProviderManager({
     const parsedContextWindow = contextWindow.trim()
       ? Number(contextWindow.trim())
       : undefined;
+    const parsedMaxOutputTokens = maxOutputTokens.trim()
+      ? Number(maxOutputTokens.trim())
+      : undefined;
     if (
       parsedContextWindow !== undefined &&
       (!Number.isSafeInteger(parsedContextWindow) || parsedContextWindow <= 0)
     ) {
       setSaveError("contextWindowError");
+      return;
+    }
+    if (
+      parsedMaxOutputTokens !== undefined &&
+      (!Number.isSafeInteger(parsedMaxOutputTokens) || parsedMaxOutputTokens <= 0)
+    ) {
+      setSaveError("maxOutputTokensError");
       return;
     }
     const values = {
@@ -656,6 +677,9 @@ export function ProviderManager({
       modelName: modelName.trim(),
       ...(parsedContextWindow !== undefined
         ? { contextWindow: parsedContextWindow }
+        : {}),
+      ...(parsedMaxOutputTokens !== undefined
+        ? { maxOutputTokens: parsedMaxOutputTokens }
         : {}),
     };
     setSecret("");
@@ -1033,6 +1057,8 @@ export function ProviderManager({
                         setModelId(event.target.value);
                         if (selected?.contextWindow)
                           setContextWindow(String(selected.contextWindow));
+                        if (selected?.maxTokens)
+                          setMaxOutputTokens(String(selected.maxTokens));
                       }}
                     >
                       <option value="">{t.availableModels}</option>
@@ -1084,6 +1110,20 @@ export function ProviderManager({
                   onChange={(event) => {
                     invalidateDraft();
                     setContextWindow(event.target.value);
+                  }}
+                />
+                <label htmlFor={`${id}-max-output-tokens`}>{t.maxOutputTokens}</label>
+                <input
+                  id={`${id}-max-output-tokens`}
+                  type="number"
+                  min="1"
+                  step="1"
+                  inputMode="numeric"
+                  value={maxOutputTokens}
+                  placeholder="4096"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setMaxOutputTokens(event.target.value);
                   }}
                 />
               </>

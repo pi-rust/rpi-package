@@ -333,8 +333,18 @@ class ProviderHost {
             },
             get_provider_models: {
               models: [
-                { id: "model-a", ownedBy: "fixture", contextWindow: 128000 },
-                { id: "model-b", ownedBy: "fixture", contextWindow: 256000 },
+                {
+                  id: "model-a",
+                  ownedBy: "fixture",
+                  contextWindow: 128000,
+                  maxTokens: 4096,
+                },
+                {
+                  id: "model-b",
+                  ownedBy: "fixture",
+                  contextWindow: 256000,
+                  maxTokens: 8192,
+                },
               ],
             },
             test_provider_config: {
@@ -677,6 +687,9 @@ test("adding a provider collects protocol and model and submits the full configu
   await expect(
     modal.getByLabel("Context window (tokens, optional)", { exact: true }),
   ).toHaveValue("256000");
+  await expect(
+    modal.getByLabel("Max output tokens (optional)", { exact: true }),
+  ).toHaveValue("8192");
   await modal.getByRole("button", { name: "Test connection", exact: true }).click();
   await expect(modal).toContainText("23 ms");
   expect(host.count("get_provider_models")).toBe(1);
@@ -704,6 +717,7 @@ test("adding a provider collects protocol and model and submits the full configu
       modelId: "model-b",
       modelName: "Model A",
       contextWindow: 256000,
+      maxOutputTokens: 8192,
     },
   ]);
   write.release();
