@@ -143,7 +143,9 @@ jobs:
           cargo build --release --workspace --locked
       - name: Assemble full extension bundle and ACP bridge
         run: |
-          cargo run --release --locked -p rpi-package-install -- pack --all
+          # Use the curated catalog so archived host-owned packages are not
+          # copied into future extension bundles.
+          cargo run --release --locked -p rpi-package-install -- pack
           cargo run --release --locked -p rpi-package-install -- pack-acp
       - name: Package individual extensions and record checksums and SDK ABI
         env:

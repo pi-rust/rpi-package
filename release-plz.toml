@@ -16,3 +16,15 @@ publish = false
 name = "rpi-web"
 # Release builds generate the ignored assets/ bundle before cargo publish.
 publish_allow_dirty = true
+
+# Durable workflow state is now a native-host capability. Keep the archived
+# crates in the workspace for source/tests, but never version or publish them.
+[[package]]
+name = "rpi-durable"
+release = false
+publish = false
+
+[[package]]
+name = "rpi-durable-core"
+release = false
+publish = false

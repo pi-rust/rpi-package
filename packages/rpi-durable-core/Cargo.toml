@@ -1,6 +1,8 @@
 [package]
 name = "rpi-durable-core"
 version = "0.2.0"
+publish = false
+# Archived: durable workflow support is now provided by the native host.
 edition = "2021"
 rust-version = "1.78"
 license = "MIT"
