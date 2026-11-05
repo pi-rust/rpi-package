@@ -14,8 +14,9 @@ fn ready() -> Value {
         "maxCount":32,"maxPhaseCandidates":128,"maxResponseBytes":131072,"responseBytesScope":"pageBytes",
         "maxBodyDecodedBytes":65536,"summaryState":"unknown","recovery":"readOnly"},
         "toolProgramChildEvents":events::profile(),
+        "toolProgramBranch":{"version":1,"command":"get_tool_program_branch","identity":"bindingAndLaneGeneration"},
         "supportedEvents":["tool_program_child_begin","tool_program_child_phase","tool_program_child_resync_required"],
-        "supportedCommands":["get_tool_program_children","get_tool_program_child_phases","get_tool_program_child_body"]})
+        "supportedCommands":["get_tool_program_branch","get_tool_program_children","get_tool_program_child_phases","get_tool_program_child_body"]})
 }
 fn request() -> ChildSnapshotQuery {
     ChildSnapshotQuery {
@@ -62,6 +63,8 @@ fn begin(id: &str, seq: u64) -> Value {
 // The projected event and authoritative query oracle share genuine metadata,
 // but tests can silently navigate the native branch without publishing an event.
 struct BranchOracle {
+    generation: u64,
+    binding_id: String,
     leaf: String,
     head: Value,
     others: Vec<Value>,
@@ -194,6 +197,8 @@ impl BareFixture {
             vec![phase(1, "prepared"), phase(0, "requested")]
         };
         let oracle = Arc::new(std::sync::Mutex::new(BranchOracle {
+            generation: 0,
+            binding_id: "44444444-4444-4444-8444-444444444444".into(),
             leaf: "leaf".into(),
             head: summary(CHILD, 10),
             others: if two_children {
@@ -241,6 +246,11 @@ impl BareFixture {
                     continue;
                 }
                 let data = match q["type"].as_str().unwrap() {
+                    "get_tool_program_branch" => {
+                        let oracle = sender.oracle.lock().unwrap();
+                        json!({"sessionId":"session","lane":"main","bindingId":oracle.binding_id,
+                            "generation":oracle.generation,"leafId":oracle.leaf})
+                    }
                     "get_tool_program_children" => {
                         let oracle = sender.oracle.lock().unwrap();
                         // Explicit leaves remain pinned for the original snapshot.
@@ -700,7 +710,11 @@ async fn envelope_contradiction_is_not_hidden_by_phase_deduplication() {
 }
 #[tokio::test]
 async fn independent_capability_validation_precedes_queries() {
-    for profile in ["toolProgramChildren", "toolProgramChildEvents"] {
+    for profile in [
+        "toolProgramChildren",
+        "toolProgramChildEvents",
+        "toolProgramBranch",
+    ] {
         let mut r = ready();
         r.as_object_mut().unwrap().remove(profile);
         let f = Fixture::new(16, vec![], false, false, false, r).await;
@@ -791,7 +805,11 @@ async fn bare_host_subscription_actual_shutdown_and_error_keep_typed_causes() {
 }
 #[tokio::test]
 async fn bare_host_subscription_profile_preflight_and_closed_attachment() {
-    for missing in ["toolProgramChildren", "toolProgramChildEvents"] {
+    for missing in [
+        "toolProgramChildren",
+        "toolProgramChildEvents",
+        "toolProgramBranch",
+    ] {
         let mut profile = ready();
         profile["sessionId"] = json!("session");
         profile.as_object_mut().unwrap().remove(missing);
@@ -876,7 +894,7 @@ async fn silent_fork_after_begin_missing_old_phase_never_forwards_valid_new_phas
         let before = f.publish.read_count();
         f.publish.send_projected(event(&phase(2, "final"))).await;
         reason(&mut s, ChildResyncReason::BranchChanged).await;
-        assert_eq!(f.publish.read_count() - before, 2);
+        assert_eq!(f.publish.read_count() - before, 3);
         assert_eq!(s.cursor, s.snapshot.last_seq);
         assert_eq!(
             snapshot::observe(CHILD, &s.working[CHILD]).outcome,
@@ -931,11 +949,14 @@ async fn fresh_leaf_with_all_facts_and_same_leaf_exact_duplicates_are_valid() {
         let before = f.publish.read_count();
         f.publish.send_projected(event(&phase(2, "final"))).await;
         update(&mut s, expected).await;
-        assert_eq!(f.publish.read_count() - before, 3);
+        assert_eq!(f.publish.read_count() - before, 5);
     }
     {
         let oracle = f.publish.oracle.lock().unwrap();
-        for q in &oracle.reads[3..] {
+        for q in &oracle.reads[5..] {
+            if q["type"] == "get_tool_program_branch" {
+                continue;
+            }
             assert_eq!(q["maxBytes"], 32768);
             assert_eq!(q["direction"], "newestFirst");
             assert!(q["cursor"].is_null());
@@ -957,7 +978,7 @@ async fn branch_changes_between_proof_reads_are_terminal_even_with_all_facts() {
     for change_head in [false, true] {
         let f = Fixture::plain().await;
         let mut s = f.subscribe().await;
-        hold_proof_read(&f, 2); // first fresh head already read; phase scan pending
+        hold_proof_read(&f, 3); // identity and first head read; phase scan pending
         f.publish.send_projected(event(&phase(2, "final"))).await;
         {
             let next = s.next();
@@ -971,7 +992,8 @@ async fn branch_changes_between_proof_reads_are_terminal_even_with_all_facts() {
                 if change_head {
                     oracle.head = summary(OTHER, 20);
                 } else {
-                    oracle.leaf = "concurrent-append-or-navigation".into();
+                    oracle.leaf = "navigation".into();
+                    oracle.generation += 1;
                 }
             }
             f.release.notify_one();
@@ -987,6 +1009,105 @@ async fn branch_changes_between_proof_reads_are_terminal_even_with_all_facts() {
         assert_eq!(s.cursor, s.snapshot.last_seq);
         f.close().await;
     }
+}
+
+#[tokio::test]
+async fn concurrent_append_during_proof_is_accepted_without_weakening_fact_checks() {
+    let f = Fixture::plain().await;
+    let mut s = f.subscribe().await;
+    hold_proof_read(&f, 3); // phase scan, after first head
+    f.publish.send_projected(event(&phase(2, "final"))).await;
+    {
+        let next = s.next();
+        tokio::pin!(next);
+        tokio::select! {
+            _ = f.phase_seen.notified() => {},
+            item = &mut next => panic!("delivered before proof: {item:?}"),
+        }
+        f.publish.oracle.lock().unwrap().leaf = "ordinary-append".into();
+        f.release.notify_one();
+        assert!(matches!(
+            next.await,
+            Some(ChildStreamItem::Update {
+                disposition: ReplayDisposition::Applied,
+                ..
+            })
+        ));
+    }
+    f.close().await;
+}
+
+#[tokio::test]
+async fn same_leaf_navigation_aba_or_binding_replacement_cannot_reuse_snapshot() {
+    for rebind in [false, true] {
+        let f = Fixture::plain().await;
+        let mut s = f.subscribe().await;
+        {
+            let mut oracle = f.publish.oracle.lock().unwrap();
+            if rebind {
+                oracle.binding_id = uuid::Uuid::new_v4().to_string();
+            } else {
+                oracle.generation += 2;
+            } // navigation away and back, exact same leaf/facts
+        }
+        f.publish.send_projected(event(&phase(2, "final"))).await;
+        let before = f.publish.read_count();
+        reason(&mut s, ChildResyncReason::BranchChanged).await;
+        assert_eq!(f.publish.read_count() - before, 1);
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+async fn navigation_during_snapshot_is_explicitly_uncertain() {
+    let f = Fixture::new(1024, vec![], true, false, false, ready()).await;
+    let state = f.service.clone();
+    let attach =
+        tokio::spawn(async move { child_subscription(&state, "session".into(), request()).await });
+    f.phase_seen.notified().await;
+    f.publish.oracle.lock().unwrap().generation += 2;
+    f.release.notify_one();
+    let mut s = attach.await.unwrap().unwrap();
+    assert!(s.snapshot().resync_required);
+    reason(&mut s, ChildResyncReason::BranchChanged).await;
+    f.close().await;
+}
+
+#[tokio::test]
+async fn old_host_keeps_read_only_snapshot_but_cannot_open_live_feed() {
+    let mut profile = ready();
+    profile.as_object_mut().unwrap().remove("toolProgramBranch");
+    let f = Fixture::new(16, vec![], false, false, false, profile).await;
+    assert!(matches!(
+        child_subscription(&f.service, "session".into(), request()).await,
+        Err((ReplyKind::Unsupported, _))
+    ));
+    assert_eq!(f.publish.read_count(), 0);
+    assert!(snapshot::child_snapshot_for_host(f.host.clone(), request())
+        .await
+        .is_ok());
+    assert!(f
+        .publish
+        .oracle
+        .lock()
+        .unwrap()
+        .reads
+        .iter()
+        .all(|q| q["type"] != "get_tool_program_branch"));
+    f.close().await;
+}
+
+#[tokio::test]
+async fn malformed_branch_binding_fails_closed_without_leaking_value() {
+    let f = Fixture::plain().await;
+    f.publish.oracle.lock().unwrap().binding_id = "SECRET-private-path".into();
+    let result = child_subscription(&f.service, "session".into(), request()).await;
+    let Err((kind, body)) = result else {
+        panic!("invalid identity accepted")
+    };
+    assert_eq!(kind, ReplyKind::HostUnavailable);
+    assert!(!body.to_string().contains("SECRET"));
+    f.close().await;
 }
 
 #[tokio::test]
@@ -1017,7 +1138,7 @@ async fn cancelling_pending_proof_retains_frame_and_all_working_state() {
     let reads = f.publish.read_count();
     f.release.notify_one();
     update(&mut s, ReplayDisposition::Applied).await;
-    assert_eq!(f.publish.read_count() - reads, 3); // redo BOTH heads + phases
+    assert_eq!(f.publish.read_count() - reads, 5); // redo identity brackets, BOTH heads + phases
     assert!(s.pending.is_none());
     f.close().await;
 }
@@ -1080,7 +1201,7 @@ async fn missing_incoming_fact_sparse_or_exhausted_scan_is_not_proof() {
         }
         let before = f.publish.read_count();
         reason(&mut s, ChildResyncReason::BranchChanged).await;
-        assert_eq!(f.publish.read_count() - before, 2); // NEVER follow continuation
+        assert_eq!(f.publish.read_count() - before, 3); // NEVER follow continuation
         f.close().await;
     }
 }
@@ -1135,7 +1256,7 @@ async fn idle_invalid_and_outside_window_events_do_not_issue_proof_reads() {
 }
 
 #[tokio::test]
-async fn eight_selected_children_require_at_most_ten_bounded_read_rpcs() {
+async fn eight_selected_children_require_at_most_twelve_bounded_read_rpcs() {
     let f = Fixture::plain().await;
     {
         let mut oracle = f.publish.oracle.lock().unwrap();
@@ -1149,21 +1270,20 @@ async fn eight_selected_children_require_at_most_ten_bounded_read_rpcs() {
     let before = f.publish.read_count();
     f.publish.send_projected(event(&phase(2, "final"))).await;
     update(&mut s, ReplayDisposition::Applied).await;
-    assert_eq!(f.publish.read_count() - before, 10);
+    assert_eq!(f.publish.read_count() - before, 12);
     {
         let oracle = f.publish.oracle.lock().unwrap();
         let reads = &oracle.reads[before..];
-        assert_eq!(reads.first().unwrap()["type"], "get_tool_program_children");
-        assert_eq!(reads.last().unwrap()["type"], "get_tool_program_children");
+        assert_eq!(reads.first().unwrap()["type"], "get_tool_program_branch");
+        assert_eq!(reads.last().unwrap()["type"], "get_tool_program_branch");
         for child_id in s.working.keys() {
             assert_eq!(
                 reads.iter().filter(|q| q["childId"] == *child_id).count(),
                 1
             );
         }
-        assert!(reads
-            .iter()
-            .all(|q| q["maxBytes"] == 32768 && q["cursor"].is_null()));
+        assert!(reads.iter().all(|q| q["type"] == "get_tool_program_branch"
+            || (q["maxBytes"] == 32768 && q["cursor"].is_null())));
     }
     f.close().await;
 }

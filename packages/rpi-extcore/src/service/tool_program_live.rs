@@ -1,7 +1,7 @@
 //! Caller-owned bounded ongoing child metadata; no worker, refresh or execution.
 use super::{
-    tool_program_access::ChildAccess, tool_program_events as events, tool_program_queries as query,
-    tool_program_snapshot as snapshot, Service,
+    tool_program_access::ChildAccess, tool_program_branch as branch, tool_program_events as events,
+    tool_program_queries as query, tool_program_snapshot as snapshot, Service,
 };
 use crate::{
     host::{BufferedEvent, HostSession},
@@ -66,6 +66,7 @@ pub struct ChildSubscription {
     access: ChildAccess,
     context: ChildEventContext,
     ready: Value,
+    branch: branch::BranchIdentity,
     snapshot: ChildSnapshot,
     receiver: Option<broadcast::Receiver<BufferedEvent>>,
     pending: Option<BufferedEvent>,
@@ -79,8 +80,9 @@ pub struct ChildSubscription {
     envelopes: VecDeque<(String, Value)>,
 }
 
-/// Subscribe BEFORE invoking the existing bounded snapshot. Both capabilities
-/// and the exact host Arc are checked independently at attachment and completion.
+/// Subscribe BEFORE invoking the existing bounded snapshot. All capabilities,
+/// branch identity and exact host Arc are checked independently at attachment
+/// and completion.
 pub async fn child_subscription(
     state: &Service,
     id: String,
@@ -103,16 +105,30 @@ async fn subscription_for_access(
     access: ChildAccess,
     request: ChildSnapshotQuery,
 ) -> ServiceResult<ChildSubscription> {
+    tokio::time::timeout(Duration::from_secs(30), subscription_inner(access, request))
+        .await
+        .map_err(|_| failure(ReplyKind::Timeout, "native child subscription timed out"))?
+}
+
+async fn subscription_inner(
+    access: ChildAccess,
+    request: ChildSnapshotQuery,
+) -> ServiceResult<ChildSubscription> {
+    snapshot::validate_request(&access.id, &request)?;
     let host = &access.host;
-    if !query::supported(host) || !events::supported(host) {
+    if !query::supported(host) || !events::supported(host) || !branch::supported(host) {
         return Err(failure(
             ReplyKind::Unsupported,
-            "native host does not advertise child snapshot queries and events",
+            "native host does not advertise live child queries, events and branch identity",
         ));
     }
     access.check_read().await?;
     let receiver = host.subscribe();
-    let initial = snapshot::snapshot_for_access(&access, request).await?;
+    let branch = branch::read(&access).await?;
+    let mut initial = snapshot::snapshot_for_access(&access, request).await?;
+    let after = branch::read(&access).await?;
+    let branch_changed = !branch.same_branch(&after);
+    initial.resync_required |= branch_changed;
     access.check_read().await?;
     let mut subscription = ChildSubscription {
         ready: host.ready(),
@@ -121,10 +137,15 @@ async fn subscription_for_access(
             lane: initial.lane.clone(),
         },
         access,
+        branch,
         cursor: initial.last_seq,
-        initial_resync: initial
-            .resync_required
-            .then_some(ChildResyncReason::SnapshotUncertain),
+        initial_resync: if branch_changed {
+            Some(ChildResyncReason::BranchChanged)
+        } else {
+            initial
+                .resync_required
+                .then_some(ChildResyncReason::SnapshotUncertain)
+        },
         snapshot: initial,
         receiver: Some(receiver),
         pending: None,
@@ -383,16 +404,19 @@ impl ChildSubscription {
         }
     }
 
-    /// Frozen v1 has no generation token or reliable navigation event. Prove
-    /// every retained fact (including terminal facts) and the incoming phase on
-    /// one fresh authoritative branch before EACH delivery, even duplicates.
-    /// At most 8 summary children + 8 phase pages + 2 summary heads, 32 KiB/page,
-    /// one page at a time; native scans at most 128 candidates/page and verifies
-    /// every selected begin ancestry. Missing facts, even in an exhausted/sparse
-    /// scan, require explicit resync; no continuation or history fallback. The
-    /// final fresh head/leaf must be EXACTLY stable: ordinary concurrent appends
-    /// may conservatively resync.
+    /// Re-prove every retained fact and incoming phase on one pinned native
+    /// leaf. The additive native binding/lane generation brackets all reads and
+    /// must still match attachment, including ABA navigation. Ordinary appends
+    /// may advance the final head, but never relax fact equality or ancestry.
+    /// At most two identity reads (2 KiB each), two summary heads and eight
+    /// phase pages (32 KiB each); no continuation or history fallback.
     async fn branch_proof(&self, event: &ChildEvent) -> Result<(), ChildResyncReason> {
+        let before = branch::read(&self.access)
+            .await
+            .map_err(|(kind, _)| Self::proof_error(kind))?;
+        if !self.branch.same_branch(&before) {
+            return Err(ChildResyncReason::BranchChanged);
+        }
         let mut head = self.fresh_head().await?;
         let original = &self.snapshot.page.children;
         if original.is_empty() {
@@ -432,7 +456,13 @@ impl ChildSubscription {
         }
         let mut check = self.fresh_head().await?;
         Self::prove_children(&mut check, original)?;
-        if check.leaf_id != head.leaf_id || check.children != head.children {
+        if check.children != head.children {
+            return Err(ChildResyncReason::BranchChanged);
+        }
+        let after = branch::read(&self.access)
+            .await
+            .map_err(|(kind, _)| Self::proof_error(kind))?;
+        if !self.branch.same_branch(&after) {
             return Err(ChildResyncReason::BranchChanged);
         }
         Ok(())

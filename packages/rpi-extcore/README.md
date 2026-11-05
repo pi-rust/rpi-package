@@ -746,7 +746,11 @@ production restart or deployment is performed.
 `service::child_subscription(&Service, id: String, ChildSnapshotQuery)` returns
 `ServiceResult<service::tool_program_live::ChildSubscription>`. The receiver is
 created before invoking the existing bounded `child_snapshot`, with independent
-query/event capability gates and the same host Arc checked at both boundaries.
+query/event/branch-identity capability gates and the same host Arc checked at both boundaries.
+The additive native `toolProgramBranch` profile must be exactly
+`{"version":1,"command":"get_tool_program_branch","identity":"bindingAndLaneGeneration"}`,
+with that command advertised. Older hosts retain existing read-only pages and
+snapshots but cannot open this live feed; there is no optimistic legacy fallback.
 `subscription.snapshot() -> &ChildSnapshot` is the immutable initial result;
 `subscription.next().await -> Option<ChildStreamItem>` follows its `lastSeq`.
 Pinned native pages, cursors, fork provenance and public initial observations
@@ -782,18 +786,25 @@ cannot join the old feed; checks occur before and after receive. As with any
 lock-free delivery boundary, later replacement cannot retract an already returned
 item. Callers explicitly request a new subscription/snapshot after resync.
 Before each child delivery (including duplicates), bounded fresh summary/phase
-reads prove retained facts and the incoming frame against one current branch;
-a second summary confirms that head did not change during proof. Inconclusive,
-evicted or conflicting facts terminate with explicit resync, not a hidden scan
-or optimistic old-branch update. One proof is bounded by 30 seconds. Dropping a
-pending `next()` preserves its frame for a subsequent call.
+reads prove retained facts and the incoming frame against one pinned current
+leaf. Native identity reads bracket attachment and every live proof: destination
+session/main lane, UUIDv4 live binding ID and explicit lane-mutation generation
+must still match attachment. Ordinary append may advance the final head without
+changing generation. Navigation (including away/back to the same leaf), fork or
+binding replacement cannot reuse that proof. Retained begin/phase equality,
+incoming phase membership and the second bounded summary check remain required.
+Inconclusive, evicted or conflicting facts terminate with explicit resync, not a
+hidden scan or optimistic old-branch update. Each proof uses at most 12 RPCs:
+two identity reads (2 KiB each), two summary heads and eight phase pages
+(32 KiB each), without following continuations. Both attachment and each proof
+have one 30-second budget. Dropping a pending `next()` preserves its frame.
 
 Host-bound APIs use core-owned launch identity, not an invented `ready.sessionId`
 field. A native `--fork` chooses its own destination ID: core finalizes that
 owner's destination exactly once from the existing validated `get_state`
 readback before publishing it. Unfinalized forks fail closed; ordinary owners
-cannot be rebound. No additional per-read identity RPC or transcript store is
-introduced.
+cannot be rebound. Live branch identity is an additional bounded native query,
+not a replacement launch-owner identity, transcript store or authority token.
 
 All ongoing state is caller-owned and finite: at most eight selected children,
 eight working phases per child, 128 recent canonical identities and 128 recent
@@ -809,5 +820,12 @@ cancels the shared host. `next()` is cancellation safe even after receive while
 checking host identity. There is no detached task, poll watcher, child or parent
 execution, worker, persistent store, transcript fallback or body read. Fixtures
 use actual `TestEvents.send_projected` publication, including over 128 ongoing
-updates; they do not qualify real-native ongoing acceptance or HTTP/ACP/UI
-integration. No runtime deployment is implied.
+updates; fixtures alone do not qualify native execution. The separate Windows
+ACP proof `packages/rpi-acp/tests/tool_program_live_native.py` uses a real Code
+Mode DLL and real bash child with a file gate released only after subscription
+ACK. Local evidence in `target/branch-live-native-5/` and final-source repeat
+`target/branch-live-native-6/` each records three post-ACK normal updates
+(update/final/closed), exact native entry reconciliation and exited
+retained process handles. This qualifies that isolated Windows path only, not
+all lifecycle/fork cases on real native, HTTP live delivery, UI/HMR, Unix,
+external providers, installed extensions or full parity. No deployment is implied.

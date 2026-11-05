@@ -417,7 +417,11 @@ is emitted. Every later notification has `{sessionId, subscriptionId, update}`;
 Lag, branch/generation changes, host replacement/closure, invalid native events,
 or native resync end the subscription with an explicit resync reason. The client
 must issue a fresh bounded subscription after resynchronizing; the adapter never
-fabricates a child event or silently resumes from an uncertain cursor.
+fabricates a child event or silently resumes from an uncertain cursor. Core
+additionally requires native `toolProgramBranch` v1 (`get_tool_program_branch`,
+`bindingAndLaneGeneration`). Ordinary append keeps the generation; navigation/ABA
+and live binding replacement do not. Hosts lacking this exact profile still
+support their existing read-only pages/snapshot but cannot subscribe.
 
 Subscriptions belong to one ACP connection and are capped at 16. Duplicate
 subscription IDs, wrong-session unsubscribe requests, malformed envelopes and
@@ -466,7 +470,37 @@ explicit prebuild source inventories and bridge/native/launcher SHA-256s. Curren
 read-only recovery evidence covers 26 sessions / 70 children / 38 selected
 children, first body chunk only for each selected child, and zero execution
 frames; it is not full-body aggregate integrity or live-notification proof.
-Primary and progress files remain unchanged. Process ownership is restricted to
+The separate opt-in Windows `tests/tool_program_live_native.py --help` proves
+one real post-ACK live path with explicit test bridge/native/launcher/Code Mode
+binaries and prebuild provenance. Its loopback synthetic model calls the real
+DLL, which runs a real bash child. A file gate holds the child until a successful
+subscribe ACK; notifications must be ordinary `update` (never resync), include
+final/closed, reconcile ID/seq/parent/data to native entries, and end in succeeded.
+The proof normalizes only the five known optional phase DTO fields from absent
+to null, not descriptors or identity values. Retained exact process handles
+verify child exit and bridge/launcher/native cleanup without recursive PID kills.
+Local `target/branch-live-native-5/` and final-source repeat
+`target/branch-live-native-6/` each passed with three matched post-ACK updates;
+failed attempts 1–4 are not passing evidence. This does not qualify full parity,
+all native cancellation/fork cases, HTTP live, UI/HMR, Unix or external providers.
+
+Example (all binaries must already be built; this command does not build/install):
+
+```text
+python packages/rpi-acp/tests/tool_program_live_native.py --bridge <absolute bridge.exe> --native <absolute rpi.exe> --launcher <absolute tool_program_live_launcher.exe> --codemode <absolute rpi_codemode.dll> --build-evidence <provenance.json> --out <new evidence directory>
+```
+
+Build the test-only launcher from `examples/tool_program_live_launcher.rs`.
+The provenance JSON supplies `sources: [{path, sha256}]` inventoried before build
+and `binaries: {bridge,native,launcher,codemode: {path,sha256}}` captured after
+successful builds; retain build logs, repository heads/diffs and inventory/build
+timestamps alongside it. The harness verifies every listed source and binary
+hash before starting, then retains the provenance, native/ACP wire, transcripts,
+ACK receive boundary, provider calls, cleanup and results. These are local build
+attestations, not cryptographic build reproducibility or automatic CI proof.
+
+For the recovered-read proof above, primary and progress files remain unchanged.
+Its process ownership is restricted to
 the direct bridge, verified direct launcher and its explicit native PID, using
 retained kernel handles, creation times and image path/hash checks. Cleanup never
 recursively kills a PID tree; manual exact-handle cleanup makes a case fail.
