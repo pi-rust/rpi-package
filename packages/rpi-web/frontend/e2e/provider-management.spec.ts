@@ -102,6 +102,7 @@ class ProviderHost {
     "get_auth_status",
     "set_model",
     "set_api_key",
+    "set_provider_config",
   ];
   actions = ["projects", "provider_auth"];
   states: Record<string, Json> = {
@@ -138,10 +139,15 @@ class ProviderHost {
   }
   get writes() {
     return this.calls.filter((call) =>
-      ["set_model", "set_api_key"].includes(call.type),
+      ["set_model", "set_api_key", "set_provider_config"].includes(
+        call.type,
+      ),
     );
   }
-  permit(type: "set_model" | "set_api_key", session = A) {
+  permit(
+    type: "set_model" | "set_api_key" | "set_provider_config",
+    session = A,
+  ) {
     const key = `${session}:${type}`;
     this.permits.set(key, (this.permits.get(key) ?? 0) + 1);
   }
@@ -241,7 +247,10 @@ class ProviderHost {
       if (endpoint === "commands" && !reads.includes(type)) {
         const key = `${session}:${type}`;
         const permitted = this.permits.get(key) ?? 0;
-        if (!["set_model", "set_api_key"].includes(type) || permitted === 0)
+        if (
+          !["set_model", "set_api_key", "set_provider_config"].includes(type) ||
+          permitted === 0
+        )
           return this.reject(route, `unpermitted mutation ${session}:${type}`);
         this.permits.set(key, permitted - 1);
       }
@@ -310,6 +319,12 @@ class ProviderHost {
             set_api_key: {
               provider: body.provider,
               ready: true,
+              requiresRestart: true,
+            },
+            set_provider_config: {
+              provider: body.provider,
+              modelId: body.modelId,
+              api: body.api,
               requiresRestart: true,
             },
           };
@@ -545,7 +560,7 @@ test("empty catalogs explain the empty state and Add connection opens a blank dr
   );
   await expect(modal.getByLabel("API Key", { exact: true })).toHaveValue("");
   await expect(
-    modal.getByRole("button", { name: "Save API Key", exact: true }),
+    modal.getByRole("button", { name: "Save provider", exact: true }),
   ).toBeDisabled();
   expect(host.writes).toEqual([]);
 });
@@ -615,6 +630,57 @@ test("same-name model selection sends the exact provider/id and then reads autho
   expect(order.lastIndexOf("get_state")).toBeGreaterThan(
     order.indexOf("set_model"),
   );
+});
+
+test("adding a provider collects protocol and model and submits the full configuration", async ({
+  page,
+  host,
+}) => {
+  await start(page);
+  await openManager(page);
+  await manager(page)
+    .getByRole("button", { name: "Add connection", exact: true })
+    .click();
+  const modal = dialog(page);
+  await modal.getByLabel("Provider ID", { exact: true }).fill("gateway");
+  await modal.getByLabel("Protocol", { exact: true }).selectOption(
+    "openai-responses",
+  );
+  await modal
+    .getByLabel("Base URL", { exact: true })
+    .fill("https://api.example.test/v1");
+  await modal.getByLabel("Model ID", { exact: true }).fill("model-a");
+  await modal.getByLabel("Model name (optional)", { exact: true }).fill("Model A");
+  await modal.getByLabel("API Key", { exact: true }).fill("fixture-provider-key");
+  host.permit("set_provider_config");
+  const write = host.hold("set_provider_config", {
+    json: envelope("set_provider_config", {
+      provider: "gateway",
+      modelId: "model-a",
+      api: "openai-responses",
+      requiresRestart: true,
+    }),
+  });
+  await modal
+    .getByRole("button", { name: "Save provider", exact: true })
+    .click();
+  await write.arrived;
+  expect(host.writes.map((call) => call.body)).toEqual([
+    {
+      type: "set_provider_config",
+      provider: "gateway",
+      api: "openai-responses",
+      baseUrl: "https://api.example.test/v1",
+      apiKey: "fixture-provider-key",
+      modelId: "model-a",
+      modelName: "Model A",
+    },
+  ]);
+  write.release();
+  await write.finished;
+  await expect(modal).toContainText("models.json");
+  await expect(modal.getByLabel("API Key", { exact: true })).toHaveValue("");
+  await noSecretEcho(page, "fixture-provider-key");
 });
 
 test("API key is password-only, saved only on explicit click, cleared, and restart is explained without echo", async ({

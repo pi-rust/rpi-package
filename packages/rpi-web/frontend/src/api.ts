@@ -744,6 +744,24 @@ export const api = {
       { provider, apiKey },
       signal,
     ),
+  setProviderConfig: (
+    id: string,
+    input: {
+      provider: string;
+      api: string;
+      baseUrl: string;
+      apiKey: string;
+      modelId: string;
+      modelName?: string;
+    },
+    signal?: AbortSignal,
+  ) =>
+    commandData<{
+      provider: string;
+      modelId: string;
+      api: string;
+      requiresRestart: boolean;
+    }>(id, "set_provider_config", input, signal),
 
   queue: (id: string, includeCompleted = false, signal?: AbortSignal) =>
     commandData<{ items: QueueItem[]; count: number }>(id, "get_queue", {

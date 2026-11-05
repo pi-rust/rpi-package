@@ -174,7 +174,8 @@
   margin: 0;
 }
 
-.provider-manager-dialog input {
+.provider-manager-dialog input,
+.provider-manager-dialog select {
   width: 100%;
   min-width: 0;
   min-height: 44px;

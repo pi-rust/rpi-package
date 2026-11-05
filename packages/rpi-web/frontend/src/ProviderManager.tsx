@@ -34,8 +34,15 @@ const copy = {
     settings: "Connection settings",
     settingsLabel: "Connection settings: ",
     provider: "Provider ID",
+    protocol: "Protocol",
+    openaiCompletions: "OpenAI-compatible Chat Completions",
+    openaiResponses: "OpenAI Responses",
+    anthropicMessages: "Anthropic Messages",
     key: "API Key",
-    base: "Custom Base URL · local draft",
+    base: "Base URL",
+    baseDraft: "Custom Base URL · local draft",
+    modelId: "Model ID",
+    modelName: "Model name (optional)",
     draftNote:
       "Base URL changes and provider deletion are not supported by the node. This URL is a page-local draft only; it is never sent or persisted.",
     keyNote:
@@ -43,15 +50,20 @@ const copy = {
     cancelNote:
       "Closing or editing stops waiting for the request; it does not undo a change the node may already have accepted.",
     save: "Save API Key",
-    saving: "Saving API Key…",
+    addProvider: "Save provider",
+    saving: "Saving…",
     clear: "Clear local draft",
     cleared: "Local draft cleared.",
     close: "Close",
     help: "Usage notes",
     saved:
       "The node saved the API Key. Refresh providers to read credential metadata.",
+    providerSaved:
+      "Provider and model saved to models.json. Restart the runtime, then refresh providers.",
     saveError:
       "API Key submission failed. Check the node connection and permissions, then enter the key again.",
+    providerSaveError:
+      "Provider configuration failed. Check the node connection and configuration values, then try again.",
     restart:
       "The node requires a runtime restart for this change. Restart on the node, then refresh; this page will not restart it automatically.",
     modelSaved: "Model selection submitted and runtime state read back.",
@@ -67,6 +79,8 @@ const copy = {
       "Credential metadata is unavailable on this node. Models can still be viewed; credentials must be managed on the node when API Key configuration is unavailable.",
     keyUnsupported:
       "This node does not support API Key configuration here. Configure credentials on the node.",
+    providerUnsupported:
+      "This node does not support adding provider configurations. Configure models.json on the node.",
     modelUnsupported:
       "Model selection requires both set_model and get_state support on this node.",
     stateUnsupported: "This node does not support reading runtime state.",
@@ -95,21 +109,32 @@ const copy = {
     settings: "连接设置",
     settingsLabel: "连接设置：",
     provider: "Provider 标识",
+    protocol: "协议",
+    openaiCompletions: "OpenAI 兼容 Chat Completions",
+    openaiResponses: "OpenAI Responses",
+    anthropicMessages: "Anthropic Messages",
     key: "API Key",
-    base: "自定义 Base URL · 本地草稿",
+    base: "Base URL",
+    baseDraft: "自定义 Base URL · 本地草稿",
+    modelId: "模型 ID",
+    modelName: "模型名称（可选）",
     draftNote:
       "节点暂不支持修改 Base URL 或删除供应商。此地址仅为当前页面草稿，不会发送或持久化。",
     keyNote:
       "仅提交你主动输入的 API Key；提交时清空密钥，即使保存失败也不保留。保存密钥不代表已添加发现的供应商或通过远端验证。",
     cancelNote: "关闭或编辑只会停止等待请求，不能撤销节点可能已接受的更改。",
     save: "保存 API Key",
-    saving: "正在保存 API Key…",
+    addProvider: "保存服务商",
+    saving: "正在保存…",
     clear: "清除本地草稿",
     cleared: "已清除本地草稿。",
     close: "关闭",
     help: "使用说明",
     saved: "节点已保存 API Key。请刷新供应商以读取凭据元数据。",
+    providerSaved: "服务商和模型已写入 models.json。请重启运行时后刷新供应商。",
     saveError: "API Key 提交失败，请检查节点连接与配置权限后重新输入。",
+    providerSaveError:
+      "服务商配置失败，请检查节点连接和配置内容后重试。",
     restart:
       "节点要求重启运行时后生效。请在节点端重启，然后刷新检测；此页面不会自动重启。",
     modelSaved: "模型选择已提交并回读运行状态。",
@@ -122,6 +147,8 @@ const copy = {
     authUnsupported:
       "当前节点无法读取凭据元数据，仍可查看模型；若不支持 API Key 配置，请在节点端管理凭据。",
     keyUnsupported: "当前节点未提供 API Key 配置能力，请在节点端配置凭据。",
+    providerUnsupported:
+      "当前节点未提供添加服务商配置的能力，请在节点端配置 models.json。",
     modelUnsupported: "模型切换要求当前节点同时支持 set_model 和 get_state。",
     stateUnsupported: "当前节点未提供读取运行状态能力。",
     reasoning: "推理",
@@ -181,6 +208,7 @@ export function ProviderManager({
   const [modelNotice, setModelNotice] = useState<Message | null>(null);
   const [modelRestart, setModelRestart] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+  const [configIsNew, setConfigIsNew] = useState(false);
   const configOpenRef = useRef(false);
   const dialogBody = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -221,8 +249,12 @@ export function ProviderManager({
     };
   }, [configOpen]);
   const [provider, setProvider] = useState("");
+  const [protocol, setProtocol] = useState("openai-completions");
   const [secret, setSecret] = useState("");
   const [baseDrafts, setBaseDrafts] = useState(() => new Map<string, string>());
+  const [baseUrl, setBaseUrl] = useState("");
+  const [modelId, setModelId] = useState("");
+  const [modelName, setModelName] = useState("");
   const [savePending, setSavePending] = useState(false);
   const [saveError, setSaveError] = useState<Message | null>(null);
   const [saveNotice, setSaveNotice] = useState<Message | null>(null);
@@ -231,6 +263,7 @@ export function ProviderManager({
   const canReadState = supported.has("get_state");
   const canReadAuth = canAuth && supported.has("get_auth_status");
   const canSave = canAuth && supported.has("set_api_key");
+  const canAddProvider = canAuth && supported.has("set_provider_config");
   const canSelect = supported.has("set_model") && canReadState;
 
   const owns = (owner: Owner) =>
@@ -310,11 +343,15 @@ export function ProviderManager({
     setModelError(null);
     setModelNotice(null);
     setModelRestart(false);
+    setBaseDrafts(new Map());
     configOpenRef.current = false;
     setConfigOpen(false);
     setProvider("");
+    setProtocol("openai-completions");
     setSecret("");
-    setBaseDrafts(new Map());
+    setBaseUrl("");
+    setModelId("");
+    setModelName("");
     setSavePending(false);
     setSaveError(null);
     setSaveNotice(null);
@@ -342,12 +379,19 @@ export function ProviderManager({
     const owner = ownerRef.current;
     if (!owner || !owns(owner) || loading || owner.modelController) return;
     invalidateDraft();
+    const isNew = !value.trim();
+    const firstModel = models.find((model) => model.provider === value);
     returnFocus.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    setConfigIsNew(isNew);
     setProvider(value);
+    setProtocol(firstModel?.api || "openai-completions");
     setSecret("");
+    setBaseUrl(isNew ? "" : baseDrafts.get(value) || "");
+    setModelId(isNew ? "" : firstModel?.id || "");
+    setModelName(isNew ? "" : firstModel?.name || "");
     configOpenRef.current = true;
     setConfigOpen(true);
   }
@@ -356,8 +400,13 @@ export function ProviderManager({
     invalidateDraft();
     configOpenRef.current = false;
     setConfigOpen(false);
+    setConfigIsNew(false);
     setSecret("");
     setProvider("");
+    setProtocol("openai-completions");
+    setBaseUrl("");
+    setModelId("");
+    setModelName("");
   }
 
   async function saveKey() {
@@ -403,6 +452,60 @@ export function ProviderManager({
       setSaveRestart(result.requiresRestart === true);
     } catch {
       // Never render server error text: it could echo credentials.
+      if (current()) setSaveError("saveError");
+    } finally {
+      owner.controllers.delete(controller);
+      if (owner.saveController === controller) owner.saveController = undefined;
+      if (current()) setSavePending(false);
+    }
+  }
+
+  async function saveProvider() {
+    const owner = ownerRef.current;
+    const values = {
+      provider: provider.trim(),
+      api: protocol,
+      baseUrl: baseUrl.trim(),
+      apiKey: secret,
+      modelId: modelId.trim(),
+      modelName: modelName.trim(),
+    };
+    setSecret("");
+    if (
+      !owner ||
+      !owns(owner) ||
+      !configOpenRef.current ||
+      !configIsNew ||
+      !canAddProvider ||
+      owner.saveController ||
+      !values.provider ||
+      !values.baseUrl ||
+      !values.apiKey.trim() ||
+      !values.modelId
+    )
+      return;
+    const revision = ++owner.draftRevision;
+    const controller = new AbortController();
+    owner.saveController = controller;
+    owner.controllers.add(controller);
+    const current = () =>
+      owns(owner) &&
+      !controller.signal.aborted &&
+      configOpenRef.current &&
+      configIsNew &&
+      owner.draftRevision === revision;
+    setSavePending(true);
+    setSaveError(null);
+    setSaveNotice(null);
+    setSaveRestart(false);
+    try {
+      await Promise.resolve();
+      if (!current()) return;
+      await api.setProviderConfig(owner.sessionId, values, controller.signal);
+      if (!current()) return;
+      setSaveNotice("providerSaved");
+      setSaveRestart(true);
+    } catch {
       if (current()) setSaveError("saveError");
     } finally {
       owner.controllers.delete(controller);
@@ -475,8 +578,6 @@ export function ProviderManager({
     ]),
   ].sort();
   const pending = loading || modelPending || savePending;
-  const baseDraft = baseDrafts.get(provider.trim()) ?? "";
-
   return (
     <section className="provider-manager" aria-label={t.title}>
       <header className="provider-manager-header">
@@ -582,6 +683,10 @@ export function ProviderManager({
                   <dd>{credential?.source || t.unknown}</dd>
                 </div>
                 <div>
+                  <dt>{t.protocol}</dt>
+                  <dd>{available[0]?.api || t.unknown}</dd>
+                </div>
+                <div>
                   <dt>{t.models}</dt>
                   <dd>{available.length}</dd>
                 </div>
@@ -661,6 +766,98 @@ export function ProviderManager({
                 setSecret("");
               }}
             />
+            {configIsNew && (
+              <>
+                <label htmlFor={`${id}-protocol`}>{t.protocol}</label>
+                <select
+                  id={`${id}-protocol`}
+                  value={protocol}
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setProtocol(event.target.value);
+                  }}
+                >
+                  <option value="openai-completions">
+                    {t.openaiCompletions}
+                  </option>
+                  <option value="openai-responses">{t.openaiResponses}</option>
+                  <option value="anthropic-messages">
+                    {t.anthropicMessages}
+                  </option>
+                </select>
+                <label htmlFor={`${id}-base`}>{t.base}</label>
+                <input
+                  id={`${id}-base`}
+                  type="url"
+                  required
+                  value={baseUrl}
+                  placeholder="https://api.example.com/v1"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setBaseUrl(event.target.value);
+                  }}
+                />
+                <label htmlFor={`${id}-model-id`}>{t.modelId}</label>
+                <input
+                  id={`${id}-model-id`}
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  required
+                  value={modelId}
+                  placeholder="my-model"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setModelId(event.target.value);
+                  }}
+                />
+                <label htmlFor={`${id}-model-name`}>{t.modelName}</label>
+                <input
+                  id={`${id}-model-name`}
+                  autoComplete="off"
+                  value={modelName}
+                  placeholder={modelId || "My Model"}
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setModelName(event.target.value);
+                  }}
+                />
+              </>
+            )}
+            {!configIsNew && (
+              <>
+                <label htmlFor={`${id}-base`}>{t.baseDraft}</label>
+                <input
+                  id={`${id}-base`}
+                  type="url"
+                  value={baseUrl}
+                  placeholder="https://api.example.com/v1"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    const value = event.target.value;
+                    setBaseUrl(value);
+                    setBaseDrafts((drafts) =>
+                      new Map(drafts).set(provider.trim(), value),
+                    );
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    invalidateDraft();
+                    setBaseUrl("");
+                    setBaseDrafts((drafts) => {
+                      const next = new Map(drafts);
+                      next.delete(provider.trim());
+                      return next;
+                    });
+                    setSaveNotice("cleared");
+                  }}
+                >
+                  {t.clear}
+                </button>
+              </>
+            )}
             <label htmlFor={`${id}-key`}>{t.key}</label>
             <input
               id={`${id}-key`}
@@ -674,53 +871,37 @@ export function ProviderManager({
             />
             <button
               type="button"
-              aria-label={t.save}
+              aria-label={configIsNew ? t.addProvider : t.save}
               disabled={
-                savePending || !canSave || !provider.trim() || !secret.trim()
+                savePending ||
+                (configIsNew
+                  ? !canAddProvider ||
+                    !provider.trim() ||
+                    !baseUrl.trim() ||
+                    !modelId.trim() ||
+                    !secret.trim()
+                  : !canSave || !provider.trim() || !secret.trim())
               }
-              onClick={() => void saveKey()}
+              onClick={() => void (configIsNew ? saveProvider() : saveKey())}
             >
-              {savePending ? t.saving : t.save}
+              {savePending ? t.saving : configIsNew ? t.addProvider : t.save}
             </button>
-            {!canSave && (
+            {configIsNew && !canAddProvider && (
+              <p className="provider-manager-note">{t.providerUnsupported}</p>
+            )}
+            {!configIsNew && !canSave && (
               <p className="provider-manager-note">{t.keyUnsupported}</p>
             )}
             {saveError && (
               <p className="provider-manager-error" role="alert">
-                {t[saveError]}
+                {t[configIsNew ? "providerSaveError" : saveError]}
               </p>
             )}
             {saveNotice && <p role="status">{t[saveNotice]}</p>}
             {saveRestart && <p role="status">{t.restart}</p>}
-            <label htmlFor={`${id}-base`}>{t.base}</label>
-            <input
-              id={`${id}-base`}
-              type="url"
-              value={baseDraft}
-              placeholder="https://api.example.com"
-              onChange={(event) => {
-                invalidateDraft();
-                setBaseDrafts((drafts) =>
-                  new Map(drafts).set(provider.trim(), event.target.value),
-                );
-              }}
-            />
-            <p className="provider-manager-note">{t.draftNote}</p>
-            <button
-              type="button"
-              onClick={() => {
-                invalidateDraft();
-                setSecret("");
-                setBaseDrafts((drafts) => {
-                  const next = new Map(drafts);
-                  next.delete(provider.trim());
-                  return next;
-                });
-                setSaveNotice("cleared");
-              }}
-            >
-              {t.clear}
-            </button>
+            {!configIsNew && (
+              <p className="provider-manager-note">{t.draftNote}</p>
+            )}
             <details className="provider-manager-help">
               <summary>{t.help}</summary>
               <p className="provider-manager-note">{t.keyNote}</p>
