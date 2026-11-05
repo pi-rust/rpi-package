@@ -50,11 +50,15 @@ const copy = {
     draftNote:
       "Base URL changes and provider deletion are not supported by the node. This URL is a page-local draft only; it is never sent or persisted.",
     keyNote:
-      "Only the key you explicitly enter is submitted. The secret is cleared on submission, even if saving fails. Saving a key does not add a discovered provider or validate remote access.",
+      "Only the key you explicitly enter is submitted. When editing a provider, leave it blank to preserve the existing key. The secret is cleared on submission, even if saving fails. Saving a key does not add a discovered provider or validate remote access.",
     cancelNote:
       "Closing or editing stops waiting for the request; it does not undo a change the node may already have accepted.",
     save: "Save API Key",
     addProvider: "Save provider",
+    updateProvider: "Save changes",
+    deleteProvider: "Delete provider",
+    deleting: "Deleting…",
+    deleteConfirm: "Delete this provider configuration from models.json?",
     saving: "Saving…",
     clear: "Clear local draft",
     cleared: "Local draft cleared.",
@@ -139,10 +143,14 @@ const copy = {
     draftNote:
       "节点暂不支持修改 Base URL 或删除供应商。此地址仅为当前页面草稿，不会发送或持久化。",
     keyNote:
-      "仅提交你主动输入的 API Key；提交时清空密钥，即使保存失败也不保留。保存密钥不代表已添加发现的供应商或通过远端验证。",
+      "仅提交你主动输入的 API Key；修改服务商时留空会保留已有 Key。提交时清空密钥，即使保存失败也不保留。保存密钥不代表已添加发现的供应商或通过远端验证。",
     cancelNote: "关闭或编辑只会停止等待请求，不能撤销节点可能已接受的更改。",
     save: "保存 API Key",
     addProvider: "保存服务商",
+    updateProvider: "保存修改",
+    deleteProvider: "删除服务商",
+    deleting: "正在删除…",
+    deleteConfirm: "确定从 models.json 删除这个服务商配置吗？",
     saving: "正在保存…",
     clear: "清除本地草稿",
     cleared: "已清除本地草稿。",
@@ -239,6 +247,7 @@ export function ProviderManager({
   const [modelRestart, setModelRestart] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [configIsNew, setConfigIsNew] = useState(false);
+  const [configIsEditable, setConfigIsEditable] = useState(false);
   const configOpenRef = useRef(false);
   const dialogBody = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -311,11 +320,14 @@ export function ProviderManager({
   const [saveError, setSaveError] = useState<Message | null>(null);
   const [saveNotice, setSaveNotice] = useState<Message | null>(null);
   const [saveRestart, setSaveRestart] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
   const canReadModels = supported.has("get_available_models");
   const canReadState = supported.has("get_state");
   const canReadAuth = canAuth && supported.has("get_auth_status");
   const canSave = canAuth && supported.has("set_api_key");
   const canAddProvider = canAuth && supported.has("set_provider_config");
+  const canUpdateProvider = canAuth && supported.has("update_provider_config");
+  const canDeleteProvider = canAuth && supported.has("delete_provider_config");
   const canSelect = supported.has("set_model") && canReadState;
 
   const owns = (owner: Owner) =>
@@ -415,6 +427,7 @@ export function ProviderManager({
     setMaxOutputTokens("");
     setSupportsImages(false);
     setSavePending(false);
+    setDeletePending(false);
     setSaveError(null);
     setSaveNotice(null);
     setSaveRestart(false);
@@ -434,6 +447,7 @@ export function ProviderManager({
       owner.providerProbeController = undefined;
     }
     setSavePending(false);
+    setDeletePending(false);
     setSaveError(null);
     setSaveNotice(null);
     setSaveRestart(false);
@@ -452,16 +466,20 @@ export function ProviderManager({
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    const editable = !isNew && Boolean(firstModel) && canUpdateProvider;
     setConfigIsNew(isNew);
+    setConfigIsEditable(editable);
     setProvider(value);
     setProtocol(firstModel?.api || "openai-completions");
     setSecret("");
-    setBaseUrl(isNew ? "" : baseDrafts.get(value) || "");
+    setBaseUrl(
+      isNew ? "" : editable ? firstModel?.baseUrl || "" : baseDrafts.get(value) || "",
+    );
     setModelId(isNew ? "" : firstModel?.id || "");
     setModelName(isNew ? "" : firstModel?.name || "");
-    setContextWindow("");
-    setMaxOutputTokens("");
-    setSupportsImages(false);
+    setContextWindow(firstModel?.contextWindow ? String(firstModel.contextWindow) : "");
+    setMaxOutputTokens(firstModel?.maxTokens ? String(firstModel.maxTokens) : "");
+    setSupportsImages(firstModel?.input?.includes("image") ?? false);
     setFetchedModels([]);
     setProviderProbeError(false);
     setConnectionError(false);
@@ -475,6 +493,7 @@ export function ProviderManager({
     configOpenRef.current = false;
     setConfigOpen(false);
     setConfigIsNew(false);
+    setConfigIsEditable(false);
     setSecret("");
     setProvider("");
     setProtocol("openai-completions");
@@ -552,8 +571,8 @@ export function ProviderManager({
       !owner ||
       !owns(owner) ||
       !configOpenRef.current ||
-      !configIsNew ||
-      !canAddProvider ||
+      (!configIsNew && !configIsEditable) ||
+      (configIsNew ? !canAddProvider : !canUpdateProvider) ||
       !input.baseUrl ||
       !input.apiKey.trim() ||
       owner.providerProbeController
@@ -567,7 +586,7 @@ export function ProviderManager({
       owns(owner) &&
       !controller.signal.aborted &&
       configOpenRef.current &&
-      configIsNew &&
+      (configIsNew || configIsEditable) &&
       owner.providerProbeRevision === revision;
     setProviderProbePending(true);
     setProviderProbeAction("fetch");
@@ -609,8 +628,8 @@ export function ProviderManager({
       !owner ||
       !owns(owner) ||
       !configOpenRef.current ||
-      !configIsNew ||
-      !canAddProvider ||
+      (!configIsNew && !configIsEditable) ||
+      (configIsNew ? !canAddProvider : !canUpdateProvider) ||
       !input.baseUrl ||
       !input.apiKey.trim() ||
       owner.providerProbeController
@@ -624,7 +643,7 @@ export function ProviderManager({
       owns(owner) &&
       !controller.signal.aborted &&
       configOpenRef.current &&
-      configIsNew &&
+      (configIsNew || configIsEditable) &&
       owner.providerProbeRevision === revision;
     setProviderProbePending(true);
     setProviderProbeAction("test");
@@ -652,6 +671,37 @@ export function ProviderManager({
         setProviderProbePending(false);
         setProviderProbeAction(null);
       }
+    }
+  }
+
+  async function deleteProviderConfig() {
+    const owner = ownerRef.current;
+    if (
+      !owner ||
+      !owns(owner) ||
+      !configOpenRef.current ||
+      !configIsEditable ||
+      !canDeleteProvider ||
+      deletePending ||
+      !window.confirm(t.deleteConfirm)
+    )
+      return;
+    const controller = new AbortController();
+    owner.saveController = controller;
+    owner.controllers.add(controller);
+    setDeletePending(true);
+    setSaveError(null);
+    try {
+      await api.deleteProviderConfig(owner.sessionId, provider.trim(), controller.signal);
+      if (!owns(owner) || controller.signal.aborted) return;
+      closeConfig();
+      void readProviders(owner);
+    } catch {
+      if (owns(owner) && !controller.signal.aborted) setSaveError("providerSaveError");
+    } finally {
+      owner.controllers.delete(controller);
+      if (owner.saveController === controller) owner.saveController = undefined;
+      setDeletePending(false);
     }
   }
 
@@ -697,13 +747,13 @@ export function ProviderManager({
       !owner ||
       !owns(owner) ||
       !configOpenRef.current ||
-      !configIsNew ||
-      !canAddProvider ||
+      (!configIsNew && !configIsEditable) ||
+      (configIsNew ? !canAddProvider : !canUpdateProvider) ||
       owner.saveController ||
       !values.provider ||
       !values.baseUrl ||
-      !values.apiKey.trim() ||
-      !values.modelId
+      !values.modelId ||
+      (configIsNew && !values.apiKey.trim())
     )
       return;
     const revision = ++owner.draftRevision;
@@ -714,7 +764,7 @@ export function ProviderManager({
       owns(owner) &&
       !controller.signal.aborted &&
       configOpenRef.current &&
-      configIsNew &&
+      (configIsNew || configIsEditable) &&
       owner.draftRevision === revision;
     setSavePending(true);
     setSaveError(null);
@@ -723,7 +773,11 @@ export function ProviderManager({
     try {
       await Promise.resolve();
       if (!current()) return;
-      await api.setProviderConfig(owner.sessionId, values, controller.signal);
+      if (configIsNew) {
+        await api.setProviderConfig(owner.sessionId, values, controller.signal);
+      } else {
+        await api.updateProviderConfig(owner.sessionId, values, controller.signal);
+      }
       if (!current()) return;
       setSaveNotice("providerSaved");
       setSaveRestart(true);
@@ -981,6 +1035,7 @@ export function ProviderManager({
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
+              readOnly={configIsEditable}
               value={provider}
               onChange={(event) => {
                 invalidateDraft();
@@ -988,7 +1043,7 @@ export function ProviderManager({
                 setSecret("");
               }}
             />
-            {configIsNew && (
+            {(configIsNew || configIsEditable) && (
               <>
                 <label htmlFor={`${id}-protocol`}>{t.protocol}</label>
                 <select
@@ -1152,7 +1207,7 @@ export function ProviderManager({
                 </label>
               </>
             )}
-            {!configIsNew && (
+            {!configIsNew && !configIsEditable && (
               <>
                 <label htmlFor={`${id}-base`}>{t.baseDraft}</label>
                 <input
@@ -1199,36 +1254,64 @@ export function ProviderManager({
             />
             <button
               type="button"
-              aria-label={configIsNew ? t.addProvider : t.save}
+              aria-label={
+                configIsNew
+                  ? t.addProvider
+                  : configIsEditable
+                    ? t.updateProvider
+                    : t.save
+              }
               disabled={
                 savePending ||
-                (configIsNew
-                  ? !canAddProvider ||
+                deletePending ||
+                (configIsNew || configIsEditable
+                  ? (configIsNew ? !canAddProvider : !canUpdateProvider) ||
                     !provider.trim() ||
                     !baseUrl.trim() ||
                     !modelId.trim() ||
-                    !secret.trim()
+                    (configIsNew && !secret.trim())
                   : !canSave || !provider.trim() || !secret.trim())
               }
-              onClick={() => void (configIsNew ? saveProvider() : saveKey())}
+              onClick={() =>
+                void (configIsNew || configIsEditable ? saveProvider() : saveKey())
+              }
             >
-              {savePending ? t.saving : configIsNew ? t.addProvider : t.save}
+              {savePending
+                ? t.saving
+                : configIsNew
+                  ? t.addProvider
+                  : configIsEditable
+                    ? t.updateProvider
+                    : t.save}
             </button>
             {configIsNew && !canAddProvider && (
               <p className="provider-manager-note">{t.providerUnsupported}</p>
             )}
-            {!configIsNew && !canSave && (
+            {configIsEditable && !canUpdateProvider && (
+              <p className="provider-manager-note">{t.providerUnsupported}</p>
+            )}
+            {!configIsNew && !configIsEditable && !canSave && (
               <p className="provider-manager-note">{t.keyUnsupported}</p>
             )}
             {saveError && (
               <p className="provider-manager-error" role="alert">
-                {t[configIsNew ? "providerSaveError" : saveError]}
+                {t[configIsNew || configIsEditable ? "providerSaveError" : saveError]}
               </p>
             )}
             {saveNotice && <p role="status">{t[saveNotice]}</p>}
             {saveRestart && <p role="status">{t.restart}</p>}
-            {!configIsNew && (
+            {!configIsNew && !configIsEditable && (
               <p className="provider-manager-note">{t.draftNote}</p>
+            )}
+            {configIsEditable && (
+              <button
+                type="button"
+                className="provider-manager-danger"
+                disabled={savePending || deletePending || !canDeleteProvider}
+                onClick={() => void deleteProviderConfig()}
+              >
+                {deletePending ? t.deleting : t.deleteProvider}
+              </button>
             )}
             <details className="provider-manager-help">
               <summary>{t.help}</summary>

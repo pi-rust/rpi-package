@@ -183,6 +183,8 @@ export interface ModelDescriptor {
   provider: string;
   reasoning?: boolean;
   api?: string;
+  baseUrl?: string;
+  input?: string[];
   contextWindow?: number;
   maxTokens?: number;
 }
@@ -769,6 +771,33 @@ export const api = {
       latencyMs: number;
       modelCount?: number | null;
     }>(id, "test_provider_config", input, signal),
+  updateProviderConfig: (
+    id: string,
+    input: {
+      provider: string;
+      api: string;
+      baseUrl: string;
+      apiKey?: string;
+      modelId: string;
+      modelName?: string;
+      contextWindow?: number;
+      maxOutputTokens?: number;
+      supportsImages: boolean;
+    },
+    signal?: AbortSignal,
+  ) =>
+    commandData<{
+      provider: string;
+      modelId: string;
+      requiresRestart: boolean;
+    }>(id, "update_provider_config", input, signal),
+  deleteProviderConfig: (id: string, provider: string, signal?: AbortSignal) =>
+    commandData<{ provider: string; requiresRestart: boolean }>(
+      id,
+      "delete_provider_config",
+      { provider },
+      signal,
+    ),
   setProviderConfig: (
     id: string,
     input: {

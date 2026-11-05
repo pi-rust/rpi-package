@@ -24,6 +24,8 @@ pub const SUPPORTED_COMMANDS: &[&str] = &[
     "oauth",
     "set_api_key",
     "set_provider_config",
+    "update_provider_config",
+    "delete_provider_config",
     "set_model",
     "get_available_thinking_levels",
     "set_thinking_level",

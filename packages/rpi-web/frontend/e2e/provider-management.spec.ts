@@ -95,6 +95,10 @@ class ProviderHost {
   unexpected: string[] = [];
   models = models.map((model) => ({ ...model }));
   providers = [auth("alpha"), auth("auth-only")];
+  enableProviderEditing() {
+    for (const command of ["update_provider_config", "delete_provider_config"])
+      if (!this.commands.includes(command)) this.commands.push(command);
+  }
   commands = [
     "get_state",
     "get_messages",
@@ -252,7 +256,13 @@ class ProviderHost {
         const key = `${session}:${type}`;
         const permitted = this.permits.get(key) ?? 0;
         if (
-          !["set_model", "set_api_key", "set_provider_config"].includes(type) ||
+          ![
+            "set_model",
+            "set_api_key",
+            "set_provider_config",
+            "update_provider_config",
+            "delete_provider_config",
+          ].includes(type) ||
           permitted === 0
         )
           return this.reject(route, `unpermitted mutation ${session}:${type}`);
@@ -329,6 +339,15 @@ class ProviderHost {
               provider: body.provider,
               modelId: body.modelId,
               api: body.api,
+              requiresRestart: true,
+            },
+            update_provider_config: {
+              provider: body.provider,
+              modelId: body.modelId,
+              requiresRestart: true,
+            },
+            delete_provider_config: {
+              provider: body.provider,
               requiresRestart: true,
             },
             get_provider_models: {
@@ -728,6 +747,54 @@ test("adding a provider collects protocol and model and submits the full configu
   await write.finished;
   await expect(modal).toContainText("models.json");
   await expect(modal.getByLabel("API Key", { exact: true })).toHaveValue("");
+  await noSecretEcho(page, "fixture-provider-key");
+});
+
+test("a configured provider can be edited without echoing its key and deleted", async ({
+  page,
+  host,
+}) => {
+  host.enableProviderEditing();
+  host.models[0] = {
+    ...host.models[0],
+    baseUrl: "https://api.example.test/v1",
+    api: "openai-completions",
+    maxTokens: 4096,
+    input: ["text", "image"],
+  };
+  await start(page);
+  await openManager(page);
+  await connection(page, "alpha");
+  const modal = dialog(page);
+  await expect(modal.getByLabel("Base URL", { exact: true })).toHaveValue(
+    "https://api.example.test/v1",
+  );
+  await modal.getByLabel("Model ID", { exact: true }).fill("updated-model");
+  await modal
+    .getByLabel("Model name (optional)", { exact: true })
+    .fill("Updated model");
+  host.permit("update_provider_config");
+  await modal.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect
+    .poll(() => host.count("update_provider_config"))
+    .toBe(1);
+  expect(
+    host.calls.find((call) => call.type === "update_provider_config")?.body,
+  ).toMatchObject({
+    provider: "alpha",
+    modelId: "updated-model",
+    modelName: "Updated model",
+    apiKey: "",
+    supportsImages: true,
+  });
+  await expect(modal).toContainText(/restart/i);
+  page.once("dialog", (dialog) => void dialog.accept());
+  host.permit("delete_provider_config");
+  await modal
+    .getByRole("button", { name: "Delete provider", exact: true })
+    .click();
+  await expect.poll(() => host.count("delete_provider_config")).toBe(1);
+  await expect(modal).not.toBeVisible();
   await noSecretEcho(page, "fixture-provider-key");
 });
 
