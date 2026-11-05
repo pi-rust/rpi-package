@@ -52,6 +52,9 @@ jobs:
     needs: frontend
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
+    env:
+      # Treat compiler warnings as CI failures for every build.
+      RUSTFLAGS: '-D warnings'
     strategy:
       fail-fast: false
       matrix:

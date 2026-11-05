@@ -28,6 +28,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     env:
+      # Treat compiler warnings as CI failures for every build and test.
+      RUSTFLAGS: '-D warnings'
       RPI_OFFLINE: '1'
     steps:
       - uses: actions/checkout@v4
@@ -94,9 +96,8 @@ jobs:
         # Includes the test-only rpi-acp configuration_fixture example; checking
         # it is not native execution, installation, or runtime qualification.
         run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web --all-targets
-      # Only MCP core is a strict Clippy gate. Existing extcore warnings and
-      # the pinned SDK export_plugin! adapter not_unsafe_ptr_arg_deref baseline
-      # are not suppressed, run with relaxed lints, or labelled strict passes.
+      # Only MCP core is an explicit Clippy gate. The compile/test commands
+      # above still reject all compiler warnings via RUSTFLAGS.
       - name: Strict MCP core Clippy
         run: cargo clippy --locked -p rpi-mcp-core --all-targets -- -D warnings
       - name: Build the adapter library

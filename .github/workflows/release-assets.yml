@@ -78,6 +78,9 @@ jobs:
     needs: source
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    env:
+      # Treat compiler warnings as CI failures for every build and test.
+      RUSTFLAGS: '-D warnings'
     permissions:
       contents: read
     strategy:
