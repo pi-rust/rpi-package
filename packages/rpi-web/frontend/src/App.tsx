@@ -615,10 +615,17 @@ type SessionCompletionNotification = {
 
 type SettlementIdentity = NonNullable<SessionSummary["latestSettlement"]>;
 
-function settlementKey(settlement: SettlementIdentity | null | undefined) {
+function settlementKey(
+  settlement: SettlementIdentity | null | undefined,
+  fallbackSeq?: number,
+) {
   if (!settlement) return null;
   if (settlement.runId) return `run:${settlement.runId}`;
   if (settlement.seq != null) return `seq:${settlement.seq}`;
+  // Older native settlement payloads do not carry a run ID or their SSE
+  // sequence. The session summary still exposes the sequence as lastSeq;
+  // use it so the live event and the polling refresh share one identity.
+  if (fallbackSeq != null) return `seq:${fallbackSeq}`;
   if (settlement.outcome) return `outcome:${settlement.outcome}`;
   return null;
 }
@@ -721,7 +728,7 @@ export default function App() {
       settlement: SettlementIdentity | null | undefined,
       fallbackSeq?: number,
     ) => {
-      const identity = settlementKey(settlement) ??
+      const identity = settlementKey(settlement, fallbackSeq) ??
         (fallbackSeq != null ? `seq:${fallbackSeq}` : null);
       if (!identity) return;
       const id = `${sessionId}:${identity}`;
@@ -1445,22 +1452,35 @@ export default function App() {
             const previous = sessionListValue.current;
             if (sessionListInitialized.current) {
               for (const entry of list) {
-                const currentKey = settlementKey(entry.latestSettlement);
+                const currentKey = settlementKey(
+                  entry.latestSettlement,
+                  entry.lastSeq,
+                );
                 if (!currentKey) continue;
                 const previousEntry = previous?.find(
                   (item) => item.sessionId === entry.sessionId,
                 );
-                if (currentKey === settlementKey(previousEntry?.latestSettlement))
+                if (
+                  currentKey ===
+                  settlementKey(
+                    previousEntry?.latestSettlement,
+                    previousEntry?.lastSeq,
+                  )
+                )
                   continue;
                 notifySessionCompletion(
                   entry.sessionId,
                   entry.title,
                   entry.latestSettlement,
+                  entry.lastSeq,
                 );
               }
             } else {
               for (const entry of list) {
-                const currentKey = settlementKey(entry.latestSettlement);
+                const currentKey = settlementKey(
+                  entry.latestSettlement,
+                  entry.lastSeq,
+                );
                 if (currentKey)
                   notifiedSettlements.current.add(`${entry.sessionId}:${currentKey}`);
               }
