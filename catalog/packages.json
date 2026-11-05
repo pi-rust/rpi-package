@@ -12,36 +12,47 @@
   },
   {
     "name": "rpi-mcp-adapter",
-    "version": "0.2.6",
+    "version": "0.2.7",
     "type": "extension",
     "tool": "mcp_list + mcp_call + mcp_request",
     "inspiredBy": "pi-mcp-adapter",
     "sourceDownloadsPerMonth": 761442,
     "install": "rpi install rpi-mcp-adapter",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.6/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.7/rpi-extension.json"
   },
   {
     "name": "rpi-subagents",
-    "version": "0.1.12",
+    "version": "0.1.13",
     "type": "extension",
     "tool": "delegate_task",
     "inspiredBy": "pi-subagents",
     "sourceDownloadsPerMonth": 362483,
     "install": "rpi install rpi-subagents",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-subagents-v0.1.12/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-subagents-v0.1.13/rpi-extension.json"
+  },
+  {
+    "name": "rpi-codemode",
+    "version": "0.1.13",
+    "type": "extension",
+    "tool": "codemode",
+    "inspiredBy": "Bounded native JavaScript tool programs",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-codemode",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-codemode-v0.1.13/rpi-extension.json"
   },
   {
     "name": "rpi-orchestrator",
-    "version": "0.1.12",
+    "version": "0.1.13",
     "type": "extension",
     "tool": "subagent + plan + dispatch",
     "inspiredBy": "DAG subagent orchestration",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-orchestrator",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-orchestrator-v0.1.12/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-orchestrator-v0.1.13/rpi-extension.json"
   },
   {
     "name": "rpi-btw",
@@ -56,47 +67,36 @@
   },
   {
     "name": "rpi-lens",
-    "version": "0.1.12",
+    "version": "0.1.13",
     "type": "extension",
     "tool": "code_lens",
     "inspiredBy": "pi-lens",
     "sourceDownloadsPerMonth": 65476,
     "install": "rpi install rpi-lens",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-lens-v0.1.12/rpi-extension.json"
-  },
-  {
-    "name": "rpi-durable",
-    "version": "0.3.1",
-    "type": "extension",
-    "tool": "durable",
-    "inspiredBy": "Durable session workflow checkpoints",
-    "sourceDownloadsPerMonth": null,
-    "install": "rpi install rpi-durable --path packages/rpi-durable",
-    "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-durable-v0.3.1/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-lens-v0.1.13/rpi-extension.json"
   },
   {
     "name": "rpi-todo",
-    "version": "0.3.1",
+    "version": "0.3.2",
     "type": "extension",
     "tool": "todo",
     "inspiredBy": "Pi todo extensions",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-todo",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-todo-v0.3.1/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-todo-v0.3.2/rpi-extension.json"
   },
   {
     "name": "rpi-goal",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "type": "extension",
     "tool": "goal",
     "inspiredBy": "Codex goal mode",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-goal",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.2.1/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.2.2/rpi-extension.json"
   },
   {
     "name": "rpi-plan-mode",
@@ -199,14 +199,14 @@
   },
   {
     "name": "rpi-acp",
-    "version": "0.2.6",
+    "version": "0.2.10",
     "type": "extension",
     "tool": "--acp (Agent Client Protocol stdio server)",
     "inspiredBy": "Zed external agents / agent-client-protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-acp",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.6/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.10/rpi-extension.json"
   },
   {
     "name": "rpi-permission-gate",
@@ -243,14 +243,14 @@
   },
   {
     "name": "rpi-web",
-    "version": "0.1.33",
+    "version": "0.1.42",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Browser project and session workspace",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-web",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.33/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.42/rpi-extension.json"
   },
   {
     "name": "rpi-edit-diagnostics",

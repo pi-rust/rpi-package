@@ -10,6 +10,8 @@ pub mod jsonrpc;
 mod kit;
 #[allow(unsafe_code)]
 mod process;
+/// Owned platform primitives for trusted local native operations.
+pub use process::{ProcessTree, SharedFileLock};
 mod runtime;
 pub mod transport;
 pub use config::{Exposure, HttpServer, McpConfig, McpServerConfig, StdioServer};

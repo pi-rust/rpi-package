@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.9...rpi-extcore-v0.2.10) - 2026-11-05
+
+### Fixed
+
+- *(extcore)* prove live children with native branch identity
+
+## [0.2.9](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.8...rpi-extcore-v0.2.9) - 2026-11-04
+
+### Added
+
+- *(adapters)* expose bounded Code Mode child queries and live feed
+- *(extcore)* reconcile bounded child snapshots with native commit replay
+- *(extcore)* add capability-gated native ToolProgram child readers
+
+### Fixed
+
+- *(catalog)* reject duplicate headers and page test scans
+- *(extcore)* reprove every selected child before live delivery
+
+### Other
+
+- tolerate Windows process cleanup latency
+
+## [0.2.8](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.7...rpi-extcore-v0.2.8) - 2026-11-03
+
+### Fixed
+
+- *(web)* retire archived sessions and permanently delete native history ([#183](https://github.com/pi-rust/rpi-package/pull/183))
+
+## [0.2.7](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.6...rpi-extcore-v0.2.7) - 2026-11-02
+
+### Added
+
+- *(extcore)* own exact session resource lifecycle and recovery
+
+### Fixed
+
+- *(extcore)* retain resource authority across fork and recovery failures
+- *(extcore)* inspect safe legacy package names
+
+### Other
+
+- *(extcore)* synchronize fork capacity admission deterministically
+
 ## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.5...rpi-extcore-v0.2.6) - 2026-11-01
 
 ### Added

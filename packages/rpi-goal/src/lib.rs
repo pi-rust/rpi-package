@@ -23,10 +23,11 @@ const GOAL_CUSTOM_TYPE: &str = "goal";
 const MAX_TITLE_CHARS: usize = 500;
 const MAX_NOTES_CHARS: usize = 20_000;
 
+mod runtime;
+
 // Reuse the SDK's host-context lifetime and thread-safety contract.
 type Runtime = PluginApi;
 
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 /// Last injected goal-state fingerprint (title + status + notes). Prevents
 /// re-injecting the same status on every `TurnEnd` (transcript bloat).
 static LAST_INJECTED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -151,7 +152,7 @@ fn is_subagent() -> bool {
 /// Call a host runtime action (e.g. `AppendEntry`). Safe from any thread,
 /// including event handlers and command handlers.
 fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
-    let runtime = *RUNTIME.get().ok_or("goal runtime is unavailable")?;
+    let runtime = runtime::snapshot().ok_or("goal runtime is unavailable")?;
     let input = args.to_string();
     let mut output = StbString::empty();
     let rc = (runtime.runtime_action)(
@@ -272,7 +273,7 @@ fn flush_pending_state() -> bool {
 }
 
 fn read_goals() -> Result<Goals, String> {
-    if RUNTIME.get().is_some() {
+    if runtime::snapshot().is_some() {
         if let Some(goals) = pending_state()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -311,7 +312,7 @@ fn read_goals() -> Result<Goals, String> {
 }
 
 fn write_goals(goals: &Goals) -> Result<(), String> {
-    if RUNTIME.get().is_some() {
+    if runtime::snapshot().is_some() {
         call_runtime(
             RuntimeActionId::AppendEntry,
             json!({"customType": GOAL_STATE_ENTRY, "data": goals}),
@@ -511,7 +512,7 @@ fn validate_notes(notes: &str) -> Result<String, String> {
 fn persist_and_queue(goals: &Goals, goal: &Goal) -> Result<(), String> {
     let mut goals = goals.clone();
     goals.active = Some(goal.clone());
-    if RUNTIME.get().is_some() {
+    if runtime::snapshot().is_some() {
         queue_state(&goals);
     } else {
         write_goals(&goals)?;
@@ -609,7 +610,7 @@ fn op_complete() -> Result<Goal, String> {
     done.updated_at = now_ms();
     goals.archived.push(done.clone());
     goals.active = None;
-    if RUNTIME.get().is_some() {
+    if runtime::snapshot().is_some() {
         queue_state(&goals);
     } else {
         write_goals(&goals)?;
@@ -876,6 +877,7 @@ fn goal(params: &Value) -> Result<String, String> {
 static HANDLES: ToolHandles<Drive> = ToolHandles::new();
 
 struct Drive {
+    runtime: Option<Runtime>,
     params: Value,
     done: bool,
 }
@@ -888,6 +890,7 @@ extern "C" fn execute(
     let text = params.to_string_lossy();
     params.free_with(free);
     HANDLES.insert(Drive {
+        runtime: runtime::snapshot(),
         params: serde_json::from_str(&text).unwrap_or(Value::Null),
         done: false,
     })
@@ -903,6 +906,7 @@ extern "C" fn poll(handle: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void)
         ));
     };
     let mut drive = entry.lock();
+    let _scope = runtime::enter(drive.runtime);
     if entry.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
         drive.done = true;
         return StepResult::err(StbString::from_string("goal cancelled".into()));
@@ -933,7 +937,8 @@ use rpi_plugin_sdk::callbacks::free_string;
 // TurnEnd handler — count turns, enforce budgets, inject the active goal
 // ---------------------------------------------------------------------------
 
-extern "C" fn on_turn_end(event: StablePluginEvent, _: *mut c_void) -> i32 {
+extern "C" fn on_turn_end(event: StablePluginEvent, user_data: *mut c_void) -> i32 {
+    let _scope = runtime::enter(runtime::callback(user_data));
     // TurnEnd carries no payload (empty event) in this ABI; ignore the struct.
     let _ = event;
     // A subagent process shares the parent's cwd and therefore its
@@ -1057,9 +1062,11 @@ fn start_from_command(title: &str, notes: &str) -> Result<String, String> {
     };
     // A full SendUserMessage waits for the agent run to finish. Calling it
     // inline deadlocks the TUI, leaving the editor populated and unresponsive.
+    let runtime = runtime::snapshot();
     std::thread::Builder::new()
         .name("rpi-goal-start".into())
         .spawn(move || {
+            let _scope = runtime::enter(runtime);
             if let Err(error) =
                 call_runtime(RuntimeActionId::SendUserMessage, json!({"text": prompt}))
             {
@@ -1166,7 +1173,8 @@ fn run_command(args: &str) -> String {
 }
 
 rpi_plugin_sdk::string_handler! {
-fn goal_command(args_json, out, _user_data) {
+fn goal_command(args_json, out, user_data) {
+    let _scope = runtime::enter(runtime::callback(user_data));
     let raw = args_json.to_owned();
     let envelope: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
     let args = envelope
@@ -1187,12 +1195,12 @@ fn goal_command(args_json, out, _user_data) {
 // ---------------------------------------------------------------------------
 rpi_plugin_sdk::export_plugin!(|api| {
     capture_process_role();
-    let _ = RUNTIME.set(*api);
+    runtime::install(*api);
     if let Some(register_event) = api.register_event_handler {
         let rc = register_event(
             EventTag::TurnEnd,
             on_turn_end as EventHandlerFn,
-            std::ptr::null_mut(),
+            api.user_data,
         );
         if rc != 0 {
             return rc;
@@ -1464,7 +1472,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Serializes everything below: they mutate process-global state (cwd, env,
-    /// the `RUNTIME` vtable, the injected-fingerprint latch).
+    /// the runtime vtable and the injected-fingerprint latch).
     static GLOBAL_STATE_LOCK: Mutex<()> = Mutex::new(());
 
     struct ProcessRoleGuard {
@@ -1702,10 +1710,12 @@ mod tests {
         assert_eq!(fs::read_to_string(goals_path()).unwrap(), file);
     }
 
-    /// Install the recording runtime. `RUNTIME` is a `OnceLock`, so the first
-    /// caller wins; the recorder is deterministic regardless of which test it is.
+    /// Install one recording runtime for the serialized state tests.
     fn install_recording_runtime() {
-        let _ = RUNTIME.set(rpi_plugin_sdk::PluginApi {
+        if runtime::snapshot().is_some() {
+            return;
+        }
+        runtime::install(rpi_plugin_sdk::PluginApi {
             abi_version: rpi_plugin_sdk::RPI_PLUGIN_ABI_VERSION_UNIFIED,
             struct_size: std::mem::size_of::<rpi_plugin_sdk::PluginApi>() as u32,
             free_string: rpi_plugin_sdk::callbacks::free_string,

@@ -38,4 +38,31 @@ class OriginPolicyTest {
             "http://example.com", "https://user:pass@example.com", "https://example.com\\test")
             .forEach { assertFalse(it, OriginPolicy.isHttps(it)) }
     }
+
+    @Test fun permitsHttpForBrowserOnlyNeverForConnection() {
+        listOf("http://docs.example", "HTTP://DOCS.EXAMPLE:13031/downloads/client.apk?fixture=1#download",
+            "http://192.0.2.7:13031/downloads/client.apk", "http://[2001:db8::7]:13031/client.apk")
+            .forEach {
+                assertTrue(it, OriginPolicy.isBrowserLink(it))
+                assertFalse(it, OriginPolicy.isHttps(it))
+                assertNull(it, OriginPolicy.normalize(it))
+                assertFalse(it, OriginPolicy.isInternal(it, "https://docs.example"))
+            }
+    }
+
+    @Test fun httpsBrowserLinksRetainExistingPolicy() {
+        listOf("https://docs.example/path?q=1#details", "HTTPS://DOCS.EXAMPLE:443/", "https://docs.example:8443/client.apk")
+            .forEach { assertTrue(it, OriginPolicy.isBrowserLink(it)) }
+        assertTrue(OriginPolicy.isInternal("https://workspace.example/sessions/1", trusted))
+        assertFalse(OriginPolicy.isInternal("http://workspace.example/sessions/1", trusted))
+    }
+
+    @Test fun browserHandoffRejectsUnsafeSchemesCredentialsAndMalformedAuthorities() {
+        listOf("", "//docs.example", "javascript:alert(1)", "intent://scan", "file:///test", "content://test",
+            "data:text/html,test", "mailto:user@example.com", "http://user:pass@docs.example", "https://user@docs.example",
+            "http://docs.example:0", "http://docs.example:65536", "http://docs.example:", "http://docs.example.",
+            "http://docs.example\\@evil.example", "http://docs.example\n.evil.example", "http://éxample.com",
+            "http://[::1]suffix.example", "http://%65xample.com")
+            .forEach { assertFalse(it, OriginPolicy.isBrowserLink(it)) }
+    }
 }

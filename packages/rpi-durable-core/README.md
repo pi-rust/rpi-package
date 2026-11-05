@@ -1,5 +1,9 @@
 # rpi-durable-core
 
+> **Archived:** Durable workflow support is now provided by the native `rpi`
+> host. Version `0.2.0` is the final core release; this crate will not receive
+> new versions. It remains in the workspace only for historical source/tests.
+
 Protocol-neutral durable business-state primitives shared by `rpi-durable` and
 `rpi-extcore`.
 

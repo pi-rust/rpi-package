@@ -909,6 +909,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2408,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.2.6"
+version = "0.2.10"
 dependencies = [
  "rpi-extcore",
  "rpi-plugin-sdk 0.3.20",
@@ -2488,8 +2498,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpi-codemode"
+version = "0.1.13"
+dependencies = [
+ "rpi-plugin-sdk 0.3.20",
+ "rquickjs",
+ "serde_json",
+]
+
+[[package]]
 name = "rpi-durable"
-version = "0.3.1"
+version = "0.3.4"
 dependencies = [
  "rpi-durable-core",
  "rpi-plugin-sdk 0.3.20",
@@ -2519,9 +2538,10 @@ dependencies = [
 
 [[package]]
 name = "rpi-extcore"
-version = "0.2.6"
+version = "0.2.10"
 dependencies = [
  "base64 0.22.1",
+ "fs2",
  "futures-util",
  "rpi-durable-core",
  "rpi-mcp-core",
@@ -2556,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde",
@@ -2565,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.1.14"
+version = "0.1.18"
 dependencies = [
  "axum",
  "futures-util",
@@ -2604,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2613,7 +2633,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-adapter"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "rpi-mcp-core",
  "rpi-plugin-sdk 0.3.20",
@@ -2622,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "reqwest 0.12.28",
@@ -2635,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-orchestrator"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2746,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2766,7 +2786,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-todo"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2811,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.33"
+version = "0.1.42"
 dependencies = [
  "axum",
  "rpi-extcore",
@@ -2842,6 +2862,33 @@ dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d16661bff09e9ed8e01094a188b463de45ec0693ade55b92ed54027d7ba7c40c"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c8db6379e204ef84c0811e90e7cc3e3e4d7688701db68a00d14a6db6849087b"
+dependencies = [
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bc352c6b663604c3c186c000cfcc6c271f4b50bc135a285dd6d4f2a42f9790a"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -4021,6 +4068,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4028,6 +4091,12 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"

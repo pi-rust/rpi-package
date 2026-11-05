@@ -111,6 +111,7 @@ impl Session {
             provider,
             permission_gate: !env_flag("RPI_ACP_NO_PERMISSION_GATE"),
             bypass: PERMISSION_BYPASS.load(Ordering::Acquire),
+            resources: None,
         })
         .await?;
         Self::attach(rpc).await
@@ -140,6 +141,54 @@ impl Session {
     #[cfg(test)]
     pub(crate) async fn attach_for_test(rpc: Arc<HostSession>) -> Result<Arc<Self>, String> {
         Self::attach(rpc).await
+    }
+
+    pub(crate) async fn tool_program_children(
+        &self,
+        query: rpi_extcore::service::tool_program_queries::ChildPageQuery,
+    ) -> rpi_extcore::reply::ServiceResult<rpi_extcore::service::tool_program_queries::ChildPage>
+    {
+        rpi_extcore::service::tool_program_queries::child_summaries_for_host(&self.rpc, query).await
+    }
+
+    pub(crate) async fn tool_program_phases(
+        &self,
+        query: rpi_extcore::service::tool_program_queries::ChildPhaseQuery,
+    ) -> rpi_extcore::reply::ServiceResult<rpi_extcore::service::tool_program_queries::ChildPhasePage>
+    {
+        rpi_extcore::service::tool_program_queries::child_phases_for_host(&self.rpc, query).await
+    }
+
+    pub(crate) async fn tool_program_body(
+        &self,
+        query: rpi_extcore::service::tool_program_queries::ChildBodyQuery,
+    ) -> rpi_extcore::reply::ServiceResult<rpi_extcore::service::tool_program_queries::ChildBodyPage>
+    {
+        rpi_extcore::service::tool_program_queries::child_body_for_host(&self.rpc, query).await
+    }
+
+    pub(crate) async fn tool_program_snapshot(
+        &self,
+        query: rpi_extcore::service::tool_program_snapshot::ChildSnapshotQuery,
+    ) -> rpi_extcore::reply::ServiceResult<rpi_extcore::service::tool_program_snapshot::ChildSnapshot>
+    {
+        rpi_extcore::service::tool_program_snapshot::child_snapshot_for_host(
+            self.rpc.clone(),
+            query,
+        )
+        .await
+    }
+
+    pub(crate) async fn tool_program_subscription(
+        &self,
+        query: rpi_extcore::service::tool_program_snapshot::ChildSnapshotQuery,
+    ) -> rpi_extcore::reply::ServiceResult<rpi_extcore::service::tool_program_live::ChildSubscription>
+    {
+        rpi_extcore::service::tool_program_live::child_subscription_for_host(
+            self.rpc.clone(),
+            query,
+        )
+        .await
     }
 
     async fn send(&self, value: Value) -> Result<(), String> {

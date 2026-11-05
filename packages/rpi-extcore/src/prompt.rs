@@ -10,11 +10,11 @@ use std::io::{self, Write};
 
 pub const MAX_CONTENT_BLOCKS: usize = 64;
 pub const MAX_IMAGES: usize = 4;
-pub const MAX_IMAGE_BYTES: usize = 256 * 1024;
-pub const MAX_IMAGE_BASE64_BYTES: usize = 349_528;
-pub const MAX_TOTAL_IMAGE_BYTES: usize = 512 * 1024;
+pub const MAX_IMAGE_BYTES: usize = 1024 * 1024;
+pub const MAX_IMAGE_BASE64_BYTES: usize = MAX_IMAGE_BYTES.div_ceil(3) * 4;
+pub const MAX_TOTAL_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 32 * 1024;
-pub const MAX_PROMPT_BYTES: usize = 768 * 1024;
+pub const MAX_PROMPT_BYTES: usize = 3 * 1024 * 1024;
 
 /// Only the native plain user-input variants, in their original order.
 /// Constructing a block alone does not validate aggregate prompt budgets.
@@ -151,7 +151,7 @@ fn validate_blocks<'a>(
                     &mut image_bytes,
                     size,
                     MAX_TOTAL_IMAGE_BYTES,
-                    "aggregate prompt images exceed 524288 decoded bytes",
+                    "aggregate prompt images exceed 2097152 decoded bytes",
                 )?;
             }
         }
@@ -164,13 +164,13 @@ fn validate_image(data: &str, mime_type: &str) -> Result<usize, String> {
         return Err("image MIME must be image/png or image/jpeg".into());
     }
     if data.is_empty() || data.len() > MAX_IMAGE_BASE64_BYTES {
-        return Err("image requires 1..262144 decoded bytes".into());
+        return Err(format!("image requires 1..{} decoded bytes", MAX_IMAGE_BYTES).into());
     }
     let bytes = STANDARD
         .decode(data)
         .map_err(|_| "image requires canonical standard base64")?;
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
-        return Err("image requires 1..262144 decoded bytes".into());
+        return Err(format!("image requires 1..{} decoded bytes", MAX_IMAGE_BYTES).into());
     }
     if STANDARD.encode(&bytes) != data {
         return Err("image requires canonical standard base64".into());
@@ -300,7 +300,7 @@ impl PromptProfile {
             ("maxContentBlocks", MAX_CONTENT_BLOCKS as u64),
             ("maxImageSide", 2000),
             ("maxImagePixels", 4_000_000),
-            ("imageDecodeAllocBudgetBytes", 32 * 1024 * 1024),
+            ("imageDecodeAllocBudgetBytes", 64 * 1024 * 1024),
         ] {
             if fields.get(name).and_then(Value::as_u64) != Some(expected) {
                 return Err("incomplete or incompatible native prompt limits".into());

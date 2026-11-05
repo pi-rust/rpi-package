@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.6...rpi-mcp-adapter-v0.2.7) - 2026-11-02
+
+### Other
+
+- updated the following local packages: rpi-mcp-core
+
 ## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.5...rpi-mcp-adapter-v0.2.6) - 2026-11-01
 
 ### Added

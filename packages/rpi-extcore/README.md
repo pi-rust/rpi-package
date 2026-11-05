@@ -4,6 +4,47 @@ Shared native-agent services for protocol adapters. This is a normal Rust librar
 
 The Web and ACP adapters use the same native RPC driver, request correlation, bounded command writer, child cleanup and run tracker. Native transcripts remain owned by the rpi host. Existing Web and ACP storage locations are preserved by their entrypoints.
 
+## Transport-neutral native resources
+
+`resources::ResourceSelection`, `Service::apply_resources`,
+`resource_configuration` / `resource_operation` / `resource_operations`,
+`manage_resources`, `release_idle_resources` and `resource_project_fence` expose
+exact native selection, bounded persistent operation identities and owned idle
+coordination without changing Web/ACP contracts. Capability negotiation uses a
+bounded advertised pure native profile; unsupported backends fail closed.
+
+`Service::resource_saved_history` is a nonexecuting, bounded canonical native
+reader for closed/blocked sessions, including pending history. It never opens an
+executable host, loads configured resources, repairs a transcript, or falls back
+to another selection. Offline apply requires its fresh native **and** durable
+idle proof. Explicit `supersedes_operation_id` preserves old terminal identities
+and is allowed only after fresh original-binding noncommit proof; committed or
+uncertain intents must recover with the original ID/payload instead.
+
+See [native resource ownership and limits](../../docs/architecture/native-resources.md)
+for project/external-owner scope, settings-capture limits, request/response budgets,
+recovery semantics, and native-owned current/historical fork and clone initialization.
+Configured destinations start at revision 1 without source retry authority; source
+history and binding remain untouched. Fork/clone completion is bounded and
+Service-owned across caller cancellation. Configured live sources are fenced for
+current settings capture through destination completion; storage-uncertain sources
+refuse before native launch. Exact destination metadata/configuration publish in
+one Registry transaction only after verification, settings restoration and durable
+attachment. Ordinary reopen consumes owned-stop settings at that same final
+publication boundary, never on pure resource readback. Failure retains the capture;
+uncertain persistence latches the owner. Legacy resource-less forks keep their
+existing behavior. Identical apply retries reuse only the latest replaceable
+failure diagnostic's reserved headroom, without relaxing ledger/result limits.
+
+`tests/resource_recovery.rs` compiles a local std-only mock native with `rustc`
+and exercises these public Service/Registry failure and cancellation boundaries,
+including bare-filename directory-sync persistence on Unix. It uses no credentials
+or model service and is not real-native acceptance evidence.
+
+The opt-in integration tests require an
+explicit absolute trusted native executable and fixture library, never PATH.
+These APIs do not grant installed-reference or project authorization to callers.
+
 ## Use as a crates.io dependency
 
 `rpi-extcore` is published as an ordinary Rust library. Depend on the `0.1`
@@ -36,6 +77,37 @@ to the same directory, otherwise reject before spawning. Empty/missing recorded
 directories retain native fallback; no-MCP compatibility remains unchanged.
 This metadata snapshot is not a concurrent-filesystem sandbox.
 
+## Session archival and permanent deletion
+
+`service::session_metadata(archived: true)` closes only a provably idle native
+host and waits for its actual exit before publishing archived metadata. History
+is retained. Archived sessions reject open/fork/commands until an explicit
+`archived: false` restore; restoring alone does not start a native process.
+Busy sessions are not interrupted (`session_busy`); missing or unsupported idle
+proof fails closed (`session_idle_unknown`). Metadata is validated before close.
+
+`service::delete_session` closes an idle host, then discovers a unique native v4
+history using bounded header-only reads. It acquires the native-compatible stable
+`.lock` before capturing fingerprints and persisting a deletion manifest. The
+same lock remains held through removal. Only that primary, its known temporary
+and progress companions, and that UUID's supplemental timing files are removed;
+project files, external attachments, fork histories and the stable lock stay.
+Registry/preferences/resource records are forgotten only after cleanup succeeds.
+A new deletion with no matching primary fails with `deletion_history_missing`,
+even for a legacy registry-only entry: absence in the current configured root
+cannot prove native never used another root. Repair the storage configuration
+rather than treating this as successful permanent deletion.
+
+Partially completed deletion retains its original persisted manifest and exposes
+`deleting: true`. Reopen/fork/commands/resource apply are blocked with
+`session_deleting`; explicit DELETE retries use the same fingerprints, including
+after restart, and accept captured files already removed. Changed files are never
+silently adopted. No automatic background deletion is started on registry load.
+Retained cleanup owners survive caller cancellation and have bounded admission.
+These checks protect ordinary ownership and filesystem races, not a hostile
+concurrent-filesystem sandbox. Native transcripts remain native-owned; core only
+validates and removes precisely authorized files for this explicit operation.
+
 ## Native identity, ordered prompts and client text I/O
 
 These are source contracts requiring a supporting native binary, not a claim
@@ -61,13 +133,13 @@ transcripts; core provides neutral validation, correlation and lifecycle.
   `begin_prompt(String)` remains the unchanged legacy path. Constructors check
   aggregate blocks; the writer separately checks the final correlated command,
   including JSON escaping, envelope and LF.
-- The v1 ordered profile caps blocks at 64, images at 4, each image at 256 KiB
-  decoded / 349,528 base64 bytes, all images at 512 KiB decoded, aggregate text
-  at 32 KiB UTF-8 and the complete prompt frame at 768 KiB. Native allows at
-  most 2000 pixels per side / 4,000,000 pixels and a 32 MiB best-effort decoder
+- The v1 ordered profile caps blocks at 64, images at 4, each image at 1 MiB
+  decoded / 1,398,104 base64 bytes, all images at 2 MiB decoded, aggregate text
+  at 32 KiB UTF-8 and the complete prompt frame at 3 MiB. Native allows at
+  most 2000 pixels per side / 4,000,000 pixels and a 64 MiB best-effort decoder
   allocation budget, not a hard total heap limit. URI/path input and fetching,
   data URLs, APNG, JPEG-XT, orientation transforms and lossy text fallback are
-  not provided by this API. Native inbound frames remain 1 MiB.
+  not provided by this API. Native inbound frames remain 4 MiB.
 - `file_io::{FileIOCapabilities, FileIOHandler, FileIORequest, FileIOResponse,
   FileIOCancellation}` and `HostSession::configure_file_io` install one
   session-owned neutral text handler while idle under the run lease. The exact
@@ -573,3 +645,187 @@ Old native hosts return unsupported (HTTP 501); malformed queries return 400,
 invalid host pages 502, and removed snapshot leaves 409. Existing `/api/v1`,
 legacy `get_messages`, snapshot/SSE replay boundaries and native ownership are
 unchanged. Installing/restarting matching runtime layers is a separate step.
+
+## Bounded native Code Mode child inspection
+
+`service::{child_summaries, child_phases, child_body}` and the named request,
+page, descriptor and cursor types in `service::tool_program_queries` expose
+read-only native child inspection on an **already live** host. They require the
+exact `toolProgramChildren` v1 profile plus all three advertised native commands.
+Missing/old/mismatched hosts return Unsupported without sending a new command,
+opening an executable session, or scanning a generic transcript.
+
+Begin pages return at most 32 authoritative summaries with `state: unknown`.
+Phase pages return at most 32 matching phases and scan at most 128 candidates;
+empty pages with continuation are valid. A complete data page is at most 128 KiB
+(no oversized-first exception), not a 128 KiB bound on the compatibility RPC
+frame's duplicated data/result. Bodies require exact native child/phase authority,
+use at most eight chunks / 64 KiB decoded bytes per page, and verify each returned
+chunk's SHA-256. Consumers must stream all pages to verify the aggregate body hash.
+
+Core validates source/leaf/direction/target cursor binding, ordered identities,
+descriptor shape, page and decoded budgets, canonical base64 and chunk checksums.
+Malformed host replies and unclassified native rejection/storage failures are
+sanitized HostUnavailable; request preflight failures remain InvalidInput. No
+retry, execution, parent settlement, adapter database or synthetic assistant
+message is introduced. `originVerification: forkCopy` preserves historical origin
+IDs without claiming a destination run checkpoint; missing final/close stays
+uncertain and scan exhaustion never means execution completed.
+
+Native separately advertises bounded post-ACK child commit events and explicit
+resync-on-lag. `service::tool_program_events::{supported, parse}` independently
+negotiates that exact profile and validates typed begin/phase/resync metadata:
+pinned source/lane, native IDs, flags, descriptors and strict nested fields.
+The complete original event is at most 32 KiB and its data at most 16 KiB,
+checked before cloning; unrelated events remain ignored even on older hosts.
+Parsing trusts the negotiated native post-ACK promise, not an independent
+checkpoint/body verification. Native transcripts remain authoritative.
+
+### Child snapshot and replay handoff
+
+`service::child_snapshot(&Service, id, ChildSnapshotQuery)` is a new explicit
+read-only operation, separate from the unchanged ordinary transcript snapshot.
+Example request:
+
+```json
+{"children":{"direction":"newestFirst","limit":8,"maxBytes":32768},"phaseLimit":2}
+```
+
+It requires both exact query and event profiles. Only a fresh newest-first window
+is accepted; use the existing typed page APIs for historical continuations.
+A snapshot reads at most eight begins and one bounded newest-first phase scan
+(up to eight phases) per child, without a hidden pagination loop or body read.
+The entire future has a 30-second budget, including existing native correlation
+and writer backpressure; an existing per-RPC timeout can win that same deadline.
+No worker, run lease, cache, transcript scan or execution is started.
+
+Core subscribes before capturing the replay boundary, pins native query pages,
+revalidates their branch and host identity, then captures the replay end and
+selected metadata under the history lock. It does not first clone unrelated
+message/tool bodies. The complete result and selected-event accounting are each
+bounded to 128 KiB. Eviction, discontinuity or byte overflow returns Conflict
+with `child_snapshot_resync_required`, not truncated success. Continue the
+existing replay/subscription strictly after `lastSeq`; later eviction still
+requires resync. Core replay sequences and native entry sequences are distinct.
+
+Pinned `page`/`phases` and their cursors remain unchanged. `observations` fold
+validated overlapping events by stable native identity; a bounded identity table
+also rejects cross-child entry-ID/sequence contradictions. `events` carries typed
+metadata and its applied/duplicate/outside-window/resync disposition. New children
+outside the selected window and native lag signals set `resyncRequired`; clients
+must refresh rather than treat that window as complete. Ordinary parent run
+settlement is untouched.
+
+A child outcome requires the actual final and adjacent closed records and their
+native flags. Final alone is `finalObserved`; missing final/close or exhausted
+scans cannot imply success. Outcomes describe observed child history (historical
+in a fork), never destination execution, parent settlement, or unread body
+availability/integrity. HTTP/ACP mappings and Web cards/reconnect/HMR remain
+unfinished; this API does not automatically change their existing behavior.
+
+Focused fixtures cover strict events, overlap, resubscription, sparse pages,
+replay eviction, byte budgets, source conflicts, cancellation, same-ID host
+replacement and the total deadline. The opt-in ignored
+`actual_native_readonly_child_snapshots` test requires explicit absolute
+`RPI_CODEMODE_NATIVE_BIN`, `RPI_CODEMODE_NATIVE_EVIDENCE`, a new
+`RPI_CODEMODE_CORE_EVIDENCE_OUT`, and `RPI_CODEMODE_NATIVE_SHA256`. It compiles a
+std-only fixed-discovery-exclusion launcher, forwards native pipes unchanged,
+and opens only copied retained sessions. The launcher is not a protocol mock.
+Current Windows evidence covers 26 real-native/core snapshots, 38 selected
+children, zero execution events, exact final/closed facts and unchanged source
+primaries. It does **not** qualify live native-core overlap or adapter/UI behavior.
+
+Metadata ancestry/eager custom backends are not an RSS bound. See the
+[latest qualification checkpoint](../../docs/codemode-full-parity-matrix.md#latest-neutral-child-snapshot-and-replay-integration)
+for evidence, failed preliminary probes and remaining work. No installation,
+production restart or deployment is performed.
+
+
+### Ongoing bounded child subscription
+
+`service::child_subscription(&Service, id: String, ChildSnapshotQuery)` returns
+`ServiceResult<service::tool_program_live::ChildSubscription>`. The receiver is
+created before invoking the existing bounded `child_snapshot`, with independent
+query/event/branch-identity capability gates and the same host Arc checked at both boundaries.
+The additive native `toolProgramBranch` profile must be exactly
+`{"version":1,"command":"get_tool_program_branch","identity":"bindingAndLaneGeneration"}`,
+with that command advertised. Older hosts retain existing read-only pages and
+snapshots but cannot open this live feed; there is no optimistic legacy fallback.
+`subscription.snapshot() -> &ChildSnapshot` is the immutable initial result;
+`subscription.next().await -> Option<ChildStreamItem>` follows its `lastSeq`.
+Pinned native pages, cursors, fork provenance and public initial observations
+are never mutated. Working observations seed both query phases and validated
+snapshot overlap/terminal facts, using the same identity, merge and outcome
+rules as snapshots, not a second lifecycle implementation.
+
+The exact Serde DTO (boxed Rust event/observation fields serialize transparently)
+is:
+
+```text
+{"type":"update","seq":<core sequence>,"event":<validated ChildEvent>,
+ "observation":<ChildObservation or null>,"disposition":"applied"|"duplicate"}
+{"type":"resyncRequired","seq":<last consumed core sequence>,"reason":<reason>}
+```
+
+`event.seq` is a native entry sequence, not the outer core sequence. `observation`
+is present for applied phase facts and null for duplicates; outcomes still need
+actual final/adjacent closed records and do not settle the parent. The native
+source session and main lane are strictly checked before returning any child
+metadata. Unrelated events advance the core cursor without returning their
+payloads. Queued events already included at or before initial `lastSeq` are
+skipped. Lag is terminal even if dropped frames might have been snapshot overlap.
+
+`ChildResyncReason` serializes as `snapshotUncertain`, `hostReplaced`,
+`hostClosed`, `hostError`, `receiverClosed`, `lagged`, `coreSequenceGap`,
+`invalidChildEvent`, `nativeResync`, `outsideWindow`, `identityConflict`,
+`unknownOldIdentity`, `phaseDiscontinuity`, `branchChanged` or `branchUnavailable`.
+Each emits one sanitized terminal
+item, then `None`: no untrusted error payload is forwarded, no refresh is hidden,
+and no completeness is inferred. A replacement host with the same session ID
+cannot join the old feed; checks occur before and after receive. As with any
+lock-free delivery boundary, later replacement cannot retract an already returned
+item. Callers explicitly request a new subscription/snapshot after resync.
+Before each child delivery (including duplicates), bounded fresh summary/phase
+reads prove retained facts and the incoming frame against one pinned current
+leaf. Native identity reads bracket attachment and every live proof: destination
+session/main lane, UUIDv4 live binding ID and explicit lane-mutation generation
+must still match attachment. Ordinary append may advance the final head without
+changing generation. Navigation (including away/back to the same leaf), fork or
+binding replacement cannot reuse that proof. Retained begin/phase equality,
+incoming phase membership and the second bounded summary check remain required.
+Inconclusive, evicted or conflicting facts terminate with explicit resync, not a
+hidden scan or optimistic old-branch update. Each proof uses at most 12 RPCs:
+two identity reads (2 KiB each), two summary heads and eight phase pages
+(32 KiB each), without following continuations. Both attachment and each proof
+have one 30-second budget. Dropping a pending `next()` preserves its frame.
+
+Host-bound APIs use core-owned launch identity, not an invented `ready.sessionId`
+field. A native `--fork` chooses its own destination ID: core finalizes that
+owner's destination exactly once from the existing validated `get_state`
+readback before publishing it. Unfinalized forks fail closed; ordinary owners
+cannot be rebound. Live branch identity is an additional bounded native query,
+not a replacement launch-owner identity, transcript store or authority token.
+
+All ongoing state is caller-owned and finite: at most eight selected children,
+eight working phases per child, 128 recent canonical identities and 128 recent
+complete event envelopes, plus the unchanged initial snapshot (128 KiB maximum).
+Old unknown/evicted native identities conservatively require resync instead of
+being reaccepted; exact retained duplicates are idempotent and contradictory
+cross-child IDs/sequences fail closed. A native phase-index gap requires resync;
+native entry-sequence jumps alone are allowed because other journal entries can
+interleave. These are bounded metadata structures, not a claim about native RSS.
+
+Dropping the subscription only releases its receiver/references, never kills or
+cancels the shared host. `next()` is cancellation safe even after receive while
+checking host identity. There is no detached task, poll watcher, child or parent
+execution, worker, persistent store, transcript fallback or body read. Fixtures
+use actual `TestEvents.send_projected` publication, including over 128 ongoing
+updates; fixtures alone do not qualify native execution. The separate Windows
+ACP proof `packages/rpi-acp/tests/tool_program_live_native.py` uses a real Code
+Mode DLL and real bash child with a file gate released only after subscription
+ACK. Local evidence in `target/branch-live-native-5/` and final-source repeat
+`target/branch-live-native-6/` each records three post-ACK normal updates
+(update/final/closed), exact native entry reconciliation and exited
+retained process handles. This qualifies that isolated Windows path only, not
+all lifecycle/fork cases on real native, HTTP live delivery, UI/HMR, Unix,
+external providers, installed extensions or full parity. No deployment is implied.

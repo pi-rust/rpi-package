@@ -380,6 +380,140 @@ changes observed during a prompt also produce the custom notification
 lacks branch operations, normal ACP sessions continue to work and
 `session/durable` returns an unavailable error.
 
+### Read-only Code Mode child queries
+
+The optional `agentCapabilities._meta["rpi/tool-program-children"]` v1 descriptor
+advertises `optional: true`, `recovery: "readOnly"` and exactly these methods:
+
+* `session/tool_program_children` — core `ChildPageQuery` → `ChildPage`.
+* `session/tool_program_phases` — core `ChildPhaseQuery` → `ChildPhasePage`.
+* `session/tool_program_body` — core `ChildBodyQuery` → `ChildBodyPage`.
+* `session/tool_program_snapshot` — core `ChildSnapshotQuery` → `ChildSnapshot`.
+
+Each request is exactly `{sessionId: string, query: <typed core DTO>, _meta?: object}`;
+unknown outer/nested fields and malformed types are rejected. `sessionId` must be
+nonempty, control-free and at most 512 UTF-8 bytes. The session must already be
+attached to this ACP connection. Explicit callers need not advertise a client
+capability. The adapter forwards the typed core result directly, without adding
+an envelope, projecting child cards, fetching bodies for summaries, or opening a
+session. These methods neither execute tools nor retry, scan transcripts or fall
+back to another session/source. Query DTOs/budgets and cursor source validation
+remain owned by [extcore](../rpi-extcore/README.md).
+
+Adapter availability at initialize does not claim a native profile. Every read
+checks the existing host through core; older/incompatible hosts fail explicitly.
+Snapshot additionally requires core's exact native child-event profile to validate
+its bounded metadata/replay boundary. The descriptor also contains an optional
+`live` object (`snapshotFirst: true`, `maxSubscriptions: 16`) advertising the
+vendor methods `session/tool_program_subscribe` and
+`session/tool_program_unsubscribe`, plus the notification
+`session/tool_program_update`. These are deliberately not standard
+`session/update` messages: clients must opt into the `rpi` metadata contract.
+
+Subscribe params add a caller-owned `subscriptionId` to the same typed snapshot
+query. The response contains the bounded snapshot before any update notification
+is emitted. Every later notification has `{sessionId, subscriptionId, update}`;
+`update` is a typed child update or a terminal `resyncRequired` item from core.
+Lag, branch/generation changes, host replacement/closure, invalid native events,
+or native resync end the subscription with an explicit resync reason. The client
+must issue a fresh bounded subscription after resynchronizing; the adapter never
+fabricates a child event or silently resumes from an uncertain cursor. Core
+additionally requires native `toolProgramBranch` v1 (`get_tool_program_branch`,
+`bindingAndLaneGeneration`). Ordinary append keeps the generation; navigation/ABA
+and live binding replacement do not. Hosts lacking this exact profile still
+support their existing read-only pages/snapshot but cannot subscribe.
+
+Subscriptions belong to one ACP connection and are capped at 16. Duplicate
+subscription IDs, wrong-session unsubscribe requests, malformed envelopes and
+unknown fields are rejected. `$/cancel_request`, `session/cancel`, close/delete,
+EOF and shutdown cancel and join pending snapshot work and live watchers before
+retiring the session or connection. The optional feed does not execute tools,
+create a transcript owner or change standard ACP `session/update` semantics.
+Summary state remains `unknown`; scan exhaustion is not child settlement, and
+returned body chunks do not verify unread chunks or whole-body integrity.
+
+Core `InvalidInput`/`NotFound` map to JSON-RPC `-32602`; other core failures map to
+`-32001`. Typed core failures include bounded, sanitized `error.data.code` (for
+example `tool_program_queries_unsupported`, `child_snapshot_resync_required`, or
+`host_unavailable`), preserving only known neutral diagnostics, never raw native
+errors, paths or adapter debug output. Envelope/unknown-session errors retain
+ordinary ACP errors. Reads run in a connection-owned registry of at most 64 tasks,
+including tasks finishing response writes. Capacity returns bounded `-32001`
+`child query task limit exceeded`; completed handles are reaped on next input.
+Request IDs are checked across prompt, list and child-query tasks, preserving the
+difference between numeric `1` and string `"1"`. Other requests and cancellations
+remain dispatchable while a native read is pending.
+
+`$/cancel_request` drops/joins the exact query task without a query completion;
+`session/cancel` cancels all queries for that session in addition to existing
+prompt-abort behavior. Close/delete stop its queries before retiring the session;
+EOF and host shutdown abort/drain every query task. Query-only cancellation never
+aborts a native run or kills the shared child. Core owns correlation retirement
+on future drop and the 30-second query/snapshot deadline; late native replies do
+not revive a request, and there is no automatic replay. A completion already
+written cannot be recalled. Cancellation of a partial response write retains
+Writer's **whole-connection terminal** policy: no cancellation acknowledgement is
+promised once that writer is terminal.
+
+Deterministic in-memory native RPC fixtures cover all four typed projections,
+strict envelopes/nested fields, cursor/budget preflight without native writes,
+old-host rejection, sanitized native errors, unknown sessions/methods and v1
+initialize compatibility. Ingress tests hold unanswered native queries while checking
+ordinary-request progress, exact cancellation/correlation retirement, typed IDs,
+cross-method duplicates, session cancel/close/delete, EOF/host shutdown, the
+64-task limit and the actual 30-second deadline. Partial-write cancellation and
+finishing-response slot/ID retention have deterministic output fixtures. These
+tests do not establish real-native execution or deployment.
+
+The separate opt-in Windows `tests/tool_program_native.py --help` proof binds
+explicit prebuild source inventories and bridge/native/launcher SHA-256s. Current
+read-only recovery evidence covers 26 sessions / 70 children / 38 selected
+children, first body chunk only for each selected child, and zero execution
+frames; it is not full-body aggregate integrity or live-notification proof.
+The separate opt-in Windows `tests/tool_program_live_native.py --help` proves
+one real post-ACK live path with explicit test bridge/native/launcher/Code Mode
+binaries and prebuild provenance. Its loopback synthetic model calls the real
+DLL, which runs a real bash child. A file gate holds the child until a successful
+subscribe ACK; notifications must be ordinary `update` (never resync), include
+final/closed, reconcile ID/seq/parent/data to native entries, and end in succeeded.
+The proof normalizes only the five known optional phase DTO fields from absent
+to null, not descriptors or identity values. Retained exact process handles
+verify child exit and bridge/launcher/native cleanup without recursive PID kills.
+Local `target/branch-live-native-5/` and final-source repeat
+`target/branch-live-native-6/` each passed with three matched post-ACK updates;
+failed attempts 1–4 are not passing evidence. This does not qualify full parity,
+all native cancellation/fork cases, HTTP live, UI/HMR, Unix or external providers.
+
+Example (all binaries must already be built; this command does not build/install):
+
+```text
+python packages/rpi-acp/tests/tool_program_live_native.py --bridge <absolute bridge.exe> --native <absolute rpi.exe> --launcher <absolute tool_program_live_launcher.exe> --codemode <absolute rpi_codemode.dll> --build-evidence <provenance.json> --out <new evidence directory>
+```
+
+Build the test-only launcher from `examples/tool_program_live_launcher.rs`.
+The provenance JSON supplies `sources: [{path, sha256}]` inventoried before build
+and `binaries: {bridge,native,launcher,codemode: {path,sha256}}` captured after
+successful builds; retain build logs, repository heads/diffs and inventory/build
+timestamps alongside it. The harness verifies every listed source and binary
+hash before starting, then retains the provenance, native/ACP wire, transcripts,
+ACK receive boundary, provider calls, cleanup and results. These are local build
+attestations, not cryptographic build reproducibility or automatic CI proof.
+
+For the recovered-read proof above, primary and progress files remain unchanged.
+Its process ownership is restricted to
+the direct bridge, verified direct launcher and its explicit native PID, using
+retained kernel handles, creation times and image path/hash checks. Cleanup never
+recursively kills a PID tree; manual exact-handle cleanup makes a case fail.
+Native EOF retirement may be exit 0 or owner termination 1, recorded verbatim;
+this does not qualify graceful native shutdown or system console cleanup.
+
+An earlier proof helper incorrectly inferred descendants from historical PIDs
+and terminated unrelated `work-cli` processes after PID reuse. That failed run
+is retained, not counted as acceptance. The corrected helper has focused mock
+safety regressions and fresh actual-native evidence; see the
+[current qualification](../../docs/codemode-full-parity-matrix.md#current-child-adapter-and-web-increment).
+No installed extension, Unix, provider, deployment, CI or full-parity claim.
+
 ### Event mapping
 
 The child RPC uses `message` for prompt text and `success`/`data` for responses.
@@ -777,10 +911,10 @@ Images needing orientation transforms must be normalized by the client; this
 path does not silently resize, re-encode, drop, or replace images with text.
 
 The ordered native profile permits 1..64 content blocks, at most 4 images,
-256 KiB decoded per image (349,528 base64 bytes), 512 KiB decoded images total,
+1 MiB decoded per image (1,398,104 base64 bytes), 2 MiB decoded images total,
 and 32 KiB aggregate UTF-8 text. The complete serialized native prompt command,
-including correlation ID, escaping and LF, is limited to 768 KiB. Native caps
-images at 2000 pixels per side / 4,000,000 pixels and advertises a 32 MiB
+including correlation ID, escaping and LF, is limited to 3 MiB. Native caps
+images at 2000 pixels per side / 4,000,000 pixels and advertises a 64 MiB
 **best-effort decoder allocation budget**, not a process-wide heap/RSS limit
 (JPEG scratch allocations are not all accounted). Native inbound frames remain
 limited to 1 MiB.
@@ -835,7 +969,7 @@ not copied into a new bridge-owned filesystem or history database.
 
 At most 64 requests are pending; text is limited to 256 KiB UTF-8, independently
 of the 768 KiB encoded JSON payload limit (escaping can reach that first).
-Native inbound frames are bounded to 1 MiB. Native waits up to 60 seconds;
+Native inbound frames are bounded to 4 MiB. Native waits up to 60 seconds;
 core gives handlers 50 seconds including queue time and separately bounds native
 response dispatch to 5 seconds; ACP gives each client operation 45 seconds
 including queued frame writing. These layered deadlines are not a global hard

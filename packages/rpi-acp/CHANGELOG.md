@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.9...rpi-acp-v0.2.10) - 2026-11-05
+
+### Fixed
+
+- *(extcore)* prove live children with native branch identity
+
+## [0.2.9](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.8...rpi-acp-v0.2.9) - 2026-11-04
+
+### Added
+
+- *(acp)* add optional live child subscriptions
+- *(adapters)* expose bounded Code Mode child queries and live feed
+
+### Fixed
+
+- *(acp)* bound live subscription shutdown
+
+## [0.2.8](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.7...rpi-acp-v0.2.8) - 2026-11-03
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.2.7](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.6...rpi-acp-v0.2.7) - 2026-11-02
+
+### Added
+
+- *(extcore)* own exact session resource lifecycle and recovery
+
 ## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.5...rpi-acp-v0.2.6) - 2026-11-01
 
 ### Added

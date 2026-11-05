@@ -1,6 +1,8 @@
 [package]
 name = "rpi-durable"
-version = "0.3.1"
+version = "0.3.4"
+publish = false
+# Archived: durable workflow support is now provided by the native host.
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

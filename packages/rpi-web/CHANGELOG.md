@@ -2,6 +2,69 @@
 
 ## [Unreleased]
 
+## [0.1.42](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.41...rpi-web-v0.1.42) - 2026-11-05
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.41](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.40...rpi-web-v0.1.41) - 2026-11-04
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.40](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.39...rpi-web-v0.1.40) - 2026-11-04
+
+### Added
+
+- *(web)* show pending answers and inspect Code Mode children
+
+## [0.1.39](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.38...rpi-web-v0.1.39) - 2026-11-03
+
+### Fixed
+
+- *(web)* expose mobile fork and guard pending fork requests ([#185](https://github.com/pi-rust/rpi-package/pull/185))
+
+## [0.1.38](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.37...rpi-web-v0.1.38) - 2026-11-03
+
+### Fixed
+
+- *(web)* retire archived sessions and permanently delete native history ([#183](https://github.com/pi-rust/rpi-package/pull/183))
+
+## [0.1.37](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.36...rpi-web-v0.1.37) - 2026-11-02
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.36](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.35...rpi-web-v0.1.36) - 2026-11-02
+
+### Fixed
+
+- *(android)* confirm HTTP download links in system browser
+
+### Other
+
+- Merge pull request #172 from pi-rust/fix/android-http-links
+
+## [0.1.35](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.34...rpi-web-v0.1.35) - 2026-11-02
+
+### Added
+
+- *(web)* expose provider management in runtime settings
+- *(web)* toggle the existing conversation timeline from the toolbar
+
+### Fixed
+
+- *(web)* remove intrusive mobile provider suggestions
+
+## [0.1.34](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.33...rpi-web-v0.1.34) - 2026-11-02
+
+### Fixed
+
+- *(ci)* stabilize Web production frontend release checks ([#173](https://github.com/pi-rust/rpi-package/pull/173))
+
 ## [0.1.33](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.32...rpi-web-v0.1.33) - 2026-11-02
 
 ### Added

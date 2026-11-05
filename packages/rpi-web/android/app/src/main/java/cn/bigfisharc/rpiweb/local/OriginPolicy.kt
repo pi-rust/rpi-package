@@ -5,10 +5,11 @@ import java.util.Locale
 
 /** No browser/Android dependency: all trust comparisons use scheme/host/port, not prefixes. */
 object OriginPolicy {
-    private fun uri(raw: String): URI? = try {
+    private fun uri(raw: String, allowHttp: Boolean = false): URI? = try {
         if (raw.isBlank() || raw.any { it <= ' ' || it == '\\' || it.code > 127 }) null
         else URI(raw).takeIf {
-            it.scheme.equals("https", ignoreCase = true) &&
+            (it.scheme.equals("https", ignoreCase = true) ||
+                (allowHttp && it.scheme.equals("http", ignoreCase = true))) &&
                 it.rawUserInfo == null && it.host != null &&
                 !it.host.endsWith('.') && !it.host.contains('%') &&
                 (it.port == -1 || it.port in 1..65535) &&
@@ -27,6 +28,9 @@ object OriginPolicy {
     }
 
     fun isHttps(raw: String): Boolean = uri(raw) != null
+
+    /** Browser handoff only: HTTP is never a trusted connection origin. */
+    fun isBrowserLink(raw: String): Boolean = uri(raw, allowHttp = true) != null
 
     fun isInternal(raw: String, trustedOrigin: String): Boolean {
         val parsed = uri(raw) ?: return false

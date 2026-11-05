@@ -1,5 +1,6 @@
 //! Read native transcript branches without projecting a client protocol.
 pub mod page;
+pub(crate) mod saved;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},

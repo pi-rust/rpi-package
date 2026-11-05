@@ -24,9 +24,19 @@
 //! calls are confined to this module; every acquired Windows handle has RAII.
 use std::io;
 use std::process::{Child, Command};
+mod file_lock;
+pub use file_lock::SharedFileLock;
 
+/// Contained process tree owned by the component that spawns it. The command,
+/// executable, arguments and environment must come from the caller's authorized
+/// configuration; this type does not authorize untrusted remote command input.
+/// Stop/Drop target only the owned process group/job, never a caller-supplied PID.
+/// `stop` includes synchronous OS termination/wait and must run in a retained
+/// blocking cleanup owner when used from async code. Kernel I/O/wait failures are
+/// not hard-preemptible deadlines. Taking pipes is supported; detaching/replacing
+/// the owned Child or deliberately escaping containment violates this contract.
 #[derive(Debug)]
-pub(crate) struct ProcessTree {
+pub struct ProcessTree {
     child: Child,
     #[cfg(windows)]
     job: Option<std::os::windows::io::OwnedHandle>,
@@ -36,7 +46,7 @@ pub(crate) struct ProcessTree {
 }
 
 impl ProcessTree {
-    pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
+    pub fn spawn(command: &mut Command) -> io::Result<Self> {
         #[cfg(windows)]
         {
             Self::spawn_with(command, |_, _| Ok(()))
@@ -58,11 +68,11 @@ impl ProcessTree {
         }
     }
 
-    pub(crate) fn child_mut(&mut self) -> &mut Child {
+    pub fn child_mut(&mut self) -> &mut Child {
         &mut self.child
     }
 
-    pub(crate) fn stop(&mut self) {
+    pub fn stop(&mut self) {
         if self.stopped {
             return;
         }
