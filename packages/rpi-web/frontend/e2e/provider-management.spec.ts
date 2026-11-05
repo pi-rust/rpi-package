@@ -333,8 +333,8 @@ class ProviderHost {
             },
             get_provider_models: {
               models: [
-                { id: "model-a", ownedBy: "fixture" },
-                { id: "model-b", ownedBy: "fixture" },
+                { id: "model-a", ownedBy: "fixture", contextWindow: 128000 },
+                { id: "model-b", ownedBy: "fixture", contextWindow: 256000 },
               ],
             },
             test_provider_config: {
@@ -674,6 +674,9 @@ test("adding a provider collects protocol and model and submits the full configu
   );
   await modal.getByLabel("Available models", { exact: true }).selectOption("model-b");
   await expect(modal.getByLabel("Model ID", { exact: true })).toHaveValue("model-b");
+  await expect(
+    modal.getByLabel("Context window (tokens, optional)", { exact: true }),
+  ).toHaveValue("256000");
   await modal.getByRole("button", { name: "Test connection", exact: true }).click();
   await expect(modal).toContainText("23 ms");
   expect(host.count("get_provider_models")).toBe(1);
@@ -700,6 +703,7 @@ test("adding a provider collects protocol and model and submits the full configu
       apiKey: "fixture-provider-key",
       modelId: "model-b",
       modelName: "Model A",
+      contextWindow: 256000,
     },
   ]);
   write.release();

@@ -43,6 +43,7 @@ const copy = {
     baseDraft: "Custom Base URL · local draft",
     modelId: "Model ID",
     modelName: "Model name (optional)",
+    contextWindow: "Context window (tokens, optional)",
     availableModels: "Available models",
     draftNote:
       "Base URL changes and provider deletion are not supported by the node. This URL is a page-local draft only; it is never sent or persisted.",
@@ -73,6 +74,7 @@ const copy = {
       "API Key submission failed. Check the node connection and permissions, then enter the key again.",
     providerSaveError:
       "Provider configuration failed. Check the node connection and configuration values, then try again.",
+    contextWindowError: "Context window must be a positive whole number.",
     restart:
       "The node requires a runtime restart for this change. Restart on the node, then refresh; this page will not restart it automatically.",
     modelSaved: "Model selection submitted and runtime state read back.",
@@ -127,6 +129,7 @@ const copy = {
     baseDraft: "自定义 Base URL · 本地草稿",
     modelId: "模型 ID",
     modelName: "模型名称（可选）",
+    contextWindow: "上下文大小（tokens，可选）",
     availableModels: "可用模型",
     draftNote:
       "节点暂不支持修改 Base URL 或删除供应商。此地址仅为当前页面草稿，不会发送或持久化。",
@@ -153,6 +156,7 @@ const copy = {
     saveError: "API Key 提交失败，请检查节点连接与配置权限后重新输入。",
     providerSaveError:
       "服务商配置失败，请检查节点连接和配置内容后重试。",
+    contextWindowError: "上下文大小必须是大于 0 的整数。",
     restart:
       "节点要求重启运行时后生效。请在节点端重启，然后刷新检测；此页面不会自动重启。",
     modelSaved: "模型选择已提交并回读运行状态。",
@@ -275,8 +279,13 @@ export function ProviderManager({
   const [baseUrl, setBaseUrl] = useState("");
   const [modelId, setModelId] = useState("");
   const [modelName, setModelName] = useState("");
+  const [contextWindow, setContextWindow] = useState("");
   const [fetchedModels, setFetchedModels] = useState<
-    Array<{ id: string; ownedBy?: string | null }>
+    Array<{
+      id: string;
+      ownedBy?: string | null;
+      contextWindow?: number | null;
+    }>
   >([]);
   const [providerProbePending, setProviderProbePending] = useState(false);
   const [providerProbeAction, setProviderProbeAction] = useState<
@@ -392,6 +401,7 @@ export function ProviderManager({
     setBaseUrl("");
     setModelId("");
     setModelName("");
+    setContextWindow("");
     setSavePending(false);
     setSaveError(null);
     setSaveNotice(null);
@@ -437,6 +447,7 @@ export function ProviderManager({
     setBaseUrl(isNew ? "" : baseDrafts.get(value) || "");
     setModelId(isNew ? "" : firstModel?.id || "");
     setModelName(isNew ? "" : firstModel?.name || "");
+    setContextWindow("");
     setFetchedModels([]);
     setProviderProbeError(false);
     setConnectionError(false);
@@ -456,6 +467,7 @@ export function ProviderManager({
     setBaseUrl("");
     setModelId("");
     setModelName("");
+    setContextWindow("");
     setFetchedModels([]);
     setProviderProbeError(false);
     setConnectionError(false);
@@ -551,6 +563,8 @@ export function ProviderManager({
       if (!current()) return;
       setFetchedModels(result.models);
       if (!modelId.trim() && result.models[0]) setModelId(result.models[0].id);
+      if (!contextWindow.trim() && result.models[0]?.contextWindow)
+        setContextWindow(String(result.models[0].contextWindow));
     } catch {
       if (current()) setProviderProbeError(true);
     } finally {
@@ -623,6 +637,16 @@ export function ProviderManager({
 
   async function saveProvider() {
     const owner = ownerRef.current;
+    const parsedContextWindow = contextWindow.trim()
+      ? Number(contextWindow.trim())
+      : undefined;
+    if (
+      parsedContextWindow !== undefined &&
+      (!Number.isSafeInteger(parsedContextWindow) || parsedContextWindow <= 0)
+    ) {
+      setSaveError("contextWindowError");
+      return;
+    }
     const values = {
       provider: provider.trim(),
       api: protocol,
@@ -630,6 +654,9 @@ export function ProviderManager({
       apiKey: secret,
       modelId: modelId.trim(),
       modelName: modelName.trim(),
+      ...(parsedContextWindow !== undefined
+        ? { contextWindow: parsedContextWindow }
+        : {}),
     };
     setSecret("");
     if (
@@ -999,7 +1026,14 @@ export function ProviderManager({
                     <select
                       id={`${id}-available-models`}
                       value={fetchedModels.some((model) => model.id === modelId) ? modelId : ""}
-                      onChange={(event) => setModelId(event.target.value)}
+                      onChange={(event) => {
+                        const selected = fetchedModels.find(
+                          (model) => model.id === event.target.value,
+                        );
+                        setModelId(event.target.value);
+                        if (selected?.contextWindow)
+                          setContextWindow(String(selected.contextWindow));
+                      }}
                     >
                       <option value="">{t.availableModels}</option>
                       {fetchedModels.map((model) => (
@@ -1036,6 +1070,20 @@ export function ProviderManager({
                   onChange={(event) => {
                     invalidateDraft();
                     setModelName(event.target.value);
+                  }}
+                />
+                <label htmlFor={`${id}-context-window`}>{t.contextWindow}</label>
+                <input
+                  id={`${id}-context-window`}
+                  type="number"
+                  min="1"
+                  step="1"
+                  inputMode="numeric"
+                  value={contextWindow}
+                  placeholder="128000"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setContextWindow(event.target.value);
                   }}
                 />
               </>

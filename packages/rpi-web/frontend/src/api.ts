@@ -750,7 +750,11 @@ export const api = {
     signal?: AbortSignal,
   ) =>
     commandData<{
-      models: Array<{ id: string; ownedBy?: string | null }>;
+      models: Array<{
+        id: string;
+        ownedBy?: string | null;
+        contextWindow?: number | null;
+      }>;
     }>(id, "get_provider_models", input, signal),
   testProviderConfig: (
     id: string,
@@ -772,6 +776,7 @@ export const api = {
       apiKey: string;
       modelId: string;
       modelName?: string;
+      contextWindow?: number;
     },
     signal?: AbortSignal,
   ) =>
