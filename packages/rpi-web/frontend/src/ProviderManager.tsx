@@ -43,6 +43,7 @@ const copy = {
     baseDraft: "Custom Base URL · local draft",
     modelId: "Model ID",
     modelName: "Model name (optional)",
+    availableModels: "Available models",
     draftNote:
       "Base URL changes and provider deletion are not supported by the node. This URL is a page-local draft only; it is never sent or persisted.",
     keyNote:
@@ -60,6 +61,14 @@ const copy = {
       "The node saved the API Key. Refresh providers to read credential metadata.",
     providerSaved:
       "Provider and model saved to models.json. Restart the runtime, then refresh providers.",
+    fetchModels: "Fetch models",
+    fetchingModels: "Fetching models…",
+    fetchedModels: "Models fetched. Select one or enter a custom model ID.",
+    testConnection: "Test connection",
+    testingConnection: "Testing connection…",
+    connectionPassed: "Connection succeeded · {{latency}} ms · {{count}} models reported.",
+    connectionFailed: "Connection test failed. Check the endpoint and API key.",
+    fetchModelsError: "Could not fetch models. Check the endpoint and API key.",
     saveError:
       "API Key submission failed. Check the node connection and permissions, then enter the key again.",
     providerSaveError:
@@ -118,6 +127,7 @@ const copy = {
     baseDraft: "自定义 Base URL · 本地草稿",
     modelId: "模型 ID",
     modelName: "模型名称（可选）",
+    availableModels: "可用模型",
     draftNote:
       "节点暂不支持修改 Base URL 或删除供应商。此地址仅为当前页面草稿，不会发送或持久化。",
     keyNote:
@@ -132,6 +142,14 @@ const copy = {
     help: "使用说明",
     saved: "节点已保存 API Key。请刷新供应商以读取凭据元数据。",
     providerSaved: "服务商和模型已写入 models.json。请重启运行时后刷新供应商。",
+    fetchModels: "获取模型",
+    fetchingModels: "正在获取模型…",
+    fetchedModels: "模型获取成功，请选择模型或手动输入模型 ID。",
+    testConnection: "测试连接",
+    testingConnection: "正在测试连接…",
+    connectionPassed: "连接成功 · {{latency}} ms · 返回 {{count}} 个模型。",
+    connectionFailed: "连接测试失败，请检查地址和 API Key。",
+    fetchModelsError: "获取模型失败，请检查地址和 API Key。",
     saveError: "API Key 提交失败，请检查节点连接与配置权限后重新输入。",
     providerSaveError:
       "服务商配置失败，请检查节点连接和配置内容后重试。",
@@ -164,6 +182,8 @@ type Owner = {
   readRevision: number;
   modelRevision: number;
   draftRevision: number;
+  providerProbeRevision: number;
+  providerProbeController?: AbortController;
   saveController?: AbortController;
   modelController?: AbortController;
 };
@@ -255,6 +275,19 @@ export function ProviderManager({
   const [baseUrl, setBaseUrl] = useState("");
   const [modelId, setModelId] = useState("");
   const [modelName, setModelName] = useState("");
+  const [fetchedModels, setFetchedModels] = useState<
+    Array<{ id: string; ownedBy?: string | null }>
+  >([]);
+  const [providerProbePending, setProviderProbePending] = useState(false);
+  const [providerProbeAction, setProviderProbeAction] = useState<
+    "fetch" | "test" | null
+  >(null);
+  const [providerProbeError, setProviderProbeError] = useState(false);
+  const [connectionError, setConnectionError] = useState(false);
+  const [connectionResult, setConnectionResult] = useState<{
+    latencyMs: number;
+    modelCount: number;
+  } | null>(null);
   const [savePending, setSavePending] = useState(false);
   const [saveError, setSaveError] = useState<Message | null>(null);
   const [saveNotice, setSaveNotice] = useState<Message | null>(null);
@@ -335,6 +368,7 @@ export function ProviderManager({
       readRevision: 0,
       modelRevision: 0,
       draftRevision: 0,
+      providerProbeRevision: 0,
     };
     ownerRef.current = owner;
     setModels([]);
@@ -343,6 +377,12 @@ export function ProviderManager({
     setModelError(null);
     setModelNotice(null);
     setModelRestart(false);
+    setFetchedModels([]);
+    setProviderProbePending(false);
+    setProviderProbeAction(null);
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
     setBaseDrafts(new Map());
     configOpenRef.current = false;
     setConfigOpen(false);
@@ -368,11 +408,16 @@ export function ProviderManager({
       ++owner.draftRevision;
       owner.saveController?.abort();
       owner.saveController = undefined;
+      owner.providerProbeController?.abort();
+      owner.providerProbeController = undefined;
     }
     setSavePending(false);
     setSaveError(null);
     setSaveNotice(null);
     setSaveRestart(false);
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
   }
 
   function openConfig(value: string) {
@@ -392,6 +437,10 @@ export function ProviderManager({
     setBaseUrl(isNew ? "" : baseDrafts.get(value) || "");
     setModelId(isNew ? "" : firstModel?.id || "");
     setModelName(isNew ? "" : firstModel?.name || "");
+    setFetchedModels([]);
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
     configOpenRef.current = true;
     setConfigOpen(true);
   }
@@ -407,6 +456,10 @@ export function ProviderManager({
     setBaseUrl("");
     setModelId("");
     setModelName("");
+    setFetchedModels([]);
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
   }
 
   async function saveKey() {
@@ -457,6 +510,114 @@ export function ProviderManager({
       owner.controllers.delete(controller);
       if (owner.saveController === controller) owner.saveController = undefined;
       if (current()) setSavePending(false);
+    }
+  }
+
+  async function fetchProviderModels() {
+    const owner = ownerRef.current;
+    const input = {
+      api: protocol,
+      baseUrl: baseUrl.trim(),
+      apiKey: secret,
+    };
+    if (
+      !owner ||
+      !owns(owner) ||
+      !configOpenRef.current ||
+      !configIsNew ||
+      !canAddProvider ||
+      !input.baseUrl ||
+      !input.apiKey.trim() ||
+      owner.providerProbeController
+    )
+      return;
+    const revision = ++owner.providerProbeRevision;
+    const controller = new AbortController();
+    owner.providerProbeController = controller;
+    owner.controllers.add(controller);
+    const current = () =>
+      owns(owner) &&
+      !controller.signal.aborted &&
+      configOpenRef.current &&
+      configIsNew &&
+      owner.providerProbeRevision === revision;
+    setProviderProbePending(true);
+    setProviderProbeAction("fetch");
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
+    try {
+      const result = await api.getProviderModels(owner.sessionId, input, controller.signal);
+      if (!current()) return;
+      setFetchedModels(result.models);
+      if (!modelId.trim() && result.models[0]) setModelId(result.models[0].id);
+    } catch {
+      if (current()) setProviderProbeError(true);
+    } finally {
+      owner.controllers.delete(controller);
+      if (owner.providerProbeController === controller)
+        owner.providerProbeController = undefined;
+      if (current()) {
+        setProviderProbePending(false);
+        setProviderProbeAction(null);
+      }
+    }
+  }
+
+  async function testProviderConnection() {
+    const owner = ownerRef.current;
+    const input = {
+      api: protocol,
+      baseUrl: baseUrl.trim(),
+      apiKey: secret,
+    };
+    if (
+      !owner ||
+      !owns(owner) ||
+      !configOpenRef.current ||
+      !configIsNew ||
+      !canAddProvider ||
+      !input.baseUrl ||
+      !input.apiKey.trim() ||
+      owner.providerProbeController
+    )
+      return;
+    const revision = ++owner.providerProbeRevision;
+    const controller = new AbortController();
+    owner.providerProbeController = controller;
+    owner.controllers.add(controller);
+    const current = () =>
+      owns(owner) &&
+      !controller.signal.aborted &&
+      configOpenRef.current &&
+      configIsNew &&
+      owner.providerProbeRevision === revision;
+    setProviderProbePending(true);
+    setProviderProbeAction("test");
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
+    try {
+      const result = await api.testProviderConfig(
+        owner.sessionId,
+        input,
+        controller.signal,
+      );
+      if (!current()) return;
+      setConnectionResult({
+        latencyMs: result.latencyMs,
+        modelCount: result.modelCount ?? 0,
+      });
+    } catch {
+      if (current()) setConnectionError(true);
+    } finally {
+      owner.controllers.delete(controller);
+      if (owner.providerProbeController === controller)
+        owner.providerProbeController = undefined;
+      if (current()) {
+        setProviderProbePending(false);
+        setProviderProbeAction(null);
+      }
     }
   }
 
@@ -811,6 +972,61 @@ export function ProviderManager({
                     setModelId(event.target.value);
                   }}
                 />
+                <div className="provider-manager-inline-actions">
+                  <button
+                    type="button"
+                    disabled={providerProbePending || !baseUrl.trim() || !secret.trim()}
+                    onClick={() => void fetchProviderModels()}
+                  >
+                    {providerProbeAction === "fetch"
+                      ? t.fetchingModels
+                      : t.fetchModels}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={providerProbePending || !baseUrl.trim() || !secret.trim()}
+                    onClick={() => void testProviderConnection()}
+                  >
+                    {providerProbeAction === "test"
+                      ? t.testingConnection
+                      : t.testConnection}
+                  </button>
+                </div>
+                {fetchedModels.length > 0 && (
+                  <>
+                    <p role="status">{t.fetchedModels}</p>
+                    <label htmlFor={`${id}-available-models`}>{t.availableModels}</label>
+                    <select
+                      id={`${id}-available-models`}
+                      value={fetchedModels.some((model) => model.id === modelId) ? modelId : ""}
+                      onChange={(event) => setModelId(event.target.value)}
+                    >
+                      <option value="">{t.availableModels}</option>
+                      {fetchedModels.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.id}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
+                {providerProbeError && (
+                  <p className="provider-manager-error" role="alert">
+                    {t.fetchModelsError}
+                  </p>
+                )}
+                {connectionError && (
+                  <p className="provider-manager-error" role="alert">
+                    {t.connectionFailed}
+                  </p>
+                )}
+                {connectionResult && (
+                  <p role="status">
+                    {t.connectionPassed
+                      .replace("{{latency}}", String(connectionResult.latencyMs))
+                      .replace("{{count}}", String(connectionResult.modelCount))}
+                  </p>
+                )}
                 <label htmlFor={`${id}-model-name`}>{t.modelName}</label>
                 <input
                   id={`${id}-model-name`}

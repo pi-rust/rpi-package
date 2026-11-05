@@ -41,6 +41,13 @@
   font-size: 20px;
 }
 
+.provider-manager-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0;
+}
+
 .provider-manager button,
 .provider-manager-dialog button,
 .workspace-dialog:has(.provider-manager-dialog) .dialog-heading button {

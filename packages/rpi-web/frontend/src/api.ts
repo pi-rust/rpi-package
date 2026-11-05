@@ -744,6 +744,25 @@ export const api = {
       { provider, apiKey },
       signal,
     ),
+  getProviderModels: (
+    id: string,
+    input: { api: string; baseUrl: string; apiKey: string },
+    signal?: AbortSignal,
+  ) =>
+    commandData<{
+      models: Array<{ id: string; ownedBy?: string | null }>;
+    }>(id, "get_provider_models", input, signal),
+  testProviderConfig: (
+    id: string,
+    input: { api: string; baseUrl: string; apiKey: string },
+    signal?: AbortSignal,
+  ) =>
+    commandData<{
+      ok: boolean;
+      status: number;
+      latencyMs: number;
+      modelCount?: number | null;
+    }>(id, "test_provider_config", input, signal),
   setProviderConfig: (
     id: string,
     input: {

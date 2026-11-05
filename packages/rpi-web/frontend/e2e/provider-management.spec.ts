@@ -103,6 +103,8 @@ class ProviderHost {
     "set_model",
     "set_api_key",
     "set_provider_config",
+    "get_provider_models",
+    "test_provider_config",
   ];
   actions = ["projects", "provider_auth"];
   states: Record<string, Json> = {
@@ -243,6 +245,8 @@ class ProviderHost {
         "get_messages",
         "get_available_models",
         "get_auth_status",
+        "get_provider_models",
+        "test_provider_config",
       ];
       if (endpoint === "commands" && !reads.includes(type)) {
         const key = `${session}:${type}`;
@@ -326,6 +330,18 @@ class ProviderHost {
               modelId: body.modelId,
               api: body.api,
               requiresRestart: true,
+            },
+            get_provider_models: {
+              models: [
+                { id: "model-a", ownedBy: "fixture" },
+                { id: "model-b", ownedBy: "fixture" },
+              ],
+            },
+            test_provider_config: {
+              ok: true,
+              status: 200,
+              latencyMs: 23,
+              modelCount: 2,
             },
           };
           await route.fulfill({ json: envelope(type, data[type]) });
@@ -652,6 +668,16 @@ test("adding a provider collects protocol and model and submits the full configu
   await modal.getByLabel("Model ID", { exact: true }).fill("model-a");
   await modal.getByLabel("Model name (optional)", { exact: true }).fill("Model A");
   await modal.getByLabel("API Key", { exact: true }).fill("fixture-provider-key");
+  await modal.getByRole("button", { name: "Fetch models", exact: true }).click();
+  await expect(modal.getByLabel("Available models", { exact: true })).toHaveValue(
+    "model-a",
+  );
+  await modal.getByLabel("Available models", { exact: true }).selectOption("model-b");
+  await expect(modal.getByLabel("Model ID", { exact: true })).toHaveValue("model-b");
+  await modal.getByRole("button", { name: "Test connection", exact: true }).click();
+  await expect(modal).toContainText("23 ms");
+  expect(host.count("get_provider_models")).toBe(1);
+  expect(host.count("test_provider_config")).toBe(1);
   host.permit("set_provider_config");
   const write = host.hold("set_provider_config", {
     json: envelope("set_provider_config", {
@@ -672,7 +698,7 @@ test("adding a provider collects protocol and model and submits the full configu
       api: "openai-responses",
       baseUrl: "https://api.example.test/v1",
       apiKey: "fixture-provider-key",
-      modelId: "model-a",
+      modelId: "model-b",
       modelName: "Model A",
     },
   ]);
