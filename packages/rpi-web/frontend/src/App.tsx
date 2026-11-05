@@ -606,6 +606,23 @@ function sessionSelectionError(session?: SessionSummary) {
     : session?.archived ? new ApiError("", 409, "session_archived") : null;
 }
 
+type SessionCompletionNotification = {
+  id: string;
+  sessionId: string;
+  title: string;
+  outcome: string;
+};
+
+type SettlementIdentity = NonNullable<SessionSummary["latestSettlement"]>;
+
+function settlementKey(settlement: SettlementIdentity | null | undefined) {
+  if (!settlement) return null;
+  if (settlement.runId) return `run:${settlement.runId}`;
+  if (settlement.seq != null) return `seq:${settlement.seq}`;
+  if (settlement.outcome) return `outcome:${settlement.outcome}`;
+  return null;
+}
+
 function normalizeLevel(value: unknown) {
   return typeof value === "string" ? value : "";
 }
@@ -691,6 +708,37 @@ export default function App() {
     null,
   );
   const sessionListValue = useRef<SessionSummary[] | null>(null);
+  const sessionListInitialized = useRef(false);
+  const sessionTitles = useRef(new Map<string, string>());
+  const notifiedSettlements = useRef(new Set<string>());
+  const [sessionNotifications, setSessionNotifications] = useState<
+    SessionCompletionNotification[]
+  >([]);
+  const notifySessionCompletion = useCallback(
+    (
+      sessionId: string,
+      title: string | null | undefined,
+      settlement: SettlementIdentity | null | undefined,
+      fallbackSeq?: number,
+    ) => {
+      const identity = settlementKey(settlement) ??
+        (fallbackSeq != null ? `seq:${fallbackSeq}` : null);
+      if (!identity) return;
+      const id = `${sessionId}:${identity}`;
+      if (notifiedSettlements.current.has(id)) return;
+      notifiedSettlements.current.add(id);
+      setSessionNotifications((previous) => [
+        ...previous,
+        {
+          id,
+          sessionId,
+          title: title?.trim() || "",
+          outcome: settlement?.outcome || "completed",
+        },
+      ].slice(-8));
+    },
+    [],
+  );
   const draftBySession = useRef(loadDrafts());
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -1078,6 +1126,17 @@ export default function App() {
           setInterrupted(Boolean(event.pendingResume));
           setRecoveryNoticeDismissed(false);
           const outcome = String(event.outcome ?? "settled");
+          const settlement: SettlementIdentity = {
+            outcome,
+            runId: typeof event.runId === "string" ? event.runId : undefined,
+            seq: seq > 0 ? seq : undefined,
+          };
+          notifySessionCompletion(
+            activeSessionRef.current,
+            sessionTitles.current.get(activeSessionRef.current),
+            settlement,
+            seq,
+          );
           setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(outcome) || event.aborted === true);
           const aborted =
             event.aborted && outcome !== "aborted" ? " · aborted" : "";
@@ -1306,7 +1365,7 @@ export default function App() {
           break;
       }
     },
-    [showNextDialog, traceEvent],
+    [notifySessionCompletion, showNextDialog, traceEvent],
   );
 
   const handleEvent = useCallback(
@@ -1333,6 +1392,10 @@ export default function App() {
     sessionListRevision.current++;
     sessionListRequest.current = null;
     sessionListValue.current = null;
+    sessionListInitialized.current = false;
+    sessionTitles.current.clear();
+    notifiedSettlements.current.clear();
+    setSessionNotifications([]);
     initialSelectionError.current = "";
     activeSessionRef.current = "";
     sessionReadsAbort.current?.abort();
@@ -1379,6 +1442,33 @@ export default function App() {
         .then(
           ({ sessions: list }) => {
             if (revision !== sessionListRevision.current) return latest();
+            const previous = sessionListValue.current;
+            if (sessionListInitialized.current) {
+              for (const entry of list) {
+                const currentKey = settlementKey(entry.latestSettlement);
+                if (!currentKey) continue;
+                const previousEntry = previous?.find(
+                  (item) => item.sessionId === entry.sessionId,
+                );
+                if (currentKey === settlementKey(previousEntry?.latestSettlement))
+                  continue;
+                notifySessionCompletion(
+                  entry.sessionId,
+                  entry.title,
+                  entry.latestSettlement,
+                );
+              }
+            } else {
+              for (const entry of list) {
+                const currentKey = settlementKey(entry.latestSettlement);
+                if (currentKey)
+                  notifiedSettlements.current.add(`${entry.sessionId}:${currentKey}`);
+              }
+            }
+            for (const entry of list) {
+              if (entry.title) sessionTitles.current.set(entry.sessionId, entry.title);
+            }
+            sessionListInitialized.current = true;
             sessionListValue.current = list;
             setSessions(list);
             return list;
@@ -1399,7 +1489,7 @@ export default function App() {
       sessionListRequest.current = pending;
       return pending;
     },
-    [clearAccess],
+    [clearAccess, notifySessionCompletion],
   );
 
   const createSession = useCallback(
@@ -3260,6 +3350,55 @@ export default function App() {
         } as CSSProperties
       }
     >
+      {sessionNotifications.length > 0 &&
+        createPortal(
+          <div
+            className="session-notification-stack"
+            aria-label={t("sessionCompleted")}
+            aria-live="polite"
+          >
+            {sessionNotifications.map((notification) => (
+              <div className="session-notification" key={notification.id}>
+                <button
+                  type="button"
+                  className="session-notification-main"
+                  aria-label={`${t("sessionCompleted")}: ${notification.title || t("newSession")}`}
+                  onClick={() => {
+                    select(notification.sessionId);
+                    setSessionNotifications((previous) =>
+                      previous.filter((item) => item.id !== notification.id),
+                    );
+                  }}
+                >
+                  <Check size={16} aria-hidden="true" />
+                  <span className="session-notification-copy">
+                    <strong>{notification.title || t("newSession")}</strong>
+                    <span>{t("sessionCompleted")}</span>
+                    <span>
+                      {t("sessionCompletedOutcome", {
+                        outcome: notification.outcome,
+                      })}
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="icon-button session-notification-close"
+                  aria-label={t("closeNotification")}
+                  title={t("closeNotification")}
+                  onClick={() =>
+                    setSessionNotifications((previous) =>
+                      previous.filter((item) => item.id !== notification.id),
+                    )
+                  }
+                >
+                  <X size={15} aria-hidden="true" />
+                </button>
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
       {dialog && (
         <DialogOverlay
           key={dialog.requestId}

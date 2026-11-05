@@ -605,6 +605,51 @@ test("live settlement is not resurrected by stale hydration or replaced with sta
   await expect(model(page)).toContainText("settled-model");
 });
 
+test("settled sessions create clickable dismissible notifications", async ({
+  page,
+  host,
+}) => {
+  await start(page, host);
+  await received(host, A, "events");
+  host.emit(A, [
+    {
+      seq: 11,
+      event: {
+        type: "agent_settled",
+        runId: "notification-run-1",
+        outcome: "completed",
+      },
+    },
+    {
+      seq: 12,
+      event: {
+        type: "agent_settled",
+        runId: "notification-run-2",
+        outcome: "failed",
+      },
+    },
+  ]);
+  const notification = page.getByRole("button", {
+    name: "Session completed: Loading Alpha",
+    exact: true,
+  });
+  await expect(notification).toHaveCount(2);
+  await select(page, B);
+  await notification.first().click();
+  await expect(page).toHaveURL(/session=loading-a/);
+  await expect(notification).toHaveCount(1);
+
+  const secondNotification = page.getByRole("button", {
+    name: "Session completed: Loading Alpha",
+    exact: true,
+  });
+  await expect(secondNotification).toBeVisible();
+  await page
+    .getByRole("button", { name: "Dismiss notification", exact: true })
+    .click();
+  await expect(secondNotification).toHaveCount(0);
+});
+
 test("live host_closed cannot be reopened by stale active-operation hydration", async ({
   page,
   host,

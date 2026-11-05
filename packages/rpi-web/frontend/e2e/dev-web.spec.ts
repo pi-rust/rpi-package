@@ -5,6 +5,11 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 const timelineToggle = (page: Page) =>
   page.getByRole("button", { name: /^(Conversation timeline|对话时间线)$/ });
 async function openTimeline(page: Page) {
+  // Completion notices are intentionally rendered above the workspace. Clear
+  // them before exercising the toolbar so the fixture does not click through
+  // a notice that may overlap the timeline toggle.
+  const notices = page.locator(".session-notification-close");
+  while (await notices.count()) await notices.first().click();
   const button = timelineToggle(page);
   await expect(button).toBeVisible();
   await expect(button).toHaveAttribute("aria-controls", "conversation-timeline-navigation");
@@ -75,6 +80,16 @@ function response(data: unknown, command = "mock") {
 }
 
 async function mockHost(page: Page) {
+  // Completion notices are covered by session-loading.spec.ts. Keep this
+  // broader interaction fixture from letting an overlay steal unrelated
+  // clicks while testing timeline and tool-card behavior.
+  await page.addLocatorHandler(
+    page.locator(".session-notification-stack"),
+    async (stack) => {
+      const close = stack.locator(".session-notification-close").first();
+      if (await close.count()) await close.click();
+    },
+  );
   const projects = [
     { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust", archived: false },
     { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package", archived: false },
