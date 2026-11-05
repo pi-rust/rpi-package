@@ -78,14 +78,14 @@
   },
   {
     "name": "rpi-todo",
-    "version": "0.3.1",
+    "version": "0.3.2",
     "type": "extension",
     "tool": "todo",
     "inspiredBy": "Pi todo extensions",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-todo",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-todo-v0.3.1/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-todo-v0.3.2/rpi-extension.json"
   },
   {
     "name": "rpi-goal",
