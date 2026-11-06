@@ -9,13 +9,27 @@ import subprocess
 import tarfile
 import zipfile
 
-TARGETS = {
+GNU_TARGETS = {
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
 }
+
+# The first musl release is intentionally x86_64-only. The build is native in
+# the musl container, which is required for cdylib/unwind and native package
+# detection. Add another target only together with a native toolchain and
+# runtime smoke test for that architecture.
+MUSL_TARGETS = {
+    "x86_64-unknown-linux-musl",
+}
+TARGETS = GNU_TARGETS | MUSL_TARGETS
+# Full bundles use the installer/catalog and therefore remain GNU-only until
+# the installer can filter catalog entries by target. Individual package
+# releases use each crate's declared target matrix below.
+BUNDLE_TARGETS = GNU_TARGETS
+WEB_TARGETS = GNU_TARGETS
 
 
 def command(*args):
@@ -41,6 +55,16 @@ def asset(path, repository, tag):
     }
 
 
+def platform_slug(target):
+    """Return the installer/archive slug without conflating GNU and musl."""
+    windows = "windows" in target
+    macos = "apple-darwin" in target
+    os_name = "windows" if windows else "macos" if macos else "linux"
+    arch = target.split("-", 1)[0]
+    suffix = "-musl" if target.endswith("-unknown-linux-musl") else ""
+    return f"{os_name}-{arch}{suffix}"
+
+
 def archive_library(library, destination):
     if destination.suffix == ".zip":
         with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -48,6 +72,40 @@ def archive_library(library, destination):
     else:
         with tarfile.open(destination, "w:gz") as archive:
             archive.add(library, arcname=library.name)
+
+
+def package_supported_targets(package):
+    """Read the crate-owned prebuilt target contract.
+
+    Missing metadata is deliberately conservative: it preserves the historical
+    GNU/Windows/macOS set but never opts an unreviewed crate into musl.
+    """
+    package_metadata = package.get("metadata") or {}
+    rpi_metadata = package_metadata.get("rpi") or {}
+    prebuilt = rpi_metadata.get("prebuilt") or {}
+    if not isinstance(prebuilt, dict):
+        return set(GNU_TARGETS)
+    declared = prebuilt.get("supported-targets")
+    if not isinstance(declared, list) or not all(isinstance(target, str) for target in declared):
+        return set(GNU_TARGETS)
+    unknown = set(declared) - TARGETS
+    if unknown:
+        raise ValueError(f"{package['name']} declares unknown prebuilt targets: {sorted(unknown)}")
+    return set(declared)
+
+
+def workspace_metadata(root=None):
+    args = ["cargo", "metadata", "--format-version", "1", "--locked"]
+    if root:
+        args.extend(["--manifest-path", str(pathlib.Path(root) / "Cargo.toml")])
+    return json.loads(subprocess.check_output(args, text=True, encoding="utf-8"))
+
+
+def package_targets_by_name(metadata, name):
+    for package in metadata.get("packages", []):
+        if package.get("name") == name:
+            return package_supported_targets(package)
+    return set(TARGETS)
 
 
 def sdk_identity(package, metadata):
@@ -79,6 +137,8 @@ def build(args):
     output.mkdir(parents=True, exist_ok=True)
     selected = set(json.loads(args.tags))
     found = set()
+    known_tags = set()
+    eligible_selected = set()
     packages = []
     for package in metadata["packages"]:
         if package["id"] not in metadata["workspace_members"]:
@@ -87,6 +147,12 @@ def build(args):
         if not library_target:
             continue
         tag = f"{package['name']}-v{package['version']}"
+        known_tags.add(tag)
+        supported_targets = package_supported_targets(package)
+        if args.target not in supported_targets:
+            continue
+        if tag in selected:
+            eligible_selected.add(tag)
         if getattr(args, "packages_only", False) and tag not in selected:
             continue
         stem = library_target["name"] if windows else "lib" + library_target["name"]
@@ -116,16 +182,20 @@ def build(args):
             "sdk": record["sdk"], "target": args.target, "distribution": distribution,
         }
         write_json(output / f"{package['name']}.{args.target}.json", fragment)
-    if selected != found:
-        raise ValueError(f"Release tags do not match workspace versions: {sorted(selected - found)}")
+    unknown = selected - known_tags
+    if unknown:
+        raise ValueError(f"Release tags do not match workspace versions: {sorted(unknown)}")
+    if eligible_selected != found:
+        raise ValueError(f"Missing supported release tags: {sorted(eligible_selected - found)}")
     if getattr(args, "packages_only", False):
         if not selected:
             raise ValueError("Package-only builds require at least one release tag")
         return
 
-    os_name = "windows" if windows else "macos" if macos else "linux"
-    arch = args.target.split("-")[0]
-    platform = f"{os_name}-{arch}"
+    if args.target not in BUNDLE_TARGETS:
+        return
+
+    platform = platform_slug(args.target)
     bundle = pathlib.Path("dist") / f"rpi-packages-{platform}.{archive_extension}"
     bridge = pathlib.Path("dist") / f"rpi-acp-{platform}.{archive_extension}"
     # The installer has already produced the bundle and standalone ACP bridge.
@@ -158,10 +228,11 @@ def upload(tag, paths):
     subprocess.run(["gh", "release", "upload", tag, *map(str, paths), "--clobber"], check=True)
 
 
-def collect(root, pattern, source_ref):
+def collect(root, pattern, source_ref, expected_targets=None):
+    expected_targets = TARGETS if expected_targets is None else expected_targets
     fragments = [json.loads(path.read_text(encoding="utf-8")) for path in root.glob(pattern)]
     targets = [fragment["target"] for fragment in fragments]
-    if set(targets) != TARGETS or len(targets) != len(TARGETS):
+    if set(targets) != expected_targets or len(targets) != len(expected_targets):
         raise ValueError(f"Missing or duplicate platform artifacts for {pattern}: {targets}")
     if any(fragment["source_commit"] != source_ref for fragment in fragments):
         raise ValueError("Platform artifacts were built from different source commits")
@@ -182,7 +253,9 @@ def publish(args):
     prepared = []
     for tag in json.loads(args.tags):
         name, version = tag.rsplit("-v", 1)
-        fragments = collect(root, f"{name}.*.json", args.source_ref)
+        metadata = workspace_metadata(getattr(args, "metadata_root", None))
+        expected_targets = package_targets_by_name(metadata, name)
+        fragments = collect(root, f"{name}.*.json", args.source_ref, expected_targets)
         first = fragments[0]
         identity = (name, version, first["repository"], tag, first["sdk"])
         for fragment in fragments:
@@ -211,7 +284,7 @@ def publish(args):
             upload(tag, [manifest])
         return
 
-    bundles = collect(root, "bundle.*.json", args.source_ref)
+    bundles = collect(root, "bundle.*.json", args.source_ref, BUNDLE_TARGETS)
     bundle_manifest = {
         "schema_version": 1, "repository": f"https://github.com/{args.repository}",
         "tag": args.bundle_tag, "source_commit": args.source_ref,
@@ -239,7 +312,7 @@ def publish(args):
             print(f"Preserving already published immutable assets: {tag}")
             continue
         upload(tag, paths)
-        # Publish the discovery manifest last, after all five archives exist.
+        # Publish the discovery manifest last, after all supported archives exist.
         upload(tag, [manifest])
 
     if not bundle_exists:
@@ -261,6 +334,7 @@ def main():
     parser.add_argument("--tags", default="[]", help="JSON array of per-package release tags")
     parser.add_argument("--packages-only", action="store_true", help="Build/publish selected packages without the full workspace bundle")
     parser.add_argument("--output", default="dist/release-assets")
+    parser.add_argument("--metadata-root", help="workspace checkout used for package target declarations")
     args = parser.parse_args()
     if args.command == "build" and not args.target:
         parser.error("build requires --target")

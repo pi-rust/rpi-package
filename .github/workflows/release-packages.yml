@@ -110,8 +110,48 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  musl-build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      # Old package source tags may predate the musl helper and target-aware
+      # release script. Keep the current tooling alongside the exact source.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+      - name: Build selected x86_64 musl package artifacts
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          BUNDLE_TAG: unused
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+        run: |
+          docker run --rm \
+            -e GITHUB_REPOSITORY -e SOURCE_REF -e BUNDLE_TAG -e PACKAGE_RELEASES \
+            -e RUSTFLAGS -e PACKAGES_ONLY \
+            -e PROJECT_ROOT -e SCRIPT_ROOT \
+            -e RPI_ANTIGRAVITY_OAUTH_CLIENT_ID \
+            -e RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            messense/rust-musl-cross:x86_64-musl \
+            sh -lc 'if command -v apt-get >/dev/null; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash python3 pkg-config binutils perl make libasound2-dev libssl-dev git; elif command -v apk >/dev/null; then apk add --no-cache bash python3 pkgconf binutils perl make alsa-lib-dev openssl-dev git; else echo "no supported package manager in musl image" >&2; exit 2; fi && CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-unknown-linux-musl-gcc PACKAGES_ONLY=1 PROJECT_ROOT=/workspace SCRIPT_ROOT=/workspace/.release-tools bash .release-tools/tools/build-musl.sh'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selected-x86_64-unknown-linux-musl
+          path: dist/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
   publish:
-    needs: build
+    needs: [build, musl-build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -119,6 +159,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: .release-source
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -127,7 +171,7 @@ jobs:
           pattern: selected-*
           path: dist/release-assets/
           merge-multiple: true
-      - name: Validate five platforms and publish discovery manifests last
+      - name: Validate all supported platforms and publish discovery manifests last
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -136,4 +180,4 @@ jobs:
         run: |
           python .github/scripts/prebuilt-assets.py publish --packages-only \
             --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
-            --bundle-tag unused --tags "$PACKAGE_RELEASES"
+            --bundle-tag unused --metadata-root .release-source --tags "$PACKAGE_RELEASES"

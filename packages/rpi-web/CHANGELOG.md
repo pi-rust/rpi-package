@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+## [0.1.44](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.43...rpi-web-v0.1.44) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
+## [0.1.43](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.42...rpi-web-v0.1.43) - 2026-11-05
+
+### Added
+
+- *(web)* notify when sessions settle
+- *(web)* edit and delete provider configurations
+- *(web)* configure image input support
+- *(web)* configure maximum output tokens
+- *(web)* configure provider context window
+- *(web)* add provider model discovery and connection test
+- *(web)* add provider configuration form
+- *(web)* show pending answers and inspect code children
+- *(web)* inspect bounded Code Mode child calls
+- *(web)* expose provider management in runtime settings
+- *(web)* toggle the existing conversation timeline from the toolbar
+- *(web)* follow system light and dark appearance
+- *(web)* upload pasted clipboard images and files
+- *(web)* add paged history, file previews and execution traces
+
+### Fixed
+
+- *(web)* deduplicate settlement notifications ([#203](https://github.com/pi-rust/rpi-package/pull/203))
+- *(web)* render session notifications as overlays
+- *(web)* size image support checkbox
+- *(web)* allow the public dev host
+- *(web)* refresh full child phase windows
+- *(web)* expose mobile fork and guard pending fork requests
+- *(web)* guard session archival and permanent deletion
+- *(web)* remove intrusive mobile provider suggestions
+- *(ci)* stabilize Web production frontend release checks
+- *(web)* simplify execution trace duration bars
+- *(web)* reset file chooser before asynchronous uploads
+- *(web)* navigate timeline questions inline without a popup
+- *(web)* keep historical reader mounted during summary refresh
+
+### Other
+
+- sync dev web branch with main
+- Merge remote-tracking branch 'origin/main' into dev/web-hmr
+- *(web)* use the exact accessible send control name
+- *(web)* synchronize release fixtures with session readiness
+- *(web)* make branding checks portable across clean checkouts
+
 ## [0.1.42](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.41...rpi-web-v0.1.42) - 2026-11-05
 
 ### Other

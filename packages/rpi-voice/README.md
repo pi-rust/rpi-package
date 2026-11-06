@@ -192,6 +192,13 @@ The built `rpi_voice.dll`/`.so`/`.dylib` is dropped into `.rpi/extensions/` by
 `task install` (or `rpi-package-install`) and loads automatically on the next
 rpi start.
 
+### musl Linux
+
+The official musl prebuilt is not currently published for this crate. `rpi-voice`
+remains available on GNU Linux, while its ALSA, native-tls/OpenSSL and bundled
+sherpa-onnx native dependencies are qualified for musl. The musl release CI
+skips this crate rather than publishing an incomplete or incompatible archive.
+
 ## Push-to-talk
 
 `/voice ptt` turns the configured key (default: **space**) into a hold-to-talk

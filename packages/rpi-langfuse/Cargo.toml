@@ -1,6 +1,6 @@
 [package]
 name = "rpi-langfuse"
-version = "0.4.5"
+version = "0.4.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,6 +10,15 @@ description = "Langfuse tracing, scoring, and prompt management tools for the rp
 readme = "README.md"
 keywords = ["rpi", "langfuse", "tracing", "observability", "llm"]
 categories = ["development-tools"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

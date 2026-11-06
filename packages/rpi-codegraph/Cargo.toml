@@ -1,6 +1,6 @@
 [package]
 name = "rpi-codegraph"
-version = "0.1.8"
+version = "0.1.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,6 +10,15 @@ description = "Bounded source file and import graph tool for the rpi Rust agent"
 readme = "README.md"
 keywords = ["rpi", "codegraph", "source", "plugin"]
 categories = ["development-tools"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

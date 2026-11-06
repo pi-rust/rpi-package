@@ -1963,6 +1963,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "openssl-src"
+version = "300.6.1+3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "openssl-sys"
 version = "0.9.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1970,6 +1979,7 @@ checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
 dependencies = [
  "cc",
  "libc",
+ "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -2418,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.2.10"
+version = "0.2.12"
 dependencies = [
  "rpi-extcore",
  "rpi-plugin-sdk 0.3.20",
@@ -2474,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-ask-user"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "jsonschema",
  "rpi-plugin-sdk 0.3.20",
@@ -2483,7 +2493,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-btw"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2491,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-codegraph"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2499,7 +2509,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-codemode"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "rquickjs",
@@ -2527,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-edit-diagnostics"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "getrandom 0.2.17",
  "rpi-plugin-sdk 0.3.20",
@@ -2538,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-extcore"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "base64 0.22.1",
  "fs2",
@@ -2576,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde",
@@ -2585,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "axum",
  "futures-util",
@@ -2601,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-im-message"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "feishu-sdk",
  "regex",
@@ -2614,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-langfuse"
-version = "0.4.5"
+version = "0.4.7"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",
@@ -2624,7 +2634,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2633,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-mcp-adapter"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "rpi-mcp-core",
  "rpi-plugin-sdk 0.3.20",
@@ -2655,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-orchestrator"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2676,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-permission-gate"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2684,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-permissions"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2692,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-plan-mode"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2724,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-providers"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2747,7 +2757,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-run-stats"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2755,7 +2765,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-server"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "async-trait",
  "rpi-plugin-sdk 0.3.20",
@@ -2766,7 +2776,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2786,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-todo"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2794,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-ui-adapter"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "futures-util",
@@ -2809,7 +2819,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-voice"
-version = "0.3.10"
+version = "0.3.14"
 dependencies = [
  "cpal",
  "futures-util",
@@ -2831,7 +2841,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.42"
+version = "0.1.44"
 dependencies = [
  "axum",
  "rpi-extcore",
@@ -2846,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-webfetch"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",
@@ -2856,7 +2866,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-websearch"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",

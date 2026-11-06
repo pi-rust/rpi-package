@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -121,14 +121,9 @@ const OTEL_PATH: &str = "/api/public/otel/v1/traces";
 /// they are the same identity, and two literals would let the OTLP resource
 /// disagree with the trace metadata after a rename.
 const SDK_NAME: &str = EXTENSION_NAME;
-const MAX_STRING_LENGTH: usize = 12000;
-const MAX_TOOL_PAYLOAD_LENGTH: usize = 24000;
-const FLUSH_TIMEOUT_MS: u64 = 3000;
-const EXIT_FLUSH_WITH_MEDIA_TIMEOUT_MS: u64 = 15000;
 
 const SECRET_REDACTION_MARK: &str = "[redacted-langfuse-secret]";
 const LANGFUSE_KEY_PATTERN: &str = r"\b[sp]k-lf-[\w-]+\b";
-const DATA_URI_PATTERN: &str = r"data:[^;,]{0,100};base64,[A-Za-z0-9+/]+=*";
 
 /// Subagent-nesting channel: the turn a nested `rpi` should attach to.
 ///
@@ -161,12 +156,6 @@ pub struct LangfuseConfig {
     pub environment: Option<String>,
     #[serde(default)]
     pub release: Option<String>,
-}
-
-impl LangfuseConfig {
-    fn is_valid(&self) -> bool {
-        !self.public_key.is_empty() && !self.secret_key.is_empty()
-    }
 }
 
 static CONFIG_CACHE: OnceLock<Mutex<Option<LangfuseConfig>>> = OnceLock::new();
@@ -479,21 +468,6 @@ fn extract_tool_calls(content: &Value) -> Vec<Value> {
         .collect()
 }
 
-fn extract_images(content: &Value) -> Vec<Value> {
-    let Value::Array(items) = content else {
-        return Vec::new();
-    };
-    items
-        .iter()
-        .filter(|p| {
-            p.get("type").and_then(Value::as_str) == Some("image")
-                && p.get("data").and_then(Value::as_str).is_some()
-                && p.get("mimeType").and_then(Value::as_str).is_some()
-        })
-        .cloned()
-        .collect()
-}
-
 fn describe_image(image: &Value) -> String {
     let mime = image
         .get("mimeType")
@@ -731,7 +705,7 @@ fn extract_model_parameters(
 
     if let Some(model) = model {
         if let Some(Value::Object(params)) = model.get("samplingParams") {
-            for (key, value) in params {
+            for (key, _value) in params {
                 if let Some(v) = payload.get(key) {
                     match v {
                         Value::Number(n) => {
@@ -772,7 +746,6 @@ struct PiUsage {
     cache_read: u64,
     cache_write: u64,
     reasoning: Option<u64>,
-    cache_write_1h: Option<u64>,
     cost: Option<CostDetails>,
 }
 
@@ -791,7 +764,6 @@ fn parse_usage(value: &Value) -> Option<PiUsage> {
     let cache_read = value.get("cacheRead")?.as_u64()?;
     let cache_write = value.get("cacheWrite")?.as_u64()?;
     let reasoning = value.get("reasoning").and_then(Value::as_u64);
-    let cache_write_1h = value.get("cacheWrite1h").and_then(Value::as_u64);
 
     let cost = value.get("cost").and_then(|c| {
         Some(CostDetails {
@@ -809,7 +781,6 @@ fn parse_usage(value: &Value) -> Option<PiUsage> {
         cache_read,
         cache_write,
         reasoning,
-        cache_write_1h,
         cost,
     })
 }
@@ -914,6 +885,7 @@ fn build_cost_details(usage: &PiUsage) -> Option<Map<String, Value>> {
 // ChatML conversion
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ChatMlToolCall {
     id: String,
@@ -921,12 +893,14 @@ struct ChatMlToolCall {
     arguments: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ChatMlThinkingPart {
     content: String,
     redacted: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum ChatMlMessage {
     User {
@@ -945,6 +919,7 @@ enum ChatMlMessage {
     },
 }
 
+#[allow(dead_code)]
 fn extract_thinking(content: &Value) -> Vec<ChatMlThinkingPart> {
     let Value::Array(items) = content else {
         return Vec::new();
@@ -967,6 +942,7 @@ fn extract_thinking(content: &Value) -> Vec<ChatMlThinkingPart> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn history_tool_calls(content: &Value) -> Vec<ChatMlToolCall> {
     let Value::Array(items) = content else {
         return Vec::new();
@@ -992,6 +968,7 @@ fn history_tool_calls(content: &Value) -> Vec<ChatMlToolCall> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn to_chat_ml_message(message: &Value) -> Option<ChatMlMessage> {
     let role = message.get("role").and_then(Value::as_str)?;
 
@@ -1055,6 +1032,7 @@ fn to_chat_ml_message(message: &Value) -> Option<ChatMlMessage> {
     }
 }
 
+#[allow(dead_code)]
 fn build_history_input(messages: &Value) -> Option<Vec<ChatMlMessage>> {
     let Value::Array(items) = messages else {
         return None;
@@ -1070,6 +1048,7 @@ fn build_history_input(messages: &Value) -> Option<Vec<ChatMlMessage>> {
     }
 }
 
+#[allow(dead_code)]
 fn chat_ml_message_to_value(msg: &ChatMlMessage) -> Value {
     match msg {
         ChatMlMessage::User { content } => {
@@ -1140,7 +1119,6 @@ fn chat_ml_message_to_value(msg: &ChatMlMessage) -> Value {
 
 struct OpenGeneration {
     obs_id: String,
-    index: u32,
     saw_first_token: bool,
     finished: bool,
 }
@@ -1148,7 +1126,6 @@ struct OpenGeneration {
 struct OpenTool {
     obs_id: String,
     name: String,
-    started_at: Instant,
 }
 
 struct PromptState {
@@ -2106,7 +2083,7 @@ fn resolve_turn_number(session_id: &str, _prompt: &str) -> u32 {
     *entry
 }
 
-extern "C" fn on_context(event: StablePluginEvent, _: *mut c_void) -> i32 {
+extern "C" fn on_context(_event: StablePluginEvent, _: *mut c_void) -> i32 {
     if !is_enabled() {
         return 0;
     }
@@ -2215,7 +2192,6 @@ fn on_before_provider_request(event, _user_data) {
 
     state.open_generation = Some(OpenGeneration {
         obs_id,
-        index,
         saw_first_token: false,
         finished: false,
     });
@@ -2459,7 +2435,6 @@ fn on_tool_execution_start(event, _user_data) {
         OpenTool {
             obs_id: obs_id.clone(),
             name: tool_name.clone(),
-            started_at: Instant::now(),
         },
     );
 
@@ -2561,7 +2536,7 @@ fn on_tool_execution_end(event, _user_data) {
 }
 }
 
-extern "C" fn on_session_before_compact(event: StablePluginEvent, _: *mut c_void) -> i32 {
+extern "C" fn on_session_before_compact(_event: StablePluginEvent, _: *mut c_void) -> i32 {
     if !is_enabled() {
         return 0;
     }
@@ -4331,7 +4306,6 @@ mod tests {
             cache_read: 20,
             cache_write: 10,
             reasoning: Some(10),
-            cache_write_1h: None,
             cost: None,
         };
         let details = build_usage_details(&usage).unwrap();

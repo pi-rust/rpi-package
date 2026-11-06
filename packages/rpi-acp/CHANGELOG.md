@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.12](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.11...rpi-acp-v0.2.12) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
+## [0.2.11](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.10...rpi-acp-v0.2.11) - 2026-11-05
+
+### Fixed
+
+- *(acp)* sync inline image prompt limits
+- *(acp)* keep test-only response helper out of release builds
+
 ## [0.2.10](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.9...rpi-acp-v0.2.10) - 2026-11-05
 
 ### Fixed

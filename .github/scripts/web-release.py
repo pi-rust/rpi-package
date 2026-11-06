@@ -32,7 +32,7 @@ def build(args):
     if assets.command("git", "rev-parse", "HEAD") != args.source_ref:
         raise ValueError("Checkout differs from the release commit")
     host = re.search(r"^host: (.+)$", assets.command("rustc", "-vV"), re.MULTILINE).group(1)
-    if args.target not in assets.TARGETS or args.target != host:
+    if args.target not in assets.WEB_TARGETS or args.target != host:
         raise ValueError("The build target must match the native compiler")
     windows = "windows" in args.target
     binary_name = "rpi-web.exe" if windows else "rpi-web"
@@ -69,7 +69,7 @@ def build(args):
 
 def publish(args):
     root = Path(args.output)
-    fragments = assets.collect(root, "rpi-web.*.json", args.source_ref)
+    fragments = assets.collect(root, "rpi-web.*.json", args.source_ref, assets.WEB_TARGETS)
     first = fragments[0]
     if not re.fullmatch(r"rpi-web-v\d+\.\d+\.\d+", args.tag):
         raise ValueError("Invalid Web release tag")

@@ -1,6 +1,6 @@
 [package]
 name = "rpi-ui-adapter"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version = "1.85"
 license.workspace = true
@@ -10,6 +10,15 @@ description = "UI adapters for rpi ACP agents, starting with Open WebUI"
 readme = "README.md"
 keywords = ["rpi", "acp", "openwebui", "ui", "adapter"]
 exclude = ["**/__pycache__/**", "**/*.pyc"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

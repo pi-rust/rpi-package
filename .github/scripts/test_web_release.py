@@ -28,7 +28,7 @@ class WebReleaseTests(unittest.TestCase):
             args = argparse.Namespace(output=directory, source_ref="a" * 40,
                                       tag="rpi-web-v0.1.0", repository="pi-rust/rpi-package")
             fragments = []
-            for target in sorted(web.assets.TARGETS):
+            for target in sorted(web.assets.WEB_TARGETS):
                 path = root / f"{target}.zip"
                 path.write_bytes(target.encode())
                 fragment = dict(schema_version=1, name="rpi-web", version="0.1.0", tag=args.tag,

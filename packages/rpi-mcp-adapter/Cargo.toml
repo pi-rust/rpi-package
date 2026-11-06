@@ -1,6 +1,6 @@
 [package]
 name = "rpi-mcp-adapter"
-version = "0.2.7"
+version = "0.2.8"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,6 +10,15 @@ description = "Session-scoped stdio and Streamable HTTP MCP adapter for the rpi 
 readme = "README.md"
 keywords = ["rpi", "mcp", "json-rpc", "plugin"]
 categories = ["development-tools"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

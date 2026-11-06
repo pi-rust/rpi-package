@@ -1,6 +1,6 @@
 [package]
 name = "rpi-btw"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,6 +10,15 @@ description = "Ask a read-only side question without interrupting or adding to t
 readme = "README.md"
 keywords = ["rpi", "btw", "plugin", "assistant"]
 categories = ["development-tools"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
