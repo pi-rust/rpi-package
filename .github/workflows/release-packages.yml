@@ -159,6 +159,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: .release-source
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -176,4 +180,4 @@ jobs:
         run: |
           python .github/scripts/prebuilt-assets.py publish --packages-only \
             --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
-            --bundle-tag unused --tags "$PACKAGE_RELEASES"
+            --bundle-tag unused --metadata-root .release-source --tags "$PACKAGE_RELEASES"

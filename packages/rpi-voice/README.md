@@ -194,13 +194,10 @@ rpi start.
 
 ### musl Linux
 
-The official musl package is currently built in API mode with
-`--no-default-features --features musl-api`. The `cpal`/ALSA dependency still
-requires the musl system development packages, while `native-tls` compiles a
-vendored OpenSSL for the target. The bundled sherpa-onnx archive has not yet
-been qualified as a musl-native library. Set
-`RPI_STT_ENGINE=api` (or `auto` with an API fallback) when using this artifact.
-The normal GNU Linux artifact keeps the default offline `local-stt` feature.
+The official musl prebuilt is not currently published for this crate. `rpi-voice`
+remains available on GNU Linux, while its ALSA, native-tls/OpenSSL and bundled
+sherpa-onnx native dependencies are qualified for musl. The musl release CI
+skips this crate rather than publishing an incomplete or incompatible archive.
 
 ## Push-to-talk
 
