@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-im-message-v0.1.13...rpi-im-message-v0.1.14) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
 ## [0.1.13](https://github.com/pi-rust/rpi-package/compare/rpi-im-message-v0.1.12...rpi-im-message-v0.1.13) - 2026-10-31
 
 ### Fixed
