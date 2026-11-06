@@ -28,7 +28,7 @@ fn fresh_native_null_operation_matches_typed_omitted_optional_binding() {
 }
 #[test]
 fn immutable_identity_never_overwrites_and_bounds_inputs() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let path = root.path().join("deep/file");
     immutable(&path, b"original").unwrap();
     immutable(&path, b"original").unwrap();
@@ -45,8 +45,8 @@ fn immutable_identity_never_overwrites_and_bounds_inputs() {
 }
 #[test]
 fn symlink_or_junction_ancestor_cannot_escape_source_root() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = tempdir();
+    let outside = tempdir();
     let link = root.path().join("escape");
     #[cfg(unix)]
     std::os::unix::fs::symlink(outside.path(), &link).unwrap();
@@ -67,4 +67,12 @@ fn symlink_or_junction_ancestor_cannot_escape_source_root() {
     assert!(!outside.path().join("should-not-exist").exists());
     #[cfg(windows)]
     std::fs::remove_dir(link).unwrap();
+}
+
+fn tempdir() -> tempfile::TempDir {
+    // macOS exposes its temp directory through /var, which is a system symlink.
+    // Resolve that parent so explicit fixture links exercise the path checks.
+    tempfile::Builder::new()
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap()
 }

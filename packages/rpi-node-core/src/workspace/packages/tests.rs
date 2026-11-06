@@ -124,7 +124,7 @@ fn skill_metadata_and_instruction_entries_must_be_canonical() {
 
 #[tokio::test]
 async fn acquisition_is_pinned_idempotent_and_not_an_install_or_host() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let owner = owner(&root);
     let project = owner
         .create_project("package-test", None, false)
@@ -179,7 +179,7 @@ async fn acquisition_is_pinned_idempotent_and_not_an_install_or_host() {
 
 #[tokio::test]
 async fn incomplete_bytes_can_complete_but_changed_and_extra_bytes_are_preserved() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let owner = owner(&root);
     let project = owner.create_project("partial", None, false).await.unwrap();
     let bundle = curated().unwrap().remove(0);
@@ -221,7 +221,7 @@ async fn incomplete_bytes_can_complete_but_changed_and_extra_bytes_are_preserved
 
 #[tokio::test]
 async fn authorization_does_not_fall_back_or_acquire_on_install() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let owner = owner(&root);
     let project = owner
         .create_project("authorized", None, false)
@@ -257,7 +257,7 @@ async fn authorization_does_not_fall_back_or_acquire_on_install() {
 
 #[tokio::test]
 async fn concurrent_acquisition_is_one_content_identity() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let owner = owner(&root);
     let project = owner
         .create_project("concurrent", None, false)
@@ -277,7 +277,7 @@ async fn concurrent_acquisition_is_one_content_identity() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn symlink_or_junction_sources_are_not_followed() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let owner = owner(&root);
     let project = owner.create_project("links", None, false).await.unwrap();
     let bundle = curated().unwrap().remove(0);
@@ -332,7 +332,7 @@ fn distribution_wire_rejects_unknown_fields() {
 async fn cancelled_io_is_retained_and_shutdown_waits_for_actual_worker_exit() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             let owner = owner(&root);
             let project = owner.create_project("retained", None, false).await.unwrap();
             let source = owner.package_source(&curated().unwrap().remove(0));
@@ -386,7 +386,7 @@ async fn cancelled_io_is_retained_and_shutdown_waits_for_actual_worker_exit() {
 #[cfg(unix)]
 #[test]
 fn literal_backslash_aliases_never_impersonate_a_canonical_tree() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let bundle = curated().unwrap().remove(0);
     for (path, text) in &bundle.sources {
         std::fs::write(root.path().join(path.replace('/', "\\")), text).unwrap();
@@ -398,4 +398,12 @@ fn literal_backslash_aliases_never_impersonate_a_canonical_tree() {
     }
     assert!(verify_tree(root.path(), &bundle).is_err());
     assert!(root.path().join(r"prompts\system.md").is_file());
+}
+
+fn tempdir() -> tempfile::TempDir {
+    // macOS exposes its temp directory through /var, which is a system symlink.
+    // Resolve that parent so explicit fixture links exercise the path checks.
+    tempfile::Builder::new()
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap()
 }

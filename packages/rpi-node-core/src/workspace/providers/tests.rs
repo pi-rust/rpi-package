@@ -37,7 +37,7 @@ fn raw(s: &Store, name: &str) -> Value {
 }
 #[test]
 fn read_is_lazy_and_crud_is_native_single_file_cas() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempdir();
     let s = store(temp.path());
     let first = snapshot(&s).unwrap();
     assert_eq!(catalog(&first).providers.len(), 0);
@@ -94,7 +94,7 @@ fn read_is_lazy_and_crud_is_native_single_file_cas() {
 }
 #[test]
 fn edits_preserve_unrelated_fields_order_and_do_not_resolve_headers() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempdir();
     let s = store(temp.path());
     std::fs::create_dir_all(s.root().unwrap()).unwrap();
     let source = r#"{ // retain semantic values, never resolve commands
@@ -142,7 +142,7 @@ fn edits_preserve_unrelated_fields_order_and_do_not_resolve_headers() {
 }
 #[test]
 fn invalid_input_and_external_changes_preserve_all_bytes() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempdir();
     let s = store(temp.path());
     for endpoint in [
         "file:///secret",
@@ -188,7 +188,7 @@ fn invalid_input_and_external_changes_preserve_all_bytes() {
 }
 #[test]
 fn clearing_absent_source_never_invents_a_null_provider() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempdir();
     let s = store(temp.path());
     change(
         &s,
@@ -203,7 +203,7 @@ fn clearing_absent_source_never_invents_a_null_provider() {
 }
 #[test]
 fn revision_is_owner_salted_and_replaced_files_are_private() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempdir();
     let s = store(temp.path());
     let mut second = store(temp.path());
     second.salt = [42; 32];
@@ -247,7 +247,7 @@ fn revision_is_owner_salted_and_replaced_files_are_private() {
 #[cfg(unix)]
 #[test]
 fn links_and_special_files_are_not_followed() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempdir();
     let s = store(temp.path());
     std::fs::create_dir_all(s.root().unwrap()).unwrap();
     let outside = temp.path().join("outside");
@@ -287,7 +287,7 @@ fn duplicate_json_keys_fail_closed_without_loss_or_secret_echo() {
 
 #[test]
 fn incompatible_optional_fields_are_readonly_and_never_overwritten() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempdir();
     let s = store(temp.path());
     change(&s, ProviderAction::Upsert { definition: def() }).unwrap();
     for (field, value) in [
@@ -311,7 +311,7 @@ fn incompatible_optional_fields_are_readonly_and_never_overwritten() {
 }
 #[test]
 fn unrelated_edits_preserve_absence_null_and_model_advanced_identity() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempdir();
     let s = store(temp.path());
     std::fs::create_dir_all(s.root().unwrap()).unwrap();
     let original = json!({"providers":{def().id:{"api":"openai-completions","baseUrl":"https://example.invalid/v1","models":[{"id":"test/model","reasoning":null,"maxTokens":null,"compat":{"custom":true},"headers":{"x":"unchanged-secret"}}]}}});
@@ -330,4 +330,12 @@ fn unrelated_edits_preserve_absence_null_and_model_advanced_identity() {
         raw(&s, "models.json")["providers"][&def().id]["models"],
         original["providers"][&def().id]["models"]
     );
+}
+
+fn tempdir() -> tempfile::TempDir {
+    // macOS exposes its temp directory through /var, which is a system symlink.
+    // Resolve that parent so explicit fixture links exercise the path checks.
+    tempfile::Builder::new()
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap()
 }
