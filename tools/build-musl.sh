@@ -58,37 +58,60 @@ case "$TARGET" in
     ;;
 esac
 
-# The native speech archive published by sherpa-onnx is not yet qualified for
-# musl. Build the rest of the workspace, then build voice without local-stt so
-# the extension still provides the hosted OpenAI-compatible STT path. Package
-# backfills use the same rule for a selected rpi-voice release.
+# Resolve the crate-owned target declarations before compiling. Unsupported
+# packages are intentionally absent from the musl build; they are not failed
+# builds. A marker keeps the Actions artifact non-empty for package backfills
+# containing only GNU-only releases. Manual bundle-only runs have no package
+# tags and skip musl entirely because the aggregate bundle is GNU-only.
+if [[ "${PACKAGES_ONLY:-0}" != "1" && "${PACKAGE_RELEASES:-[]}" == "[]" ]]; then
+  mkdir -p dist/release-assets
+  printf 'No package releases were selected for the musl target.\n' > dist/release-assets/.no-musl-packages
+  exit 0
+fi
 if [[ "${PACKAGES_ONLY:-0}" == "1" ]]; then
   : "${PACKAGE_RELEASES:?PACKAGE_RELEASES is required for package-only builds}"
-  python3 - "$PACKAGE_RELEASES" <<'PY'
+fi
+MUSL_PACKAGE_NAMES="$(python3 - "${PACKAGE_RELEASES:-[]}" "${PACKAGES_ONLY:-0}" <<'PY'
 import json
 import subprocess
 import sys
 
-selected = json.loads(sys.argv[1])
+selected = set(json.loads(sys.argv[1]))
+packages_only = sys.argv[2] == "1"
 metadata = json.loads(subprocess.check_output([
     "cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"
 ], text=True))
-packages = {
-    f"{package['name']}-v{package['version']}": package
-    for package in metadata["packages"]
-    if package["id"] in metadata["workspace_members"]
-}
-names = [packages[tag]["name"] for tag in selected]
-regular = [name for name in names if name != "rpi-voice"]
-if regular:
-    subprocess.run(["cargo", "build", "--release", "--locked", "--lib", *sum((["-p", name] for name in regular), [])], check=True)
-if "rpi-voice" in names:
-    subprocess.run(["cargo", "build", "--release", "--locked", "--lib", "--no-default-features", "--features", "musl-api", "-p", "rpi-voice"], check=True)
+workspace = set(metadata["workspace_members"])
+for package in metadata["packages"]:
+    if package["id"] not in workspace:
+        continue
+    if not any("cdylib" in target.get("crate_types", []) for target in package["targets"]):
+        continue
+    package_metadata = package.get("metadata") or {}
+    rpi_metadata = package_metadata.get("rpi") or {}
+    prebuilt = rpi_metadata.get("prebuilt") or {}
+    declared = prebuilt.get("supported-targets", []) if isinstance(prebuilt, dict) else []
+    if "x86_64-unknown-linux-musl" not in declared:
+        continue
+    tag = f"{package['name']}-v{package['version']}"
+    if packages_only and tag not in selected:
+        continue
+    print(package["name"])
 PY
-else
-  cargo build --release --workspace --locked --exclude rpi-voice
-  cargo build --release --locked --no-default-features --features musl-api -p rpi-voice
+)"
+
+if [[ -z "$MUSL_PACKAGE_NAMES" ]]; then
+  mkdir -p dist/release-assets
+  printf 'No selected workspace packages declare x86_64-unknown-linux-musl support.\n' > dist/release-assets/.no-musl-packages
+  exit 0
 fi
+
+read -r -a MUSL_PACKAGES <<< "$MUSL_PACKAGE_NAMES"
+cargo_args=(build --release --locked --lib)
+for package in "${MUSL_PACKAGES[@]}"; do
+  cargo_args+=(--package "$package")
+done
+cargo "${cargo_args[@]}"
 
 # Cargo can exit successfully after dropping an unsupported cdylib, and a
 # glibc-linked object can look superficially like a musl build. Fail closed on
@@ -105,14 +128,14 @@ for library in "${LIBRARIES[@]}"; do
     exit 1
   fi
 done
-if [[ -f "${RELEASE_DIR}/librpi_goal.so" ]]; then
-  if ! nm -D "${RELEASE_DIR}/librpi_goal.so" | grep -q ' rpi_plugin_register$'; then
-    echo "rpi-goal does not export rpi_plugin_register" >&2
+"$CC" tools/musl-plugin-loader.c -o "$RELEASE_DIR/musl-plugin-loader" -ldl
+for library in "${LIBRARIES[@]}"; do
+  if ! nm -D "$library" | grep -q ' rpi_plugin_register$'; then
+    echo "plugin does not export rpi_plugin_register: $library" >&2
     exit 1
   fi
-  "$CC" tools/musl-plugin-loader.c -o "$RELEASE_DIR/musl-plugin-loader" -ldl
-  "$RELEASE_DIR/musl-plugin-loader" "${RELEASE_DIR}/librpi_goal.so"
-fi
+  "$RELEASE_DIR/musl-plugin-loader" "$library"
+done
 
 # With no release metadata requested this is a local build-only helper.
 if [[ -z "${SOURCE_REF:-}" ]]; then
@@ -123,12 +146,9 @@ fi
 : "${PACKAGE_RELEASES:?PACKAGE_RELEASES is required when packaging}"
 : "${BUNDLE_TAG:?BUNDLE_TAG is required when packaging}"
 
-if [[ "${PACKAGES_ONLY:-0}" != "1" ]]; then
-  cargo test --locked -p rpi-package-install
-  cargo run --release --locked -p rpi-package-install -- pack
-  cargo run --release --locked -p rpi-package-install -- pack-acp
-fi
-
+# Musl currently publishes individual package archives only. The aggregate
+# installer bundle remains GNU-only until its catalog can carry the same
+# package-specific target matrix.
 package_args=()
 if [[ "${PACKAGES_ONLY:-0}" == "1" ]]; then
   package_args+=(--packages-only)

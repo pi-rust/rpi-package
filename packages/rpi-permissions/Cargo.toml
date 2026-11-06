@@ -11,6 +11,16 @@ readme = "README.md"
 keywords = ["rpi", "permissions", "security", "plugin"]
 categories = ["command-line-utilities"]
 
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

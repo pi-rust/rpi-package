@@ -10,6 +10,15 @@ description = "Tool-call permission gate extension for rpi — confirm dangerous
 readme = "README.md"
 keywords = ["rpi", "permission", "tool-call", "extension", "approval"]
 
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

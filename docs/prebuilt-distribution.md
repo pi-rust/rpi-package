@@ -83,6 +83,27 @@ resolve to the same repository, and third-party repositories can implement the
 same protocol. A host may provide an explicit repository override or trusted
 registry mapping for extensions that have not been published to crates.io.
 
+Each extension crate owns its prebuilt support declaration in `Cargo.toml`:
+
+```toml
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+```
+
+The default for a missing declaration is the five historical GNU/Windows/macOS
+targets; it never opts a crate into musl. Release CI reads this metadata from
+the exact source checkout, builds only declared target/package combinations,
+and validates each package manifest against the same declaration. A crate such
+as `rpi-voice` can therefore remain GNU-only without blocking musl artifacts
+for other crates.
+
 `rpi-extension.json` is uploaded **after all platform archives are available**.
 A missing manifest means the requested version has no complete prebuilt release
 yet. Report that state or retry later; never silently install another package's
@@ -109,7 +130,7 @@ Each package archive is flat and contains only that extension's library. Cargo
 library target names determine file names, including `lib` on Unix; consumers
 must read `library.path` rather than derive it from the package name.
 
-Example manifest showing one target (real releases include all six supported targets):
+Example manifest showing one target (each package lists only its declared supported targets):
 
 ```json
 {
@@ -141,27 +162,29 @@ Unknown fields may be ignored; unknown schema versions must be rejected.
 ## Bundles and build provenance
 
 The aggregate Release `rpi-packages-<first 12 characters of source commit>`
-contains `rpi-packages.json`, six full platform bundles, and six standalone
-ACP bridge archives. Bundles contain all workspace cdylibs, the installer, and
+contains `rpi-packages.json`, five full GNU platform bundles, and five
+standalone ACP bridge archives. Individual package Releases may additionally
+contain musl archives when that crate declares musl support. Bundles contain
+all workspace cdylibs for their GNU targets, the installer, and
 the catalog. `rpi-packages.json` maps target triples to archive checksums and
 the individual package versions, SDK identities and library checksums.
 It is a convenience distribution for installing the whole collection; single
 package installation uses the package Release above.
 
-All six builds use the same exact Git commit. Linux GNU builds use Ubuntu
-22.04; the x86_64 musl build uses a native musl toolchain container. Normal
-runtime dependencies such as glibc/musl, ALSA and OpenSSL still apply. The
-supported targets are Windows x64 MSVC, Linux x64/ARM64 GNU, Linux x64 musl,
-and macOS Intel/Apple Silicon. Windows ARM64, Linux aarch64 musl and 32-bit
-platforms are not currently built. The loader performs the final host
-compatibility check.
+All GNU builds use the same exact Git commit. Linux GNU builds use Ubuntu
+22.04. The x86_64 musl job uses a native musl toolchain container and builds
+only crates that explicitly declare `x86_64-unknown-linux-musl` support in
+`[package.metadata.rpi.prebuilt].supported-targets`. `rpi-voice` currently
+remains GNU-only because of its ALSA, native-tls/OpenSSL and sherpa-onnx native
+dependencies. Other crates may independently declare musl support without
+waiting for voice. Windows ARM64, Linux aarch64 musl and 32-bit platforms are
+not currently built. The loader performs the final host compatibility check.
 
 Musl builds use `-C target-feature=-crt-static` because Rust otherwise drops
-`cdylib` targets for the musl target. The `rpi-voice` musl artifact is built
-without its default `local-stt` feature until a musl-compatible sherpa-onnx
-native archive is qualified; hosted OpenAI-compatible STT remains available.
-Do not mix GNU and musl plugins or hosts: the libc variant is part of the
-exact target triple and the archive slug.
+`cdylib` targets for the musl target. Individual package manifests are the
+source of truth; a missing declaration never opts a crate into musl. Do not
+mix GNU and musl plugins or hosts: the libc variant is part of the exact target
+triple and the archive slug.
 
 ## Release automation
 
@@ -185,16 +208,17 @@ API only; it does not bypass `main` protection. A version-PR push triggered by
 that token is skipped by the release workflow because the original run already
 publishes the merged commit. `workflow_dispatch` can always retry that commit.
 
-The build pipeline preserves Actions artifacts for 14 days. Six-platform
-assembly verifies source commit, package identity, SDK identity and checksums
-before uploading discovery manifests. The musl build also uses a native musl
-`dlopen`/`dlsym` smoke loader against `rpi-goal` before packaging. A completed
-manifest and its archives are preserved on retry; unfinished releases can
-finish uploading safely.
+The build pipeline preserves Actions artifacts for 14 days. GNU bundle
+assembly and per-package target matrices verify source commit, package
+identity, SDK identity and checksums before uploading discovery manifests. The
+musl build also uses a native musl `dlopen`/`dlsym` smoke loader against
+`rpi-goal` before packaging. A completed manifest and its archives are
+preserved on retry; unfinished releases can finish uploading safely.
 To recover a failed asset build, rerun the failed jobs or manually invoke
 `release-assets.yml` with the published commit and a JSON array of its package
-tags. The existing `release-unix.yml` entry point now manually builds all six
-platform bundles from its supplied tag.
+tags. The existing `release-unix.yml` entry point now manually builds the
+GNU platform bundles from its supplied tag; individual musl package assets are
+built according to each crate's target declaration.
 
 Repository prerequisites: `CARGO_REGISTRY_TOKEN` with publishing permission
 for all extension crates, Actions PR creation enabled or `RELEASE_GITHUB_TOKEN`,
