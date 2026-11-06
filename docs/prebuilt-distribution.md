@@ -200,3 +200,36 @@ Repository prerequisites: `CARGO_REGISTRY_TOKEN` with publishing permission
 for all extension crates, Actions PR creation enabled or `RELEASE_GITHUB_TOKEN`,
 and permission for the workflow token to push its release branch and create
 Releases. `main` remains protected against direct pushes, including bot pushes.
+
+## Optional RustFS/CDN mirror
+
+GitHub Releases remain the canonical package source. The asset workflow can
+also copy the exact validated archives and discovery manifests to an optional
+S3-compatible RustFS bucket. Configure these repository Actions secrets to
+enable it:
+
+```text
+RPI_RUSTFS_ENDPOINT
+RPI_RUSTFS_BUCKET
+RPI_RUSTFS_ACCESS_KEY
+RPI_RUSTFS_SECRET_KEY
+RPI_CDN_BASE_URL=https://assets.bigfisharc.cn
+```
+
+Objects use the shared public layout:
+
+```text
+rpi-package/releases/<package-tag>/rpi-extension.json
+rpi-package/releases/<package-tag>/<archive>
+rpi-package/releases/<bundle-tag>/rpi-packages.json
+rpi-package/releases/<bundle-tag>/<archive>
+```
+
+The mirror is skipped when no RustFS settings are present. A partial
+configuration fails clearly rather than silently publishing an incomplete
+mirror. Existing objects are checked for size and the recorded SHA-256 before
+they are preserved; versioned objects are never overwritten with different
+content. Configure the RustFS bucket/CDN for public object reads without
+public listing, writing or deleting, and use a short cache for manifests and
+long immutable caching for versioned archives. The client continues to trust
+the GitHub manifest and uses the CDN only as an optional archive accelerator.

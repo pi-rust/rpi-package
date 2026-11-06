@@ -14,6 +14,16 @@ on:
         required: false
       RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET:
         required: false
+      RPI_RUSTFS_ENDPOINT:
+        required: false
+      RPI_RUSTFS_BUCKET:
+        required: false
+      RPI_RUSTFS_ACCESS_KEY:
+        required: false
+      RPI_RUSTFS_SECRET_KEY:
+        required: false
+      RPI_CDN_BASE_URL:
+        required: false
   workflow_dispatch:
     inputs:
       source_ref:
@@ -173,7 +183,30 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SOURCE_REF: ${{ inputs.source_ref }}
           PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
         run: |
           python .github/scripts/prebuilt-assets.py publish --packages-only \
             --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
             --bundle-tag unused --tags "$PACKAGE_RELEASES"
+      - name: Optionally mirror immutable package files to RustFS
+        id: rustfs_mirror
+        continue-on-error: true
+        env:
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+        run: |
+          python .github/scripts/prebuilt-assets.py mirror \
+            --bundle-tag unused --tags "$PACKAGE_RELEASES"
+      - name: Report RustFS mirror failure
+        if: steps.rustfs_mirror.outcome == 'failure'
+        run: |
+          echo "::warning::RustFS/CDN mirror failed; GitHub Releases remain canonical."
+          echo "- WARNING: RustFS/CDN mirror failed; GitHub Releases remain canonical." >> "$GITHUB_STEP_SUMMARY"
