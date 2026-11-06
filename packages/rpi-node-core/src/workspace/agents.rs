@@ -36,9 +36,8 @@ fn executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return path
-            .metadata()
-            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0);
+        path.metadata()
+            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
     }
     #[cfg(windows)]
     {
@@ -66,19 +65,27 @@ fn resolve(program: &str) -> Option<PathBuf> {
     } else {
         return None;
     };
-    for candidate in candidates {
-        if executable(&candidate) {
-            return Some(candidate);
-        }
-        #[cfg(windows)]
-        if candidate.extension().is_none() {
-            let exe = candidate.with_extension("exe");
-            if executable(&exe) {
-                return Some(exe);
+    #[cfg(windows)]
+    {
+        for candidate in candidates {
+            if executable(&candidate) {
+                return Some(candidate);
+            }
+            if candidate.extension().is_none() {
+                let exe = candidate.with_extension("exe");
+                if executable(&exe) {
+                    return Some(exe);
+                }
             }
         }
+        None
     }
-    None
+    #[cfg(not(windows))]
+    {
+        candidates
+            .into_iter()
+            .find(|candidate| executable(candidate))
+    }
 }
 
 fn profile(id: &str) -> Result<Profile, WorkspaceError> {
