@@ -4,6 +4,8 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository = "https://github.com/pi-rust/rpi-package"
+
 description = "Versioned component packages and isolated custom UI contracts"
 
 [dependencies]

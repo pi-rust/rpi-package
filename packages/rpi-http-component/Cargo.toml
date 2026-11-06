@@ -4,6 +4,8 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository = "https://github.com/pi-rust/rpi-package"
+
 description = "Remote-access custom UI and owner binding"
 
 [dependencies]

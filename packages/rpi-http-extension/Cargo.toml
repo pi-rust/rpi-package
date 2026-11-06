@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license.workspace = true
+repository = "https://github.com/pi-rust/rpi-package"
+
 description = "Native rpi entry point for the shared workspace HTTP node"
 autobins = false
 

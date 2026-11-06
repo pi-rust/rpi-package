@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
+repository = "https://github.com/pi-rust/rpi-package"
+
 description = "Native node ownership, startup and shutdown shared by rpi extensions"
 
 [lints.rust]
