@@ -169,6 +169,7 @@ jobs:
           docker run --rm \
             -e SOURCE_REF -e RELEASE_TAG -e GITHUB_REPOSITORY \
             -e RUSTFLAGS='-D warnings -C target-feature=-crt-static' \
+            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             rust:alpine sh -ec '
               apk add --no-cache build-base binutils python3 git
