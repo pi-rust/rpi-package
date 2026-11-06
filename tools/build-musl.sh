@@ -17,7 +17,7 @@ case "$TARGET" in
   x86_64-unknown-linux-musl)
     LINKER="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER:-}"
     if [[ -z "$LINKER" ]]; then
-      for candidate in x86_64-linux-musl-gcc musl-gcc; do
+      for candidate in x86_64-unknown-linux-musl-gcc x86_64-linux-musl-gcc musl-gcc; do
         if command -v "$candidate" >/dev/null; then
           LINKER="$candidate"
           break
@@ -35,7 +35,7 @@ case "$TARGET" in
 esac
 
 if [[ -z "$LINKER" ]] || ! command -v "$LINKER" >/dev/null; then
-  echo "musl linker not found: ${LINKER:-x86_64-linux-musl-gcc or musl-gcc}" >&2
+  echo "musl linker not found: ${LINKER:-x86_64-unknown-linux-musl-gcc or musl-gcc}" >&2
   exit 2
 fi
 
