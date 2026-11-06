@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.13](https://github.com/pi-rust/rpi-package/compare/rpi-voice-v0.3.12...rpi-voice-v0.3.13) - 2026-11-06
+
+### Fixed
+
+- vendor OpenSSL for musl voice builds
+
 ## [0.3.12](https://github.com/pi-rust/rpi-package/compare/rpi-voice-v0.3.11...rpi-voice-v0.3.12) - 2026-11-06
 
 ### Added
