@@ -946,6 +946,38 @@ test("native retry displays actual attempt, error and delay and rejects repeated
   await expect(nodes(page, "Native retry")).toHaveCount(1);
 });
 
+test("failed settlement keeps retry context and exposes the error", async ({ page, host }) => {
+  await start(page, host);
+  await host.emit(A, 12, {
+    type: "retry_scheduled",
+    attempt: 1,
+    maxRetries: 2,
+    error: "Provider temporarily unavailable",
+  });
+  await expect(page.locator('[data-transcript-row="retry-note"]')).toContainText(
+    "Provider temporarily unavailable",
+  );
+
+  await host.boundary(
+    A,
+    13,
+    {
+      type: "agent_settled",
+      runId: "failed-after-retry",
+      outcome: "failed",
+      error: "Provider permanently unavailable",
+      summary: "Provider request failed",
+    },
+    { latestSettlement: { runId: "failed-after-retry", outcome: "failed" } },
+  );
+  await expect(page.locator(".error-banner")).toContainText(
+    "Provider permanently unavailable",
+  );
+  await expect(page.locator('[data-transcript-row="retry-note"]')).toContainText(
+    "Provider temporarily unavailable",
+  );
+});
+
 test("host closure clears running trace observations without a fabricated settlement", async ({ page, host }) => {
   await start(page, host);
   await host.emit(A, 12, { type: "message_start", message: assistant("closing", { stopReason: undefined }) });
