@@ -15,7 +15,15 @@ cd "$ROOT_DIR"
 TARGET="${TARGET:-x86_64-unknown-linux-musl}"
 case "$TARGET" in
   x86_64-unknown-linux-musl)
-    LINKER="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER:-musl-gcc}"
+    LINKER="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER:-}"
+    if [[ -z "$LINKER" ]]; then
+      for candidate in x86_64-linux-musl-gcc musl-gcc; do
+        if command -v "$candidate" >/dev/null; then
+          LINKER="$candidate"
+          break
+        fi
+      done
+    fi
     ;;
   aarch64-unknown-linux-musl)
     LINKER="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER:-aarch64-linux-musl-gcc}"
@@ -26,10 +34,10 @@ case "$TARGET" in
     ;;
 esac
 
-command -v "$LINKER" >/dev/null || {
-  echo "musl linker not found: $LINKER" >&2
+if [[ -z "$LINKER" ]] || ! command -v "$LINKER" >/dev/null; then
+  echo "musl linker not found: ${LINKER:-x86_64-linux-musl-gcc or musl-gcc}" >&2
   exit 2
-}
+fi
 
 # Preserve CI's -D warnings or a caller's extra flags while adding the flag
 # required for Rust shared libraries on musl.
