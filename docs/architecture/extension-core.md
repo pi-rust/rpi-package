@@ -221,6 +221,16 @@ qualify this Stage 8 configuration slice.
 
 The dependency graph describes shared code. Separate `rpi --acp`, `rpi --webserver` and `rpi-http` processes still own separate runtime instances. To share live sessions, clients must connect to one service instance. HTTP can embed a caller-owned `Arc<Service>`; sharing JSON files between independent processes is not a live-session transport. Use a single writer per registry.
 
+`rpi-http-extension` exposes the API-only service through the existing plugin ABI
+(`rpi --http`) and a standalone executable. It maps `SessionStart`,
+`SessionShutdown` and `StdioLifecycle` onto `rpi_http::serve_until`; it does not
+add a node owner, control protocol, authentication layer or Work UI contract.
+The plugin requires normal model configuration, like `--webserver`, and does not
+claim `requiresAgent:false`. The service it starts owns its own live session
+registry and native children; loading the plugin into an Agent session does not
+make that Agent session live in the HTTP service, nor does it share runs, dialogs
+or events with it.
+
 Remote ACP-to-HTTP attachment and a combined multi-protocol daemon are subsequent deployment features. TCP and other extensions can adopt the core later without changing this dependency direction.
 
 ## Verification contract

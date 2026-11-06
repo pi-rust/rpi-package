@@ -116,6 +116,11 @@ Web 0.1.1 supports `.rpi/web.json` startup settings. Run `rpi-web --init` once i
 cargo run --locked -p rpi-http -- --project /path/to/project --rpi-bin /path/to/rpi --port 3030
 ```
 
+`rpi-http-extension` packages the same API-only service as a standard native
+plugin (`rpi --http`) and as the `rpi-http-service` executable. It only maps the
+existing plugin lifecycle onto `rpi-http`; it starts a separate core `Service`
+and does not share the live Agent session that loaded the extension.
+
 `rpi-extcore` is also published as a reusable crates.io library. Applications
 can depend on the compatible minor line with `rpi-extcore = "0.1"`; it requires
 Rust 1.78+ and a compatible native `rpi --mode rpc` executable at runtime. See
