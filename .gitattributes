@@ -1,0 +1,5 @@
+# Embedded package content and generated component identities must be stable
+# across Windows and Unix checkouts, including strict skill frontmatter.
+packages/rpi-node-core/assets/** text eol=lf
+packages/rpi-http-component/ui/** text eol=lf
+packages/rpi-components/ui-host/** text eol=lf
