@@ -16,6 +16,9 @@ categories = ["development-tools"]
 # use into ~/.rpi/agent/models/sense-voice (or RPI_STT_MODEL_DIR).
 default = ["local-stt"]
 local-stt = ["dep:sherpa-onnx"]
+# Musl builds use the hosted/API voice path and compile OpenSSL for the target
+# instead of trying to consume the host runner's glibc OpenSSL installation.
+musl-api = ["native-tls/vendored"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
