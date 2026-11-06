@@ -51,32 +51,32 @@ jobs:
         # session_catalog includes deterministic post-result worker-exit gates;
         # fixture qualification is not a real-native smoke or deployment.
         run: |
-          cargo test --locked -p rpi-extcore session_catalog
-          cargo test --locked -p rpi-acp session_list
-          cargo test --locked -p rpi-acp list_dispatcher
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-extcore session_catalog
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-acp session_list
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-acp list_dispatcher
       - name: Check provenance-gated native harness syntax without running it
         run: python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/session_list_native.py').read_text(encoding='utf-8'))"
       - name: Test bounded live configuration and ACP dispatch fixtures
         run: |
-          cargo test --locked -p rpi-extcore --lib configuration::tests
-          cargo test --locked -p rpi-acp --lib protocol::configuration::tests
-          cargo test --locked -p rpi-acp --lib protocol_configuration_tests
-          cargo test --locked -p rpi-acp --lib protocol_configuration_dispatch_tests
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-extcore --lib configuration::tests
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-acp --lib protocol::configuration::tests
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-acp --lib protocol_configuration_tests
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-acp --lib protocol_configuration_dispatch_tests
       - name: Check included configuration-test formatting
         run: rustfmt --edition 2021 --check packages/rpi-extcore/src/configuration_tests.rs packages/rpi-acp/src/configuration_tests.rs packages/rpi-acp/src/protocol_configuration_tests.rs packages/rpi-acp/src/protocol_configuration_dispatch_tests.rs
       - name: Check configuration native harness syntax without running it
         run: python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/configuration_native.py').read_text(encoding='utf-8'))"
       - name: Test bounded context usage and ACP lifecycle fixtures
-        run: cargo test --locked -p rpi-extcore -p rpi-acp context_usage
+        run: python .github/scripts/workspace-cargo.py test --locked -p rpi-extcore -p rpi-acp context_usage
       - name: Check context usage tests and native harness syntax
         run: |
           rustfmt --edition 2021 --check packages/rpi-extcore/src/context_usage_tests.rs packages/rpi-acp/src/context_usage_tests.rs packages/rpi-acp/src/protocol_context_usage_tests.rs
           python -c "import ast,pathlib; ast.parse(pathlib.Path('packages/rpi-acp/tests/context_usage_native.py').read_text(encoding='utf-8'))"
       - name: Test optional native tool-name fidelity fixtures
         run: |
-          cargo test --locked -p rpi-acp tool_name
-          cargo test --locked -p rpi-acp names_do_not_create_empty_progress_or_change_tool_presentation
-          cargo test --locked -p rpi-acp replay_missing_result_name_does_not_guess_from_adjacent_call
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-acp tool_name
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-acp names_do_not_create_empty_progress_or_change_tool_presentation
+          python .github/scripts/workspace-cargo.py test --locked -p rpi-acp replay_missing_result_name_does_not_guess_from_adjacent_call
       - name: Check included tool-name tests and native harness syntax
         run: |
           rustfmt --edition 2021 --check packages/rpi-acp/src/tool_name_tests.rs packages/rpi-acp/src/history_tool_name_tests.rs
@@ -85,27 +85,27 @@ jobs:
       - name: Test default package compatibility and runtime ownership
         # Includes identity, ordered prompt/image and client text-I/O fixtures;
         # syntax checking the Windows native harness above is not executing it.
-        run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
+        run: python .github/scripts/workspace-cargo.py test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
       - name: Test configured core HTTP transport with loopback fixtures
-        run: cargo test --locked -p rpi-mcp-core configured_http_tests
+        run: python .github/scripts/workspace-cargo.py test --locked -p rpi-mcp-core configured_http_tests
       - name: Test stdio bridge with real MCP children and a fixture native peer
-        run: cargo test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge
+        run: python .github/scripts/workspace-cargo.py test --locked -p rpi-extcore --features test-support --test mcp_stdio_bridge
       - name: Test HTTP bridge with loopback MCP and a fixture native peer
-        run: cargo test --locked -p rpi-extcore --features test-support --test mcp_http_bridge
+        run: python .github/scripts/workspace-cargo.py test --locked -p rpi-extcore --features test-support --test mcp_http_bridge
       - name: Check all targets
         # Includes the test-only rpi-acp configuration_fixture example; checking
         # it is not native execution, installation, or runtime qualification.
-        run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web --all-targets
+        run: python .github/scripts/workspace-cargo.py check --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web --all-targets
       # Only MCP core is an explicit Clippy gate. The compile/test commands
       # above still reject all compiler warnings via RUSTFLAGS.
       - name: Strict MCP core Clippy
-        run: cargo clippy --locked -p rpi-mcp-core --all-targets -- -D warnings
+        run: python .github/scripts/workspace-cargo.py clippy --locked -p rpi-mcp-core --all-targets -- -D warnings
       - name: Build the adapter library
-        run: cargo build --locked -p rpi-mcp-adapter --lib
+        run: python .github/scripts/workspace-cargo.py build --locked -p rpi-mcp-adapter --lib
       - name: Verify the standalone core package
-        run: cargo package --locked -p rpi-mcp-core
+        run: python .github/scripts/workspace-cargo.py package --locked -p rpi-mcp-core
       - name: Verify the adapter against the unpublished workspace core
-        run: cargo package --locked -p rpi-mcp-adapter --config 'patch.crates-io.rpi-mcp-core.path="packages/rpi-mcp-core"'
+        run: python .github/scripts/workspace-cargo.py package --locked -p rpi-mcp-adapter --config 'patch.crates-io.rpi-mcp-core.path="packages/rpi-mcp-core"'
       # Real-native ACP/MCP, session/list, configuration, context usage and tool-name smokes require
       # separately verified native/bridge binaries (plus the isolated test DLL
       # for configuration) and prebuild provenance. This fixture-only job does

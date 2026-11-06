@@ -175,7 +175,11 @@ jobs:
               apk add --no-cache build-base binutils python3 git
               git config --global --add safe.directory /workspace
               cargo build --release --locked -p rpi-web --bin rpi-web --lib
-              cargo test --release --locked -p rpi-web -p rpi-http -p rpi-extcore
+              if [ -f .github/scripts/workspace-cargo.py ]; then
+                python3 .github/scripts/workspace-cargo.py test --release --locked -p rpi-web -p rpi-http -p rpi-extcore
+              else
+                cargo test --release --locked -p rpi-web -p rpi-http -p rpi-extcore
+              fi
               cc tools/musl-plugin-loader.c -o target/release/musl-plugin-loader -ldl
               if readelf -d target/release/librpi_web_extension.so | grep -Eq "libc\\.so\\.6|ld-linux"; then
                 echo "Web musl extension links glibc" >&2

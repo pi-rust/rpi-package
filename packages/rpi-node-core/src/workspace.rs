@@ -371,7 +371,7 @@ impl LocalWorkspace {
         Ok(Health {
             ok: true,
             service: Some("rpi-extcore".into()),
-            version: Some("17ba89c0098f018db76e22051fe8c73e2792dc1c".into()),
+            version: Some("0.2.7".into()),
             protocol: Some("rpi".into()),
         })
     }
