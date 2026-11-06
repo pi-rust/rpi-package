@@ -31,7 +31,7 @@ use rpi_extcore::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::{broadcast, watch};
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
@@ -51,6 +51,9 @@ pub struct AppConfig {
     pub session_dir: Option<PathBuf>,
     /// Where the bridge remembers session ids across restarts.
     pub registry: PathBuf,
+    /// Optional idle timeout for live native hosts, in seconds. `None` keeps
+    /// the legacy behavior and retains live hosts until explicit close.
+    pub session_timeout_seconds: Option<u64>,
 }
 
 fn default_service_name() -> &'static str {
@@ -70,6 +73,7 @@ impl Default for AppConfig {
             allowed_hosts: None,
             session_dir: None,
             registry: rpi_extcore::registry::default_path(),
+            session_timeout_seconds: None,
         }
     }
 }
@@ -187,6 +191,14 @@ pub async fn serve_until(
         shutdown: receiver,
         service_name: config.service_name,
     };
+    let idle_reaper = config
+        .session_timeout_seconds
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| {
+            state
+                .backend
+                .spawn_idle_reaper(Duration::from_secs(seconds))
+        });
     let router = routes(state.clone())
         .merge(frontend)
         .layer(from_fn_with_state(security, crate::security::guard))
@@ -206,8 +218,11 @@ pub async fn serve_until(
         }),
     );
     tokio::pin!(serving);
-    tokio::select! {
-        result = &mut serving => result?,
+    let stopped_by_signal = tokio::select! {
+        result = &mut serving => {
+            result?;
+            false
+        }
         _ = stop => {
             println!("  Status      Stopping...");
             let _ = shutdown.send(true);
@@ -215,7 +230,15 @@ pub async fn serve_until(
                 state.backend.shutdown().await;
                 let _ = serving.await;
             }).await;
+            true
         }
+    };
+    if !stopped_by_signal {
+        state.backend.shutdown().await;
+    }
+    if let Some(reaper) = idle_reaper {
+        reaper.abort();
+        let _ = reaper.await;
     }
     println!("  Status      Stopped");
     Ok(())
@@ -242,6 +265,23 @@ pub fn router(
         .layer(from_fn_with_state(security, crate::security::guard))
         // Outside the guard so authentication and extractor failures are not cached either.
         .layer(axum::middleware::from_fn(image_cache_control))
+}
+
+async fn touch_session_activity(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(id) = request
+        .uri()
+        .path()
+        .strip_prefix("/api/v1/sessions/")
+        .and_then(|path| path.split('/').next())
+        .filter(|id| !id.is_empty())
+    {
+        state.backend.touch_session(id).await;
+    }
+    next.run(request).await
 }
 
 async fn image_cache_control(
@@ -325,6 +365,7 @@ fn routes(state: AppState) -> Router {
         )
         .route("/api/v1/sessions/{id}/durable/events", get(durable_events))
         .route("/api/v1/sessions/{id}/events", get(events))
+        .layer(from_fn_with_state(state.clone(), touch_session_activity))
         .with_state(state)
 }
 

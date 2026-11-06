@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub session_dir: Option<PathBuf>,
     /// Where the bridge remembers session ids across restarts.
     pub registry: PathBuf,
+    /// Idle timeout for live native hosts, in seconds. Zero/None disables it.
+    pub session_timeout_seconds: Option<u64>,
 }
 
 impl Default for AppConfig {
@@ -39,6 +41,7 @@ impl Default for AppConfig {
             allowed_hosts: None,
             session_dir: None,
             registry: rpi_extcore::registry::default_path(),
+            session_timeout_seconds: Some(30 * 60),
         }
     }
 }
@@ -82,6 +85,7 @@ pub(crate) async fn run_until(
         allowed_hosts: config.allowed_hosts.clone(),
         session_dir: config.session_dir.clone(),
         registry: config.registry.clone(),
+        session_timeout_seconds: config.session_timeout_seconds,
     };
     rpi_http::serve_until(
         http,
