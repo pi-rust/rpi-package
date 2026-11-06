@@ -572,6 +572,7 @@ function latestMessageStats(messages: unknown[]): RuntimeState["stats"] {
 
 /** One line of a provider error, for a transcript row. */
 function shortReason(value: unknown) {
+  if (value == null) return "";
   const text = typeof value === "string" ? value : errorText(value);
   const line = text.split("\n")[0] ?? "";
   return line.length > 160 ? `${line.slice(0, 157)}…` : line;
@@ -1116,6 +1117,7 @@ export default function App() {
       switch (event.type) {
         case "agent_start":
         case "operation_accepted":
+          setRows((previous) => previous.filter((row) => row.id !== "retry-note"));
           setRunActive(true);
           setStatus("running");
           setInterrupted(false);
@@ -1144,22 +1146,28 @@ export default function App() {
             settlement,
             seq,
           );
-          setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(outcome) || event.aborted === true);
           const aborted =
             event.aborted && outcome !== "aborted" ? " · aborted" : "";
-          const reason =
-            typeof event.error === "string" && event.error.trim()
-              ? ` · ${shortReason(event.error)}`
-              : "";
+          const failure = [
+            "failed",
+            "error",
+            "interrupted",
+            "aborted",
+            "stopped",
+          ].includes(outcome) || event.aborted === true;
+          setFailedRun(failure);
+          const errorReason = shortReason(event.error);
+          const reason = errorReason ? ` · ${errorReason}` : "";
           const summary =
             typeof event.summary === "string" && event.summary.trim()
               ? event.summary
               : `Run ${outcome}${aborted}${reason}`;
-          if (reason) setError(String(event.error));
+          if (failure && errorReason) setError(errorReason);
+          else if (outcome === "completed") setError("");
           setRows((previous) => [
             ...previous.filter(
               (row) =>
-                row.id !== "retry-note" &&
+                (failure || row.id !== "retry-note") &&
                 row.id !== `settled-${String(event.runId ?? seq)}` &&
                 (row.kind !== "note" ||
                   row.translation?.key !== "restoredRun" ||
@@ -1221,6 +1229,8 @@ export default function App() {
         case "retry_scheduled": {
           const attempt = Number(event.attempt ?? 1);
           const max = Number(event.maxRetries ?? 0);
+          const retryReason = shortReason(event.error);
+          if (retryReason) setError(retryReason);
           setRows((previous) => [
             ...previous.filter((row) => row.id !== "retry-note"),
             {
@@ -1827,10 +1837,7 @@ export default function App() {
           earlierPage.current?.rows ?? [],
           rowsFromMessages(snapshot.messages),
         );
-        setRows((previous) => restoreRowsWithNotes(
-          restored,
-          previous.filter((row) => row.id !== "retry-note"),
-        ));
+        setRows((previous) => restoreRowsWithNotes(restored, previous));
         setPersistedHistory(snapshot.history ?? null);
         setLeafId(snapshot.leafId ?? "");
         setInterrupted(Boolean(snapshot.pendingResume));
