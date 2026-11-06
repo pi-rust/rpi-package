@@ -41,7 +41,7 @@ impl SessionEntry {
         }
     }
     fn is_live(&self) -> bool {
-        !*self.revoked.borrow() && self.expires_at.is_none_or(|at| at > Instant::now())
+        !*self.revoked.borrow() && self.expires_at.map_or(true, |at| at > Instant::now())
     }
     fn revoke(&self) {
         self.revoked.send_replace(true);
@@ -196,7 +196,7 @@ impl Security {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, entry| {
-            let keep = entry.expires_at.is_none_or(|at| at > now);
+            let keep = entry.expires_at.map_or(true, |at| at > now);
             if !keep {
                 entry.revoke();
             }
@@ -419,7 +419,7 @@ fn issue_session(
     now: Instant,
 ) -> Result<(), StatusCode> {
     sessions.retain(|_, entry| {
-        let keep = entry.expires_at.is_none_or(|at| at > now)
+        let keep = entry.expires_at.map_or(true, |at| at > now)
             && entry.access.generation == access.generation;
         if !keep {
             entry.revoke();

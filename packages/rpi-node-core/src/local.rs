@@ -36,6 +36,7 @@ impl LocalRuntime {
     }
 
     /// Resolve explicit extension-launch paths without mutating process environment.
+    #[allow(clippy::needless_pass_by_value)] // Own the launch configuration at the host boundary.
     pub fn prepare_with(
         rpi_override: Option<PathBuf>,
         data_override: Option<PathBuf>,

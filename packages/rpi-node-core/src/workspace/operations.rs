@@ -69,7 +69,7 @@ struct Inner {
     state: Mutex<State>,
 }
 
-/// Shared by all adapters attached to one LocalWorkspace, not by unrelated owners.
+/// Shared by all adapters attached to one `LocalWorkspace`, not by unrelated owners.
 /// There is deliberately no Debug implementation which might reveal cached data.
 #[derive(Clone)]
 pub struct RemoteOperations(Arc<Inner>);
@@ -113,6 +113,7 @@ impl RemoteOperations {
             }),
         })))
     }
+    #[must_use]
     pub fn owner_epoch(&self) -> &str {
         &self.0.epoch
     }
@@ -265,18 +266,23 @@ impl RemoteOperations {
     }
 }
 impl OperationPermit {
+    #[must_use]
     pub fn reference(&self) -> &OperationRef {
         &self.reference
     }
+    #[must_use]
     pub fn client_instance_id(&self) -> &str {
         &self.client_instance_id
     }
+    #[must_use]
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+    #[must_use]
     pub fn kind(&self) -> RealtimeOperationKind {
         self.kind
     }
+    #[must_use]
     pub fn payload(&self) -> &Value {
         &self.payload
     }

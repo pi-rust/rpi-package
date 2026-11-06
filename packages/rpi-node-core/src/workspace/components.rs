@@ -3,6 +3,7 @@ use super::{LocalError, LocalWorkspace, WorkspaceError};
 use rpi_components::{Call, InstallRequest, Installed};
 
 impl LocalWorkspace {
+    #[must_use]
     pub fn component_host(&self) -> &rpi_components::host::Host {
         &self.inner.components
     }

@@ -54,6 +54,10 @@ impl HttpServer {
     pub fn start(workspace: Arc<LocalWorkspace>, config: ServerConfig) -> Result<Self, String> {
         Self::start_inner(workspace, config, None, None)
     }
+    /// Start public transport using a saved password verifier.
+    ///
+    /// # Errors
+    /// Returns an error if the listener cannot bind or initialize.
     pub fn start_with_password_digest(
         workspace: Arc<LocalWorkspace>,
         config: ServerConfig,
@@ -63,6 +67,10 @@ impl HttpServer {
     }
     /// Private parent/client entrance to the SAME owner. Public sharing policy
     /// cannot disable this listener or grant its component privileges.
+    /// Start private local control for the same workspace owner.
+    ///
+    /// # Errors
+    /// Returns an error for a non-loopback bind or listener startup failure.
     pub fn start_control(
         workspace: Arc<LocalWorkspace>,
         config: ServerConfig,
@@ -73,6 +81,7 @@ impl HttpServer {
         }
         Self::start_inner(workspace, config, Some(capability), None)
     }
+    #[allow(clippy::too_many_lines)] // Listener setup retains one cleanup owner.
     fn start_inner(
         workspace: Arc<LocalWorkspace>,
         mut config: ServerConfig,

@@ -1,4 +1,4 @@
-//! Shared admission and LocalSet dispatch. Network handlers only send owned,
+//! Shared admission and `LocalSet` dispatch. Network handlers only send owned,
 //! Send messages; the supplied workspace remains the sole !Send RPC owner.
 use crate::{ServerState, routes, security::AuthLease};
 use rpi_node_api::api::realtime::{
@@ -93,7 +93,7 @@ pub(crate) async fn publish_authenticated(
 ) -> Result<(), RealtimeError> {
     let slot = tokio::select! {
         biased;
-        _ = auth.invalidated(&state.sharing, &state.shutdown) => {
+        () = auth.invalidated(&state.sharing, &state.shutdown) => {
             return Err(error(if *state.shutdown.borrow() {
                 RealtimeErrorCode::Unavailable
             } else { RealtimeErrorCode::AccessDenied }));
@@ -161,6 +161,7 @@ enum Prepared {
     Query { session_id: String, payload: Value },
     Subscribe { session_id: String, after: u64 },
 }
+#[allow(clippy::too_many_lines)] // One admission/settlement lifecycle for each request.
 async fn execute_realtime(state: Arc<ServerState>, request: RealtimeRequest) {
     let RealtimeRequest {
         action,

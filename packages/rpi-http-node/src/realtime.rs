@@ -228,6 +228,7 @@ fn request_id(frame: &ClientFrame) -> &str {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Keep connection admission, cancellation and cleanup together.
 async fn connection(
     socket: WebSocket,
     state: Arc<ServerState>,

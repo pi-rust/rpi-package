@@ -166,6 +166,7 @@ pub(crate) struct ApiRequest {
     permit: tokio::sync::OwnedSemaphorePermit,
     auth: Option<security::AuthLease>,
 }
+#[allow(clippy::too_many_arguments)] // Axum extracts request metadata before authenticated dispatch.
 async fn dispatch(
     State(state): State<Arc<ServerState>>,
     auth: Option<Extension<security::AuthLease>>,
@@ -539,7 +540,7 @@ async fn perform(
                     if *stopped.borrow() || !lease.is_valid(&policy) { break; }
                     let item = tokio::select! {
                         biased;
-                        _ = lease.invalidated(&policy, &stopped) => break,
+                        () = lease.invalidated(&policy, &stopped) => break,
                         item = source.next() => item,
                     };
                     // A revoke can land after the select chose a ready event.

@@ -239,6 +239,7 @@ impl LocalWorkspace {
     }
 
     /// Receipts belong to this owner, surviving HTTP listener and socket changes.
+    #[must_use]
     pub fn remote_operations(&self) -> &operations::RemoteOperations {
         &self.inner.remote_operations
     }
