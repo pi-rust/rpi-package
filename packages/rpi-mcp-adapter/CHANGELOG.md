@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.8...rpi-mcp-adapter-v0.2.9) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
 ## [0.2.8](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.7...rpi-mcp-adapter-v0.2.8) - 2026-11-06
 
 ### Other
