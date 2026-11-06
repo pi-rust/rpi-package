@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-lens-v0.1.14...rpi-lens-v0.1.15) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
 ## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-lens-v0.1.13...rpi-lens-v0.1.14) - 2026-11-06
 
 ### Other

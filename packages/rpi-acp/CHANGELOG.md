@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.12...rpi-acp-v0.2.13) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
 ## [0.2.12](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.11...rpi-acp-v0.2.12) - 2026-11-06
 
 ### Other
