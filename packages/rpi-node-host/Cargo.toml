@@ -1,0 +1,31 @@
+[package]
+name = "rpi-node-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Native node ownership, startup and shutdown shared by rpi extensions"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+rpi-http-component = { path = "../rpi-http-component", version = "0.1.0" }
+rpi-components = { path = "../rpi-components", version = "0.1.0" }
+rpi-node-core = { path = "../rpi-node-core", version = "0.1.0" }
+rpi-http-node = { path = "../rpi-http-node", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "signal", "time", "sync", "macros"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Pipes", "Win32_System_IO"] }

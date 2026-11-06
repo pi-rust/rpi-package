@@ -1,0 +1,40 @@
+[package]
+name = "rpi-node-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Shared workspace owner for native rpi node extensions"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+rpi-components = { path = "../rpi-components", version = "0.1.0" }
+thiserror = "2"
+getrandom = "0.3"
+fs2 = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-stream = "0.3"
+async-trait = "0.1"
+futures-core = "0.3"
+futures-util = "0.3"
+serde_json = { version = "1", features = ["preserve_order"] }
+url = "2"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+rpi-node-api = { path = "../rpi-node-api", version = "0.1.0" }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "cookies", "rustls-tls"] }
+serde_json = "1"
+
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+rpi-extcore = { git = "https://github.com/pi-rust/rpi-package", rev = "17ba89c0098f018db76e22051fe8c73e2792dc1c" }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,12 @@
+[package]
+name = "rpi-node-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license.workspace = true
+description = "Transport-neutral workspace node contracts shared by native extensions and clients"
+
+[dependencies]
+futures-core = "0.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

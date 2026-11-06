@@ -1,0 +1,17 @@
+[package]
+name = "rpi-http-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Reusable authenticated HTTP node transport and lifecycle"
+
+[dependencies]
+axum = "0.8.9"
+tokio = { version = "1", features = ["sync", "time", "net", "rt", "macros"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+subtle = "2"
+getrandom = "0.3"
+url = "2"

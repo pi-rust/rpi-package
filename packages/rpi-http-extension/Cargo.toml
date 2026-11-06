@@ -1,0 +1,25 @@
+[package]
+name = "rpi-http-extension"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license.workspace = true
+description = "Native rpi entry point for the shared workspace HTTP node"
+autobins = false
+
+[[bin]]
+name = "rpi-node-service"
+path = "src/main.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]
+
+[dependencies]
+rpi-plugin-sdk.workspace = true
+rpi-node-host = { path = "../rpi-node-host", version = "0.1.0" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }

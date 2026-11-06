@@ -28,8 +28,17 @@ members = [
     "packages/rpi-voice",
     "packages/rpi-providers",
     "packages/rpi-web",
+    "packages/rpi-node-launcher",
     "packages/rpi-extcore",
     "packages/rpi-http",
+    "packages/rpi-components",
+    "packages/rpi-http-component",
+    "packages/rpi-http-runtime",
+    "packages/rpi-node-api",
+    "packages/rpi-node-core",
+    "packages/rpi-http-node",
+    "packages/rpi-node-host",
+    "packages/rpi-http-extension",
     "tools/rpi-package-install",
 ]
 exclude = ["tools/rpi-package-smoke"]

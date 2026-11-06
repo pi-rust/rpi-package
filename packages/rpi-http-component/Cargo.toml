@@ -1,0 +1,12 @@
+[package]
+name = "rpi-http-component"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Remote-access custom UI and owner binding"
+
+[dependencies]
+rpi-components = { path = "../rpi-components", version = "0.1.0" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
