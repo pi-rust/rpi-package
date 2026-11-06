@@ -174,10 +174,13 @@ package installation uses the package Release above.
 All GNU builds use the same exact Git commit. Linux GNU builds use Ubuntu
 22.04. The x86_64 musl job uses a native musl toolchain container and builds
 only crates that explicitly declare `x86_64-unknown-linux-musl` support in
-`[package.metadata.rpi.prebuilt].supported-targets`. `rpi-voice` currently
-remains GNU-only because of its ALSA, native-tls/OpenSSL and sherpa-onnx native
-dependencies. Other crates may independently declare musl support without
-waiting for voice. Windows ARM64, Linux aarch64 musl and 32-bit platforms are
+`[package.metadata.rpi.prebuilt].supported-targets`. All workspace extension
+crates except `rpi-voice` declare x86_64 musl support.
+`rpi-voice` remains GNU-only because of its ALSA, native-tls/OpenSSL and
+sherpa-onnx native dependencies. A native Alpine Rust toolchain builds the
+complete selected package list; each library must exist and pass ELF dependency,
+export, and musl `dlopen` checks before it can be packaged. Windows ARM64,
+Linux aarch64 musl and 32-bit platforms are
 not currently built. The loader performs the final host compatibility check.
 
 Musl builds use `-C target-feature=-crt-static` because Rust otherwise drops

@@ -43,6 +43,16 @@ class WebReleaseTests(unittest.TestCase):
                 web.publish(args)
                 self.assertEqual(len(upload.call_args_list), 2)
                 self.assertIn("rpi-web-release.json", upload.call_args_list[-1].args[0][-1])
+                # A completed GNU matrix must not publish a release that is
+                # still missing its newly supported musl archive.
+                musl = root / "rpi-web.x86_64-unknown-linux-musl.json"
+                original = musl.read_bytes()
+                musl.unlink()
+                upload.reset_mock()
+                with self.assertRaises(ValueError):
+                    web.publish(args)
+                upload.assert_not_called()
+                musl.write_bytes(original)
                 fragments[0]["frontend"] = {"index.html": "different"}
                 web.assets.write_json(root / f"rpi-web.{fragments[0]['target']}.json", fragments[0])
                 upload.reset_mock()
