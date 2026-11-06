@@ -2,10 +2,8 @@
 # Build rpi extension libraries in a native musl environment.
 #
 # A musl target defaults to a static CRT, and Rust consequently drops cdylib
-# targets. This script keeps the required linker/CRT settings together and
-# makes the musl voice build explicit: the offline sherpa-onnx feature is not
-# assumed to have a musl prebuilt archive, so musl releases build voice in API
-# mode unless a separately validated native speech toolchain is supplied.
+# targets. Use a native musl compiler and build only the combinations declared
+# by each crate. Voice is excluded by its package-owned support declaration.
 set -euo pipefail
 
 ROOT_DIR="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -17,7 +15,7 @@ case "$TARGET" in
   x86_64-unknown-linux-musl)
     LINKER="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER:-}"
     if [[ -z "$LINKER" ]]; then
-      for candidate in x86_64-unknown-linux-musl-gcc x86_64-linux-musl-gcc musl-gcc; do
+      for candidate in x86_64-unknown-linux-musl-gcc x86_64-linux-musl-gcc musl-gcc cc; do
         if command -v "$candidate" >/dev/null; then
           LINKER="$candidate"
           break
@@ -39,22 +37,27 @@ if [[ -z "$LINKER" ]] || ! command -v "$LINKER" >/dev/null; then
   exit 2
 fi
 
+COMPILER_HOST="$(rustc -vV | sed -n 's/^host: //p')"
+if [[ "$COMPILER_HOST" != "$TARGET" ]]; then
+  echo "musl releases require a native $TARGET compiler, got $COMPILER_HOST" >&2
+  exit 2
+fi
+
 # Preserve CI's -D warnings or a caller's extra flags while adding the flag
 # required for Rust shared libraries on musl.
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=-crt-static"
 export CC="${CC:-$LINKER}"
-# Native-tls's vendored OpenSSL build uses target-qualified C tool variables.
-# Keep all C/AR invocations on the musl cross toolchain, never the Ubuntu host.
+# Keep target-qualified C/AR invocations on the native musl toolchain.
 case "$TARGET" in
   x86_64-unknown-linux-musl)
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$LINKER"
     export CC_x86_64_unknown_linux_musl="$LINKER"
-    export AR_x86_64_unknown_linux_musl="${LINKER%-gcc}-ar"
+    export AR_x86_64_unknown_linux_musl="${AR:-ar}"
     ;;
   aarch64-unknown-linux-musl)
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$LINKER"
     export CC_aarch64_unknown_linux_musl="$LINKER"
-    export AR_aarch64_unknown_linux_musl="${LINKER%-gcc}-ar"
+    export AR_aarch64_unknown_linux_musl="${AR:-ar}"
     ;;
 esac
 
@@ -63,7 +66,7 @@ esac
 # builds. A marker keeps the Actions artifact non-empty for package backfills
 # containing only GNU-only releases. Manual bundle-only runs have no package
 # tags and skip musl entirely because the aggregate bundle is GNU-only.
-if [[ "${PACKAGES_ONLY:-0}" != "1" && "${PACKAGE_RELEASES:-[]}" == "[]" ]]; then
+if [[ -n "${SOURCE_REF:-}" && "${PACKAGES_ONLY:-0}" != "1" && "${PACKAGE_RELEASES:-[]}" == "[]" ]]; then
   mkdir -p dist/release-assets
   printf 'No package releases were selected for the musl target.\n' > dist/release-assets/.no-musl-packages
   exit 0
@@ -106,7 +109,7 @@ if [[ -z "$MUSL_PACKAGE_NAMES" ]]; then
   exit 0
 fi
 
-read -r -a MUSL_PACKAGES <<< "$MUSL_PACKAGE_NAMES"
+mapfile -t MUSL_PACKAGES <<< "$MUSL_PACKAGE_NAMES"
 cargo_args=(build --release --locked --lib)
 for package in "${MUSL_PACKAGES[@]}"; do
   cargo_args+=(--package "$package")
@@ -116,13 +119,32 @@ cargo "${cargo_args[@]}"
 # Cargo can exit successfully after dropping an unsupported cdylib, and a
 # glibc-linked object can look superficially like a musl build. Fail closed on
 # both cases before anything is packaged.
-RELEASE_DIR="target/$TARGET/release"
-mapfile -t LIBRARIES < <(find "$RELEASE_DIR" -maxdepth 1 -type f -name '*.so' -print)
+RELEASE_DIR="$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release"
+mapfile -t LIBRARIES < <(python3 - "$RELEASE_DIR" "${MUSL_PACKAGES[@]}" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+metadata = json.loads(subprocess.check_output([
+    "cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"
+], text=True))
+selected = set(sys.argv[2:])
+for package in metadata["packages"]:
+    if package["name"] in selected:
+        target = next(t for t in package["targets"] if "cdylib" in t["crate_types"])
+        print(Path(sys.argv[1]) / ("lib" + target["name"] + ".so"))
+PY
+)
 if [[ "${#LIBRARIES[@]}" -eq 0 ]]; then
   echo "no musl cdylib artifacts found in $RELEASE_DIR" >&2
   exit 1
 fi
 for library in "${LIBRARIES[@]}"; do
+  if [[ ! -f "$library" ]]; then
+    echo "missing selected musl library: $library" >&2
+    exit 1
+  fi
   if readelf -d "$library" | grep -Eq 'libc\.so\.6|ld-linux[^ ]*\.so'; then
     echo "glibc dependency found in musl artifact: $library" >&2
     exit 1

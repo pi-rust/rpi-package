@@ -67,6 +67,11 @@ class PrebuiltAssetsTests(unittest.TestCase):
                     for package in metadata["packages"]}
         self.assertNotIn("x86_64-unknown-linux-musl", by_name["rpi-voice"])
         self.assertIn("x86_64-unknown-linux-musl", by_name["rpi-goal"])
+        self.assertEqual(by_name["rpi-web"], assets.WEB_TARGETS)
+        for package in metadata["packages"]:
+            if package["id"] in metadata["workspace_members"] and any("cdylib" in target["crate_types"] for target in package["targets"]):
+                if package["name"] != "rpi-voice":
+                    self.assertIn("x86_64-unknown-linux-musl", by_name[package["name"]], package["name"])
 
     def test_crate_metadata_controls_musl_support(self):
         gnu_only = {"name": "rpi-voice", "metadata": {"rpi": {"prebuilt": {
@@ -174,7 +179,7 @@ class PrebuiltAssetsTests(unittest.TestCase):
         text = workflow.read_text()
         self.assertEqual(set(re.findall(r"target: ([a-z0-9_-]+)", text)), assets.GNU_TARGETS)
         self.assertIn("x86_64-unknown-linux-musl", text)
-        self.assertIn("messense/rust-musl-cross:x86_64-musl", text)
+        self.assertIn("rust:alpine", text)
 
     def test_sdk_abi_comes_from_the_resolved_sdk_source(self):
         sdk_root = self.root / "sdk"

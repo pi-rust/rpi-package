@@ -126,3 +126,10 @@ profile/session and a deterministic loopback model to execute the real tool,
 then verifies snapshots, no-op reads, restart recovery, branch navigation, IDs,
 statuses and clearing. It makes no external model calls and does not replace
 installed plugins.
+
+## Linux musl installation
+
+The x86_64 musl prebuilt library requires a matching musl `rpi` host and the
+dynamic musl and `libgcc_s` runtimes (`apk add libgcc` on Alpine). GNU and musl
+extension libraries are not interchangeable. Release CI verifies the library
+with a musl `dlopen`/`dlsym` loader before publishing its GitHub and CDN archives.

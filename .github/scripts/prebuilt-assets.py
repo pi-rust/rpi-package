@@ -35,7 +35,7 @@ TARGETS = GNU_TARGETS | MUSL_TARGETS
 # the installer can filter catalog entries by target. Individual package
 # releases use each crate's declared target matrix below.
 BUNDLE_TARGETS = GNU_TARGETS
-WEB_TARGETS = GNU_TARGETS
+WEB_TARGETS = GNU_TARGETS | MUSL_TARGETS
 
 
 def command(*args):

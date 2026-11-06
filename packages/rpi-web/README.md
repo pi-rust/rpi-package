@@ -159,8 +159,10 @@ After the listener binds successfully, the terminal shows a server status page:
 The standalone program remains available for direct execution and container deployments:
 
 1. Download and extract `rpi` for your platform from the [host v0.7.0 release](https://github.com/bigfish1913/pi-rust/releases/tag/v0.7.0).
-2. Download and extract `rpi-web` from the [Web releases](https://github.com/pi-rust/rpi-package/releases?q=rpi-web-v). Builds are available for Windows x64, Linux x64 / ARM64, and macOS Intel / Apple Silicon.
+2. Download and extract `rpi-web` from the [Web releases](https://github.com/pi-rust/rpi-package/releases?q=rpi-web-v). Builds are available for Windows x64, Linux GNU x64 / ARM64, Linux musl x64, and macOS Intel / Apple Silicon.
 3. The archive includes a complete `assets/` directory for external frontend overrides. Place the host executable alongside the Web executable, or select it with an absolute `--rpi-bin` path. The release's `rpi-web-release.json` contains checksums.
+
+The musl extension requires a musl `rpi` host; GNU and musl libraries are not interchangeable. The musl standalone program and extension use the dynamic musl runtime (and `libgcc_s`), rather than a fully static executable. On Alpine, install `libgcc`. Release CI builds both entrypoints with a native musl Rust compiler, tests the packages, loads the extension with a musl `dlopen` fixture, and checks the standalone HTTP listener before publishing. The CDN mirror includes both standalone archives and installable extension archives with their manifests.
 
 For example, a Windows installation can use this layout:
 
