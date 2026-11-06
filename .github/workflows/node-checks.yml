@@ -1,0 +1,31 @@
+name: Node components
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check -p rpi-components -p rpi-http-component -p rpi-http-runtime -p rpi-node-api -p rpi-node-core -p rpi-http-node -p rpi-node-host -p rpi-node-launcher -p rpi-http-extension
+      - run: cargo test --locked -p rpi-components -p rpi-http-component -p rpi-http-runtime -p rpi-node-api -p rpi-node-core -p rpi-http-node -p rpi-node-host -p rpi-node-launcher -p rpi-http-extension
+      - run: cargo clippy --locked -p rpi-components -p rpi-http-component -p rpi-node-launcher -p rpi-node-host -p rpi-http-extension --all-targets -- -D warnings
