@@ -33,6 +33,8 @@ import {
   ListTodo,
   Loader2,
   LogOut,
+  Maximize2,
+  Minimize2,
   Moon,
   Paperclip,
   PanelLeft,
@@ -612,7 +614,14 @@ type SessionCompletionNotification = {
   sessionId: string;
   title: string;
   outcome: string;
+  error: string;
 };
+
+function isFailedOutcome(outcome: string) {
+  return ["failed", "error", "interrupted", "aborted", "stopped"].includes(
+    outcome,
+  );
+}
 
 type SettlementIdentity = NonNullable<SessionSummary["latestSettlement"]>;
 
@@ -660,9 +669,19 @@ export default function App() {
   const initialSelectionError = useRef("");
   const [sessionId, setSessionId] = useState("");
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [immersive, setImmersive] = useState(false);
   useEffect(() => {
     setTimelineOpen(false);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!immersive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setImmersive(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [immersive]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsRoot, setProjectsRoot] = useState("");
   const [projectDialog, setProjectDialog] = useState(false);
@@ -719,6 +738,7 @@ export default function App() {
   const sessionListInitialized = useRef(false);
   const sessionTitles = useRef(new Map<string, string>());
   const notifiedSettlements = useRef(new Set<string>());
+  const pendingNotificationContinue = useRef<string | null>(null);
   const [sessionNotifications, setSessionNotifications] = useState<
     SessionCompletionNotification[]
   >([]);
@@ -742,6 +762,7 @@ export default function App() {
           sessionId,
           title: title?.trim() || "",
           outcome: settlement?.outcome || "completed",
+          error: shortReason(settlement?.error),
         },
       ].slice(-8));
     },
@@ -1137,6 +1158,7 @@ export default function App() {
           const outcome = String(event.outcome ?? "settled");
           const settlement: SettlementIdentity = {
             outcome,
+            error: shortReason(event.error) || undefined,
             runId: typeof event.runId === "string" ? event.runId : undefined,
             seq: seq > 0 ? seq : undefined,
           };
@@ -1842,6 +1864,8 @@ export default function App() {
         setLeafId(snapshot.leafId ?? "");
         setInterrupted(Boolean(snapshot.pendingResume));
         setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(String(snapshot.latestSettlement?.outcome ?? "")) || snapshot.latestSettlement?.aborted === true);
+        const snapshotError = shortReason(snapshot.latestSettlement?.error);
+        if (snapshotError) setError(snapshotError);
         setRecoveryNoticeDismissed(false);
         setFirstId(earlierPage.current?.firstId ?? snapshot.firstId ?? "");
         setHasMore(earlierPage.current?.hasMore ?? Boolean(snapshot.hasMore));
@@ -1964,6 +1988,8 @@ export default function App() {
           setLeafId(snapshot.leafId ?? "");
           setInterrupted(Boolean(snapshot.pendingResume));
           setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(String(snapshot.latestSettlement?.outcome ?? "")) || snapshot.latestSettlement?.aborted === true);
+          const snapshotError = shortReason(snapshot.latestSettlement?.error);
+          if (snapshotError) setError(snapshotError);
           setRecoveryNoticeDismissed(false);
           setFirstId(snapshot.firstId ?? "");
           setHasMore(Boolean(snapshot.hasMore));
@@ -2472,7 +2498,7 @@ export default function App() {
     });
   }
 
-  async function submit(event?: FormEvent) {
+  async function submit(event?: FormEvent, forceContinue = false) {
     event?.preventDefault();
     if (uploadScope.current?.pending) return;
     if (composerContinue) {
@@ -2482,7 +2508,7 @@ export default function App() {
         return;
       }
     }
-    const continuing = composerContinue;
+    const continuing = forceContinue || composerContinue;
     const message = continuing ? t("continueTaskPrompt") : draft.trim();
     if (
       (!message && attachments.length === 0) ||
@@ -2641,6 +2667,45 @@ export default function App() {
       }
     }
   }
+
+  async function continueCurrent(forcePrompt = false) {
+    if (interrupted && supported.has("resume_pending")) {
+      await resumePending();
+      return;
+    }
+    if ((failedRun || forcePrompt) && supported.has("prompt"))
+      await submit(undefined, forcePrompt);
+  }
+
+  function continueFromNotification(
+    notification: SessionCompletionNotification,
+  ) {
+    setSessionNotifications((previous) =>
+      previous.filter((item) => item.id !== notification.id),
+    );
+    if (notification.sessionId === activeSessionRef.current) {
+      if (loadingSession || !sessionHydrated || busy) {
+        pendingNotificationContinue.current = notification.sessionId;
+        return;
+      }
+      void continueCurrent(true);
+      return;
+    }
+    select(notification.sessionId);
+    pendingNotificationContinue.current = notification.sessionId;
+  }
+
+  useEffect(() => {
+    if (
+      !pendingNotificationContinue.current ||
+      pendingNotificationContinue.current !== sessionId ||
+      loadingSession ||
+      !sessionHydrated
+    )
+      return;
+    pendingNotificationContinue.current = null;
+    void continueCurrent(true);
+  }, [sessionHydrated, sessionId, loadingSession, interrupted, failedRun]);
 
   /** Page backwards through the branch, prepending entries older than the
    * current first row. The bridge forwards `get_messages` unchanged, so this is
@@ -3169,6 +3234,7 @@ export default function App() {
   }
 
   function select(id: string, selectedProjectId?: string) {
+    pendingNotificationContinue.current = null;
     // refreshSessions publishes this ref before React renders: URL initialization
     // and post-mutation fallbacks must guard against that latest list too.
     const known = (sessionListValue.current ?? sessions).find((entry) => entry.sessionId === id);
@@ -3369,7 +3435,7 @@ export default function App() {
 
   return (
     <div
-      className="workspace"
+      className={`workspace${immersive ? " workspace--immersive" : ""}`}
       style={
         {
           "--sidebar-width": `${sidebarWidth}px`,
@@ -3381,48 +3447,79 @@ export default function App() {
         createPortal(
           <div
             className="session-notification-stack"
-            aria-label={t("sessionCompleted")}
+            aria-label={t("sessionNotifications")}
             aria-live="polite"
           >
-            {sessionNotifications.map((notification) => (
-              <div className="session-notification" key={notification.id}>
-                <button
-                  type="button"
-                  className="session-notification-main"
-                  aria-label={`${t("sessionCompleted")}: ${notification.title || t("newSession")}`}
-                  onClick={() => {
-                    select(notification.sessionId);
-                    setSessionNotifications((previous) =>
-                      previous.filter((item) => item.id !== notification.id),
-                    );
-                  }}
+            {sessionNotifications.map((notification) => {
+              const failed = isFailedOutcome(notification.outcome);
+              const statusLabel = failed
+                ? t("sessionFailed")
+                : t("sessionCompleted");
+              return (
+                <div
+                  className={`session-notification ${failed ? "session-notification--error" : "session-notification--success"}`}
+                  key={notification.id}
                 >
-                  <Check size={16} aria-hidden="true" />
-                  <span className="session-notification-copy">
-                    <strong>{notification.title || t("newSession")}</strong>
-                    <span>{t("sessionCompleted")}</span>
-                    <span>
-                      {t("sessionCompletedOutcome", {
-                        outcome: notification.outcome,
-                      })}
+                  <button
+                    type="button"
+                    className="session-notification-main"
+                    aria-label={`${statusLabel}: ${notification.title || t("newSession")}`}
+                    onClick={() => {
+                      select(notification.sessionId);
+                      setSessionNotifications((previous) =>
+                        previous.filter((item) => item.id !== notification.id),
+                      );
+                    }}
+                  >
+                    {failed ? (
+                      <AlertTriangle size={16} aria-hidden="true" />
+                    ) : (
+                      <Check size={16} aria-hidden="true" />
+                    )}
+                    <span className="session-notification-copy">
+                      <strong>{notification.title || t("newSession")}</strong>
+                      <span>{statusLabel}</span>
+                      <span>
+                        {t("sessionCompletedOutcome", {
+                          outcome: valueLabel(
+                            language,
+                            notification.outcome,
+                          ),
+                        })}
+                      </span>
+                      {notification.error && <span>{notification.error}</span>}
                     </span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="icon-button session-notification-close"
-                  aria-label={t("closeNotification")}
-                  title={t("closeNotification")}
-                  onClick={() =>
-                    setSessionNotifications((previous) =>
-                      previous.filter((item) => item.id !== notification.id),
-                    )
-                  }
-                >
-                  <X size={15} aria-hidden="true" />
-                </button>
-              </div>
-            ))}
+                  </button>
+                  {failed &&
+                    (supported.has("prompt") ||
+                      supported.has("resume_pending")) && (
+                      <button
+                        type="button"
+                        className="session-notification-continue"
+                        aria-label={t("continue")}
+                        title={t("continue")}
+                        onClick={() => continueFromNotification(notification)}
+                      >
+                        <Play size={14} aria-hidden="true" />
+                        <span>{t("continue")}</span>
+                      </button>
+                    )}
+                  <button
+                    type="button"
+                    className="icon-button session-notification-close"
+                    aria-label={t("closeNotification")}
+                    title={t("closeNotification")}
+                    onClick={() =>
+                      setSessionNotifications((previous) =>
+                        previous.filter((item) => item.id !== notification.id),
+                      )
+                    }
+                  >
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </div>
+              );
+            })}
           </div>,
           document.body,
         )}
@@ -3597,7 +3694,7 @@ export default function App() {
           </div>
         </Modal>
       )}
-      {sidebar && (
+      {sidebar && !immersive && (
         <>
           <button
             className="sidebar-backdrop mobile-only"
@@ -3726,6 +3823,17 @@ export default function App() {
       )}
 
       <section className="main-shell">
+        {immersive && (
+          <button
+            type="button"
+            className="icon-button immersive-exit"
+            aria-label={t("exitImmersiveView")}
+            title={t("exitImmersiveView")}
+            onClick={() => setImmersive(false)}
+          >
+            <Minimize2 size={17} aria-hidden="true" />
+          </button>
+        )}
         <header className="toolbar">
           <div className="toolbar-left">
             <button
@@ -3775,6 +3883,25 @@ export default function App() {
             </button>
           </div>
           <div className="toolbar-actions">
+            <button
+              type="button"
+              className={`icon-button ${immersive ? "selected" : ""}`}
+              disabled={!sessionId}
+              aria-label={t("immersiveView")}
+              title={t("immersiveView")}
+              aria-pressed={immersive}
+              onClick={() => {
+                setImmersive(true);
+                setSidebar(false);
+                setTimelineOpen(false);
+                setPanel(false);
+                setInspector(false);
+                setTraceOpen(false);
+                setWorkbenchOpen(false);
+              }}
+            >
+              <Maximize2 size={17} aria-hidden="true" />
+            </button>
             {!activeSessionRunning && (
               <span
                 className={`connection ${status === "error" ? "offline" : ""}`}
