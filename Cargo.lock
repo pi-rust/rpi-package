@@ -2610,6 +2610,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpi-http-extension"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "rpi-http",
+ "rpi-plugin-sdk 0.3.20",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "rpi-im-message"
 version = "0.1.15"
 dependencies = [
