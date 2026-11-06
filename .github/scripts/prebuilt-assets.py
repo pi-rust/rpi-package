@@ -9,13 +9,23 @@ import subprocess
 import tarfile
 import zipfile
 
-TARGETS = {
+GNU_TARGETS = {
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
 }
+
+# The first musl release is intentionally x86_64-only. The build is native in
+# the musl container, which is required for cdylib/unwind and native package
+# detection. Add another target only together with a native toolchain and
+# runtime smoke test for that architecture.
+MUSL_TARGETS = {
+    "x86_64-unknown-linux-musl",
+}
+TARGETS = GNU_TARGETS | MUSL_TARGETS
+WEB_TARGETS = GNU_TARGETS
 
 
 def command(*args):
@@ -39,6 +49,16 @@ def asset(path, repository, tag):
         "size": path.stat().st_size,
         "format": "zip" if path.suffix == ".zip" else "tar.gz",
     }
+
+
+def platform_slug(target):
+    """Return the installer/archive slug without conflating GNU and musl."""
+    windows = "windows" in target
+    macos = "apple-darwin" in target
+    os_name = "windows" if windows else "macos" if macos else "linux"
+    arch = target.split("-", 1)[0]
+    suffix = "-musl" if target.endswith("-unknown-linux-musl") else ""
+    return f"{os_name}-{arch}{suffix}"
 
 
 def archive_library(library, destination):
@@ -123,9 +143,7 @@ def build(args):
             raise ValueError("Package-only builds require at least one release tag")
         return
 
-    os_name = "windows" if windows else "macos" if macos else "linux"
-    arch = args.target.split("-")[0]
-    platform = f"{os_name}-{arch}"
+    platform = platform_slug(args.target)
     bundle = pathlib.Path("dist") / f"rpi-packages-{platform}.{archive_extension}"
     bridge = pathlib.Path("dist") / f"rpi-acp-{platform}.{archive_extension}"
     # The installer has already produced the bundle and standalone ACP bridge.
@@ -158,10 +176,11 @@ def upload(tag, paths):
     subprocess.run(["gh", "release", "upload", tag, *map(str, paths), "--clobber"], check=True)
 
 
-def collect(root, pattern, source_ref):
+def collect(root, pattern, source_ref, expected_targets=None):
+    expected_targets = TARGETS if expected_targets is None else expected_targets
     fragments = [json.loads(path.read_text(encoding="utf-8")) for path in root.glob(pattern)]
     targets = [fragment["target"] for fragment in fragments]
-    if set(targets) != TARGETS or len(targets) != len(TARGETS):
+    if set(targets) != expected_targets or len(targets) != len(expected_targets):
         raise ValueError(f"Missing or duplicate platform artifacts for {pattern}: {targets}")
     if any(fragment["source_commit"] != source_ref for fragment in fragments):
         raise ValueError("Platform artifacts were built from different source commits")
@@ -239,7 +258,7 @@ def publish(args):
             print(f"Preserving already published immutable assets: {tag}")
             continue
         upload(tag, paths)
-        # Publish the discovery manifest last, after all five archives exist.
+        # Publish the discovery manifest last, after all supported archives exist.
         upload(tag, [manifest])
 
     if not bundle_exists:
