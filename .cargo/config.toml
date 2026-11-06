@@ -7,7 +7,7 @@ rustflags = ["-C", "link-arg=advapi32.lib"]
 # linker names below; local cross builds can override them with a different
 # CARGO_TARGET_*_LINKER toolchain prefix.
 [target.x86_64-unknown-linux-musl]
-linker = "x86_64-linux-musl-gcc"
+linker = "x86_64-unknown-linux-musl-gcc"
 rustflags = ["-C", "target-feature=-crt-static"]
 
 [target.aarch64-unknown-linux-musl]
