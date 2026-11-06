@@ -9,6 +9,17 @@ on:
       tag:
         required: true
         type: string
+    secrets:
+      RPI_RUSTFS_ENDPOINT:
+        required: false
+      RPI_RUSTFS_BUCKET:
+        required: false
+      RPI_RUSTFS_ACCESS_KEY:
+        required: false
+      RPI_RUSTFS_SECRET_KEY:
+        required: false
+      RPI_CDN_BASE_URL:
+        required: false
   workflow_dispatch:
     inputs:
       source_ref:
@@ -181,3 +192,21 @@ jobs:
             --source-ref "$SOURCE_REF" --repository "$GITHUB_REPOSITORY" \
             --bundle-tag unused --tags "[\"$RELEASE_TAG\"]" \
             --packages-only --output dist/web-extension
+      - name: Optionally mirror Web release files to RustFS
+        id: rustfs_mirror
+        continue-on-error: true
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+        run: |
+          python .github/scripts/web-release.py mirror \
+            --tag "$RELEASE_TAG" --output dist/web-release
+      - name: Report RustFS mirror failure
+        if: steps.rustfs_mirror.outcome == 'failure'
+        run: |
+          echo "::warning::RustFS/CDN Web mirror failed; GitHub Releases remain canonical."
+          echo "- WARNING: RustFS/CDN Web mirror failed; GitHub Releases remain canonical." >> "$GITHUB_STEP_SUMMARY"

@@ -56,6 +56,34 @@ class WebReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 web.publish(args)
 
+    def test_web_mirror_uses_release_manifest_and_shared_key_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tag = "rpi-web-v0.1.0"
+            archive = root / "rpi-web-standalone-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+            archive.write_bytes(b"web-release")
+            distribution = web.assets.asset(archive, "pi-rust/rpi-package", tag)
+            web.assets.write_json(root / "rpi-web-release.json", {
+                "schema_version": 1,
+                "name": "rpi-web",
+                "version": "0.1.0",
+                "tag": tag,
+                "targets": {"x86_64-unknown-linux-gnu": distribution},
+            })
+            files = web.mirror_files(root, tag)
+            self.assertEqual([path.name for _, path in files], [archive.name, "rpi-web-release.json"])
+            self.assertEqual(
+                web.assets._object_key(tag, files[0][1]),
+                f"rpi-package/releases/{tag}/{archive.name}",
+            )
+
+    def test_web_mirror_rejects_wrong_manifest_tag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            web.assets.write_json(root / "rpi-web-release.json", {"tag": "rpi-web-v0.1.0", "targets": {}})
+            with self.assertRaises(ValueError):
+                web.mirror_files(root, "rpi-web-v0.1.1")
+
     def test_web_tag_selection_does_not_enter_extension_pipeline(self):
         spec = importlib.util.spec_from_file_location("tags", Path(__file__).with_name("select-release-tags.py"))
         tags = importlib.util.module_from_spec(spec)
