@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12](https://github.com/pi-rust/rpi-package/compare/rpi-voice-v0.3.11...rpi-voice-v0.3.12) - 2026-11-06
+
+### Added
+
+- add x86_64 musl plugin distribution support
+
 ## [0.3.11](https://github.com/pi-rust/rpi-package/compare/rpi-voice-v0.3.10...rpi-voice-v0.3.11) - 2026-11-05
 
 ### Fixed
