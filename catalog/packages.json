@@ -89,14 +89,14 @@
   },
   {
     "name": "rpi-goal",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "type": "extension",
     "tool": "goal",
     "inspiredBy": "Codex goal mode",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-goal",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.2.2/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.2.3/rpi-extension.json"
   },
   {
     "name": "rpi-plan-mode",
@@ -177,36 +177,36 @@
   },
   {
     "name": "rpi-langfuse",
-    "version": "0.4.5",
+    "version": "0.4.6",
     "type": "extension",
     "tool": "langfuse_trace + langfuse_score + langfuse_prompt",
     "inspiredBy": "Langfuse open-source LLM observability platform",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-langfuse",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-langfuse-v0.4.5/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-langfuse-v0.4.6/rpi-extension.json"
   },
   {
     "name": "rpi-voice",
-    "version": "0.3.10",
+    "version": "0.3.11",
     "type": "extension",
     "tool": "/voice command + push-to-talk shortcut",
     "inspiredBy": "hands-free voice assistants, made local",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-voice",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-voice-v0.3.10/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-voice-v0.3.11/rpi-extension.json"
   },
   {
     "name": "rpi-acp",
-    "version": "0.2.10",
+    "version": "0.2.11",
     "type": "extension",
     "tool": "--acp (Agent Client Protocol stdio server)",
     "inspiredBy": "Zed external agents / agent-client-protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-acp",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.10/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.11/rpi-extension.json"
   },
   {
     "name": "rpi-permission-gate",
@@ -243,14 +243,14 @@
   },
   {
     "name": "rpi-web",
-    "version": "0.1.42",
+    "version": "0.1.43",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Browser project and session workspace",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-web",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.42/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.43/rpi-extension.json"
   },
   {
     "name": "rpi-edit-diagnostics",

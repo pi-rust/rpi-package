@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.10...rpi-extcore-v0.2.11) - 2026-11-05
+
+### Added
+
+- *(web)* edit and delete provider configurations
+- *(web)* add provider model discovery and connection test
+- *(web)* add provider configuration form
+- *(web)* add paged history, file previews and execution traces
+
+### Fixed
+
+- *(test)* tolerate Windows process startup jitter
+- *(acp)* sync inline image prompt limits
+- *(extcore)* gate Windows-only test imports
+
+### Other
+
+- sync dev web branch with main
+- Merge remote-tracking branch 'origin/main' into dev/web-hmr
+- *(web)* make branding checks portable across clean checkouts
+
 ## [0.2.10](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.9...rpi-extcore-v0.2.10) - 2026-11-05
 
 ### Fixed
