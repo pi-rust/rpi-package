@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "rpi-extcore",
  "rpi-plugin-sdk 0.3.20",
@@ -2538,7 +2538,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-extcore"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "base64 0.22.1",
  "fs2",
@@ -2576,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde",
@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "axum",
  "futures-util",
@@ -2614,7 +2614,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-langfuse"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",
@@ -2755,7 +2755,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-server"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "async-trait",
  "rpi-plugin-sdk 0.3.20",
@@ -2809,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-voice"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "cpal",
  "futures-util",
@@ -2831,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.42"
+version = "0.1.43"
 dependencies = [
  "axum",
  "rpi-extcore",
