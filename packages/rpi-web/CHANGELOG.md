@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.44](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.43...rpi-web-v0.1.44) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
 ## [0.1.43](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.42...rpi-web-v0.1.43) - 2026-11-05
 
 ### Added

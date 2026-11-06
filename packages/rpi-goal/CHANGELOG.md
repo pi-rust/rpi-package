@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.3...rpi-goal-v0.2.4) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
 ## [0.2.3](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.2...rpi-goal-v0.2.3) - 2026-11-05
 
 ### Fixed
