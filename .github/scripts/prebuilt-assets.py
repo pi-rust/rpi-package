@@ -31,6 +31,10 @@ MUSL_TARGETS = {
     "x86_64-unknown-linux-musl",
 }
 TARGETS = GNU_TARGETS | MUSL_TARGETS
+# Full bundles use the installer/catalog and therefore remain GNU-only until
+# the installer can filter catalog entries by target. Individual package
+# releases use each crate's declared target matrix below.
+BUNDLE_TARGETS = GNU_TARGETS
 WEB_TARGETS = GNU_TARGETS
 
 
@@ -76,6 +80,40 @@ def archive_library(library, destination):
             archive.add(library, arcname=library.name)
 
 
+def package_supported_targets(package):
+    """Read the crate-owned prebuilt target contract.
+
+    Missing metadata is deliberately conservative: it preserves the historical
+    GNU/Windows/macOS set but never opts an unreviewed crate into musl.
+    """
+    package_metadata = package.get("metadata") or {}
+    rpi_metadata = package_metadata.get("rpi") or {}
+    prebuilt = rpi_metadata.get("prebuilt") or {}
+    if not isinstance(prebuilt, dict):
+        return set(GNU_TARGETS)
+    declared = prebuilt.get("supported-targets")
+    if not isinstance(declared, list) or not all(isinstance(target, str) for target in declared):
+        return set(GNU_TARGETS)
+    unknown = set(declared) - TARGETS
+    if unknown:
+        raise ValueError(f"{package['name']} declares unknown prebuilt targets: {sorted(unknown)}")
+    return set(declared)
+
+
+def workspace_metadata(root=None):
+    args = ["cargo", "metadata", "--format-version", "1", "--locked"]
+    if root:
+        args.extend(["--manifest-path", str(pathlib.Path(root) / "Cargo.toml")])
+    return json.loads(subprocess.check_output(args, text=True, encoding="utf-8"))
+
+
+def package_targets_by_name(metadata, name):
+    for package in metadata.get("packages", []):
+        if package.get("name") == name:
+            return package_supported_targets(package)
+    return set(TARGETS)
+
+
 def sdk_identity(package, metadata):
     by_id = {item["id"]: item for item in metadata["packages"]}
     node = next(item for item in metadata["resolve"]["nodes"] if item["id"] == package["id"])
@@ -105,6 +143,8 @@ def build(args):
     output.mkdir(parents=True, exist_ok=True)
     selected = set(json.loads(args.tags))
     found = set()
+    known_tags = set()
+    eligible_selected = set()
     packages = []
     for package in metadata["packages"]:
         if package["id"] not in metadata["workspace_members"]:
@@ -113,6 +153,12 @@ def build(args):
         if not library_target:
             continue
         tag = f"{package['name']}-v{package['version']}"
+        known_tags.add(tag)
+        supported_targets = package_supported_targets(package)
+        if args.target not in supported_targets:
+            continue
+        if tag in selected:
+            eligible_selected.add(tag)
         if getattr(args, "packages_only", False) and tag not in selected:
             continue
         stem = library_target["name"] if windows else "lib" + library_target["name"]
@@ -142,11 +188,17 @@ def build(args):
             "sdk": record["sdk"], "target": args.target, "distribution": distribution,
         }
         write_json(output / f"{package['name']}.{args.target}.json", fragment)
-    if selected != found:
-        raise ValueError(f"Release tags do not match workspace versions: {sorted(selected - found)}")
+    unknown = selected - known_tags
+    if unknown:
+        raise ValueError(f"Release tags do not match workspace versions: {sorted(unknown)}")
+    if eligible_selected != found:
+        raise ValueError(f"Missing supported release tags: {sorted(eligible_selected - found)}")
     if getattr(args, "packages_only", False):
         if not selected:
             raise ValueError("Package-only builds require at least one release tag")
+        return
+
+    if args.target not in BUNDLE_TARGETS:
         return
 
     platform = platform_slug(args.target)
@@ -412,7 +464,9 @@ def publish(args):
     prepared = []
     for tag in json.loads(args.tags):
         name, version = tag.rsplit("-v", 1)
-        fragments = collect(root, f"{name}.*.json", args.source_ref)
+        metadata = workspace_metadata(getattr(args, "metadata_root", None))
+        expected_targets = package_targets_by_name(metadata, name)
+        fragments = collect(root, f"{name}.*.json", args.source_ref, expected_targets)
         first = fragments[0]
         identity = (name, version, first["repository"], tag, first["sdk"])
         for fragment in fragments:
@@ -441,7 +495,7 @@ def publish(args):
             upload(tag, [manifest])
         return
 
-    bundles = collect(root, "bundle.*.json", args.source_ref)
+    bundles = collect(root, "bundle.*.json", args.source_ref, BUNDLE_TARGETS)
     bundle_manifest = {
         "schema_version": 1, "repository": f"https://github.com/{args.repository}",
         "tag": args.bundle_tag, "source_commit": args.source_ref,
@@ -492,6 +546,7 @@ def main():
     parser.add_argument("--packages-only", action="store_true", help="Build/publish selected packages without the full workspace bundle")
     parser.add_argument("--output", default="dist/release-assets")
     parser.add_argument("--dry-run", action="store_true", help="Print mirror commands without uploading")
+    parser.add_argument("--metadata-root", help="workspace checkout used for package target declarations")
     args = parser.parse_args()
     if args.command == "build" and (not args.target or not args.repository or not args.source_ref):
         parser.error("build requires --target, --repository and --source-ref")

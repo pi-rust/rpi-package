@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-websearch-v0.1.7...rpi-websearch-v0.1.8) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
 ## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-websearch-v0.1.6...rpi-websearch-v0.1.7) - 2026-10-31
 
 ### Fixed

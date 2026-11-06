@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-ui-adapter-v0.1.1...rpi-ui-adapter-v0.1.2) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
 ## [0.1.1] - 2026-10-17
 
 ### Added

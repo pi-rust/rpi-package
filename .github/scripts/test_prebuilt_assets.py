@@ -37,6 +37,8 @@ class PrebuiltAssetsTests(unittest.TestCase):
                 "source_commit": self.args.source_ref, "sdk": self.sdk,
                 "target": target, "distribution": distribution,
             })
+            if target not in assets.BUNDLE_TARGETS:
+                continue
             bundle = self.root / f"bundle-{target}.zip"
             bridge = self.root / f"bridge-{target}.zip"
             bundle.write_bytes(b"bundle")
@@ -58,6 +60,26 @@ class PrebuiltAssetsTests(unittest.TestCase):
         self.assertEqual(assets.platform_slug("x86_64-unknown-linux-gnu"), "linux-x86_64")
         self.assertEqual(assets.platform_slug("x86_64-unknown-linux-musl"), "linux-x86_64-musl")
         self.assertEqual(assets.platform_slug("aarch64-apple-darwin"), "macos-aarch64")
+
+    def test_workspace_declarations_keep_voice_off_musl(self):
+        metadata = assets.workspace_metadata()
+        by_name = {package["name"]: assets.package_supported_targets(package)
+                    for package in metadata["packages"]}
+        self.assertNotIn("x86_64-unknown-linux-musl", by_name["rpi-voice"])
+        self.assertIn("x86_64-unknown-linux-musl", by_name["rpi-goal"])
+
+    def test_crate_metadata_controls_musl_support(self):
+        gnu_only = {"name": "rpi-voice", "metadata": {"rpi": {"prebuilt": {
+            "supported-targets": sorted(assets.GNU_TARGETS),
+        }}}}
+        musl = {"name": "rpi-goal", "metadata": {"rpi": {"prebuilt": {
+            "supported-targets": sorted(assets.GNU_TARGETS | assets.MUSL_TARGETS),
+        }}}}
+        undeclared = {"name": "old-extension", "metadata": {}}
+        self.assertEqual(assets.package_supported_targets(gnu_only), assets.GNU_TARGETS)
+        self.assertEqual(assets.package_supported_targets(musl), assets.TARGETS)
+        self.assertEqual(assets.package_supported_targets(undeclared), assets.GNU_TARGETS)
+        self.assertEqual(assets.package_targets_by_name({"packages": [gnu_only]}, "rpi-voice"), assets.GNU_TARGETS)
 
     def test_complete_manifest_is_uploaded_after_all_archives(self):
         with mock.patch.object(assets, "release_exists", return_value=True), \
