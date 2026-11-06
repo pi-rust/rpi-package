@@ -215,6 +215,44 @@ class PrebuiltAssetsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 assets.check_tag_source(self.args.repository, self.tag, self.args.source_ref)
 
+    def test_rustfs_mirror_uses_shared_immutable_key_layout(self):
+        archive = self.root / "rpi-demo-1.2.3-x86_64.zip"
+        archive.write_bytes(b"release")
+        distribution = assets.asset(archive, self.args.repository, self.tag)
+        manifest_path = self.root / "manifests" / self.tag / "rpi-extension.json"
+        assets.write_json(manifest_path, {"tag": self.tag, "targets": {"x86_64": distribution}})
+        files = assets.mirror_files(self.root, [self.tag])
+        self.assertEqual(assets._object_key(self.tag, files[0][1]),
+                         f"rpi-package/releases/{self.tag}/{archive.name}")
+        self.assertEqual(files[-1][1].name, "rpi-extension.json")
+
+    def test_rustfs_configuration_skips_or_rejects_partial_settings(self):
+        self.assertIsNone(assets.rustfs_configuration({}))
+        with self.assertRaisesRegex(ValueError, "RPI_RUSTFS_SECRET_KEY"):
+            assets.rustfs_configuration({
+                "RPI_RUSTFS_ENDPOINT": "https://rustfs.example.invalid",
+                "RPI_RUSTFS_BUCKET": "releases",
+                "RPI_RUSTFS_ACCESS_KEY": "access",
+            })
+
+    def test_rustfs_dry_run_builds_aws_commands_without_secrets(self):
+        archive = self.root / "rpi-demo-1.2.3-x86_64.zip"
+        archive.write_bytes(b"release")
+        distribution = assets.asset(archive, self.args.repository, self.tag)
+        assets.write_json(self.root / "manifests" / self.tag / "rpi-extension.json",
+                          {"tag": self.tag, "targets": {"x86_64": distribution}})
+        args = argparse.Namespace(output=str(self.root), tags=json.dumps([self.tag]),
+                                 bundle_tag="unused", dry_run=True)
+        env = {"RPI_RUSTFS_ENDPOINT": "https://rustfs.example.invalid",
+               "RPI_RUSTFS_BUCKET": "releases", "RPI_RUSTFS_ACCESS_KEY": "access",
+               "RPI_RUSTFS_SECRET_KEY": "do-not-print"}
+        with mock.patch.dict("os.environ", env, clear=True), mock.patch.object(assets.shutil, "which", return_value="aws"), \
+                mock.patch("builtins.print") as printed:
+            assets.mirror(args)
+        output = " ".join(str(call) for call in printed.call_args_list)
+        self.assertIn("s3://releases/rpi-package/releases/" + self.tag, output)
+        self.assertNotIn("do-not-print", output)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,16 @@ on:
         required: false
       RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET:
         required: false
+      RPI_RUSTFS_ENDPOINT:
+        required: false
+      RPI_RUSTFS_BUCKET:
+        required: false
+      RPI_RUSTFS_ACCESS_KEY:
+        required: false
+      RPI_RUSTFS_SECRET_KEY:
+        required: false
+      RPI_CDN_BASE_URL:
+        required: false
   workflow_dispatch:
     inputs:
       source_ref:
@@ -53,6 +63,11 @@ jobs:
     secrets:
       RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
       RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+      RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+      RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+      RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+      RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+      RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
 
   source:
     if: inputs.packages_only != true
@@ -229,7 +244,31 @@ jobs:
           SOURCE_REF: ${{ needs.source.outputs.revision }}
           BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
           PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
         run: |
           python .github/scripts/prebuilt-assets.py publish \
             --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
             --bundle-tag "$BUNDLE_TAG" --tags "$PACKAGE_RELEASES"
+      - name: Optionally mirror immutable release files to RustFS
+        id: rustfs_mirror
+        continue-on-error: true
+        env:
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+        run: |
+          python .github/scripts/prebuilt-assets.py mirror \
+            --bundle-tag "$BUNDLE_TAG" --tags "$PACKAGE_RELEASES"
+      - name: Report RustFS mirror failure
+        if: steps.rustfs_mirror.outcome == 'failure'
+        run: |
+          echo "::warning::RustFS/CDN mirror failed; GitHub Releases remain canonical."
+          echo "- WARNING: RustFS/CDN mirror failed; GitHub Releases remain canonical." >> "$GITHUB_STEP_SUMMARY"
