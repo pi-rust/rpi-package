@@ -54,6 +54,11 @@ class PrebuiltAssetsTests(unittest.TestCase):
         fragment.update(changes)
         assets.write_json(path, fragment)
 
+    def test_platform_slug_keeps_musl_separate_from_gnu(self):
+        self.assertEqual(assets.platform_slug("x86_64-unknown-linux-gnu"), "linux-x86_64")
+        self.assertEqual(assets.platform_slug("x86_64-unknown-linux-musl"), "linux-x86_64-musl")
+        self.assertEqual(assets.platform_slug("aarch64-apple-darwin"), "macos-aarch64")
+
     def test_complete_manifest_is_uploaded_after_all_archives(self):
         with mock.patch.object(assets, "release_exists", return_value=True), \
                 mock.patch.object(assets, "check_tag_source"), \
@@ -61,7 +66,7 @@ class PrebuiltAssetsTests(unittest.TestCase):
                 mock.patch.object(assets, "upload") as upload:
             assets.publish(self.args)
         self.assertEqual(upload.call_args_list[0].args[0], self.tag)
-        self.assertEqual(len(upload.call_args_list[0].args[1]), 5)
+        self.assertEqual(len(upload.call_args_list[0].args[1]), len(assets.TARGETS))
         self.assertEqual(upload.call_args_list[1].args[1][0].name, "rpi-extension.json")
         manifest = json.loads(upload.call_args_list[1].args[1][0].read_text())
         self.assertEqual(set(manifest["targets"]), assets.TARGETS)
@@ -78,10 +83,10 @@ class PrebuiltAssetsTests(unittest.TestCase):
                 mock.patch.object(assets, "upload") as upload:
             assets.publish(self.args)
         self.assertEqual(len(upload.call_args_list), 2)
-        self.assertEqual(len(upload.call_args_list[0].args[1]), 5)
+        self.assertEqual(len(upload.call_args_list[0].args[1]), len(assets.TARGETS))
         self.assertEqual(upload.call_args_list[1].args[1][0].name, "rpi-extension.json")
 
-    def test_package_only_publish_still_requires_all_five_platforms(self):
+    def test_package_only_publish_still_requires_all_supported_platforms(self):
         self.args.packages_only = True
         next(self.root.glob("rpi-demo.*.json")).unlink()
         self.assert_rejected_before_upload()
@@ -144,7 +149,10 @@ class PrebuiltAssetsTests(unittest.TestCase):
 
     def test_workflow_builds_every_target_required_by_the_manifest(self):
         workflow = pathlib.Path(__file__).parents[1] / "workflows/release-assets.yml"
-        self.assertEqual(set(re.findall(r"target: ([a-z0-9_-]+)", workflow.read_text())), assets.TARGETS)
+        text = workflow.read_text()
+        self.assertEqual(set(re.findall(r"target: ([a-z0-9_-]+)", text)), assets.GNU_TARGETS)
+        self.assertIn("x86_64-unknown-linux-musl", text)
+        self.assertIn("messense/rust-musl-cross:x86_64-musl", text)
 
     def test_sdk_abi_comes_from_the_resolved_sdk_source(self):
         sdk_root = self.root / "sdk"

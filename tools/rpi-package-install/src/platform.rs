@@ -34,8 +34,10 @@ pub fn exe_name(stem: &str) -> String {
 
 /// Stable slug baked into bundle/archive names.
 ///
-/// Matches the names the release workflow already publishes:
-/// `windows-x86_64`, `linux-x86_64`, `macos-x86_64`, `macos-aarch64`.
+/// GNU Linux keeps the historical names (`linux-x86_64` and
+/// `linux-aarch64`). A musl build gets an explicit suffix so that a GNU
+/// archive and a musl archive can never overwrite one another in a release or
+/// cache (`linux-x86_64-musl`).
 pub fn slug() -> String {
     let os = std::env::consts::OS;
     let arch = match std::env::consts::ARCH {
@@ -45,7 +47,12 @@ pub fn slug() -> String {
         "arm" => "armv7",
         other => other,
     };
-    format!("{os}-{arch}")
+    let libc = if cfg!(all(target_os = "linux", target_env = "musl")) {
+        "-musl"
+    } else {
+        ""
+    };
+    format!("{os}-{arch}{libc}")
 }
 
 /// Archive extension `pack` writes on this host: `zip` or `tar.gz`.
@@ -77,9 +84,16 @@ mod tests {
     fn slug_is_os_arch_pair() {
         let s = slug();
         assert!(s.contains('-'), "{s}");
-        let (os, arch) = s.split_once('-').unwrap();
+        let mut parts = s.split('-');
+        let os = parts.next().unwrap();
+        let arch = parts.next().unwrap();
         assert!(["windows", "linux", "macos"].contains(&os), "{os}");
         assert!(!arch.is_empty(), "{arch}");
+        if cfg!(all(target_os = "linux", target_env = "musl")) {
+            assert_eq!(parts.next(), Some("musl"), "{s}");
+        } else {
+            assert_eq!(parts.next(), None, "{s}");
+        }
     }
 
     #[test]

@@ -192,6 +192,15 @@ The built `rpi_voice.dll`/`.so`/`.dylib` is dropped into `.rpi/extensions/` by
 `task install` (or `rpi-package-install`) and loads automatically on the next
 rpi start.
 
+### musl Linux
+
+The official musl package is currently built in API mode with
+`--no-default-features`. The `cpal`/ALSA and `native-tls` dependencies still
+require the musl system development packages, but the bundled sherpa-onnx
+archive has not yet been qualified as a musl-native library. Set
+`RPI_STT_ENGINE=api` (or `auto` with an API fallback) when using this artifact.
+The normal GNU Linux artifact keeps the default offline `local-stt` feature.
+
 ## Push-to-talk
 
 `/voice ptt` turns the configured key (default: **space**) into a hold-to-talk

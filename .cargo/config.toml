@@ -1,2 +1,15 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=advapi32.lib"]
+
+# musl defaults to a static CRT, which makes Rust drop cdylib/dylib targets.
+# rpi extensions are loaded as shared objects, so musl builds must use the
+# dynamic CRT and a musl-native linker. The release container supplies the
+# linker names below; local cross builds can override them with a different
+# CARGO_TARGET_*_LINKER toolchain prefix.
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=-crt-static"]
