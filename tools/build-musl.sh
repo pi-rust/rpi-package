@@ -43,12 +43,18 @@ fi
 # required for Rust shared libraries on musl.
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=-crt-static"
 export CC="${CC:-$LINKER}"
+# Native-tls's vendored OpenSSL build uses target-qualified C tool variables.
+# Keep all C/AR invocations on the musl cross toolchain, never the Ubuntu host.
 case "$TARGET" in
   x86_64-unknown-linux-musl)
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$LINKER"
+    export CC_x86_64_unknown_linux_musl="$LINKER"
+    export AR_x86_64_unknown_linux_musl="${LINKER%-gcc}-ar"
     ;;
   aarch64-unknown-linux-musl)
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$LINKER"
+    export CC_aarch64_unknown_linux_musl="$LINKER"
+    export AR_aarch64_unknown_linux_musl="${LINKER%-gcc}-ar"
     ;;
 esac
 
@@ -77,11 +83,11 @@ regular = [name for name in names if name != "rpi-voice"]
 if regular:
     subprocess.run(["cargo", "build", "--release", "--locked", "--lib", *sum((["-p", name] for name in regular), [])], check=True)
 if "rpi-voice" in names:
-    subprocess.run(["cargo", "build", "--release", "--locked", "--lib", "--no-default-features", "-p", "rpi-voice"], check=True)
+    subprocess.run(["cargo", "build", "--release", "--locked", "--lib", "--no-default-features", "--features", "musl-api", "-p", "rpi-voice"], check=True)
 PY
 else
   cargo build --release --workspace --locked --exclude rpi-voice
-  cargo build --release --locked --no-default-features -p rpi-voice
+  cargo build --release --locked --no-default-features --features musl-api -p rpi-voice
 fi
 
 # Cargo can exit successfully after dropping an unsupported cdylib, and a

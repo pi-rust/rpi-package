@@ -142,7 +142,7 @@ jobs:
             -e RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET \
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             messense/rust-musl-cross:x86_64-musl \
-            sh -lc 'if command -v apt-get >/dev/null; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash python3 pkg-config binutils libasound2-dev libssl-dev git; elif command -v apk >/dev/null; then apk add --no-cache bash python3 pkgconf binutils alsa-lib-dev openssl-dev git; else echo "no supported package manager in musl image" >&2; exit 2; fi && CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-unknown-linux-musl-gcc PACKAGES_ONLY=1 PROJECT_ROOT=/workspace SCRIPT_ROOT=/workspace/.release-tools bash .release-tools/tools/build-musl.sh'
+            sh -lc 'if command -v apt-get >/dev/null; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash python3 pkg-config binutils perl make libasound2-dev libssl-dev git; elif command -v apk >/dev/null; then apk add --no-cache bash python3 pkgconf binutils perl make alsa-lib-dev openssl-dev git; else echo "no supported package manager in musl image" >&2; exit 2; fi && CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-unknown-linux-musl-gcc PACKAGES_ONLY=1 PROJECT_ROOT=/workspace SCRIPT_ROOT=/workspace/.release-tools bash .release-tools/tools/build-musl.sh'
       - uses: actions/upload-artifact@v4
         with:
           name: selected-x86_64-unknown-linux-musl
