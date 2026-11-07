@@ -3117,9 +3117,12 @@ export default function App() {
     }
   }
 
-  async function forkCurrent(entryId?: string) {
-    if (!sessionId || !actions.has("fork") || forkInFlight.current) return;
-    const sourceSessionId = sessionId;
+  async function forkSession(
+    source: Pick<SessionSummary, "sessionId" | "title">,
+    entryId?: string,
+  ) {
+    if (!source.sessionId || !actions.has("fork") || forkInFlight.current) return;
+    const sourceSessionId = source.sessionId;
     const navigation = navigationRevision.current;
     forkInFlight.current = true;
     setForkPending(true);
@@ -3128,7 +3131,7 @@ export default function App() {
         kind: "prompt",
         title: t("forkName"),
         defaultValue: t("forkOf", {
-          title: current?.title ?? sourceSessionId.slice(0, 8),
+          title: source.title ?? sourceSessionId.slice(0, 8),
         }),
       });
       if (title === null || navigation !== navigationRevision.current) return;
@@ -3144,6 +3147,14 @@ export default function App() {
       forkInFlight.current = false;
       setForkPending(false);
     }
+  }
+
+  async function forkCurrent(entryId?: string) {
+    if (!sessionId) return;
+    await forkSession(
+      { sessionId, title: current?.title ?? null },
+      entryId,
+    );
   }
 
   async function cloneCurrent() {
@@ -3761,12 +3772,14 @@ export default function App() {
               language={language}
               creating={creatingSession}
               canManage={actions.has("session_organization")}
+              canFork={actions.has("fork")}
               canCreate={actions.has("create_project")}
               onSelectProject={selectProject}
               onSelectSession={selectSidebarSession}
               onNewSession={(id) => void createSession(id)}
               onNewProject={() => setProjectDialog(true)}
               onRename={setRenameTarget}
+              onFork={(session) => void forkSession(session)}
               onRenameProject={setProjectRenameTarget}
               onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}

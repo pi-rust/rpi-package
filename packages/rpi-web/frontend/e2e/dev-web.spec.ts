@@ -850,6 +850,29 @@ test("rename, pin, archive and restore survive reloads", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("fork is available from a session context menu", async ({ page }) => {
+  await mockHost(page);
+  let forkBody: { title?: string } | undefined;
+  await page.route("**/api/v1/sessions/session-1/fork", async (route) => {
+    forkBody = route.request().postDataJSON();
+    return route.fulfill({
+      status: 201,
+      json: { sessionId: "fork-session", sourceSessionId: sessionId, status: "ready" },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".project-session").first().click({ button: "right" });
+  await expect(
+    page.getByRole("menuitem", { name: "Fork", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("menuitem", { name: "Fork", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Name the new fork", exact: true });
+  await expect(dialog.getByRole("textbox")).toHaveValue("Fork of Mock session");
+  await dialog.getByRole("textbox").fill("Design fork");
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect.poll(() => forkBody).toEqual({ title: "Design fork" });
+});
+
 test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
   await mockHost(page, { additionalSessions: 10 });
   await page.goto("/");
