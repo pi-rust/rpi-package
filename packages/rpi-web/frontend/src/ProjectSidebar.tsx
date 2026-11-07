@@ -16,6 +16,7 @@ import {
   FolderPlus,
   Loader2,
   MoreHorizontal,
+  Clock3,
   Pin,
   PinOff,
   Plus,
@@ -797,6 +798,7 @@ export function ProjectSidebar({
   });
   const [menu, setMenu] = useState("");
   const [pending, setPending] = useState("");
+  const [recentExpanded, setRecentExpanded] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   useEffect(() => {
     try {
@@ -864,8 +866,14 @@ export function ProjectSidebar({
       setPending("");
     }
   }
-  function sessionRow(session: SessionSummary) {
+  function sessionRow(
+    session: SessionSummary,
+    options: { showProject?: boolean } = {},
+  ) {
     const title = session.title || (zh ? "新会话" : "New session");
+    const projectName = options.showProject
+      ? projects.find((project) => project.id === session.projectId)?.name
+      : undefined;
     const awaitingAnswer = session.status === "awaiting_input";
     const running = ["running", "starting"].includes(session.status);
     return (
@@ -912,6 +920,15 @@ export function ProjectSidebar({
               title={translate(language, "draft")}
             >
               {translate(language, "draft")}
+            </span>
+          )}
+          {projectName && (
+            <span
+              className="recent-project-tag"
+              title={`${zh ? "项目" : "Project"}: ${projectName}`}
+              aria-label={`${zh ? "项目" : "Project"}: ${projectName}`}
+            >
+              {projectName}
             </span>
           )}
           {(session.tags ?? []).length > 0 && (
@@ -1047,6 +1064,13 @@ export function ProjectSidebar({
         )
       : !project.archived,
   );
+  const recentSessions = sessions
+    .filter((session) => !session.archived)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const visibleRecentSessions = recentSessions.slice(
+    0,
+    recentExpanded ? 10 : 5,
+  );
   return (
     <div className="project-navigation">
       <div className="sidebar-primary-actions">
@@ -1060,6 +1084,44 @@ export function ProjectSidebar({
           <kbd>Ctrl N</kbd>
         </button>
       </div>
+      {!archived && recentSessions.length > 0 && (
+        <section
+          className="recent-sessions"
+          aria-label={zh ? "最近会话" : "Recent chats"}
+        >
+          <div className="project-section-heading recent-sessions-heading">
+            <span>
+              <Clock3 size={14} aria-hidden="true" />
+              {zh ? "最近会话" : "Recent chats"}
+            </span>
+            {recentSessions.length > 5 && (
+              <button
+                className="recent-sessions-toggle"
+                type="button"
+                aria-expanded={recentExpanded}
+                aria-label={
+                  recentExpanded
+                    ? zh
+                      ? "收起最近会话"
+                      : "Show fewer recent chats"
+                    : zh
+                      ? "展开最近会话"
+                      : "Show more recent chats"
+                }
+                onClick={() => setRecentExpanded((expanded) => !expanded)}
+              >
+                {recentExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                <span>{recentExpanded ? (zh ? "收起" : "Less") : zh ? "更多" : "More"}</span>
+              </button>
+            )}
+          </div>
+          <div className="recent-session-list">
+            {visibleRecentSessions.map((session) =>
+              sessionRow(session, { showProject: true }),
+            )}
+          </div>
+        </section>
+      )}
       <div className="project-section-heading">
         <span>
           {archived ? (zh ? "已归档" : "Archived") : zh ? "项目" : "Projects"}
@@ -1234,7 +1296,7 @@ export function ProjectSidebar({
               </div>
               {expanded && (
                 <div className="project-chats">
-                  {chats.map(sessionRow)}
+                  {chats.map((session) => sessionRow(session))}
                   {!chats.length && (
                     <button
                       className="project-empty"

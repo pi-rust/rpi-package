@@ -232,6 +232,43 @@
   background: var(--hover);
   color: var(--text);
 }
+.recent-sessions {
+  flex: 0 0 auto;
+  padding: 0 1px 7px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+.recent-sessions-heading {
+  min-height: 35px;
+  margin-top: 4px;
+  margin-bottom: 0;
+}
+.recent-sessions-heading > span,
+.recent-sessions-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.recent-sessions-heading > span > svg {
+  color: var(--muted);
+}
+.recent-sessions-toggle {
+  min-height: 25px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+}
+.recent-sessions-toggle:hover,
+.recent-sessions-toggle:focus-visible {
+  background: var(--hover);
+  color: var(--text);
+}
+.recent-session-list .project-session {
+  margin-left: 3px;
+  margin-right: 3px;
+}
 .project-tree {
   flex: 1;
   min-width: 0;
@@ -369,6 +406,19 @@
   border-radius: 4px;
   background: var(--yellow-soft, var(--soft));
   color: var(--yellow-text, var(--muted));
+  font-size: 9px;
+}
+.recent-project-tag {
+  flex: 0 1 auto;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--muted);
   font-size: 9px;
 }
 .session-tags {

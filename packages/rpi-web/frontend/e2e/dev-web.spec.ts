@@ -79,7 +79,10 @@ function response(data: unknown, command = "mock") {
   return { type: "response", command, success: true, data };
 }
 
-async function mockHost(page: Page) {
+async function mockHost(
+  page: Page,
+  options: { additionalSessions?: number } = {},
+) {
   // Completion notices are covered by session-loading.spec.ts. Keep this
   // broader interaction fixture from letting an overlay steal unrelated
   // clicks while testing timeline and tool-card behavior.
@@ -97,6 +100,17 @@ async function mockHost(page: Page) {
   const sessions: Array<
     typeof session & { pinned?: boolean; archived?: boolean }
   > = [{ ...session, pinned: false, archived: false }];
+  for (let index = 0; index < (options.additionalSessions ?? 0); index += 1) {
+    sessions.push({
+      ...session,
+      sessionId: `session-${index + 2}`,
+      title: `Recent session ${index + 1}`,
+      projectId: index % 2 === 0 ? "project-a" : "project-b",
+      updatedAt: session.updatedAt + index + 1,
+      pinned: false,
+      archived: false,
+    });
+  }
   await page.route("**/api/v1/**", async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -834,6 +848,23 @@ test("rename, pin, archive and restore survive reloads", async ({ page }) => {
       exact: true,
     }),
   ).toBeVisible();
+});
+
+test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
+  await mockHost(page, { additionalSessions: 10 });
+  await page.goto("/");
+  const recent = page.getByRole("region", { name: "Recent chats" });
+  await expect(recent.locator(".project-session")).toHaveCount(5);
+  await expect(recent.locator(".recent-project-tag")).toHaveCount(5);
+  await expect(recent.locator(".recent-project-tag").first()).toHaveText("rpi-package");
+  const more = recent.getByRole("button", { name: "Show more recent chats", exact: true });
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await more.click();
+  await expect(recent.locator(".project-session")).toHaveCount(10);
+  await expect(recent.locator(".recent-project-tag")).toHaveCount(10);
+  await expect(
+    recent.getByRole("button", { name: "Show fewer recent chats", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
 });
 
 test("session tags can be edited without sidebar filters", async ({ page }) => {
@@ -8676,6 +8707,40 @@ test.describe("Mermaid diagrams", () => {
     await first.getByRole("button", { name: "View diagram", exact: true }).click();
     await decodedDiagram(first.locator(".mermaid-diagram img"));
     await expect(first.locator(".mermaid-source")).toHaveCount(0);
+  });
+
+  test("renders sequence diagrams with code-style generic type labels", async ({
+    page,
+  }) => {
+    const typedSequence = `sequenceDiagram
+  participant UI as UI
+  participant WC as WorkspaceClient::Remote
+  participant Client as WorkClient
+  participant HTTP as HTTP Server
+  participant Route as routes::dispatch / perform
+  participant Owner as LocalWorkspace
+
+  UI->>WC: projects()
+  WC->>Client: projects()
+  Client->>HTTP: GET /api/v1/projects
+  HTTP->>HTTP: 认证 middleware
+  HTTP->>Route: dispatch()
+  Route->>Route: executor::execute()
+  Route->>Route: perform()
+  Route->>Owner: w.projects().await
+  Owner-->>Route: Vec<Project>
+  Route-->>HTTP: JSON response
+  HTTP-->>Client: HTTP response
+  Client-->>WC: Vec<Project>
+  WC-->>UI: 更新项目列表
+`;
+    await diagramSnapshot(page, fence(typedSequence));
+    await page.goto("/");
+    const block = page.locator(".mermaid-block");
+    const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+    expect(decoded.parseErrors).toBe(0);
+    expect(decoded.text).toContain("Vec<Project>");
+    await expect(block.locator(".mermaid-status")).toHaveCount(0);
   });
 
   test("follows root theme mutations on desktop and 390px, fits the keyboard image viewer and restores focus", async ({ page }) => {
