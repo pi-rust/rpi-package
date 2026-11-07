@@ -624,6 +624,8 @@ function isFailedOutcome(outcome: string) {
 }
 
 type SettlementIdentity = NonNullable<SessionSummary["latestSettlement"]>;
+const SESSION_NOTIFICATION_SUCCESS_TIMEOUT_MS = 6_000;
+const SESSION_NOTIFICATION_ERROR_TIMEOUT_MS = 12_000;
 
 function settlementKey(
   settlement: SettlementIdentity | null | undefined,
@@ -742,6 +744,9 @@ export default function App() {
   const [sessionNotifications, setSessionNotifications] = useState<
     SessionCompletionNotification[]
   >([]);
+  const notificationTimers = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
   const notifySessionCompletion = useCallback(
     (
       sessionId: string,
@@ -765,6 +770,40 @@ export default function App() {
           error: shortReason(settlement?.error),
         },
       ].slice(-8));
+    },
+    [],
+  );
+  useEffect(() => {
+    const timers = notificationTimers.current;
+    const activeIds = new Set(sessionNotifications.map((item) => item.id));
+    for (const [id, timer] of timers) {
+      if (!activeIds.has(id)) {
+        clearTimeout(timer);
+        timers.delete(id);
+      }
+    }
+    for (const notification of sessionNotifications) {
+      if (timers.has(notification.id)) continue;
+      const timeout = isFailedOutcome(notification.outcome)
+        ? SESSION_NOTIFICATION_ERROR_TIMEOUT_MS
+        : SESSION_NOTIFICATION_SUCCESS_TIMEOUT_MS;
+      timers.set(
+        notification.id,
+        setTimeout(() => {
+          timers.delete(notification.id);
+          setSessionNotifications((previous) =>
+            previous.filter((item) => item.id !== notification.id),
+          );
+        }, timeout),
+      );
+    }
+  }, [sessionNotifications]);
+  useEffect(
+    () => () => {
+      for (const timer of notificationTimers.current.values()) {
+        clearTimeout(timer);
+      }
+      notificationTimers.current.clear();
     },
     [],
   );

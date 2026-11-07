@@ -699,6 +699,32 @@ test("settled sessions create clickable dismissible notifications", async ({
   await expect(failedNotification).toHaveCount(0);
 });
 
+test("settlement notifications auto-dismiss after their timeout", async ({
+  page,
+  host,
+}) => {
+  await page.clock.install();
+  await start(page, host);
+  await received(host, A, "events");
+  host.emit(A, [
+    {
+      seq: 11,
+      event: {
+        type: "agent_settled",
+        runId: "notification-auto-dismiss-run",
+        outcome: "completed",
+      },
+    },
+  ]);
+  const notification = page.getByRole("button", {
+    name: "Session completed: Loading Alpha",
+    exact: true,
+  });
+  await expect(notification).toBeVisible();
+  await page.clock.fastForward(6_001);
+  await expect(notification).toHaveCount(0);
+});
+
 test("failed notifications offer direct continue", async ({ page, host }) => {
   await start(page, host);
   await hydrated(page, host);
