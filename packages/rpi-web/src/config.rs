@@ -9,7 +9,7 @@ use std::{
 pub const HELP: &str = "rpi-web [--config PATH] [--init]
        [--project PATH] [--rpi-bin PATH] [--bind IP] [--port N]
        [--add-project PATH]... [--projects-root PATH] [--assets PATH]
-       [--session-dir PATH] [--registry PATH] [--version]
+       [--session-dir PATH] [--registry PATH] [--session-timeout SECONDS] [--version]
 
 Reads ~/.rpi/agent/web.json ($RPI_CODING_AGENT_DIR/web.json), then
 <startup-project>/.rpi/web.json. A legacy ~/.rpi/web.json is read first and
@@ -72,6 +72,8 @@ struct FileConfig {
     registry: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     allowed_hosts: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_timeout_seconds: Option<u64>,
 }
 
 impl FileConfig {
@@ -114,6 +116,9 @@ impl FileConfig {
         }
         if let Some(port) = self.port {
             config.port = port;
+        }
+        if let Some(seconds) = self.session_timeout_seconds {
+            config.session_timeout_seconds = (seconds > 0).then_some(seconds);
         }
         if let Some(hosts) = self.allowed_hosts {
             let hosts: Vec<_> = hosts.into_iter().map(|s| s.trim().to_string()).collect();
@@ -192,6 +197,7 @@ fn configure_with_agent(
                     "--port",
                     "--session-dir",
                     "--registry",
+                    "--session-timeout",
                 ]
                 .contains(&arg.as_str())
                 {
@@ -220,6 +226,11 @@ fn configure_with_agent(
                     }
                     "--session-dir" => cli.session_dir = Some(value.into()),
                     "--registry" => cli.registry = Some(value.into()),
+                    "--session-timeout" => {
+                        cli.session_timeout_seconds = Some(value.parse().map_err(|_| {
+                            "--session-timeout requires a non-negative number of seconds"
+                        })?)
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -251,6 +262,8 @@ fn configure_with_agent(
             registry: (config.registry != rpi_extcore::registry::default_path())
                 .then_some(config.registry),
             allowed_hosts: None,
+            session_timeout_seconds: (config.session_timeout_seconds != Some(30 * 60))
+                .then_some(config.session_timeout_seconds.unwrap_or_default()),
         };
         std::fs::create_dir_all(file.parent().ok_or("config requires a parent directory")?)
             .map_err(|e| format!("{}: {e}", file.display()))?;
@@ -361,6 +374,7 @@ mod tests {
         assert_eq!(config.project, f.0.join("work"));
         assert_eq!(config.registry, rpi_extcore::registry::default_path());
         assert_eq!(config.port, 3030);
+        assert_eq!(config.session_timeout_seconds, Some(30 * 60));
         assert_eq!(config.rpi_bin, Path::new("rpi"));
         let config = f.run(&[
             "--project",
@@ -383,11 +397,12 @@ mod tests {
         let f = Fixture::new();
         f.write(
             "home/.rpi/agent/web.json",
-            r#"{"port":3100,"assets":"ui","rpiBin":"rpi","projects":["global-repo"]}"#,
+            r#"{"port":3100,"assets":"ui","rpiBin":"rpi","projects":["global-repo"],"sessionTimeoutSeconds":120}"#,
         );
         f.write("work/.rpi/web.json", "\u{feff}{\"port\":3200,\"project\":\"..\",\"projectsRoot\":\"managed\",\"sessionDir\":\"history\",\"registry\":\"state/sessions.json\",\"allowedHosts\":[\" example.test \"],\"projects\":[\"local-repo\"]}");
         let local = f.run(&[]);
         assert_eq!(local.port, 3200);
+        assert_eq!(local.session_timeout_seconds, Some(120));
         assert_eq!(local.project, f.0.join("work/.rpi/.."));
         assert_eq!(local.assets, Some(f.0.join("home/.rpi/agent/ui")));
         assert_eq!(local.projects_root, Some(f.0.join("work/.rpi/managed")));
@@ -442,6 +457,10 @@ mod tests {
         assert_eq!(layered.bind, "0.0.0.0");
         // A host `--port` (forwarded as `--port N`) wins over every file.
         assert_eq!(f.run(&["--port", "3031"]).port, 3031);
+        assert_eq!(
+            f.run(&["--session-timeout", "0"]).session_timeout_seconds,
+            None
+        );
     }
 
     #[test]

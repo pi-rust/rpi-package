@@ -28,7 +28,7 @@ This serves `/api/v1`, including projects, sessions, commands, snapshots, SSE, m
 cargo run --locked -p rpi-http -- --config /path/to/http.json --port 3031
 ```
 
-JSON paths are relative to the file, except a bare executable name, which is resolved on PATH. CLI options override JSON regardless of their order. This new standalone entrypoint loads only an explicitly selected configuration file; the existing `rpi-web` global/project configuration discovery remains in Web.
+JSON paths are relative to the file, except a bare executable name, which is resolved on PATH. CLI options override JSON regardless of their order. `sessionTimeoutSeconds` optionally releases idle native hosts while preserving their saved sessions; `0` disables it. This new standalone entrypoint loads only an explicitly selected configuration file; the existing `rpi-web` global/project configuration discovery remains in Web.
 
 ## Authentication and compatibility
 

@@ -44,9 +44,59 @@ async fn idle_close(state: &Service, id: &str) -> ServiceResult<()> {
         })?;
         // The host has confirmed child exit, not merely accepted stop.
         state.sessions.write().await.remove(id);
+        state.session_activity.write().await.remove(id);
         detach_durable(state, id).await;
     }
     Ok(())
+}
+
+/// Retire live native hosts that have not received a Web/API request for the
+/// configured timeout. The session registry and native transcript are kept;
+/// only the in-memory host is released.
+pub(super) async fn reap_idle(state: &Service, timeout: Duration) {
+    let now = Instant::now();
+    let candidates = state
+        .session_activity
+        .read()
+        .await
+        .iter()
+        .filter(|(_, last)| now.duration_since(**last) >= timeout)
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return;
+    }
+    // Do not make ordinary requests wait behind a long native idle probe.
+    let Ok(_lifecycle) = state.session_lifecycle.try_lock() else {
+        return;
+    };
+    for id in candidates {
+        if state.closing.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let expired = state
+            .session_activity
+            .read()
+            .await
+            .get(&id)
+            .is_some_and(|last| last.elapsed() >= timeout);
+        if !expired {
+            continue;
+        }
+        match idle_close(state, &id).await {
+            Ok(()) => {}
+            // Busy sessions are checked again on the next pass. Unknown native
+            // state is backed off so a broken host cannot consume the reaper.
+            Err((ReplyKind::Unavailable, _)) => {
+                state
+                    .session_activity
+                    .write()
+                    .await
+                    .insert(id, Instant::now());
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 pub(super) async fn metadata(
