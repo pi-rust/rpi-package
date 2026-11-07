@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.19...rpi-http-v0.1.20) - 2026-11-07
+
+### Added
+
+- *(web)* release idle session hosts
+
 ## [0.1.19](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.18...rpi-http-v0.1.19) - 2026-11-05
 
 ### Other
