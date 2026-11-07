@@ -236,7 +236,7 @@ class MockHost {
       const kind = body ? String(body.type) : match[2];
       if (![A, B].includes(id))
         return this.reject(route, `unknown session ${id}`);
-      if (body && !["get_state", ...diagnostics, ...catalogs].includes(kind))
+      if (body && !["get_state", ...diagnostics, ...catalogs, "prompt"].includes(kind))
         return this.reject(route, `unexpected command ${kind}`);
       if (
         (["snapshot", "events"].includes(kind) && request.method() !== "GET") ||
@@ -410,6 +410,27 @@ async function rendered(page: Page) {
       }),
   );
 }
+
+test("conversation supports immersive full-screen viewing and Escape exit", async ({
+  page,
+  host,
+}) => {
+  await start(page, host);
+  const workspace = page.locator(".workspace");
+  await page
+    .getByRole("button", { name: "Immersive view", exact: true })
+    .click();
+  await expect(workspace).toHaveClass(/workspace--immersive/);
+  await expect(page.locator(".toolbar")).toBeHidden();
+  await expect(page.locator(".sidebar")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Exit immersive view", exact: true }),
+  ).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(workspace).not.toHaveClass(/workspace--immersive/);
+  await expect(page.locator(".toolbar")).toBeVisible();
+});
 
 test("open finishes before a bounded snapshot, and snapshot paints/connects before state", async ({
   page,
@@ -647,28 +668,67 @@ test("settled sessions create clickable dismissible notifications", async ({
         type: "agent_settled",
         runId: "notification-run-2",
         outcome: "failed",
+        error: "Provider unavailable",
       },
     },
   ]);
-  const notification = page.getByRole("button", {
+  const completedNotification = page.getByRole("button", {
     name: "Session completed: Loading Alpha",
     exact: true,
   });
-  await expect(notification).toHaveCount(2);
+  const failedNotification = page.getByRole("button", {
+    name: "Session failed: Loading Alpha",
+    exact: true,
+  });
+  await expect(completedNotification).toHaveCount(1);
+  await expect(failedNotification).toHaveCount(1);
+  await expect(page.locator(".session-notification--error")).toContainText(
+    "Provider unavailable",
+  );
+  await expect(page.locator(".session-notification--success")).toHaveCount(1);
+  await expect(page.locator(".session-notification--error")).toHaveCount(1);
   await select(page, B);
-  await notification.first().click();
+  await completedNotification.click();
   await expect(page).toHaveURL(/session=loading-a/);
-  await expect(notification).toHaveCount(1);
+  await expect(completedNotification).toHaveCount(0);
 
-  const secondNotification = page.getByRole("button", {
-    name: "Session completed: Loading Alpha",
-    exact: true,
-  });
-  await expect(secondNotification).toBeVisible();
+  await expect(failedNotification).toBeVisible();
   await page
     .getByRole("button", { name: "Dismiss notification", exact: true })
     .click();
-  await expect(secondNotification).toHaveCount(0);
+  await expect(failedNotification).toHaveCount(0);
+});
+
+test("failed notifications offer direct continue", async ({ page, host }) => {
+  await start(page, host);
+  await hydrated(page, host);
+  await received(host, A, "events");
+  host.sessionSettlements[A] = {
+    outcome: "failed",
+    runId: "notification-failed-run",
+  };
+  host.sessionLastSeq[A] = 11;
+  host.emit(A, [
+    {
+      seq: 11,
+      event: {
+        type: "agent_settled",
+        runId: "notification-failed-run",
+        outcome: "failed",
+        error: "Provider unavailable",
+      },
+    },
+  ]);
+
+  const notification = page.locator(".session-notification--error");
+  await expect(notification).toBeVisible();
+  const continueAction = notification.getByRole("button", {
+    name: "Continue",
+    exact: true,
+  });
+  await expect(continueAction).toBeVisible();
+  await continueAction.click();
+  await expect.poll(() => host.count(A, "prompt")).toBe(1);
 });
 
 test("live host_closed cannot be reopened by stale active-operation hydration", async ({

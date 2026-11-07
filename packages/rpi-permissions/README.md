@@ -51,3 +51,10 @@ After explicit user authorization only:
 {"action":"grant","rule":"Bash(git push *)","effect":"deny","cwd":"/project"}
 {"action":"revoke","rule":"Bash(git push *)","cwd":"/project"}
 ```
+
+## Linux musl installation
+
+The x86_64 musl prebuilt library requires a matching musl `rpi` host and the
+dynamic musl and `libgcc_s` runtimes (`apk add libgcc` on Alpine). GNU and musl
+extension libraries are not interchangeable. Release CI verifies the library
+with a musl `dlopen`/`dlsym` loader before publishing its GitHub and CDN archives.

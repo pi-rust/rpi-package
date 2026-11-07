@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.1.46](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.45...rpi-web-v0.1.46) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
+## [0.1.45](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.44...rpi-web-v0.1.45) - 2026-11-06
+
+### Fixed
+
+- *(web)* preserve failure and retry feedback ([#218](https://github.com/pi-rust/rpi-package/pull/218))
+
 ## [0.1.44](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.43...rpi-web-v0.1.44) - 2026-11-06
 
 ### Other

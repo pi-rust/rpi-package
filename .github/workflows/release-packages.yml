@@ -14,6 +14,16 @@ on:
         required: false
       RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET:
         required: false
+      RPI_RUSTFS_ENDPOINT:
+        required: false
+      RPI_RUSTFS_BUCKET:
+        required: false
+      RPI_RUSTFS_ACCESS_KEY:
+        required: false
+      RPI_RUSTFS_SECRET_KEY:
+        required: false
+      RPI_CDN_BASE_URL:
+        required: false
   workflow_dispatch:
     inputs:
       source_ref:
@@ -44,7 +54,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - runner: macos-15-intel
             target: x86_64-apple-darwin
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
     defaults:
       run:
@@ -141,8 +151,8 @@ jobs:
             -e RPI_ANTIGRAVITY_OAUTH_CLIENT_ID \
             -e RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET \
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
-            messense/rust-musl-cross:x86_64-musl \
-            sh -lc 'if command -v apt-get >/dev/null; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash python3 pkg-config binutils perl make libasound2-dev libssl-dev git; elif command -v apk >/dev/null; then apk add --no-cache bash python3 pkgconf binutils perl make alsa-lib-dev openssl-dev git; else echo "no supported package manager in musl image" >&2; exit 2; fi && CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-unknown-linux-musl-gcc PACKAGES_ONLY=1 PROJECT_ROOT=/workspace SCRIPT_ROOT=/workspace/.release-tools bash .release-tools/tools/build-musl.sh'
+            rust:alpine \
+            sh -ec 'apk add --no-cache bash python3 pkgconf build-base binutils git && git config --global --add safe.directory /workspace && PACKAGES_ONLY=1 PROJECT_ROOT=/workspace SCRIPT_ROOT=/workspace/.release-tools bash .release-tools/tools/build-musl.sh'
       - uses: actions/upload-artifact@v4
         with:
           name: selected-x86_64-unknown-linux-musl
@@ -177,7 +187,30 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SOURCE_REF: ${{ inputs.source_ref }}
           PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
         run: |
           python .github/scripts/prebuilt-assets.py publish --packages-only \
             --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
             --bundle-tag unused --metadata-root .release-source --tags "$PACKAGE_RELEASES"
+      - name: Optionally mirror immutable package files to RustFS
+        id: rustfs_mirror
+        continue-on-error: true
+        env:
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+        run: |
+          python .github/scripts/prebuilt-assets.py mirror \
+            --bundle-tag unused --tags "$PACKAGE_RELEASES"
+      - name: Report RustFS mirror failure
+        if: steps.rustfs_mirror.outcome == 'failure'
+        run: |
+          echo "::warning::RustFS/CDN mirror failed; GitHub Releases remain canonical."
+          echo "- WARNING: RustFS/CDN mirror failed; GitHub Releases remain canonical." >> "$GITHUB_STEP_SUMMARY"

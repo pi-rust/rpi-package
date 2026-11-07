@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/pi-rust/rpi-package/compare/rpi-langfuse-v0.4.7...rpi-langfuse-v0.4.8) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
 ## [0.4.7](https://github.com/pi-rust/rpi-package/compare/rpi-langfuse-v0.4.6...rpi-langfuse-v0.4.7) - 2026-11-06
 
 ### Other

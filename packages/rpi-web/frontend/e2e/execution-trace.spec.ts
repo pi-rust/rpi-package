@@ -1242,6 +1242,9 @@ test("a snapshot-only failure stays visible without assigning older history to t
   });
   await open(page, host);
   await show(page);
+  await expect(page.locator(".error-banner")).toContainText(
+    "Snapshot-only native failure",
+  );
   const groups = pane(page).locator(".trace-group");
   await expect(groups).toHaveCount(2);
   await expect(
