@@ -16,6 +16,8 @@ export function renderMermaid(
     // do not pass shape metadata (YAML) or authored CSS into the renderer:
     // quoted/escaped `img` keys can otherwise cause requests before SVG export.
     const diagram = source.replace(/^\s*%%[^\n]*(?:\n|$)/gm, "").trimStart();
+    const typeLikeMarkup =
+      /^<\s*(?:[A-Z_$][\w$]*(?:(?:::|\.)[A-Za-z_$][\w$]*)*|string|number|boolean|unknown|never|void|any)(?:\s*,\s*(?:[A-Z_$][\w$]*(?:(?:::|\.)[A-Za-z_$][\w$]*)*|string|number|boolean|unknown|never|void|any))*\s*>$/;
     if (
       !/^(?:flowchart|graph|sequenceDiagram)\b/.test(diagram) ||
       source.length > 20_000 ||
@@ -25,7 +27,8 @@ export function renderMermaid(
       /@\s*\{|\b(?:classDef|linkStyle)\b|\bstyle\s+\S/i.test(source) ||
       /\b(?:url\s*\(|img\s*:)|@import|!\[/i.test(source) ||
       [...source.matchAll(/<\s*\/?\s*[a-z][^>]*>/gi)].some(
-        ([tag]) => !/^<br\s*\/?>$/i.test(tag),
+        ([tag]) =>
+          !/^<br\s*\/?>$/i.test(tag) && !typeLikeMarkup.test(tag),
       )
     ) {
       throw new Error("Unsupported or oversized diagram");
