@@ -483,6 +483,62 @@ test("a stopped session can send a selected queued message now", async ({
     .click();
   await expect.poll(() => commands).toEqual(["cancel_queued", "prompt"]);
 });
+test("sending one queued message keeps later waiting messages visible", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let queueReads = 0;
+  const commands: string[] = [];
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_queue") {
+        queueReads++;
+        const items =
+          queueReads === 1
+            ? [
+                {
+                  entryId: "queue-1",
+                  queue: "followUp",
+                  status: "queued",
+                  text: "first pending",
+                },
+                {
+                  entryId: "queue-2",
+                  queue: "followUp",
+                  status: "queued",
+                  text: "second pending",
+                },
+              ]
+            : [];
+        return route.fulfill({
+          json: response({ items, count: items.length }, body.type),
+        });
+      }
+      if (body.type === "cancel_queued" || body.type === "prompt") {
+        commands.push(body.type);
+        return route.fulfill({
+          json: response({ accepted: true, entryId: "queue-1" }, body.type),
+        });
+      }
+      return route.fallback();
+    },
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(2);
+  await page
+    .locator(".inspector .queue-item")
+    .filter({ hasText: "first pending" })
+    .getByRole("button", { name: "Send now: first pending", exact: true })
+    .click();
+  await expect.poll(() => commands).toEqual(["cancel_queued", "prompt"]);
+  await expect(page.locator(".composer-queue-panel")).toContainText(
+    "second pending",
+  );
+});
+
 test("failed queue cancellation restores the removed message", async ({
   page,
 }) => {

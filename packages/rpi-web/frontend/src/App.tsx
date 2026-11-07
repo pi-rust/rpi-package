@@ -2152,7 +2152,14 @@ export default function App() {
       if (supported.has("get_queue")) {
         jobs.push(async () => {
           const value = await api.queue(id, showQueueHistory, controller.signal);
-          if (current()) setQueueItems(value.items ?? []);
+          if (!current()) return;
+          const items = value.items ?? [];
+          setQueueItems((previous) =>
+            items.length === 0 &&
+            (runActive || queueRunSubmission.current.has(id))
+              ? previous.filter(isEditableQueueItem)
+              : items,
+          );
         });
       }
       if (supported.has("get_stats")) {
@@ -2199,7 +2206,7 @@ export default function App() {
         if (diagnosticsAbort.current === controller) diagnosticsAbort.current = null;
       }
     },
-    [supported, actions, showQueueHistory, clearAccess],
+    [supported, actions, showQueueHistory, clearAccess, runActive],
   );
 
   useEffect(() => {
