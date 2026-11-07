@@ -1463,6 +1463,9 @@
   }
 }
 @media (max-width: 767px) {
+  .workspace.workspace--immersive .composer-area {
+    display: none;
+  }
   .workbench,
   .workspace .inspector {
     top: 51px;

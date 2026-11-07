@@ -415,6 +415,7 @@ test("conversation supports immersive full-screen viewing and Escape exit", asyn
   page,
   host,
 }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await start(page, host);
   const workspace = page.locator(".workspace");
   await page
@@ -422,6 +423,7 @@ test("conversation supports immersive full-screen viewing and Escape exit", asyn
     .click();
   await expect(workspace).toHaveClass(/workspace--immersive/);
   await expect(page.locator(".toolbar")).toBeHidden();
+  await expect(page.locator(".composer-area")).toBeHidden();
   await expect(page.locator(".sidebar")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Exit immersive view", exact: true }),
