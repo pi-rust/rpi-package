@@ -871,14 +871,15 @@ export function ProjectSidebar({
     options: { showProject?: boolean } = {},
   ) {
     const title = session.title || (zh ? "新会话" : "New session");
-    const projectName = options.showProject
+    const recent = options.showProject === true;
+    const projectName = recent
       ? projects.find((project) => project.id === session.projectId)?.name
       : undefined;
     const awaitingAnswer = session.status === "awaiting_input";
     const running = ["running", "starting"].includes(session.status);
     return (
       <div
-        className={`project-session ${session.sessionId === sessionId ? "active" : ""}`}
+        className={`${recent ? "recent-session" : "project-session"} ${session.sessionId === sessionId ? "active" : ""}`}
         key={session.sessionId}
         onContextMenu={(event) => {
           if (!canManage) return;
@@ -894,6 +895,13 @@ export function ProjectSidebar({
           className="project-session-link"
           onClick={() => onSelectSession(session)}
           title={title}
+          aria-label={
+            recent
+              ? `${zh ? "最近会话" : "Recent chat"}: ${title}${
+                  projectName ? ` · ${projectName}` : ""
+                }`
+              : undefined
+          }
           aria-current={session.sessionId === sessionId ? "page" : undefined}
         >
           {awaitingAnswer ? (
@@ -908,19 +916,30 @@ export function ProjectSidebar({
           ) : (
             <span className="session-indent-dot" />
           )}
-          <span className="session-title">
-            {session.relation && <span className="fork-label">↳ </span>}
-            {title}
+          <span
+            className={`session-title ${recent ? "recent-session-title" : ""}`}
+            data-title={recent ? `${session.relation ? "↳ " : ""}${title}` : undefined}
+          >
+            {!recent && (
+              <>
+                {session.relation && <span className="fork-label">↳ </span>}
+                {title}
+              </>
+            )}
           </span>
-          <SessionAnswerBadge session={session} language={language} />
-          <SessionIssueBadge session={session} language={language} />
-          {draftSessionIds.has(session.sessionId) && (
-            <span
-              className="session-draft"
-              title={translate(language, "draft")}
-            >
-              {translate(language, "draft")}
-            </span>
+          {!recent && (
+            <>
+              <SessionAnswerBadge session={session} language={language} />
+              <SessionIssueBadge session={session} language={language} />
+              {draftSessionIds.has(session.sessionId) && (
+                <span
+                  className="session-draft"
+                  title={translate(language, "draft")}
+                >
+                  {translate(language, "draft")}
+                </span>
+              )}
+            </>
           )}
           {projectName && (
             <span
@@ -931,7 +950,7 @@ export function ProjectSidebar({
               {projectName}
             </span>
           )}
-          {(session.tags ?? []).length > 0 && (
+          {!recent && (session.tags ?? []).length > 0 && (
             <span className="session-tags" aria-label={translate(language, "tags")}>
               {(session.tags ?? []).slice(0, 2).map((tag) => (
                 <span className="session-tag" key={tag}>{tag}</span>
@@ -945,11 +964,11 @@ export function ProjectSidebar({
             {shortTime(session.updatedAt, language)}
           </time>
         </button>
-        {canManage && (
+        {canManage && !recent && (
           <div className="session-menu">
             <button
               className="icon-button session-menu-trigger"
-              aria-label={`${zh ? "会话操作" : "Session actions"}: ${title}`}
+              aria-label={`${recent ? (zh ? "最近会话操作" : "Recent chat actions") : zh ? "会话操作" : "Session actions"}: ${title}`}
               aria-expanded={menu === session.sessionId}
               aria-haspopup="menu"
               onClick={(event) => {

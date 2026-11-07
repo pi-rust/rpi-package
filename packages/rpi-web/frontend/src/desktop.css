@@ -265,7 +265,7 @@
   background: var(--hover);
   color: var(--text);
 }
-.recent-session-list .project-session {
+.recent-session-list .recent-session {
   margin-left: 3px;
   margin-right: 3px;
 }
@@ -281,11 +281,13 @@
 }
 .project-group,
 .project-group-header,
-.project-session {
+.project-session,
+.recent-session {
   min-width: 0;
   max-width: 100%;
 }
-.project-session {
+.project-session,
+.recent-session {
   overflow: hidden;
 }
 .project-group {
@@ -352,7 +354,8 @@
 .project-menu-trigger[aria-expanded="true"] {
   opacity: 1;
 }
-.project-session {
+.project-session,
+.recent-session {
   position: relative;
   display: flex;
   align-items: center;
@@ -361,10 +364,12 @@
   min-height: 31px;
   padding-right: 2px;
 }
-.project-session:hover {
+.project-session:hover,
+.recent-session:hover {
   background: var(--hover);
 }
-.project-session.active {
+.project-session.active,
+.recent-session.active {
   background: var(--hover);
 }
 .project-session-link {
@@ -394,6 +399,13 @@
   min-width: 0;
   flex: 1;
   text-align: left;
+}
+.recent-session-title::before {
+  content: attr(data-title);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .project-session-link > time {
   flex: 0 0 auto;

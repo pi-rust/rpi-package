@@ -854,13 +854,13 @@ test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
   await mockHost(page, { additionalSessions: 10 });
   await page.goto("/");
   const recent = page.getByRole("region", { name: "Recent chats" });
-  await expect(recent.locator(".project-session")).toHaveCount(5);
+  await expect(recent.locator(".recent-session")).toHaveCount(5);
   await expect(recent.locator(".recent-project-tag")).toHaveCount(5);
   await expect(recent.locator(".recent-project-tag").first()).toHaveText("rpi-package");
   const more = recent.getByRole("button", { name: "Show more recent chats", exact: true });
   await expect(more).toHaveAttribute("aria-expanded", "false");
   await more.click();
-  await expect(recent.locator(".project-session")).toHaveCount(10);
+  await expect(recent.locator(".recent-session")).toHaveCount(10);
   await expect(recent.locator(".recent-project-tag")).toHaveCount(10);
   await expect(
     recent.getByRole("button", { name: "Show fewer recent chats", exact: true }),
