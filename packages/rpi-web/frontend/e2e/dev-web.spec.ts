@@ -12483,7 +12483,12 @@ test.describe("retirement", () => {
     page.on("request", request => { if (request.method() === "DELETE" || request.url().endsWith("/metadata")) mutations.push(request.url()); });
     await page.goto("/?session=session-1");
     await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Session actions: Mock session", exact: true })).toHaveCount(0);
+    const actions = page.getByRole("button", { name: "Session actions: Mock session", exact: true });
+    await expect(actions).toHaveCount(1);
+    await actions.click();
+    await expect(page.getByRole("menuitem", { name: "Fork", exact: true })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Archive", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "Delete", exact: true })).toHaveCount(0);
     expect(mutations).toEqual([]);
   });
 });
