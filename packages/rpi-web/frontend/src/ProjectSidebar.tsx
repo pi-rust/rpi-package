@@ -14,6 +14,8 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  GitBranch,
+  GitFork,
   Loader2,
   MoreHorizontal,
   Clock3,
@@ -746,12 +748,14 @@ interface SidebarProps {
   language: Language;
   creating: boolean;
   canManage: boolean;
+  canFork: boolean;
   canCreate: boolean;
   onSelectProject: (project: Project) => void;
   onSelectSession: (session: SessionSummary) => void;
   onNewSession: (projectId: string) => void;
   onNewProject: () => void;
   onRename: (session: SessionSummary) => void;
+  onFork: (session: SessionSummary) => void;
   onRenameProject: (project: Project) => void;
   onProjectMetadata: (project: Project, archived: boolean) => Promise<void>;
   onEditTags: (session: SessionSummary) => void;
@@ -771,12 +775,14 @@ export function ProjectSidebar({
   language,
   creating,
   canManage,
+  canFork,
   canCreate,
   onSelectProject,
   onSelectSession,
   onNewSession,
   onNewProject,
   onRename,
+  onFork,
   onRenameProject,
   onProjectMetadata,
   onEditTags,
@@ -872,6 +878,12 @@ export function ProjectSidebar({
   ) {
     const title = session.title || (zh ? "新会话" : "New session");
     const recent = options.showProject === true;
+    const relationKind =
+      session.relation === "clone"
+        ? "clone"
+        : session.relation
+          ? "fork"
+          : null;
     const projectName = recent
       ? projects.find((project) => project.id === session.projectId)?.name
       : undefined;
@@ -882,7 +894,7 @@ export function ProjectSidebar({
         className={`${recent ? "recent-session" : "project-session"} ${session.sessionId === sessionId ? "active" : ""}`}
         key={session.sessionId}
         onContextMenu={(event) => {
-          if (!canManage) return;
+          if (!canManage && !canFork) return;
           event.preventDefault();
           setMenuPosition({
             top: Math.min(event.clientY, window.innerHeight - 150),
@@ -916,16 +928,28 @@ export function ProjectSidebar({
           ) : (
             <span className="session-indent-dot" />
           )}
+          {relationKind && (
+            <span
+              className={`session-relation-prefix session-relation-${relationKind}`}
+              title={
+                relationKind === "clone"
+                  ? zh
+                    ? "克隆会话"
+                    : "Cloned session"
+                  : zh
+                    ? "分叉会话"
+                    : "Forked session"
+              }
+              aria-hidden="true"
+            >
+              {relationKind === "clone" ? <GitBranch size={12} /> : <GitFork size={12} />}
+            </span>
+          )}
           <span
             className={`session-title ${recent ? "recent-session-title" : ""}`}
-            data-title={recent ? `${session.relation ? "↳ " : ""}${title}` : undefined}
+            data-title={recent ? title : undefined}
           >
-            {!recent && (
-              <>
-                {session.relation && <span className="fork-label">↳ </span>}
-                {title}
-              </>
-            )}
+            {!recent && title}
           </span>
           {!recent && (
             <>
@@ -964,7 +988,7 @@ export function ProjectSidebar({
             {shortTime(session.updatedAt, language)}
           </time>
         </button>
-        {canManage && !recent && (
+        {(canManage || canFork) && !recent && (
           <div className="session-menu">
             <button
               className="icon-button session-menu-trigger"
@@ -994,13 +1018,27 @@ export function ProjectSidebar({
                   aria-label={title}
                   style={menuPosition}
                 >
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setMenu("");
-                      onRename(session);
-                    }}
-                  >
+                  {canFork && (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setMenu("");
+                        onFork(session);
+                      }}
+                    >
+                      <GitFork size={14} />
+                      {translate(language, "fork")}
+                    </button>
+                  )}
+                  {canManage && (
+                    <>
+                      <button
+                        role="menuitem"
+                        onClick={() => {
+                          setMenu("");
+                          onRename(session);
+                        }}
+                      >
                     <SquarePen size={14} />
                     {zh ? "重命名" : "Rename"}
                   </button>
@@ -1056,11 +1094,12 @@ export function ProjectSidebar({
                     }}
                   >
                     <X size={14} />
-                    {session.deleting
-                      ? zh ? "重试永久删除" : "Retry permanent deletion"
-                      : zh ? "永久删除" : "Delete permanently"}
-                  </button>
-
+                        {session.deleting
+                          ? zh ? "重试永久删除" : "Retry permanent deletion"
+                          : zh ? "永久删除" : "Delete permanently"}
+                      </button>
+                    </>
+                  )}
                 </div>,
                 document.body,
               )}

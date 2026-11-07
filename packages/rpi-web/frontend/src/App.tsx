@@ -624,6 +624,8 @@ function isFailedOutcome(outcome: string) {
 }
 
 type SettlementIdentity = NonNullable<SessionSummary["latestSettlement"]>;
+const SESSION_NOTIFICATION_SUCCESS_TIMEOUT_MS = 6_000;
+const SESSION_NOTIFICATION_ERROR_TIMEOUT_MS = 12_000;
 
 function settlementKey(
   settlement: SettlementIdentity | null | undefined,
@@ -742,6 +744,9 @@ export default function App() {
   const [sessionNotifications, setSessionNotifications] = useState<
     SessionCompletionNotification[]
   >([]);
+  const notificationTimers = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
   const notifySessionCompletion = useCallback(
     (
       sessionId: string,
@@ -765,6 +770,40 @@ export default function App() {
           error: shortReason(settlement?.error),
         },
       ].slice(-8));
+    },
+    [],
+  );
+  useEffect(() => {
+    const timers = notificationTimers.current;
+    const activeIds = new Set(sessionNotifications.map((item) => item.id));
+    for (const [id, timer] of timers) {
+      if (!activeIds.has(id)) {
+        clearTimeout(timer);
+        timers.delete(id);
+      }
+    }
+    for (const notification of sessionNotifications) {
+      if (timers.has(notification.id)) continue;
+      const timeout = isFailedOutcome(notification.outcome)
+        ? SESSION_NOTIFICATION_ERROR_TIMEOUT_MS
+        : SESSION_NOTIFICATION_SUCCESS_TIMEOUT_MS;
+      timers.set(
+        notification.id,
+        setTimeout(() => {
+          timers.delete(notification.id);
+          setSessionNotifications((previous) =>
+            previous.filter((item) => item.id !== notification.id),
+          );
+        }, timeout),
+      );
+    }
+  }, [sessionNotifications]);
+  useEffect(
+    () => () => {
+      for (const timer of notificationTimers.current.values()) {
+        clearTimeout(timer);
+      }
+      notificationTimers.current.clear();
     },
     [],
   );
@@ -2113,7 +2152,14 @@ export default function App() {
       if (supported.has("get_queue")) {
         jobs.push(async () => {
           const value = await api.queue(id, showQueueHistory, controller.signal);
-          if (current()) setQueueItems(value.items ?? []);
+          if (!current()) return;
+          const items = value.items ?? [];
+          setQueueItems((previous) =>
+            items.length === 0 &&
+            (runActive || queueRunSubmission.current.has(id))
+              ? previous.filter(isEditableQueueItem)
+              : items,
+          );
         });
       }
       if (supported.has("get_stats")) {
@@ -2160,7 +2206,7 @@ export default function App() {
         if (diagnosticsAbort.current === controller) diagnosticsAbort.current = null;
       }
     },
-    [supported, actions, showQueueHistory, clearAccess],
+    [supported, actions, showQueueHistory, clearAccess, runActive],
   );
 
   useEffect(() => {
@@ -3078,9 +3124,12 @@ export default function App() {
     }
   }
 
-  async function forkCurrent(entryId?: string) {
-    if (!sessionId || !actions.has("fork") || forkInFlight.current) return;
-    const sourceSessionId = sessionId;
+  async function forkSession(
+    source: Pick<SessionSummary, "sessionId" | "title">,
+    entryId?: string,
+  ) {
+    if (!source.sessionId || !actions.has("fork") || forkInFlight.current) return;
+    const sourceSessionId = source.sessionId;
     const navigation = navigationRevision.current;
     forkInFlight.current = true;
     setForkPending(true);
@@ -3089,7 +3138,7 @@ export default function App() {
         kind: "prompt",
         title: t("forkName"),
         defaultValue: t("forkOf", {
-          title: current?.title ?? sourceSessionId.slice(0, 8),
+          title: source.title ?? sourceSessionId.slice(0, 8),
         }),
       });
       if (title === null || navigation !== navigationRevision.current) return;
@@ -3105,6 +3154,14 @@ export default function App() {
       forkInFlight.current = false;
       setForkPending(false);
     }
+  }
+
+  async function forkCurrent(entryId?: string) {
+    if (!sessionId) return;
+    await forkSession(
+      { sessionId, title: current?.title ?? null },
+      entryId,
+    );
   }
 
   async function cloneCurrent() {
@@ -3722,12 +3779,14 @@ export default function App() {
               language={language}
               creating={creatingSession}
               canManage={actions.has("session_organization")}
+              canFork={actions.has("fork")}
               canCreate={actions.has("create_project")}
               onSelectProject={selectProject}
               onSelectSession={selectSidebarSession}
               onNewSession={(id) => void createSession(id)}
               onNewProject={() => setProjectDialog(true)}
               onRename={setRenameTarget}
+              onFork={(session) => void forkSession(session)}
               onRenameProject={setProjectRenameTarget}
               onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}

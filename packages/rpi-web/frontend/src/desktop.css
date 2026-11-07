@@ -467,8 +467,15 @@
   background: var(--green);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 12%, transparent);
 }
-.fork-label {
+.session-relation-prefix {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 13px;
   color: var(--muted);
+}
+.session-relation-prefix.session-relation-fork {
+  color: var(--blue-text);
 }
 .session-menu {
   position: static;
@@ -1456,6 +1463,9 @@
   }
 }
 @media (max-width: 767px) {
+  .workspace.workspace--immersive .composer-area {
+    display: none;
+  }
   .workbench,
   .workspace .inspector {
     top: 51px;

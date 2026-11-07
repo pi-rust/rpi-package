@@ -483,6 +483,62 @@ test("a stopped session can send a selected queued message now", async ({
     .click();
   await expect.poll(() => commands).toEqual(["cancel_queued", "prompt"]);
 });
+test("sending one queued message keeps later waiting messages visible", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let queueReads = 0;
+  const commands: string[] = [];
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_queue") {
+        queueReads++;
+        const items =
+          queueReads === 1
+            ? [
+                {
+                  entryId: "queue-1",
+                  queue: "followUp",
+                  status: "queued",
+                  text: "first pending",
+                },
+                {
+                  entryId: "queue-2",
+                  queue: "followUp",
+                  status: "queued",
+                  text: "second pending",
+                },
+              ]
+            : [];
+        return route.fulfill({
+          json: response({ items, count: items.length }, body.type),
+        });
+      }
+      if (body.type === "cancel_queued" || body.type === "prompt") {
+        commands.push(body.type);
+        return route.fulfill({
+          json: response({ accepted: true, entryId: "queue-1" }, body.type),
+        });
+      }
+      return route.fallback();
+    },
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(2);
+  await page
+    .locator(".inspector .queue-item")
+    .filter({ hasText: "first pending" })
+    .getByRole("button", { name: "Send now: first pending", exact: true })
+    .click();
+  await expect.poll(() => commands).toEqual(["cancel_queued", "prompt"]);
+  await expect(page.locator(".composer-queue-panel")).toContainText(
+    "second pending",
+  );
+});
+
 test("failed queue cancellation restores the removed message", async ({
   page,
 }) => {
@@ -848,6 +904,29 @@ test("rename, pin, archive and restore survive reloads", async ({ page }) => {
       exact: true,
     }),
   ).toBeVisible();
+});
+
+test("fork is available from a session context menu", async ({ page }) => {
+  await mockHost(page);
+  let forkBody: { title?: string } | undefined;
+  await page.route("**/api/v1/sessions/session-1/fork", async (route) => {
+    forkBody = route.request().postDataJSON();
+    return route.fulfill({
+      status: 201,
+      json: { sessionId: "fork-session", sourceSessionId: sessionId, status: "ready" },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".project-session").first().click({ button: "right" });
+  await expect(
+    page.getByRole("menuitem", { name: "Fork", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("menuitem", { name: "Fork", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Name the new fork", exact: true });
+  await expect(dialog.getByRole("textbox")).toHaveValue("Fork of Mock session");
+  await dialog.getByRole("textbox").fill("Design fork");
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect.poll(() => forkBody).toEqual({ title: "Design fork" });
 });
 
 test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
@@ -12404,7 +12483,12 @@ test.describe("retirement", () => {
     page.on("request", request => { if (request.method() === "DELETE" || request.url().endsWith("/metadata")) mutations.push(request.url()); });
     await page.goto("/?session=session-1");
     await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Session actions: Mock session", exact: true })).toHaveCount(0);
+    const actions = page.getByRole("button", { name: "Session actions: Mock session", exact: true });
+    await expect(actions).toHaveCount(1);
+    await actions.click();
+    await expect(page.getByRole("menuitem", { name: "Fork", exact: true })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Archive", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "Delete", exact: true })).toHaveCount(0);
     expect(mutations).toEqual([]);
   });
 });
