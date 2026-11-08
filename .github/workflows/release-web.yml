@@ -172,7 +172,7 @@ jobs:
             -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             rust:alpine sh -ec '
-              apk add --no-cache build-base binutils python3 git
+              apk add --no-cache build-base binutils python3 git perl
               git config --global --add safe.directory /workspace
               cargo build --release --locked -p rpi-web --bin rpi-web --lib
               cargo test --release --locked -p rpi-web -p rpi-http -p rpi-extcore
