@@ -8,7 +8,7 @@ use axum::{
 use futures_util::{stream, Stream, StreamExt};
 use rpi_extcore::host::BufferedEvent;
 use serde_json::{json, Value};
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::broadcast;
 
 #[derive(Debug, serde::Deserialize)]
@@ -81,29 +81,40 @@ pub(super) fn event_stream(
 }
 
 // The middleware checks only the initial HTTP request. A long-lived stream must
-// also stop after another tab logs out or the authentication session expires.
+// also stop after another tab logs out, sharing is revoked or the lease expires.
 pub(super) fn authorized_events(
     events: impl Stream<Item = Result<Event, Infallible>> + Send + 'static,
     security: Arc<Security>,
     headers: axum::http::HeaderMap,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
-    let expiry_check = tokio::time::interval(std::time::Duration::from_secs(10));
+    let security_for_wait = security.clone();
+    let headers_for_wait = headers.clone();
+    let invalidation: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
+        if !security_for_wait.enabled() {
+            std::future::pending::<()>().await;
+        }
+        if let Some(lease) = security_for_wait.lease_for(&headers_for_wait).await {
+            security_for_wait
+                .access_state()
+                .wait_invalidated(&lease)
+                .await;
+        }
+    });
     stream::unfold(
-        (Box::pin(events), expiry_check),
-        move |(mut events, mut expiry_check)| {
+        (Box::pin(events), invalidation),
+        move |(mut events, mut invalidation)| {
             let security = security.clone();
             let headers = headers.clone();
             async move {
-                loop {
-                    tokio::select! {
-                        event = events.next() => {
-                            let event = event?;
-                            if !security.authorized(&headers).await { return None; }
-                            return Some((event, (events, expiry_check)));
+                tokio::select! {
+                    biased;
+                    _ = &mut invalidation => None,
+                    event = events.next() => {
+                        let event = event?;
+                        if !security.authorized(&headers).await {
+                            return None;
                         }
-                        _ = expiry_check.tick() => {
-                            if !security.authorized(&headers).await { return None; }
-                        }
+                        Some((event, (events, invalidation)))
                     }
                 }
             }

@@ -344,6 +344,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_event_streams_remain_open_without_password_authentication() {
+        let security = Arc::new(Security::new(["example.test".into()], None));
+        let (sender, receiver) = broadcast::channel(8);
+        let stream = authorized_events(
+            event_stream(json!({"type":"ready"}), vec![], receiver, false, None),
+            security,
+            axum::http::HeaderMap::new(),
+        );
+        futures_util::pin_mut!(stream);
+        assert!(stream.next().await.is_some());
+        sender
+            .send(BufferedEvent {
+                seq: 1,
+                value: json!({"type":"message_end"}),
+            })
+            .unwrap();
+        assert!(stream.next().await.is_some());
+    }
+
+    #[tokio::test]
     async fn logout_revokes_an_already_open_event_stream() {
         let security = Arc::new(Security::new(["example.test".into()], Some("secret")));
         let token = security.login("secret").await.unwrap();

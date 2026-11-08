@@ -66,13 +66,16 @@ impl Security {
     }
 
     pub async fn authorized(&self, headers: &HeaderMap) -> bool {
-        if !self.enabled() {
-            return true;
-        }
-        let Some(token) = cookie(headers) else {
-            return false;
-        };
-        self.access.authenticate(token).await.is_ok()
+        !self.enabled() || self.lease_for(headers).await.is_some()
+    }
+
+    pub(crate) async fn lease_for(&self, headers: &HeaderMap) -> Option<crate::access::AuthLease> {
+        let token = cookie(headers)?;
+        self.access.authenticate(token).await.ok()
+    }
+
+    pub(crate) fn access_state(&self) -> AccessState {
+        self.access.clone()
     }
 
     pub async fn login(&self, password: &str) -> Result<String, StatusCode> {
