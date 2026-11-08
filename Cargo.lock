@@ -2601,6 +2601,7 @@ dependencies = [
  "futures-util",
  "reqwest 0.12.28",
  "rpi-extcore",
+ "rpi-tts",
  "serde",
  "serde_json",
  "sha2",
@@ -2800,6 +2801,18 @@ version = "0.3.4"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
+]
+
+[[package]]
+name = "rpi-tts"
+version = "0.1.15"
+dependencies = [
+ "futures-util",
+ "native-tls",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "uuid",
 ]
 
 [[package]]

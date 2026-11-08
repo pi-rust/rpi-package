@@ -1163,6 +1163,19 @@ code {
   background: var(--soft);
   color: var(--text);
 }
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-toggle input {
+  accent-color: var(--accent);
+}
 .user-avatar {
   width: 24px;
   height: 24px;

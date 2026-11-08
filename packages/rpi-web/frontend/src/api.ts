@@ -570,6 +570,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ provider }),
     }),
+  tts: async (text: string, voice: string, signal?: AbortSignal) => {
+    const response = await fetch("/api/v1/tts", {
+      method: "POST",
+      headers: {
+        "x-rpi-web": "1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ text, voice }),
+      signal,
+    });
+    if (!response.ok) {
+      const value = (await response.json().catch(() => null)) as { error?: string } | null;
+      throw new ApiError(value?.error || `TTS request failed (${response.status})`, response.status);
+    }
+    return response.blob();
+  },
 
   listSessions: (filters: SessionListFilters = {}) => {
     const params = new URLSearchParams();
