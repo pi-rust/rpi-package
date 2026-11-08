@@ -1326,6 +1326,100 @@
 .workspace .toolbar {
   padding-inline: 14px;
 }
+.message-search {
+  position: fixed;
+  top: 74px;
+  right: 24px;
+  z-index: 100;
+  display: flex;
+  width: min(390px, calc(100vw - 48px));
+  max-height: min(560px, calc(100dvh - 96px));
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.message-search-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.message-search-input {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--soft);
+}
+.message-search-input:focus-within {
+  border-color: var(--blue);
+}
+.message-search-input input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+.workspace .message-search-input input:focus,
+.workspace .message-search-input input:focus-visible {
+  outline: 0;
+  box-shadow: none;
+}
+.message-search-results {
+  display: grid;
+  gap: 4px;
+  overflow: auto;
+}
+.message-search-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.message-search-result:hover,
+.message-search-result.selected {
+  border-color: var(--line);
+  background: var(--hover);
+}
+.message-search-result-index {
+  flex: 0 0 auto;
+  min-width: 18px;
+  color: var(--muted);
+  text-align: right;
+}
+.message-search-status,
+.message-search-hint,
+.message-search-count {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.message-search-hint {
+  color: var(--warning, var(--muted));
+}
 .workspace .transcript {
   padding: 18px 24px;
 }
@@ -1463,6 +1557,12 @@
   }
 }
 @media (max-width: 767px) {
+  .message-search {
+    top: calc(60px + env(safe-area-inset-top));
+    right: 8px;
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 76px);
+  }
   .workspace.workspace--immersive .composer-area {
     display: none;
   }

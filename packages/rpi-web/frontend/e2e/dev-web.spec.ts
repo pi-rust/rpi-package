@@ -81,7 +81,12 @@ function response(data: unknown, command = "mock") {
 
 async function mockHost(
   page: Page,
-  options: { additionalSessions?: number } = {},
+  options: {
+    additionalSessions?: number;
+    snapshotMessages?: unknown[];
+    messageSummaries?: unknown[];
+    nativeMessageQueries?: boolean;
+  } = {},
 ) {
   // Completion notices are covered by session-loading.spec.ts. Keep this
   // broader interaction fixture from letting an overlay steal unrelated
@@ -261,11 +266,42 @@ async function mockHost(
       if (entry) entry.title = request.postDataJSON().title;
       return route.fulfill({ json: entry });
     }
+    if (/\/sessions\/[^/]+\/message-window$/.test(path)) {
+      return route.fulfill({
+        json: {
+          messages: options.snapshotMessages ?? [],
+          firstId: "message-1",
+          lastId: "message-1",
+          nextBeforeId: null,
+          nextAfterId: null,
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+          leafId: "leaf-1",
+        },
+      });
+    }
+    if (/\/sessions\/[^/]+\/message-summaries$/.test(path)) {
+      return route.fulfill({
+        json: {
+          filtered: true,
+          role: "user",
+          messages: options.messageSummaries ?? [],
+          firstId: null,
+          lastId: null,
+          nextBeforeId: null,
+          hasMore: false,
+          leafId: "leaf-1",
+        },
+      });
+    }
     if (/\/sessions\/[^/]+\/snapshot$/.test(path)) {
       return route.fulfill({
         json: {
           sessionId,
-          messages: [],
+          supportedCommands: options.nativeMessageQueries
+            ? ["get_message_summaries", "get_message_window"]
+            : undefined,
+          messages: options.snapshotMessages ?? [],
           history: {
             records: [
               {
@@ -408,6 +444,54 @@ async function mockHost(
     return route.fulfill({ json: response({}) });
   });
 }
+
+test("message search finds loaded conversation text", async ({ page }) => {
+  await mockHost(page, {
+    snapshotMessages: [
+      {
+        entryId: "message-1",
+        role: "user",
+        content: [{ type: "text", text: "Please search this loaded message" }],
+        timestamp: 1_700_000_000_000,
+      },
+      {
+        entryId: "message-2",
+        role: "assistant",
+        content: [{ type: "text", text: "The loaded search result is ready" }],
+        timestamp: 1_700_000_000_001,
+      },
+    ],
+  });
+  await page.goto("/?session=session-1");
+  await page.getByRole("button", { name: "Search messages", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search this conversation…", exact: true }).fill("loaded message");
+  await expect(page.locator(".message-search-result")).toHaveCount(1);
+  await expect(page.locator(".message-search-result")).toContainText("Please search this loaded message");
+  await page.locator(".message-search-result").click();
+  await expect(page.locator('[data-transcript-row="message-1"]')).toBeVisible();
+});
+
+test("message search pages older user messages", async ({ page }) => {
+  await mockHost(page, {
+    nativeMessageQueries: true,
+    messageSummaries: [
+      {
+        entryId: "old-message",
+        role: "user",
+        preview: "An older message to find",
+        timestamp: 1_699_000_000_000,
+        hasImages: false,
+      },
+    ],
+  });
+  await page.goto("/?session=session-1");
+  await page.getByRole("button", { name: "Search messages", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search this conversation…", exact: true }).fill("older message");
+  await expect(page.locator(".message-search-result")).toHaveCount(1);
+  await expect(page.locator(".message-search-result")).toContainText("An older message to find");
+  await page.locator(".message-search-result").click();
+  await expect(page.locator(".history-window-status")).toBeVisible();
+});
 
 test("capabilities gate the history and queue inspector", async ({ page }) => {
   await mockHost(page);

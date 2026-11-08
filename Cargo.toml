@@ -26,6 +26,7 @@ members = [
     "packages/rpi-permission-gate",
     "packages/rpi-langfuse",
     "packages/rpi-voice",
+    "packages/rpi-tts",
     "packages/rpi-providers",
     "packages/rpi-web",
     "packages/rpi-extcore",

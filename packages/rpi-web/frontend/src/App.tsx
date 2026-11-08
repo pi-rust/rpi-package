@@ -41,6 +41,7 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
+  Search,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -48,12 +49,15 @@ import {
   Sigma,
   Sun,
   Wrench,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
 import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
+import { MessageSearch } from "./MessageSearchPanel";
 import { ProviderManager } from "./ProviderManager";
 import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
@@ -121,6 +125,11 @@ import {
   RenameDialog,
   TagsDialog,
 } from "./ProjectSidebar";
+import {
+  loadedSearchResults,
+  summaryMatches,
+  type MessageSearchResult,
+} from "./messageSearch";
 import {
   rowsFromAssistant,
   rowsFromMessages,
@@ -912,6 +921,22 @@ export default function App() {
   const traceBinding = `${sessionId}:${connectionRevision}:${navigationRevision.current}`;
   const historical = useHistoricalMessages(sessionId, traceBinding);
   const displayedRows = historical.active ? historical.rows : rows;
+  const [messageSearchOpen, setMessageSearchOpen] = useState(false);
+  const [messageSearchQuery, setMessageSearchQuery] = useState("");
+  const [messageSearchHistory, setMessageSearchHistory] = useState<MessageSearchResult[]>([]);
+  const [messageSearchLoading, setMessageSearchLoading] = useState(false);
+  const [messageSearchIndex, setMessageSearchIndex] = useState(0);
+  const messageSearchAbort = useRef<AbortController | null>(null);
+  const messageSearchLoaded = useMemo(
+    () => loadedSearchResults(displayedRows, messageSearchQuery, leafId),
+    [displayedRows, messageSearchQuery, leafId],
+  );
+  const messageSearchResults = useMemo(() => {
+    const seen = new Set(messageSearchLoaded.map((result) => result.entryId));
+    return messageSearchLoaded.concat(
+      messageSearchHistory.filter((result) => !seen.has(result.entryId)),
+    );
+  }, [messageSearchHistory, messageSearchLoaded]);
   const runTimings = useRunTimings(
     sessionId, rows, `${connectionRevision}:${navigationRevision.current}`,
     !loadingSession && Boolean(capabilities), settleTick,
@@ -922,6 +947,74 @@ export default function App() {
   );
   const displayedTimings = historical.active ? historicalRunTimings : runTimings;
   const runFooters = useMemo(() => timingByRow(displayedRows, displayedTimings), [displayedRows, displayedTimings]);
+  useEffect(() => {
+    messageSearchAbort.current?.abort();
+    setMessageSearchHistory([]);
+    setMessageSearchIndex(0);
+    const query = messageSearchQuery.trim();
+    if (!messageSearchOpen || query.length < 2 || !nativeMessageQueries || !sessionId) {
+      setMessageSearchLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    messageSearchAbort.current = controller;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const matches: MessageSearchResult[] = [];
+        let beforeId: string | undefined;
+        try {
+          setMessageSearchLoading(true);
+          for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+            const page = await api.messageSummaries(
+              sessionId,
+              { beforeId, leafId, limit: 100 },
+              controller.signal,
+            );
+            matches.push(...summaryMatches(page.messages, query, page.leafId ?? leafId));
+            if (matches.length >= 100 || !page.hasMore || !page.nextBeforeId || page.nextBeforeId === beforeId) break;
+            beforeId = page.nextBeforeId;
+          }
+          if (!controller.signal.aborted) setMessageSearchHistory(matches.slice(0, 100));
+        } catch (cause) {
+          if (!controller.signal.aborted) {
+            setMessageSearchHistory([]);
+            setError(errorText(cause));
+          }
+        } finally {
+          if (!controller.signal.aborted) setMessageSearchLoading(false);
+        }
+      })();
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+      if (messageSearchAbort.current === controller) messageSearchAbort.current = null;
+    };
+  }, [leafId, messageSearchOpen, messageSearchQuery, nativeMessageQueries, sessionId]);
+  useEffect(() => {
+    setMessageSearchOpen(false);
+    setMessageSearchQuery("");
+    setMessageSearchHistory([]);
+  }, [sessionId]);
+  const selectMessageSearch = useCallback((index: number) => {
+    const result = messageSearchResults[index];
+    if (!result) return;
+    setMessageSearchIndex(index);
+    const target = result.rowId
+      ? Array.from(document.querySelectorAll<HTMLElement>("[data-transcript-row]"))
+          .find((element) => element.dataset.transcriptRow === result.rowId)
+      : null;
+    if (target && transcriptRef.current) {
+      followingRef.current = false;
+      setFollowing(false);
+      transcriptRef.current.scrollTop +=
+        target.getBoundingClientRect().top -
+        transcriptRef.current.getBoundingClientRect().top -
+        12;
+      return;
+    }
+    if (result.leafId) historical.open({ entryId: result.entryId, leafId: result.leafId });
+  }, [historical, messageSearchResults]);
   const { state: traceState, snapshot: traceSnapshot, event: traceEvent, clear: clearTrace } =
     useExecutionTrace(traceBinding);
   const executionTrace = useMemo(() => traceView(traceState, runTimings), [traceState, runTimings]);
@@ -982,6 +1075,81 @@ export default function App() {
   const [modelPending, setModelPending] = useState(false);
   const [thinkingPending, setThinkingPending] = useState(false);
   const [language, setLanguage] = useState<Language>(() => detectLanguage());
+  const [autoRead, setAutoRead] = useState(() => {
+    try { return localStorage.getItem("rpi-auto-read") === "1"; } catch { return false; }
+  });
+  const [readingRowId, setReadingRowId] = useState<string | null>(null);
+  const ttsAudio = useRef<HTMLAudioElement | null>(null);
+  const ttsUrl = useRef<string | null>(null);
+  const ttsAbort = useRef<AbortController | null>(null);
+  const autoReadLast = useRef("");
+  const autoReadSettlement = useRef(0);
+  const stopReading = useCallback(() => {
+    ttsAbort.current?.abort();
+    ttsAbort.current = null;
+    ttsAudio.current?.pause();
+    ttsAudio.current = null;
+    if (ttsUrl.current) URL.revokeObjectURL(ttsUrl.current);
+    ttsUrl.current = null;
+    setReadingRowId(null);
+  }, []);
+  const speakMessage = useCallback(async (rowId: string, text: string) => {
+    if (readingRowId === rowId) {
+      stopReading();
+      return;
+    }
+    stopReading();
+    const controller = new AbortController();
+    ttsAbort.current = controller;
+    try {
+      const voice = language === "zh" ? "zh-CN-XiaoxiaoNeural" : "en-US-AriaNeural";
+      const blob = await api.tts(text, voice, controller.signal);
+      if (controller.signal.aborted) return;
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      ttsUrl.current = url;
+      ttsAudio.current = audio;
+      setReadingRowId(rowId);
+      audio.onended = stopReading;
+      audio.onerror = stopReading;
+      await audio.play();
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(errorText(cause));
+      stopReading();
+    }
+  }, [language, readingRowId, stopReading]);
+  useEffect(() => {
+    try { localStorage.setItem("rpi-auto-read", autoRead ? "1" : "0"); } catch { /* optional browser persistence */ }
+  }, [autoRead]);
+  useEffect(() => {
+    stopReading();
+    autoReadLast.current = "";
+    autoReadSettlement.current = 0;
+  }, [sessionId, stopReading]);
+  useEffect(() => () => stopReading(), [stopReading]);
+  useEffect(() => {
+    if (!sessionHydrated || historical.active || !sessionId) return;
+    const row = [...displayedRows].reverse().find(
+      (candidate): candidate is Extract<Row, { kind: "text" }> =>
+        candidate.kind === "text" && candidate.role === "assistant" && Boolean(candidate.text.trim()),
+    );
+    if (row) autoReadLast.current = `${sessionId}:${row.id}`;
+    autoReadSettlement.current = settleTick;
+  }, [historical.active, sessionHydrated, sessionId]);
+  useEffect(() => {
+    if (!autoRead || !sessionHydrated || historical.active || !sessionId || settleTick === 0) return;
+    if (autoReadSettlement.current === settleTick) return;
+    autoReadSettlement.current = settleTick;
+    const row = [...displayedRows].reverse().find(
+      (candidate): candidate is Extract<Row, { kind: "text" }> =>
+        candidate.kind === "text" && candidate.role === "assistant" && Boolean(candidate.text.trim()),
+    );
+    if (!row) return;
+    const key = `${sessionId}:${row.id}`;
+    if (autoReadLast.current === key) return;
+    autoReadLast.current = key;
+    void speakMessage(row.id, row.text);
+  }, [autoRead, displayedRows, historical.active, sessionId, settleTick, speakMessage]);
   const [dialog, setDialog] = useState<UiDialog | null>(null);
   const dialogRequests = useRef(new Map<string, UiDialog>());
   const activeDialogId = useRef("");
@@ -3994,6 +4162,17 @@ export default function App() {
             )}
             <button
               type="button"
+              className={`icon-button ${messageSearchOpen ? "selected" : ""}`}
+              disabled={!sessionId}
+              aria-label={t("messageSearch")}
+              title={t("messageSearch")}
+              aria-pressed={messageSearchOpen}
+              onClick={() => setMessageSearchOpen((open) => !open)}
+            >
+              <Search size={17} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
               className={`icon-button ${timelineOpen ? "selected" : ""}`}
               disabled={!sessionId}
               aria-label={t("conversationTimeline")}
@@ -4049,6 +4228,22 @@ export default function App() {
             )}
           </div>
         </header>
+
+        <MessageSearch
+          open={messageSearchOpen}
+          query={messageSearchQuery}
+          results={messageSearchResults}
+          activeIndex={messageSearchIndex}
+          loading={messageSearchLoading}
+          historySupported={nativeMessageQueries}
+          language={language}
+          onQuery={(value) => {
+            setMessageSearchQuery(value);
+            setMessageSearchIndex(0);
+          }}
+          onClose={() => setMessageSearchOpen(false)}
+          onSelect={selectMessageSearch}
+        />
 
         {mobileSessionPicker && (
           <div
@@ -4370,6 +4565,8 @@ export default function App() {
                               row={group?.latest ?? row}
                               todoHistory={group?.previous}
                               language={language}
+                              onSpeak={speakMessage}
+                              readingRowId={readingRowId}
                             />
                           )}
                           {group !== null && row.kind === "tool" && parentToolCallId(row) && (
@@ -4878,6 +5075,8 @@ export default function App() {
               runtime={runtime}
               onChange={setRuntime}
               onError={setError}
+              autoRead={autoRead}
+              onAutoRead={setAutoRead}
               onClose={() => setPanel(false)}
             />
           )}
@@ -5857,10 +6056,14 @@ const RowView = memo(function RowView({
   row,
   language,
   todoHistory,
+  onSpeak,
+  readingRowId,
 }: {
   row: Row;
   language: Language;
   todoHistory?: ToolRow[];
+  onSpeak?: (rowId: string, text: string) => void;
+  readingRowId?: string | null;
 }) {
   const t = (key: MessageKey) => translate(language, key);
   if (row.kind === "boundary") return null;
@@ -5912,7 +6115,14 @@ const RowView = memo(function RowView({
       <ToolRowView row={row} language={language} todoHistory={todoHistory} />
     );
 
-  return <MessageRow row={row} language={language} />;
+  return (
+    <MessageRow
+      row={row}
+      language={language}
+      onSpeak={onSpeak}
+      reading={readingRowId === row.id}
+    />
+  );
 });
 
 function ToolRowView({
@@ -6067,9 +6277,13 @@ function ToolRowView({
 function MessageRow({
   row,
   language,
+  onSpeak,
+  reading,
 }: {
   row: Extract<Row, { kind: "text" }>;
   language: Language;
+  onSpeak?: (rowId: string, text: string) => void;
+  reading?: boolean;
 }) {
   const t = (key: MessageKey) => translate(language, key);
   const [copiedMarkdown, setCopiedMarkdown] = useState(false);
@@ -6108,6 +6322,16 @@ function MessageRow({
           >
             {copiedMarkdown ? <Check size={12} /> : <Copy size={12} />}
             <span>{copiedMarkdown ? t("copied") : t("copyMarkdown")}</span>
+          </button>
+          <button
+            type="button"
+            className="message-copy message-copy-markdown"
+            onClick={() => onSpeak?.(row.id, row.text)}
+            aria-label={reading ? t("stopReading") : t("readAloud")}
+            title={reading ? t("stopReading") : t("readAloud")}
+          >
+            {reading ? <VolumeX size={12} /> : <Volume2 size={12} />}
+            <span>{reading ? t("stopReading") : t("readAloud")}</span>
           </button>
         </div>
       )}
@@ -6473,6 +6697,8 @@ function RuntimePanel({
   runtime,
   onChange,
   onError,
+  autoRead,
+  onAutoRead,
   onClose,
 }: {
   language: Language;
@@ -6482,6 +6708,8 @@ function RuntimePanel({
   runtime: RuntimeState | null;
   onChange: (value: RuntimeState) => void;
   onError: (message: string) => void;
+  autoRead: boolean;
+  onAutoRead: (value: boolean) => void;
   onClose: () => void;
 }) {
   const zh = language === "zh";
@@ -6607,6 +6835,14 @@ function RuntimePanel({
   return (
     <aside className="inspector">
       {heading}
+      <label className="settings-toggle">
+        <input
+          type="checkbox"
+          checked={autoRead}
+          onChange={(event) => onAutoRead(event.target.checked)}
+        />
+        <span>{t("autoRead")}</span>
+      </label>
       <button
         type="button"
         className="provider-manager-entry"
