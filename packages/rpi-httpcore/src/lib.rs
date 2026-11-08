@@ -1,5 +1,6 @@
 //! HTTP/SSE adapter for rpi-extcore; does not embed a frontend or load plugins.
 #![forbid(unsafe_code)]
+pub mod access;
 pub mod config;
 mod security;
 mod server;

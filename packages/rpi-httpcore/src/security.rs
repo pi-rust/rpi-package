@@ -1,4 +1,5 @@
 //! Password and same-origin protection for a public rpi-web deployment.
+use crate::access::{AccessState, PrincipalId};
 use axum::{
     body::Body,
     extract::State,
@@ -11,20 +12,19 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     sync::Arc,
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 const SESSION_SECONDS: u64 = 12 * 60 * 60;
 
 pub struct Security {
     hosts: HashSet<String>,
     password: Option<[u8; 32]>,
-    sessions: Mutex<HashMap<String, Instant>>,
+    access: AccessState,
     attempts: Mutex<Vec<Instant>>,
 }
 
@@ -32,8 +32,8 @@ impl Security {
     pub fn new(hosts: impl IntoIterator<Item = String>, password: Option<&str>) -> Self {
         Self {
             hosts: hosts.into_iter().collect(),
+            access: AccessState::new(password.is_some(), 64),
             password: password.map(digest),
-            sessions: Mutex::new(HashMap::new()),
             attempts: Mutex::new(Vec::new()),
         }
     }
@@ -72,10 +72,7 @@ impl Security {
         let Some(token) = cookie(headers) else {
             return false;
         };
-        let now = Instant::now();
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, expiry| *expiry > now);
-        sessions.contains_key(token)
+        self.access.authenticate(token).await.is_ok()
     }
 
     pub async fn login(&self, password: &str) -> Result<String, StatusCode> {
@@ -93,19 +90,19 @@ impl Security {
         if !matches {
             return Err(StatusCode::UNAUTHORIZED);
         }
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, expiry| *expiry > now);
-        if sessions.len() >= 64 {
-            return Err(StatusCode::CONFLICT);
-        }
-        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        sessions.insert(token.clone(), now + Duration::from_secs(SESSION_SECONDS));
-        Ok(token)
+        let principal = PrincipalId::new("password")
+            .expect("the built-in password principal must be non-empty");
+        let lease = self
+            .access
+            .issue(principal, Duration::from_secs(SESSION_SECONDS))
+            .await
+            .map_err(|_| StatusCode::CONFLICT)?;
+        Ok(lease.credential().to_owned())
     }
 
     pub async fn logout(&self, headers: &HeaderMap) {
         if let Some(token) = cookie(headers) {
-            self.sessions.lock().await.remove(token);
+            self.access.revoke_credential(token).await;
         }
     }
 }
@@ -251,6 +248,25 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("Max-Age=0"));
+        assert!(!security.authorized(&headers).await);
+    }
+
+    #[tokio::test]
+    async fn sharing_revoke_invalidates_password_sessions_after_reopen() {
+        let security = Security::new(["example.test".to_string()], Some("secret"));
+        let token = security.login("secret").await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            format!("rpi_web_session={token}").parse().unwrap(),
+        );
+        assert!(security.authorized(&headers).await);
+
+        let closed = security.access.revoke_all().await;
+        assert_eq!(closed.generation, 1);
+        assert!(!security.authorized(&headers).await);
+
+        security.access.enable_sharing().await;
         assert!(!security.authorized(&headers).await);
     }
 
