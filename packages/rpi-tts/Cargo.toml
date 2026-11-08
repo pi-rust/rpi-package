@@ -13,8 +13,8 @@ name = "rpi_tts"
 
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
-native-tls = "0.2"
+tokio-tungstenite = { version = "0.24", features = ["native-tls-vendored"] }
+native-tls = { version = "0.2", features = ["vendored"] }
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
