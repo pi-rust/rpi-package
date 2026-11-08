@@ -41,6 +41,7 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
+  Search,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -54,6 +55,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
 import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
+import { MessageSearch } from "./MessageSearchPanel";
 import { ProviderManager } from "./ProviderManager";
 import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
@@ -121,6 +123,11 @@ import {
   RenameDialog,
   TagsDialog,
 } from "./ProjectSidebar";
+import {
+  loadedSearchResults,
+  summaryMatches,
+  type MessageSearchResult,
+} from "./messageSearch";
 import {
   rowsFromAssistant,
   rowsFromMessages,
@@ -912,6 +919,22 @@ export default function App() {
   const traceBinding = `${sessionId}:${connectionRevision}:${navigationRevision.current}`;
   const historical = useHistoricalMessages(sessionId, traceBinding);
   const displayedRows = historical.active ? historical.rows : rows;
+  const [messageSearchOpen, setMessageSearchOpen] = useState(false);
+  const [messageSearchQuery, setMessageSearchQuery] = useState("");
+  const [messageSearchHistory, setMessageSearchHistory] = useState<MessageSearchResult[]>([]);
+  const [messageSearchLoading, setMessageSearchLoading] = useState(false);
+  const [messageSearchIndex, setMessageSearchIndex] = useState(0);
+  const messageSearchAbort = useRef<AbortController | null>(null);
+  const messageSearchLoaded = useMemo(
+    () => loadedSearchResults(displayedRows, messageSearchQuery, leafId),
+    [displayedRows, messageSearchQuery, leafId],
+  );
+  const messageSearchResults = useMemo(() => {
+    const seen = new Set(messageSearchLoaded.map((result) => result.entryId));
+    return messageSearchLoaded.concat(
+      messageSearchHistory.filter((result) => !seen.has(result.entryId)),
+    );
+  }, [messageSearchHistory, messageSearchLoaded]);
   const runTimings = useRunTimings(
     sessionId, rows, `${connectionRevision}:${navigationRevision.current}`,
     !loadingSession && Boolean(capabilities), settleTick,
@@ -922,6 +945,74 @@ export default function App() {
   );
   const displayedTimings = historical.active ? historicalRunTimings : runTimings;
   const runFooters = useMemo(() => timingByRow(displayedRows, displayedTimings), [displayedRows, displayedTimings]);
+  useEffect(() => {
+    messageSearchAbort.current?.abort();
+    setMessageSearchHistory([]);
+    setMessageSearchIndex(0);
+    const query = messageSearchQuery.trim();
+    if (!messageSearchOpen || query.length < 2 || !nativeMessageQueries || !sessionId) {
+      setMessageSearchLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    messageSearchAbort.current = controller;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const matches: MessageSearchResult[] = [];
+        let beforeId: string | undefined;
+        try {
+          setMessageSearchLoading(true);
+          for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+            const page = await api.messageSummaries(
+              sessionId,
+              { beforeId, leafId, limit: 100 },
+              controller.signal,
+            );
+            matches.push(...summaryMatches(page.messages, query, page.leafId ?? leafId));
+            if (matches.length >= 100 || !page.hasMore || !page.nextBeforeId || page.nextBeforeId === beforeId) break;
+            beforeId = page.nextBeforeId;
+          }
+          if (!controller.signal.aborted) setMessageSearchHistory(matches.slice(0, 100));
+        } catch (cause) {
+          if (!controller.signal.aborted) {
+            setMessageSearchHistory([]);
+            setError(errorText(cause));
+          }
+        } finally {
+          if (!controller.signal.aborted) setMessageSearchLoading(false);
+        }
+      })();
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+      if (messageSearchAbort.current === controller) messageSearchAbort.current = null;
+    };
+  }, [leafId, messageSearchOpen, messageSearchQuery, nativeMessageQueries, sessionId]);
+  useEffect(() => {
+    setMessageSearchOpen(false);
+    setMessageSearchQuery("");
+    setMessageSearchHistory([]);
+  }, [sessionId]);
+  const selectMessageSearch = useCallback((index: number) => {
+    const result = messageSearchResults[index];
+    if (!result) return;
+    setMessageSearchIndex(index);
+    const target = result.rowId
+      ? Array.from(document.querySelectorAll<HTMLElement>("[data-transcript-row]"))
+          .find((element) => element.dataset.transcriptRow === result.rowId)
+      : null;
+    if (target && transcriptRef.current) {
+      followingRef.current = false;
+      setFollowing(false);
+      transcriptRef.current.scrollTop +=
+        target.getBoundingClientRect().top -
+        transcriptRef.current.getBoundingClientRect().top -
+        12;
+      return;
+    }
+    if (result.leafId) historical.open({ entryId: result.entryId, leafId: result.leafId });
+  }, [historical, messageSearchResults]);
   const { state: traceState, snapshot: traceSnapshot, event: traceEvent, clear: clearTrace } =
     useExecutionTrace(traceBinding);
   const executionTrace = useMemo(() => traceView(traceState, runTimings), [traceState, runTimings]);
@@ -3994,6 +4085,17 @@ export default function App() {
             )}
             <button
               type="button"
+              className={`icon-button ${messageSearchOpen ? "selected" : ""}`}
+              disabled={!sessionId}
+              aria-label={t("messageSearch")}
+              title={t("messageSearch")}
+              aria-pressed={messageSearchOpen}
+              onClick={() => setMessageSearchOpen((open) => !open)}
+            >
+              <Search size={17} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
               className={`icon-button ${timelineOpen ? "selected" : ""}`}
               disabled={!sessionId}
               aria-label={t("conversationTimeline")}
@@ -4049,6 +4151,22 @@ export default function App() {
             )}
           </div>
         </header>
+
+        <MessageSearch
+          open={messageSearchOpen}
+          query={messageSearchQuery}
+          results={messageSearchResults}
+          activeIndex={messageSearchIndex}
+          loading={messageSearchLoading}
+          historySupported={nativeMessageQueries}
+          language={language}
+          onQuery={(value) => {
+            setMessageSearchQuery(value);
+            setMessageSearchIndex(0);
+          }}
+          onClose={() => setMessageSearchOpen(false)}
+          onSelect={selectMessageSearch}
+        />
 
         {mobileSessionPicker && (
           <div
