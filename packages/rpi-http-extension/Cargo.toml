@@ -1,6 +1,6 @@
 [package]
 name = "rpi-http-extension"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,7 +21,7 @@ supported-targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarc
 
 [dependencies]
 rpi-plugin-sdk.workspace = true
-rpi-http = { path = "../rpi-http", version = "0.1.19" }
+rpi-http = { path = "../rpi-http", version = "0.1.20" }
 axum = "0.8.9"
 serde_json.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
