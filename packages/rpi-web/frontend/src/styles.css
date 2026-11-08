@@ -1163,6 +1163,9 @@ code {
   background: var(--soft);
   color: var(--text);
 }
+.message-actions .message-copy + .message-copy {
+  margin-left: 0;
+}
 
 .settings-toggle {
   display: flex;
@@ -1174,7 +1177,7 @@ code {
 }
 
 .settings-toggle input {
-  accent-color: var(--accent);
+  accent-color: var(--blue);
 }
 .user-avatar {
   width: 24px;
