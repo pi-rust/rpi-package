@@ -235,10 +235,7 @@ pub async fn login_for(
             return (status, Json(json!({"error": "authentication failed"}))).into_response()
         }
     };
-    let secure = headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|origin| origin.starts_with("https://"));
+    let secure = secure_request(headers);
     let secure_suffix = if secure { "; Secure" } else { "" };
     let mut response = Json(json!({"authenticated": true})).into_response();
     response.headers_mut().insert(
@@ -260,6 +257,29 @@ pub async fn logout_for(security: &Security, headers: &HeaderMap) -> Response {
         HeaderValue::from_static("rpi_web_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"),
     );
     response
+}
+
+fn secure_request(headers: &HeaderMap) -> bool {
+    let origin_is_secure = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| origin.starts_with("https://"));
+    let forwarded_proto_is_secure = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"));
+    let forwarded_is_secure = headers
+        .get("forwarded")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(';').any(|part| {
+                part.trim()
+                    .strip_prefix("proto=")
+                    .is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
+            })
+        });
+    origin_is_secure || forwarded_proto_is_secure || forwarded_is_secure
 }
 
 #[cfg(test)]
@@ -320,6 +340,31 @@ mod tests {
 
         security.access.enable_sharing().await;
         assert!(!security.authorized(&headers).await);
+    }
+
+    #[tokio::test]
+    async fn secure_cookie_follows_direct_and_forwarded_https() {
+        let security = Security::new(["example.test".to_string()], Some("secret"));
+        for (name, value) in [
+            ("origin", "https://example.test"),
+            ("x-forwarded-proto", "https"),
+            ("forwarded", "for=127.0.0.1;proto=https"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, value.parse().unwrap());
+            let response = login_for(
+                &security,
+                &headers,
+                LoginRequest {
+                    password: "secret".to_string(),
+                },
+            )
+            .await;
+            assert!(response.headers()[header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .contains("; Secure"));
+        }
     }
 
     #[test]

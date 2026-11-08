@@ -1,6 +1,7 @@
 use super::{middleware, ConnectionConfigError, ConnectionPolicy, ConnectionRegistry};
 use crate::access::{AccessState, Admission, AdmissionError};
 use axum::{middleware::from_fn_with_state, Router};
+use std::future::Future;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportConfigError {
@@ -39,8 +40,20 @@ impl TransportState {
 
     /// Stop new owner operations and connections, then wait for both to drain.
     pub async fn drain(&self) {
+        self.drain_with(|| async {}).await;
+    }
+
+    /// Drain transport resources and then await an owner-provided cleanup
+    /// future. The callback is deliberately opaque to keep native child and
+    /// Work-owner lifecycle outside this crate.
+    pub async fn drain_with<F, Fut>(&self, owner_drain: F)
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
         self.connections.drain().await;
         self.admission.drain().await;
+        owner_drain().await;
     }
 }
 
@@ -67,4 +80,33 @@ pub(super) fn admission_response(error: AdmissionError) -> axum::response::Respo
         ),
     };
     (status, Json(json!({"error": message}))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    #[tokio::test]
+    async fn drain_with_runs_owner_cleanup_after_transport_drain() {
+        let state = TransportState::new(
+            AccessState::new(false, 4),
+            1,
+            ConnectionPolicy::new(1, 64, 1).unwrap(),
+        )
+        .unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let callback_called = called.clone();
+        state
+            .drain_with(|| async move {
+                callback_called.store(true, Ordering::Release);
+            })
+            .await;
+        assert!(called.load(Ordering::Acquire));
+        assert!(!state.admission().is_accepting());
+        assert!(!state.connections().is_accepting());
+    }
 }
