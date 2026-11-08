@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 pub const HELP: &str = "rpi-httpcore [--config PATH] [--project PATH] [--rpi-bin PATH]
          [--bind IP] [--port N] [--registry PATH] [--session-dir PATH]
-         [--session-timeout SECONDS] [--add-project PATH]... [--projects-root PATH] [--help] [--version]
+         [--session-timeout SECONDS] [--admission-limit N] [--add-project PATH]... [--projects-root PATH] [--help] [--version]
 
 Serves /api/v1 over HTTP/SSE without frontend assets.
 JSON paths are relative to the config file; CLI paths use the working directory.
@@ -37,6 +37,8 @@ pub struct AppConfig {
     /// Optional idle timeout for live native hosts, in seconds. `None` keeps
     /// the legacy behavior and retains live hosts until explicit close.
     pub session_timeout_seconds: Option<u64>,
+    /// Maximum number of concurrent API owner operations.
+    pub admission_limit: u32,
 }
 
 impl Default for AppConfig {
@@ -53,6 +55,7 @@ impl Default for AppConfig {
             session_dir: None,
             registry: rpi_extcore::registry::default_path(),
             session_timeout_seconds: None,
+            admission_limit: 64,
         }
     }
 }
@@ -86,7 +89,8 @@ fn from_args_at(args: impl IntoIterator<Item = String>, cwd: &Path) -> Result<La
             "--help" | "-h" => return Ok(Launch::Help),
             "--version" | "-V" => return Ok(Launch::Version),
             "--config" | "--project" | "--rpi-bin" | "--bind" | "--port" | "--registry"
-            | "--session-dir" | "--session-timeout" | "--add-project" | "--projects-root" => {
+            | "--session-dir" | "--session-timeout" | "--admission-limit" | "--add-project"
+            | "--projects-root" => {
                 let value = if let Some(value) = inline {
                     value
                 } else {
@@ -150,6 +154,9 @@ fn from_args_at(args: impl IntoIterator<Item = String>, cwd: &Path) -> Result<La
             "--session-timeout" => {
                 config.session_timeout_seconds = parse_session_timeout(&value)?;
             }
+            "--admission-limit" => {
+                config.admission_limit = parse_admission_limit(&value)?;
+            }
             "--add-project" => config.projects.push(resolve(cwd, Path::new(&value))),
             "--projects-root" => config.projects_root = Some(resolve(cwd, Path::new(&value))),
             _ => unreachable!(),
@@ -163,6 +170,16 @@ fn parse_session_timeout(value: &str) -> Result<Option<u64>, String> {
         .parse::<u64>()
         .map_err(|_| "--session-timeout must be a non-negative number of seconds".to_string())?;
     Ok((seconds > 0).then_some(seconds))
+}
+
+fn parse_admission_limit(value: &str) -> Result<u32, String> {
+    let limit = value
+        .parse::<u32>()
+        .map_err(|_| "--admission-limit must be a positive number".to_string())?;
+    if limit == 0 {
+        return Err("--admission-limit must be a positive number".to_string());
+    }
+    Ok(limit)
 }
 
 fn resolve_executable(base: &Path, path: &Path) -> PathBuf {
@@ -224,6 +241,12 @@ mod tests {
             panic!("expected server config")
         };
         assert_eq!(config.session_timeout_seconds, None);
+        let Launch::Run(config) = from_args(["--admission-limit".into(), "128".into()]).unwrap()
+        else {
+            panic!("expected server config")
+        };
+        assert_eq!(config.admission_limit, 128);
+        assert!(from_args(["--admission-limit".into(), "0".into()]).is_err());
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

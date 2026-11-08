@@ -86,6 +86,7 @@ pub(crate) async fn run_until(
         session_dir: config.session_dir.clone(),
         registry: config.registry.clone(),
         session_timeout_seconds: config.session_timeout_seconds,
+        admission_limit: 64,
     };
     rpi_httpcore::serve_until(
         http,

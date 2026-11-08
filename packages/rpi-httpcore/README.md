@@ -22,7 +22,8 @@ This serves `/api/v1`, including projects, sessions, commands, snapshots, SSE, m
   "rpiBin": "/absolute/path/to/rpi",
   "port": 3030,
   "registry": "state/sessions.json",
-  "sessionDir": "history"
+  "sessionDir": "history",
+  "admissionLimit": 64
 }
 ```
 
@@ -38,7 +39,7 @@ Use `RPI_HTTP_PASSWORD` for access authentication and `RPI_HTTP_ALLOWED_HOSTS` f
 
 The existing `/api/v1` payloads, cookie authentication, `X-Rpi-Web: 1` mutation marker, SSE event names/IDs and `Last-Event-ID` behavior are preserved. Log in with `POST /api/v1/auth`, retain its cookie, and include the mutation marker on POST/DELETE requests. Model API credentials remain separate and are handled by the native host.
 
-The public `access` module contains transport-neutral lifecycle primitives for HTTP/SSE/WebSocket owners: revocable `AuthLease` values, sharing generations, `Admission` permits and drain, and one-time generation-bound `PairingStore` tickets. The public `transport` module adds protocol-neutral connection admission, Lease-bound invalidation, connection/message limits and bounded outbound queues; it does not define Work frames or operations. Authenticated SSE connections now bind to their Lease and stop on logout, expiry or generation revocation. The standard API router also uses a bounded 64-operation admission gate and drains admitted requests before backend shutdown; saturated requests receive a sanitized 429 and shutdown rejects new operations with 503. These primitives do not depend on Work, Axum or a concrete rpi service owner; the current router continues to expose the standard `rpi-extcore::Service` API.
+The public `access` module contains transport-neutral lifecycle primitives for HTTP/SSE/WebSocket owners: revocable `AuthLease` values, sharing generations, `Admission` permits and drain, and one-time generation-bound `PairingStore` tickets. The public `transport` module adds Axum adapters for protocol-neutral connection admission, bearer authentication, Host/Origin and mutation-marker checks, Lease-bound invalidation, connection/message limits and bounded outbound queues; it does not define Work frames or operations. Compose `same_origin_router`, `bearer_auth_router`, `lifecycle_router` and an owner-specific WebSocket handler for a new adapter. Authenticated SSE connections now bind to their Lease and stop on logout, expiry or generation revocation. The standard API router also uses a configurable admission gate (`--admission-limit`, default 64) and drains admitted requests before backend shutdown; saturated requests receive a sanitized 429 and shutdown rejects new operations with 503. The access layer has no Work or Axum dependency, while the transport adapters have no Work or concrete rpi service-owner dependency; the current router continues to expose the standard `rpi-extcore::Service` API.
 
 For compatibility the default registry remains `~/.rpi-web/sessions.json`. Run one backend writer per registry. Separate standalone instances can select their own `--registry` paths.
 
@@ -156,7 +157,7 @@ parity. See the [current qualification](../../docs/codemode-full-parity-matrix.m
 
 ## Embed the API
 
-`router(core, &config, shutdown_receiver)` builds an API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. Rust callers and HTTP clients then observe the same service state.
+`rpi_routes(core, &config, shutdown_receiver)` builds the standard API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. `router(...)` remains a compatibility alias. Generic owners can compose their own routes with `rpi_httpcore::transport::lifecycle_router(...)` without depending on `rpi_extcore::Service`. Rust callers and HTTP clients then observe the same service state.
 
 `serve_until(config, frontend_router, on_listen, stop)` owns a listener and a core instance with bounded shutdown; Web uses this to combine the API with its own frontend routes. `run(config)` starts the API-only service and stops on Ctrl+C.
 

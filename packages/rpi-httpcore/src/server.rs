@@ -17,8 +17,6 @@ use auth::{allowed_hosts, configured_password};
 use middleware::{admit_owner, image_cache_control, touch_session_activity};
 use response::HttpReply;
 
-const DEFAULT_ADMISSION_LIMIT: u32 = 64;
-
 #[derive(Clone)]
 struct AppState {
     backend: Arc<Service>,
@@ -78,8 +76,8 @@ pub async fn serve_until(
     let state = AppState {
         backend,
         security: security.clone(),
-        admission: Admission::new(DEFAULT_ADMISSION_LIMIT)
-            .expect("the default HTTP admission limit must be non-zero"),
+        admission: Admission::new(config.admission_limit)
+            .expect("the configured HTTP admission limit must be non-zero"),
         shutdown: receiver,
         service_name: config.service_name,
     };
@@ -144,6 +142,17 @@ pub fn router(
     config: &crate::config::AppConfig,
     shutdown: watch::Receiver<bool>,
 ) -> Router {
+    rpi_routes(backend, config, shutdown)
+}
+
+/// Build the standard rpi API router without a frontend. This named adapter
+/// can be merged with a caller-owned transport router while the legacy
+/// `router` entry point remains unchanged.
+pub fn rpi_routes(
+    backend: Arc<Service>,
+    config: &crate::config::AppConfig,
+    shutdown: watch::Receiver<bool>,
+) -> Router {
     let security = Arc::new(Security::new(
         allowed_hosts(config),
         configured_password(config).as_deref(),
@@ -151,8 +160,8 @@ pub fn router(
     let state = AppState {
         backend,
         security: security.clone(),
-        admission: Admission::new(DEFAULT_ADMISSION_LIMIT)
-            .expect("the default HTTP admission limit must be non-zero"),
+        admission: Admission::new(config.admission_limit)
+            .expect("the configured HTTP admission limit must be non-zero"),
         shutdown,
         service_name: config.service_name,
     };

@@ -1,5 +1,8 @@
 //! Password and same-origin protection for a public rpi-web deployment.
-use crate::access::{AccessState, PrincipalId};
+use crate::{
+    access::{AccessState, PrincipalId},
+    transport::HostOriginPolicy,
+};
 use axum::{
     body::Body,
     extract::State,
@@ -12,7 +15,6 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -22,7 +24,7 @@ use tokio::sync::Mutex;
 const SESSION_SECONDS: u64 = 12 * 60 * 60;
 
 pub struct Security {
-    hosts: HashSet<String>,
+    host_policy: HostOriginPolicy,
     password: Option<[u8; 32]>,
     access: AccessState,
     attempts: Mutex<Vec<Instant>>,
@@ -31,7 +33,7 @@ pub struct Security {
 impl Security {
     pub fn new(hosts: impl IntoIterator<Item = String>, password: Option<&str>) -> Self {
         Self {
-            hosts: hosts.into_iter().collect(),
+            host_policy: HostOriginPolicy::new(hosts),
             access: AccessState::new(password.is_some(), 64),
             password: password.map(digest),
             attempts: Mutex::new(Vec::new()),
@@ -43,26 +45,11 @@ impl Security {
     }
 
     pub fn host_allowed(&self, headers: &HeaderMap) -> bool {
-        headers
-            .get(header::HOST)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|host| self.hosts.contains(host))
+        self.host_policy.host_allowed(headers)
     }
 
     pub fn origin_allowed(&self, headers: &HeaderMap) -> bool {
-        let Some(origin) = headers
-            .get(header::ORIGIN)
-            .and_then(|value| value.to_str().ok())
-        else {
-            return true;
-        };
-        let Some(authority) = origin
-            .strip_prefix("https://")
-            .or_else(|| origin.strip_prefix("http://"))
-        else {
-            return false;
-        };
-        self.hosts.contains(authority.trim_end_matches('/'))
+        self.host_policy.origin_allowed(headers)
     }
 
     pub async fn authorized(&self, headers: &HeaderMap) -> bool {
@@ -124,11 +111,7 @@ fn cookie(headers: &HeaderMap) -> Option<&str> {
 }
 
 fn request_marker_present(headers: &HeaderMap, method: &str) -> bool {
-    matches!(method, "GET" | "HEAD" | "OPTIONS")
-        || headers
-            .get("x-rpi-web")
-            .and_then(|value| value.to_str().ok())
-            == Some("1")
+    HostOriginPolicy::request_marker_present(headers, method)
 }
 
 pub async fn guard(
