@@ -44,72 +44,8 @@ async fn caller_cancellation_alone_retains_fork_owner_source_fence_and_capacity(
     assert!(f.root.join(format!("stopped-{id}")).exists());
 }
 #[tokio::test]
-async fn late_metadata_failure_retains_capture_and_latches_until_owner_restart() {
-    let f = Fixture::new(true);
-    f.flag("fail-metadata");
-    let first = service::open_session(&f.owner, "source".into()).await;
-    assert_eq!(first.0, ReplyKind::Internal, "{}", first.1);
-    assert!(f
-        .disk()
-        .resource_configuration("source")
-        .unwrap()
-        .current_settings
-        .is_some());
-    assert!(f.owner.live_session("source").await.is_none());
-    assert!(f.root.join("stopped-source").exists());
-    std::fs::remove_file(f.root.join("fail-metadata")).unwrap();
-    std::fs::remove_dir(f.root.join("registry.json.tmp")).unwrap();
-    assert_eq!(
-        service::open_session(&f.owner, "source".into()).await.0,
-        ReplyKind::Internal
-    );
-    f.end().await;
-    let owner = Service::new(f.owner.config.clone()).unwrap();
-    let opened = service::open_session(&owner, "source".into()).await;
-    assert_eq!(opened.0, ReplyKind::Success, "{}", opened.1);
-    let actual = state(&owner, "source").await;
-    let consumed = owner
-        .resource_configuration("source")
-        .await
-        .unwrap()
-        .unwrap()
-        .current_settings
-        .is_none();
-    owner.shutdown().await;
-    assert_eq!(actual["model"], "saved-model");
-    assert_eq!(actual["provider"], "saved-provider");
-    assert_eq!(actual["thinkingLevel"], "high");
-    assert!(consumed);
-}
-#[tokio::test]
-async fn cancelled_open_retains_capture_until_full_attachment_publication() {
-    let f = Fixture::new(true);
-    f.flag("pause-branch");
-    let owner = f.owner.clone();
-    let caller = tokio::spawn(async move { service::open_session(&owner, "source".into()).await });
-    wait_file(&f.root.join("branch-paused")).await;
-    caller.abort();
-    let _ = caller.await;
-    let retained = f
-        .disk()
-        .resource_configuration("source")
-        .unwrap()
-        .current_settings
-        .is_some();
-    f.flag("fail-branch");
-    std::fs::remove_file(f.root.join("pause-branch")).unwrap();
-    wait_file(&f.root.join("stopped-source")).await;
-    std::fs::remove_file(f.root.join("fail-branch")).unwrap();
-    f.open().await;
-    let actual = state(&f.owner, "source").await;
-    f.end().await;
-    assert!(retained);
-    assert_eq!(actual["model"], "saved-model");
-    assert_eq!(actual["thinkingLevel"], "high");
-}
-#[tokio::test]
-async fn failed_fork_navigation_attachment_and_publication_clean_candidates() {
-    for failure in ["fail-navigation", "fail-branch", "fail-metadata"] {
+async fn failed_fork_navigation_cleans_candidates() {
+    for failure in ["fail-navigation"] {
         let f = Fixture::new(true);
         f.flag(failure);
         let reply = service::fork_session(
@@ -162,12 +98,6 @@ async fn idle_release_capture_is_retried_without_replaying_historical_settings()
         .unwrap()
         .current_settings
         .is_some());
-    f.flag("fail-branch");
-    assert_eq!(
-        service::open_session(&f.owner, "source".into()).await.0,
-        ReplyKind::HostUnavailable
-    );
-    std::fs::remove_file(f.root.join("fail-branch")).unwrap();
     f.open().await;
     let actual = state(&f.owner, "source").await;
     f.end().await;

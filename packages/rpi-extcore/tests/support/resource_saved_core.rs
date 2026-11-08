@@ -55,6 +55,26 @@ pub async fn verify(
         .unwrap()
         + 1;
     let before_ledger = service.resource_operations(id).await.unwrap().len();
+    let revision = service
+        .resource_configuration(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    let none = ResourceSelection {
+        version: 1,
+        main_package: None,
+        skills: vec![],
+        extensions: vec![],
+        instructions: vec![],
+        tools: ResourceTools::None {},
+    };
+    let request = ApplyResourcesRequest {
+        expected_revision: revision,
+        operation_id: "must-not-run-native-pending".into(),
+        target: none.clone(),
+        supersedes_operation_id: None,
+    };
     let custom = json!({"kind":"entry","type":"custom","id":"core-opaque-proof","seq":seq,"timestamp":0,"lane":"main","parentId":view.leaf_id,"customType":"opaque-test","data":{"opaque":true}});
     let opaque_bytes = [
         original.clone(),
@@ -70,15 +90,15 @@ pub async fn verify(
         .resource_saved_history(id.into(), ResourceHistoryRequest::default())
         .await
         .unwrap();
-    assert!(opaque_view
-        .custom_entries
-        .iter()
-        .any(|e| e["id"] == "core-opaque-proof"));
+    // Unknown custom entries are not interpreted or rejected by the package
+    // adapter: the native saved-read query does not request any custom type.
+    assert!(opaque_view.custom_entries.is_empty());
     assert!(opaque_view.executable);
     assert_eq!(
         service.resource_operations(id).await.unwrap().len(),
         before_ledger
     );
+    let queue_view;
     // Test-owned source reset; production has no repair/write API.
     put(&path, &original);
     let queued = json!({"kind":"record","type":"queue_enqueued","id":"native-pending-queue","seq":seq,"timestamp":0,"lane":"main","queue":"nextRun","target":{"type":"message","id":"not-yet-committed","message":{"kind":"user","role":"user","content":"must stay pending","timestamp":0}}});

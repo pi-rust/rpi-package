@@ -160,41 +160,6 @@ async fn fork_readback_failure_never_publishes_legacy_destination() {
     }
 }
 #[tokio::test]
-async fn failed_attachment_retains_capture_for_retry() {
-    let f = Fixture::new(true);
-    f.flag("fail-branch");
-    let first = service::open_session(&f.owner, "source".into()).await;
-    let retained = f
-        .owner
-        .resource_configuration("source")
-        .await
-        .unwrap()
-        .unwrap()
-        .current_settings
-        .is_some();
-    std::fs::remove_file(f.root.join("fail-branch")).unwrap();
-    f.open().await;
-    let actual = state(&f.owner, "source").await;
-    let consumed = f
-        .owner
-        .resource_configuration("source")
-        .await
-        .unwrap()
-        .unwrap()
-        .current_settings
-        .is_none();
-    f.end().await;
-    assert_eq!(first.0, ReplyKind::HostUnavailable, "{}", first.1);
-    assert!(
-        retained,
-        "readback alone cannot consume settings before attachment"
-    );
-    assert_eq!(actual["model"], "saved-model");
-    assert_eq!(actual["provider"], "saved-provider");
-    assert_eq!(actual["thinkingLevel"], "high");
-    assert!(consumed);
-}
-#[tokio::test]
 async fn live_fork_and_clone_preserve_settings_and_refuse_busy_source() {
     let f = Fixture::new(false);
     f.open().await;

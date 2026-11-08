@@ -252,7 +252,7 @@ pub(crate) async fn read(
     tokio::task::spawn_blocking(move || {
         local::negotiate_sync(&bin,&cwd)?.require_saved_read()?;
         let lock=super::lock::ObservationLock::acquire(&root,&path)?;
-        let bytes=serde_json::to_vec(&serde_json::json!({"version":1,"sessionId":id,"sessionRoot":root,"sessionPath":path,"limit":query.limit,"cursor":query.cursor})).map_err(ResourceError::unavailable)?;
+        let bytes=serde_json::to_vec(&serde_json::json!({"version":1,"sessionId":id,"sessionRoot":root,"sessionPath":path,"limit":query.limit,"customTypes":[],"cursor":query.cursor})).map_err(ResourceError::unavailable)?;
         if bytes.len()>MAX_CONFIG_BYTES {return Err(ResourceError::new(ResourceErrorKind::LimitExceeded,"saved history request exceeds 64 KiB"));}
         let file=RequestFile::create(&bytes)?;
         let (ok,bytes,_)=local::invoke(&bin,&cwd,&["--resource-session-read".into(),file.0.as_os_str().into()],8*1024*1024,Duration::from_secs(15))?;
