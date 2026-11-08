@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.14...rpi-acp-v0.2.15) - 2026-11-08
+
+### Other
+
+- Remove legacy durable runtime from package adapters
+
 ## [0.2.14](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.13...rpi-acp-v0.2.14) - 2026-11-07
 
 ### Other

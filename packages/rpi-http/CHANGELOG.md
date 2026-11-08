@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.20...rpi-http-v0.1.21) - 2026-11-08
+
+### Other
+
+- Merge pull request #242 from pi-rust/codex/remove-package-durable
+- Remove legacy durable runtime from package adapters
+
 ## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.19...rpi-http-v0.1.20) - 2026-11-07
 
 ### Added
