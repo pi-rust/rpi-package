@@ -1,71 +1,10 @@
-//! Generic connection lifecycle primitives for SSE/WebSocket adapters.
-//!
-//! This module owns admission, authorization invalidation and bounded
-//! connection resources. It intentionally does not define frames, operations
-//! or a concrete protocol.
-
-use crate::access::{AccessError, AccessState, AuthLease};
+use super::{ConnectionCloseReason, ConnectionError, ConnectionPolicy};
+use crate::access::{AccessState, AuthLease};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConnectionConfigError {
-    ZeroConnections,
-    TooManyConnections,
-    ZeroMessageBytes,
-    ZeroSendBuffer,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConnectionError {
-    Access(AccessError),
-    AtCapacity,
-    ShuttingDown,
-    MessageTooLarge,
-}
-
-impl From<AccessError> for ConnectionError {
-    fn from(error: AccessError) -> Self {
-        Self::Access(error)
-    }
-}
-
-/// Limits that apply to each connection registry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ConnectionPolicy {
-    pub max_connections: usize,
-    pub max_message_bytes: usize,
-    pub send_buffer: usize,
-}
-
-impl ConnectionPolicy {
-    pub fn new(
-        max_connections: usize,
-        max_message_bytes: usize,
-        send_buffer: usize,
-    ) -> Result<Self, ConnectionConfigError> {
-        if max_connections == 0 {
-            return Err(ConnectionConfigError::ZeroConnections);
-        }
-        if max_connections > u32::MAX as usize {
-            return Err(ConnectionConfigError::TooManyConnections);
-        }
-        if max_message_bytes == 0 {
-            return Err(ConnectionConfigError::ZeroMessageBytes);
-        }
-        if send_buffer == 0 {
-            return Err(ConnectionConfigError::ZeroSendBuffer);
-        }
-        Ok(Self {
-            max_connections,
-            max_message_bytes,
-            send_buffer,
-        })
-    }
-}
 
 struct Inner {
     access: AccessState,
@@ -173,13 +112,17 @@ impl ConnectionPermit {
 
     /// Wait until the Lease is invalidated or the registry starts shutdown.
     pub async fn wait_closed(&self) {
+        let _ = self.wait_closed_reason().await;
+    }
+
+    pub async fn wait_closed_reason(&self) -> ConnectionCloseReason {
         let invalidated = self.inner.access.wait_invalidated(&self.lease);
         let shutdown = self.inner.shutdown.notified();
         tokio::pin!(invalidated);
         tokio::pin!(shutdown);
         tokio::select! {
-            _ = &mut invalidated => {},
-            _ = &mut shutdown => {},
+            _ = &mut invalidated => ConnectionCloseReason::LeaseInvalidated,
+            _ = &mut shutdown => ConnectionCloseReason::Shutdown,
         }
     }
 
