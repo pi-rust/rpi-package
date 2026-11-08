@@ -154,7 +154,7 @@ pub struct ResourceConfiguration {
     #[serde(default)]
     pub settings: ResourceSessionSettings,
     /// Newest owned-idle-stop capture; consumed atomically with final metadata
-    /// only after resource verification and durable attachment succeed.
+    /// only after resource verification succeeds.
     /// Never substitute the historical operation settings above for this field.
     #[serde(default)]
     pub current_settings: Option<ResourceSettingsCapture>,

@@ -432,7 +432,7 @@ impl Service {
         })
         .await
         .map_err(|_| {
-            ResourceError::unavailable("resource operation owner failed; inspect durable status")
+            ResourceError::unavailable("resource operation owner failed; inspect native status")
         })?
     }
     async fn apply_resources_owned(
@@ -637,7 +637,7 @@ impl Service {
         // and revalidate the exact original CAS/payload before loading resources.
         drop(saved_read);
         let mut record =
-            record.ok_or_else(|| ResourceError::conflict("missing durable resource intent"))?;
+            record.ok_or_else(|| ResourceError::conflict("missing resource intent"))?;
         let index = record
             .operations
             .iter()
@@ -649,7 +649,6 @@ impl Service {
             if let Some(host) = &host {
                 host.await_resource_exit().await?;
             }
-            detach_durable(self, &id).await;
             self.sessions.write().await.remove(&id);
             self.session_activity.write().await.remove(&id);
             let settings = record.settings.clone();
@@ -696,17 +695,11 @@ impl Service {
                 record.operations[index].result_revision = Some(revision);
                 record.operations[index].observation = Some(observation);
                 record.operations[index].error = None;
-                // Attach optional projection before publication, then persist the
-                // verified generation before exposing any execution entrance.
-                attach_durable(self, &id, candidate.clone())
-                    .await
-                    .map_err(ResourceError::unavailable)?;
                 save_record(self, &id, record.clone()).await?;
                 Ok(())
             }
             .await;
             if let Err(error) = verified {
-                detach_durable(self, &id).await;
                 candidate.shutdown().await;
                 return Err(error);
             }
@@ -730,7 +723,7 @@ impl Service {
         Ok(record.operations[index].clone())
     }
     /// Immediate Busy rather than an unbounded guard acquisition queue. Native
-    /// auto-queue work must be empty and canonical durable state freshly idle.
+    /// auto-queue work must be empty and native state freshly idle.
     pub async fn resource_project_fence(
         &self,
         project_id: &str,
@@ -859,7 +852,6 @@ impl Service {
             let mut released = Vec::new();
             for (id, host, _) in selected {
                 host.await_resource_exit().await?;
-                detach_durable(&owner, &id).await;
                 owner.sessions.write().await.remove(&id);
                 released.push(id);
             }

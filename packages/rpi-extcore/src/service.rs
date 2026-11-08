@@ -21,7 +21,6 @@ mod retirement;
 #[path = "service_retirement_tests.rs"]
 mod service_retirement_tests;
 use crate::{
-    durable::{DurableMutation, DurableRuntime, DurableSubscription, ENTRY_TYPE},
     host::HostSession,
     projects::Projects,
     protocol::{self, ApiCommand},
@@ -138,8 +137,6 @@ pub struct Service {
     /// Monotonic Web/API activity used only for optional idle host retirement.
     /// Native transcript timestamps remain the source of truth for history.
     session_activity: Arc<RwLock<HashMap<String, Instant>>>,
-    durable: Arc<RwLock<HashMap<String, Arc<DurableRuntime>>>>,
-    durable_event_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
     run_timing_cache: Arc<std::sync::Mutex<crate::run_timing::RunTimingCache>>,
@@ -180,8 +177,6 @@ impl Service {
             default_project_id,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             session_activity: Arc::new(RwLock::new(HashMap::new())),
-            durable: Arc::new(RwLock::new(HashMap::new())),
-            durable_event_watchers: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             registry: Arc::new(RwLock::new(registry)),
             run_timing_cache: Arc::new(std::sync::Mutex::new(Default::default())),
@@ -266,172 +261,7 @@ impl Service {
             session.shutdown().await;
         }))
         .await;
-        let event_watchers: Vec<_> = self
-            .durable_event_watchers
-            .lock()
-            .await
-            .drain()
-            .map(|(_, handle)| handle)
-            .collect();
-        for watcher in event_watchers {
-            watcher.abort();
-        }
-        self.durable.write().await.clear();
     }
-
-    /// Return the in-memory projection for a live native session.
-    pub async fn durable_projection(&self, id: &str) -> Option<Arc<DurableRuntime>> {
-        self.durable.read().await.get(id).cloned()
-    }
-
-    pub async fn durable_subscription(
-        &self,
-        id: &str,
-        after: Option<u64>,
-    ) -> Option<DurableSubscription> {
-        let runtime = self.durable_projection(id).await?;
-        Some(runtime.subscribe_changes(after).await)
-    }
-
-    /// Return the current durable state for a live session.
-    pub async fn durable_state(&self, id: &str) -> ServiceResult {
-        if self.live_session(id).await.is_none() {
-            return Err((
-                ReplyKind::NotFound,
-                json!({"error": "session not found", "code": "session_not_found"}),
-            ));
-        }
-        let runtime = self.durable_projection(id).await.ok_or_else(|| {
-            (
-                ReplyKind::Unavailable,
-                json!({
-                    "error": "durable projection is not initialized",
-                    "code": "durable_unavailable"
-                }),
-            )
-        })?;
-        Ok(json!({"sessionId": id, "state": runtime.state().await}))
-    }
-
-    /// Forward one durable control-plane mutation to the `rpi-durable`
-    /// command. `rpi-extcore` never appends durable entries itself.
-    pub async fn mutate_durable(&self, id: &str, mutation: DurableMutation) -> ServiceResult {
-        self.check_session_admission(id).await?;
-        if self.live_session(id).await.is_none() {
-            return Err((ReplyKind::NotFound, json!({"error": "session not found"})));
-        }
-        let runtime = self.durable_projection(id).await.ok_or_else(|| {
-            (
-                ReplyKind::Unavailable,
-                json!({
-                    "error": "durable projection is not initialized",
-                    "code": "durable_unavailable"
-                }),
-            )
-        })?;
-        // The runtime retains its HostSession and uses host admission. Never
-        // wait for unrelated lifecycle work before forwarding a control command.
-        let result = match runtime.mutate(mutation).await {
-            Ok(result) => result,
-            Err(error) => {
-                let kind = if error.contains("queue item")
-                    || error.contains("only an interrupted run")
-                    || error.contains("run is ")
-                {
-                    ReplyKind::Conflict
-                } else if error.contains("required") || error.contains("must be") {
-                    ReplyKind::InvalidInput
-                } else if error.contains("queue cannot contain") {
-                    ReplyKind::LimitExceeded
-                } else {
-                    ReplyKind::HostUnavailable
-                };
-                return Err((kind, json!({"error": error})));
-            }
-        };
-        Ok(json!({
-            "sessionId": id,
-            "result": result,
-            "state": runtime.state().await,
-        }))
-    }
-}
-
-pub async fn durable_state(state: &Service, id: String) -> ServiceResult {
-    state.durable_state(&id).await
-}
-
-pub async fn mutate_durable(
-    state: &Service,
-    id: String,
-    mutation: DurableMutation,
-) -> ServiceResult {
-    state.mutate_durable(&id, mutation).await
-}
-
-async fn attach_durable(
-    state: &Service,
-    id: &str,
-    session: Arc<HostSession>,
-) -> Result<(), String> {
-    state.durable.write().await.remove(id);
-    if let Some(watcher) = state.durable_event_watchers.lock().await.remove(id) {
-        watcher.abort();
-    }
-
-    let Some(runtime) = DurableRuntime::try_attach(session.clone()).await? else {
-        // Durable is an optional native capability. Keep the ordinary session
-        // alive when an older host does not expose branch RPCs.
-        return Ok(());
-    };
-    state
-        .durable
-        .write()
-        .await
-        .insert(id.to_owned(), runtime.clone());
-    let event_capable = session.supports_event("session_entry_committed");
-
-    // New hosts publish generic commit metadata at the Session commit
-    // boundary. Durable projection updates are event-driven; a lagged event
-    // triggers an immediate branch refresh instead of background polling.
-    if event_capable {
-        let mut events = session.subscribe_raw();
-        let event_runtime = runtime.clone();
-        let event_watcher = tokio::spawn(async move {
-            loop {
-                let event = match events.recv().await {
-                    Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // A lag means at least one commit notification was
-                        // dropped. Reconcile immediately instead of waiting
-                        // for the slow polling fallback.
-                        let _ = event_runtime.refresh_branch().await;
-                        continue;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                };
-                if event["type"] != "session_entry_committed"
-                    || event["customType"].as_str() != Some(ENTRY_TYPE)
-                {
-                    continue;
-                }
-                let _ = event_runtime.refresh_branch().await;
-            }
-        });
-        state
-            .durable_event_watchers
-            .lock()
-            .await
-            .insert(id.to_owned(), event_watcher);
-    }
-    Ok(())
-}
-
-async fn detach_durable(state: &Service, id: &str) {
-    if let Some(watcher) = state.durable_event_watchers.lock().await.remove(id) {
-        watcher.abort();
-    }
-    state.durable.write().await.remove(id);
 }
 
 pub async fn list_projects(state: &Service) -> Value {
@@ -703,13 +533,6 @@ async fn create_session_owned(
     }
     match spawn_host(state, &id, &project).await {
         Ok((session, record)) => {
-            if let Err(error) = attach_durable(state, &id, session.clone()).await {
-                session.shutdown().await;
-                return (
-                    ReplyKind::HostUnavailable,
-                    json!({"error": error, "code": "durable_projection_unavailable"}),
-                );
-            }
             let ready = session.ready();
             let snapshot = session.snapshot().await;
             let saved = resources::publish_record(
@@ -728,7 +551,6 @@ async fn create_session_owned(
             )
             .await;
             if let Err(error) = saved {
-                detach_durable(state, &id).await;
                 session.shutdown().await;
                 return resources::reply_error(error);
             }
@@ -1069,18 +891,9 @@ async fn fork_session_owned(
             return resources::reply_error(error).into_reply();
         }
     };
-    if let Err(error) = attach_durable(state, &actual_id, session.clone()).await {
-        session.shutdown().await;
-        return (
-            ReplyKind::HostUnavailable,
-            json!({"error":error,"code":"durable_projection_unavailable"}),
-        )
-            .into_reply();
-    }
     // Shutdown sets closing before waiting for this lifecycle owner. Caller
     // cancellation alone never discards completion; shutdown may refuse it.
     if state.closing.load(std::sync::atomic::Ordering::Acquire) {
-        detach_durable(state, &actual_id).await;
         session.shutdown().await;
         return (
             ReplyKind::Unavailable,
@@ -1105,7 +918,6 @@ async fn fork_session_owned(
     )
     .await;
     if let Err(error) = saved {
-        detach_durable(state, &actual_id).await;
         session.shutdown().await;
         return resources::reply_error(error).into_reply();
     }
@@ -1187,7 +999,6 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
         if let Err(error) = session.await_resource_exit().await {
             return resources::reply_error(error);
         }
-        detach_durable(state, &id).await;
         state.sessions.write().await.remove(&id);
         state.session_activity.write().await.remove(&id);
     }
@@ -1204,13 +1015,6 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
     };
     match spawn_host(state, &id, &project).await {
         Ok((session, record)) => {
-            if let Err(error) = attach_durable(state, &id, session.clone()).await {
-                session.shutdown().await;
-                return (
-                    ReplyKind::HostUnavailable,
-                    json!({"error": error, "code": "durable_projection_unavailable"}),
-                );
-            }
             let snapshot = session.snapshot().await;
             // Configuration publication preserves the latest stored metadata,
             // even if a rename completed while the native candidate started.
@@ -1233,7 +1037,6 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
             )
             .await;
             if let Err(error) = saved {
-                detach_durable(state, &id).await;
                 session.shutdown().await;
                 return resources::reply_error(error);
             }
@@ -1529,14 +1332,7 @@ pub async fn command(state: &Service, id: String, command: ApiCommand) -> (Reply
     // abort/dialog replies, so command admission takes no service-wide mutex.
     let result = session.send(value).await;
     match result {
-        Ok(response) => {
-            if command.kind == "navigate" && response.get("success") != Some(&Value::Bool(false)) {
-                if let Some(runtime) = state.durable_projection(&id).await {
-                    let _ = runtime.refresh_branch().await;
-                }
-            }
-            (ReplyKind::Success, response)
-        }
+        Ok(response) => (ReplyKind::Success, response),
         Err(error) => (
             ReplyKind::HostUnavailable,
             protocol::response(Some(request_id), &command.kind, Err(error)),
@@ -1708,240 +1504,6 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test]
-    async fn durable_service_recovers_branch_and_persists_live_mutations() {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
-        let root =
-            std::env::temp_dir().join(format!("rpi-durable-service-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let service = Service::new(BackendConfig {
-            project: root.clone(),
-            registry: root.join("sessions.json"),
-            ..BackendConfig::default()
-        })
-        .unwrap();
-        let (writer, peer) = tokio::io::duplex(4096);
-        let (session, injector) = HostSession::test_connection(writer, 16);
-        let injector_for_fixture = injector.clone();
-        let fixture = tokio::spawn(async move {
-            let mut lines = BufReader::new(peer).lines();
-            while let Some(line) = lines.next_line().await.unwrap() {
-                let request: Value = serde_json::from_str(&line).unwrap();
-                let data = if request["type"] == "get_session_branch" {
-                    assert_eq!(request["customTypes"], json!([ENTRY_TYPE]));
-                    json!({"filtered":true,"entries": [{
-                        "id": "entry-3",
-                        "type": "custom",
-                        "customType": ENTRY_TYPE,
-                        "data": {
-                            "format": rpi_durable_core::JOURNAL_FORMAT,
-                            "version": rpi_durable_core::JOURNAL_VERSION,
-                            "kind":"snapshot","baseRevision":2,"revision":3,
-                            "state": {
-                                "revision": 3,
-                                "nextRunId": 1,
-                                "run": {"id": "run-1", "status": "running", "tools": []},
-                                "queue": []
-                            }
-                        }
-                    }]})
-                } else {
-                    json!({"entryId": "entry-durable"})
-                };
-                injector_for_fixture
-                    .send(json!({
-                        "type": "response",
-                        "id": request["id"],
-                        "success": true,
-                        "data": data
-                    }))
-                    .unwrap();
-            }
-        });
-        service
-            .sessions
-            .write()
-            .await
-            .insert("durable".into(), session.clone());
-
-        attach_durable(&service, "durable", session.clone())
-            .await
-            .unwrap();
-        let projected = service.durable_projection("durable").await.unwrap();
-        assert_eq!(
-            projected.state().await.run.as_ref().unwrap().status,
-            crate::durable::RunStatus::Running
-        );
-
-        let forwarded = service
-            .mutate_durable("durable", DurableMutation::StartRun)
-            .await
-            .unwrap();
-        assert_eq!(forwarded["result"]["entryId"], "entry-durable");
-        let snapshot = service.durable_state("durable").await.unwrap();
-        assert_eq!(snapshot["state"]["run"]["status"], "running");
-
-        detach_durable(&service, "durable").await;
-        fixture.abort();
-        service.shutdown().await;
-        drop(service);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn durable_event_refreshes_projection_without_waiting_for_polling() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
-        let root = std::env::temp_dir().join(format!(
-            "rpi-durable-event-refresh-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let service = Service::new(BackendConfig {
-            project: root.clone(),
-            registry: root.join("sessions.json"),
-            ..BackendConfig::default()
-        })
-        .unwrap();
-        let (writer, peer) = tokio::io::duplex(4096);
-        let ready = json!({
-            "type": "ready",
-            "protocol": "rpi",
-            "supportedCommands": ["get_session_branch", "append_entry", "execute_command"],
-            "supportedEvents": ["session_entry_committed"]
-        });
-        let (session, injector) = HostSession::test_connection_with_ready(writer, 16, ready);
-        let revision = Arc::new(AtomicU64::new(1));
-        let fixture_revision = revision.clone();
-        let injector_for_fixture = injector.clone();
-        let fixture = tokio::spawn(async move {
-            let mut lines = BufReader::new(peer).lines();
-            while let Some(line) = lines.next_line().await.unwrap() {
-                let request: Value = serde_json::from_str(&line).unwrap();
-                let current = fixture_revision.load(Ordering::Acquire);
-                assert_eq!(request["customTypes"], json!([ENTRY_TYPE]));
-                let data = json!({"filtered":true,"entries": [{
-                    "id": format!("entry-{current}"),
-                    "type": "custom",
-                    "customType": ENTRY_TYPE,
-                    "data": {
-                        "format": rpi_durable_core::JOURNAL_FORMAT,
-                        "version": rpi_durable_core::JOURNAL_VERSION,
-                        "kind":"snapshot","baseRevision":current-1,"revision":current,
-                        "state": {
-                            "revision": current,
-                            "nextRunId": 1,
-                            "run": {"id": "run-1", "status": "running", "tools": []},
-                            "queue": []
-                        }
-                    }
-                }]});
-                injector_for_fixture
-                    .send(json!({
-                        "type": "response",
-                        "id": request["id"],
-                        "success": true,
-                        "data": data
-                    }))
-                    .unwrap();
-            }
-        });
-        service
-            .sessions
-            .write()
-            .await
-            .insert("event-refresh".into(), session.clone());
-
-        attach_durable(&service, "event-refresh", session.clone())
-            .await
-            .unwrap();
-        let projected = service.durable_projection("event-refresh").await.unwrap();
-        assert_eq!(projected.state().await.revision, 1);
-
-        revision.store(2, Ordering::Release);
-        injector
-            .send(json!({
-                "type": "session_entry_committed",
-                "entryId": "durable-entry-2",
-                "entryType": "custom",
-                "customType": ENTRY_TYPE,
-                "lane": "main"
-            }))
-            .unwrap();
-
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if projected.state().await.revision == 2 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("commit event should refresh durable projection");
-
-        detach_durable(&service, "event-refresh").await;
-        fixture.abort();
-        service.shutdown().await;
-        drop(service);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn durable_projection_ignores_noncanonical_entries() {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
-        let root =
-            std::env::temp_dir().join(format!("rpi-durable-events-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let service = Service::new(BackendConfig {
-            project: root.clone(),
-            registry: root.join("sessions.json"),
-            ..BackendConfig::default()
-        })
-        .unwrap();
-        let (writer, peer) = tokio::io::duplex(4096);
-        let (session, injector) = HostSession::test_connection(writer, 16);
-        let injector_for_fixture = injector.clone();
-        let fixture = tokio::spawn(async move {
-            let mut lines = BufReader::new(peer).lines();
-            while let Some(line) = lines.next_line().await.unwrap() {
-                let request: Value = serde_json::from_str(&line).unwrap();
-                let data = if request["type"] == "get_session_branch" {
-                    json!({"filtered":true,"entries": []})
-                } else {
-                    json!({"entryId": "entry-durable"})
-                };
-                injector_for_fixture
-                    .send(json!({
-                        "type": "response",
-                        "id": request["id"],
-                        "success": true,
-                        "data": data
-                    }))
-                    .unwrap();
-            }
-        });
-        service
-            .sessions
-            .write()
-            .await
-            .insert("events".into(), session.clone());
-        attach_durable(&service, "events", session.clone())
-            .await
-            .unwrap();
-        let state = service.durable_projection("events").await.unwrap();
-        assert!(state.state().await.run.is_none());
-
-        detach_durable(&service, "events").await;
-        fixture.abort();
-        service.shutdown().await;
-        drop(service);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
     #[tokio::test]
     async fn snapshot_limits_native_history_without_losing_the_earlier_cursor() {
         use tokio::io::{AsyncBufReadExt, BufReader};

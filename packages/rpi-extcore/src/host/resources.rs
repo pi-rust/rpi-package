@@ -159,12 +159,7 @@ impl HostSession {
         {
             return Err(ResourceError::new(ResourceErrorKind::Unsupported, "idle resource/project exclusion cannot prove external tools or client file I/O quiescent; fence their owner or close deliberately"));
         }
-        for command in [
-            "get_state",
-            "get_messages",
-            "get_queue",
-            "get_session_branch",
-        ] {
+        for command in ["get_state", "get_messages", "get_queue"] {
             if !self.supports_command(command) {
                 return Err(ResourceError::new(
                     ResourceErrorKind::Unsupported,
@@ -200,35 +195,6 @@ impl HostSession {
             return Err(ResourceError::conflict(
                 "native persisted queue is not empty",
             ));
-        }
-        let branch = self
-            .resource_idle_command(
-                "get_session_branch",
-                json!({"customTypes":[crate::durable::ENTRY_TYPE]}),
-            )
-            .await?;
-        if branch["filtered"] != true {
-            return Err(ResourceError::unavailable("unfiltered durable idle state"));
-        }
-        let entries = branch["entries"]
-            .as_array()
-            .ok_or_else(|| ResourceError::unavailable("invalid durable idle entries"))?;
-        let durable = rpi_durable_core::DurableState::try_from_branch(entries)
-            .map_err(ResourceError::unavailable)?;
-        if durable.run.is_some_and(|run| {
-            matches!(
-                run.status,
-                rpi_durable_core::RunStatus::Queued
-                    | rpi_durable_core::RunStatus::Running
-                    | rpi_durable_core::RunStatus::Interrupted
-            )
-        }) || durable.queue.iter().any(|item| {
-            matches!(
-                item.status,
-                rpi_durable_core::QueueStatus::Queued | rpi_durable_core::QueueStatus::Claimed
-            )
-        }) {
-            return Err(ResourceError::conflict("durable work is pending"));
         }
         Ok(state)
     }

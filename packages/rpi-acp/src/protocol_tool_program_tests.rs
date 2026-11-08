@@ -465,10 +465,6 @@ async fn unknown_session_legacy_method_and_initialize_remain_compatible() {
             result["agentCapabilities"]["promptCapabilities"],
             json!({"image":true,"audio":false,"embeddedContext":true})
         );
-        assert_eq!(
-            result["agentCapabilities"]["_meta"]["rpi/durable"]["notifications"],
-            json!(["session/durable_update"])
-        );
         let cap = &result["agentCapabilities"]["_meta"]["rpi/tool-program-children"];
         assert_eq!(cap["version"], 1);
         assert_eq!(cap["optional"], true);

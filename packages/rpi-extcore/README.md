@@ -16,8 +16,7 @@ bounded advertised pure native profile; unsupported backends fail closed.
 `Service::resource_saved_history` is a nonexecuting, bounded canonical native
 reader for closed/blocked sessions, including pending history. It never opens an
 executable host, loads configured resources, repairs a transcript, or falls back
-to another selection. Offline apply requires its fresh native **and** durable
-idle proof. Explicit `supersedes_operation_id` preserves old terminal identities
+to another selection. Offline apply requires its fresh native idle proof. Explicit `supersedes_operation_id` preserves old terminal identities
 and is allowed only after fresh original-binding noncommit proof; committed or
 uncertain intents must recover with the original ID/payload instead.
 
@@ -29,8 +28,7 @@ history and binding remain untouched. Fork/clone completion is bounded and
 Service-owned across caller cancellation. Configured live sources are fenced for
 current settings capture through destination completion; storage-uncertain sources
 refuse before native launch. Exact destination metadata/configuration publish in
-one Registry transaction only after verification, settings restoration and durable
-attachment. Ordinary reopen consumes owned-stop settings at that same final
+one Registry transaction only after verification, settings restoration. Ordinary reopen consumes owned-stop settings at that same final
 publication boundary, never on pure resource readback. Failure retains the capture;
 uncertain persistence latches the owner. Legacy resource-less forks keep their
 existing behavior. Identical apply retries reuse only the latest replaceable
@@ -303,7 +301,7 @@ identity matching, presentation coalescing and wire error handling.
 | `configuration` | Shared bounded model/thinking observation, revision watch and serialized setters/readback |
 | `context_usage` | Typed native context estimate parsing and single-flight, lease-free on-demand reads |
 | `dialogs` | Question deadlines and validated answers, including multiple choices and comments |
-| `registry`, `projects`, `timing` | Durable supplemental metadata, project catalog and tool timings |
+| `registry`, `projects`, `timing` | Session metadata, project catalog and tool timings |
 | `workspace`, `process` | Scoped file/Git access and background native processes |
 | `reply`, `protocol` | Neutral operation outcomes and the existing native command contract |
 
@@ -470,35 +468,8 @@ the host. This downstream snapshot projection is not a guarantee of linear SSE
 traffic or lossless event reconstruction; compact native RPC and adapter/UI
 projection have different contracts.
 
-`rpi-durable-core` contains the protocol-neutral canonical schema and journal
-replay. `durable::DurableRuntime` is only a branch-backed projection: it reads
-`durable-state`/`rpi-durable-journal`, forwards mutations through the registered
-`rpi-durable` command, and publishes bounded in-memory changes. It never
-appends durable entries and never performs interrupted-run recovery. Lifecycle
-events are not folded into this projection; adapters refresh at attach and
-after a command commit, while a periodic branch watcher observes canonical
-commits made by another adapter/process. This prevents ordinary Agent events
-from becoming a second durable fact source. The native harness owns Agent execution recovery;
-`rpi-durable` owns workflow/business state. The native host must advertise
-`get_session_branch` and `execute_command`; hosts without those capabilities
-safely remain ordinary non-durable sessions. When those capabilities are present,
-branch-query or replay errors propagate instead of silently disabling durable
-state. `HostSession::branch_entries_of_types` makes one native request with a
-non-empty `customTypes` array, requires `filtered: true`, and returns entries
-without an unfiltered/full-transcript fallback. Durable projection queries only
-`durable-state` and decodes the current journal format/version; raw-state and
-legacy-discriminator reads are not supported. The branch remains the only
-durable source and no parallel database or scheduler is created.
-
-Sharing this library does not share memory between separate OS processes. Multiple clients must connect to the same service to share live sessions. Keep one backend writer per registry; independent service processes should use separate registry files.
-
-The `test-support` feature supplies deterministic RPC fixtures for adapter tests and is enabled only through dev dependencies.
-
-Versioning follows the repository's independent package policy. In the `0.x`
-series, compatible additions and fixes use patch releases where possible;
-breaking public API changes use a minor release. See the
-[architecture and migration contract](../../docs/architecture/extension-core.md)
-and the [changelog](CHANGELOG.md).
+Durable workflow state is owned by the native host. `rpi-extcore` does not
+project, decode, or mutate durable journal entries.
 
 ## Native run elapsed query (read-only)
 

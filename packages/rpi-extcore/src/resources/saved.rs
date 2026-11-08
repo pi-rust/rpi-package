@@ -89,30 +89,14 @@ pub struct ResourceSavedHistory {
 impl ResourceSavedHistory {
     pub(crate) fn ensure_idle(&self) -> ResourceResult<()> {
         if !self.pending.idle_proof_supported {
-            return Err(ResourceError::new(ResourceErrorKind::Unsupported,"native saved session has no canonical durable idle proof; deliberate original open/close required"));
+            return Err(ResourceError::new(
+                ResourceErrorKind::Unsupported,
+                "native saved session has no idle proof; deliberate original open/close required",
+            ));
         }
         if self.pending.execution_queue_or_recovery || self.pending.progress {
             return Err(ResourceError::conflict(
                 "native saved execution/queue/recovery/progress is pending",
-            ));
-        }
-        let durable = rpi_durable_core::DurableState::try_from_branch(&self.custom_entries)
-            .map_err(ResourceError::unavailable)?;
-        if durable.run.as_ref().is_some_and(|run| {
-            matches!(
-                run.status,
-                rpi_durable_core::RunStatus::Queued
-                    | rpi_durable_core::RunStatus::Running
-                    | rpi_durable_core::RunStatus::Interrupted
-            )
-        }) || durable.queue.iter().any(|item| {
-            matches!(
-                item.status,
-                rpi_durable_core::QueueStatus::Queued | rpi_durable_core::QueueStatus::Claimed
-            )
-        }) {
-            return Err(ResourceError::conflict(
-                "canonical saved durable work is pending",
             ));
         }
         Ok(())
@@ -202,13 +186,6 @@ fn parse(
         validate_operation_id(operation)
             .map_err(|_| ResourceError::unavailable("invalid saved native operation identity"))?;
     }
-    for entry in &data.custom_entries {
-        if entry["type"] != "custom" || entry["customType"] != crate::durable::ENTRY_TYPE {
-            return Err(ResourceError::unavailable(
-                "saved reader returned an unrequested custom type",
-            ));
-        }
-    }
     for message in &data.messages {
         if !message.is_object()
             || !message["entryId"]
@@ -275,7 +252,7 @@ pub(crate) async fn read(
     tokio::task::spawn_blocking(move || {
         local::negotiate_sync(&bin,&cwd)?.require_saved_read()?;
         let lock=super::lock::ObservationLock::acquire(&root,&path)?;
-        let bytes=serde_json::to_vec(&serde_json::json!({"version":1,"sessionId":id,"sessionRoot":root,"sessionPath":path,"limit":query.limit,"customTypes":[crate::durable::ENTRY_TYPE],"cursor":query.cursor})).map_err(ResourceError::unavailable)?;
+        let bytes=serde_json::to_vec(&serde_json::json!({"version":1,"sessionId":id,"sessionRoot":root,"sessionPath":path,"limit":query.limit,"customTypes":[],"cursor":query.cursor})).map_err(ResourceError::unavailable)?;
         if bytes.len()>MAX_CONFIG_BYTES {return Err(ResourceError::new(ResourceErrorKind::LimitExceeded,"saved history request exceeds 64 KiB"));}
         let file=RequestFile::create(&bytes)?;
         let (ok,bytes,_)=local::invoke(&bin,&cwd,&["--resource-session-read".into(),file.0.as_os_str().into()],8*1024*1024,Duration::from_secs(15))?;

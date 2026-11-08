@@ -96,7 +96,7 @@ are part of this package.
    process at all — see *Requirements* below.
 2. **Serves ACP v1** on stdio (`initialize`, `session/new`, `session/prompt`,
    `session/cancel`, `session/load`, `session/resume`, `session/list`,
-   `session/set_config_option` and the rpi extension `session/durable`. See
+   `session/set_config_option`. See
    `src/protocol.rs`.
 3. **Backs each ACP session with a child `rpi --mode rpc` process** rooted at
    the session's `cwd`, translating its event stream into ACP `session/update`
@@ -364,21 +364,6 @@ definitions and local persistence/output for fake credential canaries, and retai
 failure evidence. Successful runs qualify only the recorded Windows binary/source
 hashes; they do not certify an installed extension, Unix native execution, TLS,
 remote resource reclamation or a hard global shutdown deadline.
-
-### Durable control plane
-
-rpi-aware ACP clients may call the extension method
-`session/durable` with `params.sessionId`. Use `{"operation":"status"}` to
-read the branch-scoped durable state, or use `start_run`, `settle_run`,
-`recover_run`, `enqueue`, `claim`, `finish` and `cancel` to coordinate durable
-runs and queue items. The method persists through the native session branch,
-never replays tool side effects, and does not start a background scheduler.
-Standard ACP clients can ignore the extension; capability metadata marks
-`rpi/durable` as optional. Successful durable mutations and durable state
-changes observed during a prompt also produce the custom notification
-`session/durable_update` with `{sessionId, revision, state}`. If the native host
-lacks branch operations, normal ACP sessions continue to work and
-`session/durable` returns an unavailable error.
 
 ### Read-only Code Mode child queries
 
@@ -829,7 +814,7 @@ Registry's handshake (and its pass/fail rule) locally.
 
 ## Capabilities and limitations
 
-* **Stable ACP v1** with durable sessions. `loadSession` and session resume are
+* **Stable ACP v1** with resumable sessions. `loadSession` and session resume are
   advertised; sessions restore native rpi history after reconnection.
 * Client `fs/read_text_file` and `fs/write_text_file` are used only when the
   client independently negotiates them; see [client text files](#client-text-files).

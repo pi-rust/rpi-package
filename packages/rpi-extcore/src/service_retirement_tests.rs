@@ -147,7 +147,6 @@ async fn archive_idle_closes_preserves_history_and_restore_never_spawns() {
     assert_eq!(reply.1["archived"], true);
     assert!(*host.closed_receiver().borrow());
     assert!(f.service.live_session(&f.id).await.is_none());
-    assert!(f.service.durable_projection(&f.id).await.is_none());
     assert!(files.iter().all(|p| p.exists()));
     let seen = bounded(peer).await.unwrap();
     assert_eq!(&seen[..2], &["get_state", "get_history"]);

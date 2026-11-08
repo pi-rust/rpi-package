@@ -221,7 +221,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocol-neutral custom entries.
 - Add protocol-neutral durable control-plane mutations for run recovery and
   branch-scoped queue operations.
-- Add `DurableRuntime` so Service and ACP share branch recovery, event
   observation, mutation persistence and append-failure rollback.
 - Publish bounded revision-based durable changes for reconnectable adapters.
 - Detect optional durable branch support from the native ready capability list

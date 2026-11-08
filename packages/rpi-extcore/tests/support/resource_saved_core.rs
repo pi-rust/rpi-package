@@ -54,18 +54,7 @@ pub async fn verify(
         .max()
         .unwrap()
         + 1;
-    let custom = json!({"kind":"entry","type":"custom","id":"core-native-queued-proof","seq":seq,"timestamp":0,"lane":"main","parentId":view.leaf_id,"customType":rpi_durable_core::ENTRY_TYPE,"data":{"format":rpi_durable_core::JOURNAL_FORMAT,"version":1,"kind":"snapshot","baseRevision":0,"revision":1,"state":{"revision":1,"queue":[{"id":"offline-pending","text":"must not execute","status":"queued"}]}}});
-    let pending_bytes = [original.clone(), format!("{custom}\n").into_bytes()].concat();
-    put(&path, &pending_bytes);
-    let mut queue_view = service
-        .resource_saved_history(id.into(), ResourceHistoryRequest::default())
-        .await
-        .unwrap();
-    assert!(queue_view
-        .custom_entries
-        .iter()
-        .any(|e| e["id"] == "core-native-queued-proof"));
-    assert!(!queue_view.executable);
+    let before_ledger = service.resource_operations(id).await.unwrap().len();
     let revision = service
         .resource_configuration(id)
         .await
@@ -82,38 +71,34 @@ pub async fn verify(
     };
     let request = ApplyResourcesRequest {
         expected_revision: revision,
-        operation_id: "must-not-run-durable".into(),
+        operation_id: "must-not-run-native-pending".into(),
         target: none.clone(),
         supersedes_operation_id: None,
     };
-    let before_ledger = service.resource_operations(id).await.unwrap().len();
-    assert_eq!(
-        service
-            .apply_resources(id.into(), request.clone())
-            .await
-            .unwrap_err()
-            .kind,
-        ResourceErrorKind::Conflict
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), pending_bytes);
+    let custom = json!({"kind":"entry","type":"custom","id":"core-opaque-proof","seq":seq,"timestamp":0,"lane":"main","parentId":view.leaf_id,"customType":"opaque-test","data":{"opaque":true}});
+    let opaque_bytes = [
+        original.clone(),
+        format!(
+            "{custom}
+"
+        )
+        .into_bytes(),
+    ]
+    .concat();
+    put(&path, &opaque_bytes);
+    let opaque_view = service
+        .resource_saved_history(id.into(), ResourceHistoryRequest::default())
+        .await
+        .unwrap();
+    // Unknown custom entries are not interpreted or rejected by the package
+    // adapter: the native saved-read query does not request any custom type.
+    assert!(opaque_view.custom_entries.is_empty());
+    assert!(opaque_view.executable);
     assert_eq!(
         service.resource_operations(id).await.unwrap().len(),
         before_ledger
     );
-    assert_eq!(
-        service
-            .resource_saved_history(
-                id.into(),
-                ResourceHistoryRequest {
-                    limit: 2,
-                    cursor: view.cursor
-                }
-            )
-            .await
-            .unwrap_err()
-            .kind,
-        ResourceErrorKind::Conflict
-    );
+    let queue_view;
     // Test-owned source reset; production has no repair/write API.
     put(&path, &original);
     let queued = json!({"kind":"record","type":"queue_enqueued","id":"native-pending-queue","seq":seq,"timestamp":0,"lane":"main","queue":"nextRun","target":{"type":"message","id":"not-yet-committed","message":{"kind":"user","role":"user","content":"must stay pending","timestamp":0}}});
@@ -467,6 +452,6 @@ pub async fn verify(
         .release_idle_resources(project_id.into(), ResourceScope::Project)
         .await
         .unwrap();
-    println!("canonical saved/blocked history, durable idle refusal, explicit terminal supersede, legacy correction and committed-native/original-ID recovery acceptance passed");
+    println!("canonical saved/blocked history, native idle refusal, explicit terminal supersede, opaque custom-entry preservation and committed-native/original-ID recovery acceptance passed");
     recovered
 }

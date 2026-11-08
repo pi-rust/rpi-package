@@ -1611,27 +1611,6 @@ impl HostSession {
         Ok(())
     }
 
-    /// Read the selected native branch's custom entries in one filtered request.
-    /// Unfiltered replies are rejected: pollers must never accept a full transcript.
-    pub async fn branch_entries_of_types(
-        &self,
-        custom_types: &[&str],
-    ) -> Result<Vec<Value>, String> {
-        if custom_types.is_empty() || custom_types.iter().any(|kind| kind.trim().is_empty()) {
-            return Err("get_session_branch: non-empty custom types are required".into());
-        }
-        let data = self
-            .runtime_command("get_session_branch", json!({"customTypes": custom_types}))
-            .await?;
-        if data.get("filtered").and_then(Value::as_bool) != Some(true) {
-            return Err("get_session_branch: host must return filtered custom entries".into());
-        }
-        data.get("entries")
-            .and_then(Value::as_array)
-            .cloned()
-            .ok_or_else(|| "get_session_branch: invalid entries data".into())
-    }
-
     /// Append a protocol-neutral custom entry to the native session branch.
     pub async fn append_custom_entry(
         &self,
@@ -2078,74 +2057,6 @@ mod tests {
         assert_eq!(session.snapshot().await.status, "ready");
         assert_eq!(session.snapshot().await.last_seq, frames.len() as u64);
         session.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn branch_query_uses_one_custom_types_request_and_preserves_native_order() {
-        let (writer, peer) = tokio::io::duplex(4096);
-        let (session, injector) = HostSession::test_connection(writer, 16);
-        assert!(session.branch_entries_of_types(&[]).await.is_err());
-        assert!(session.branch_entries_of_types(&[" "]).await.is_err());
-        let entries = json!([
-            {"id":"b","seq":8,"type":"custom","customType":"second"},
-            {"id":"a","seq":3,"type":"custom","customType":"first"}
-        ]);
-        let expected = entries.as_array().unwrap().clone();
-        let fixture = tokio::spawn(async move {
-            let mut lines = BufReader::new(peer).lines();
-            let request: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(request["type"], "get_session_branch");
-            assert_eq!(request["customTypes"], json!(["first", "second"]));
-            assert!(request.get("customType").is_none());
-            injector
-                .send(json!({"type":"response","id":request["id"],"success":true,
-                "data":{"filtered":true,"entries":entries}}))
-                .unwrap();
-            assert!(
-                tokio::time::timeout(Duration::from_millis(50), lines.next_line())
-                    .await
-                    .is_err(),
-                "multiple types must not cause multiple branch requests"
-            );
-        });
-        assert_eq!(
-            session
-                .branch_entries_of_types(&["first", "second"])
-                .await
-                .unwrap(),
-            expected
-        );
-        fixture.await.unwrap();
-        session.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn branch_query_rejects_unfiltered_and_malformed_replies() {
-        for data in [
-            json!({"entries":[]}),
-            json!({"filtered":false,"entries":[]}),
-            json!({"filtered":"true","entries":[]}),
-            json!({"filtered":true}),
-            json!({"filtered":true,"entries":{}}),
-        ] {
-            let (writer, peer) = tokio::io::duplex(4096);
-            let (session, injector) = HostSession::test_connection(writer, 16);
-            let fixture = tokio::spawn(async move {
-                let mut lines = BufReader::new(peer).lines();
-                let request: Value =
-                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-                injector
-                    .send(json!({"type":"response","id":request["id"],"success":true,"data":data}))
-                    .unwrap();
-            });
-            assert!(session
-                .branch_entries_of_types(&["durable-state"])
-                .await
-                .is_err());
-            fixture.await.unwrap();
-            session.shutdown().await;
-        }
     }
 
     #[tokio::test]
