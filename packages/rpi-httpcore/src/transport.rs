@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionConfigError {
     ZeroConnections,
+    TooManyConnections,
     ZeroMessageBytes,
     ZeroSendBuffer,
 }
@@ -48,6 +49,9 @@ impl ConnectionPolicy {
     ) -> Result<Self, ConnectionConfigError> {
         if max_connections == 0 {
             return Err(ConnectionConfigError::ZeroConnections);
+        }
+        if max_connections > u32::MAX as usize {
+            return Err(ConnectionConfigError::TooManyConnections);
         }
         if max_message_bytes == 0 {
             return Err(ConnectionConfigError::ZeroMessageBytes);
