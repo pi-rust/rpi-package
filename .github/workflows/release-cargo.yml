@@ -126,8 +126,60 @@ jobs:
       - name: Exclude historical checkouts requiring an external SDK
         run: python3 .github/scripts/prepare-release-history.py
 
+      - name: Prepare a valid release comparison checkout
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+          import tomllib
+
+          root = pathlib.Path.cwd()
+          with (root / "packages/rpi-web/Cargo.toml").open("rb") as handle:
+              web_version = tomllib.load(handle)["package"]["version"]
+          tag = f"rpi-web-v{web_version}"
+          subprocess.run(["git", "rev-parse", tag], check=True, stdout=subprocess.DEVNULL)
+
+          destination = pathlib.Path(tempfile.mkdtemp(prefix="release-registry-"))
+          archive = subprocess.run(
+              ["git", "archive", tag], check=True, capture_output=True
+          ).stdout
+          subprocess.run(["tar", "-x", "-C", str(destination)], input=archive, check=True)
+
+          # rpi-web-v0.1.48 points at a historical release commit whose local
+          # rpi-web/rpi-http requirements were inconsistent. Keep the release
+          # baseline equivalent to the current workspace versions so release-plz
+          # can package the baseline before comparing it.
+          http_manifest = destination / "packages/rpi-http/Cargo.toml"
+          http_text = http_manifest.read_text()
+          current_http = tomllib.loads(
+              (root / "packages/rpi-http/Cargo.toml").read_text()
+          )["package"]["version"]
+          http_text = http_text.replace(
+              'version = "0.1.20"', f'version = "{current_http}"'
+          )
+          http_manifest.write_text(http_text)
+          for relative in (
+              "packages/rpi-web/Cargo.toml",
+              "packages/rpi-http-extension/Cargo.toml",
+          ):
+              path = destination / relative
+              path.write_text(
+                  path.read_text().replace(
+                      'version = "0.1.20"', f'version = "{current_http}"'
+                  )
+              )
+          lockfile = destination / "Cargo.lock"
+          lockfile.unlink(missing_ok=True)
+          pathlib.Path(os.environ["GITHUB_ENV"]).write_text(
+              f"RELEASE_REGISTRY_MANIFEST={destination / 'Cargo.toml'}\n"
+          )
+          print(f"Using release comparison checkout: {destination}")
+          PY
+
       - name: Generate versions and changelogs for unpublished changes
-        run: release-plz update
+        run: release-plz update --registry-manifest-path "$RELEASE_REGISTRY_MANIFEST"
 
       - name: Synchronize package catalog versions
         run: python3 .github/scripts/sync-release-catalog.py
