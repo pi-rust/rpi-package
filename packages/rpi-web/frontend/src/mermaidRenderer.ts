@@ -24,7 +24,7 @@ export function renderMermaid(
       source.split(/[\n;]/).length > 300 ||
       source.includes("%%{") ||
       /^\s*---(?:\r?\n|$)/.test(source) ||
-      /@\s*\{|\b(?:classDef|linkStyle)\b|\bstyle\s+\S/i.test(source) ||
+      /@\s*\{|\\(?:[0-9a-f]{1,6}\s?)|\b(?:background-image|image-set|filter)\s*:/i.test(diagram) ||
       /\b(?:url\s*\(|img\s*:)|@import|!\[/i.test(source) ||
       [...source.matchAll(/<\s*\/?\s*[a-z][^>]*>/gi)].some(
         ([tag]) =>
