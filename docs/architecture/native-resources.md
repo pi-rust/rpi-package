@@ -37,7 +37,7 @@ leases, loaded observations, binding CAS and native history.
 - `Service::resource_project_fence(project_id)`: immediate, short caller-owned
   exclusion for authorized filesystem CAS/snapshot/validation. Holds lifecycle
   ownership and admission gates for matching live native hosts; fresh canonical
-  native queue/recovery/durable idle checks, no retirement/stop. Captured host Arcs
+  native queue/recovery/progress idle checks, no retirement/stop. Captured host Arcs
   are fenced; unrelated projects stay independent. This excludes ONLY this
   Service's owners. Work must fence ACP/other/external owners separately or refuse.
   Unsupported live external-tool/client-I/O authority is rejected, not assumed idle.
@@ -54,8 +54,8 @@ leases, loaded observations, binding CAS and native history.
 Service's lifecycle mutex serializes restoration, replacement, release and forks.
 Each host's existing run lease is shared by execution/configuration; retirement
 permanently fences captured old host Arcs. Mutating native command entry points,
-queue submission, durable mutations and run APIs use that lease. Native state,
-queue, dialogs and durable projection must be idle before stopping. Native's
+queue submission and run APIs use that lease. Native state, queue and dialogs
+must be idle before stopping. Native's
 strict pending-history checks are a second authority, not a substitute for core
 admission. Two sessions keep independent selections and native IDs.
 
@@ -71,7 +71,7 @@ charged. Full final record validation and worst-case double-observation/target/
 metadata headroom still apply. Candidate failure is blocked,
 not automatic rollback. Ordinary retry is only the identical operation, expected
 binding and target. An explicit new operation may supersede ONLY the latest
-pending/blocked intent, after fresh canonical native/durable idle AND original
+pending/blocked intent, after fresh canonical native idle AND original
 uncommitted binding proof, independent owned child exit and normal headroom
 preflight. The existing native shared observation lock stays owned through the
 single synced atomic registry write: mark old `superseded` (retain its payload,
@@ -89,7 +89,7 @@ worker: caller loss does not discard completion, and shutdown waits for candidat
 cleanup under the same lifecycle exclusion. Closing is checked before destination
 publication; shutdown may refuse the candidate rather than publish it. Metadata
 and verified exact authority are committed in one existing Registry transaction,
-only after settings restoration and durable attachment. A failed candidate never
+only after settings restoration. A failed candidate never
 leaves an ordinary resource-less destination entry. Live configured sources keep
 their admission/run fence through completion and supply current model/provider/
 thinking; a latched source storage failure refuses before capture or native launch.
@@ -152,14 +152,14 @@ unconfigured resource fallback. Native recorded cwd must equal the owner project
 
 Reader budgets: request64KiB, response8MiB, total reads64MiB, mutations65,536,
 lanes32, messages128/5MiB, custom entries1,024/2MiB, cooperative native10s and
-contained caller15s. Core requests only native durable custom entries; `rpi.value`
+contained caller15s. Core does not request durable-specific custom entries; `rpi.value`
 and full SessionValues/settings dumps are forbidden. Pages are oldest-first on
 the native canonical main branch; source fingerprints cover transcript/progress
 bytes. Source/leaf changes reject cursors. Malformed, oversized, busy, unsupported
 or stale sources fail explicitly, never empty-success or repaired history.
 
 Offline apply/supersede/retry requires this FRESH native queue/recovery/progress
-proof plus reduction of the canonical durable journal. Cached projections and
+proof plus fresh native pending-state proof. Cached projections and
 saved observations never authorize execution. A saved observation supplies only
 the original native CAS expectation. Missing legacy lock or missing native idle
 proof is Unsupported, not assumed empty. Native uses the pre-existing noncreating

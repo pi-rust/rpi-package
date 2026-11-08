@@ -39,9 +39,7 @@ parameter schemas, and regression checks.
 | [rpi-ui-adapter](packages/rpi-ui-adapter/README.md) | Connect Open WebUI directly through `--webui=openwebui` |
 | [rpi-edit-diagnostics](packages/rpi-edit-diagnostics/README.md) | Replace `edit` with exact matching and compiler-style failure reports |
 
-`rpi-durable` and `rpi-durable-core` are archived. Durable workflow state is now
-provided by the native host, so the old packages remain only for historical
-source/tests and will not receive new versions or prebuilt releases.
+Durable workflow state is owned by the native host; packages do not provide a second durable runtime.
 
 Extensions inspired by Pi packages are independent Rust implementations, not
 ports of upstream source code, except the candidate search in
