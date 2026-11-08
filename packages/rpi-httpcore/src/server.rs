@@ -1,4 +1,4 @@
-use crate::security::Security;
+use crate::{access::Admission, security::Security};
 use axum::{middleware::from_fn_with_state, Router};
 use rpi_extcore::service::{BackendConfig, Service};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -14,13 +14,16 @@ mod sessions;
 mod system;
 
 use auth::{allowed_hosts, configured_password};
-use middleware::{image_cache_control, touch_session_activity};
+use middleware::{admit_owner, image_cache_control, touch_session_activity};
 use response::HttpReply;
+
+const DEFAULT_ADMISSION_LIMIT: u32 = 64;
 
 #[derive(Clone)]
 struct AppState {
     backend: Arc<Service>,
     security: Arc<Security>,
+    admission: Admission,
     shutdown: watch::Receiver<bool>,
     service_name: &'static str,
 }
@@ -75,6 +78,8 @@ pub async fn serve_until(
     let state = AppState {
         backend,
         security: security.clone(),
+        admission: Admission::new(DEFAULT_ADMISSION_LIMIT)
+            .expect("the default HTTP admission limit must be non-zero"),
         shutdown: receiver,
         service_name: config.service_name,
     };
@@ -114,6 +119,7 @@ pub async fn serve_until(
             println!("  Status      Stopping...");
             let _ = shutdown.send(true);
             let _ = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                state.admission.drain().await;
                 state.backend.shutdown().await;
                 let _ = serving.await;
             }).await;
@@ -145,6 +151,8 @@ pub fn router(
     let state = AppState {
         backend,
         security: security.clone(),
+        admission: Admission::new(DEFAULT_ADMISSION_LIMIT)
+            .expect("the default HTTP admission limit must be non-zero"),
         shutdown,
         service_name: config.service_name,
     };
@@ -162,6 +170,7 @@ fn routes(state: AppState) -> Router {
         .merge(sessions::routes())
         .merge(children::routes())
         .merge(events::routes())
+        .layer(from_fn_with_state(state.clone(), admit_owner))
         .layer(from_fn_with_state(state.clone(), touch_session_activity))
         .with_state(state)
 }

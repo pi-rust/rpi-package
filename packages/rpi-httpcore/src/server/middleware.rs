@@ -1,5 +1,36 @@
 use super::AppState;
-use axum::extract::State;
+use axum::{
+    extract::State,
+    response::{IntoResponse, Response},
+};
+use serde_json::json;
+
+pub(super) async fn admit_owner(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let permit = match state.admission.try_admit().await {
+        Ok(permit) => permit,
+        Err(crate::access::AdmissionError::AtCapacity) => {
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(json!({"error":"owner admission capacity exceeded"})),
+            )
+                .into_response();
+        }
+        Err(crate::access::AdmissionError::ShuttingDown) => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":"service is shutting down"})),
+            )
+                .into_response();
+        }
+    };
+    let response = next.run(request).await;
+    drop(permit);
+    response
+}
 
 pub(super) async fn touch_session_activity(
     State(state): State<AppState>,
