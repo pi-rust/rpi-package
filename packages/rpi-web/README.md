@@ -32,6 +32,17 @@ Completed conversation runs also show a compact **Worked for … / 已用时 …
 
 Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
 
+### Idle session timeout
+
+Web automatically releases an **idle native host** after 30 minutes without a
+request for that session. This closes the child process but preserves the
+session registry entry and native transcript; opening the chat again restores
+it. A running operation, pending dialog, queued work, or uncertain native idle
+state is never interrupted. Set `"sessionTimeoutSeconds": 0` in `.rpi/web.json`
+to disable the reaper, or choose another positive number of seconds. The
+command-line override is `--session-timeout SECONDS` (use `0` to disable).
+This is a resource cleanup timeout, not permanent session deletion.
+
 ## Code Mode child inspection
 
 Native-identified tool rows offer **Inspect child calls / 查看子调用**. Opening it

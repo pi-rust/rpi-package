@@ -651,6 +651,7 @@ impl Service {
             }
             detach_durable(self, &id).await;
             self.sessions.write().await.remove(&id);
+            self.session_activity.write().await.remove(&id);
             let settings = record.settings.clone();
             let options = SessionOptions {
                 executable: self.config.rpi_bin.clone(),
@@ -710,6 +711,7 @@ impl Service {
                 return Err(error);
             }
             self.sessions.write().await.insert(id.clone(), candidate);
+            self.touch_session(&id).await;
             Ok(())
         }
         .await;

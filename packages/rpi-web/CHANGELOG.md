@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.1.48](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.47...rpi-web-v0.1.48) - 2026-11-07
+
+### Added
+
+- *(web)* release idle session hosts
+
+## [0.1.47](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.46...rpi-web-v0.1.47) - 2026-11-06
+
+### Fixed
+
+- *(web)* keep settlement errors visible ([#228](https://github.com/pi-rust/rpi-package/pull/228))
+
 ## [0.1.46](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.45...rpi-web-v0.1.46) - 2026-11-06
 
 ### Fixed

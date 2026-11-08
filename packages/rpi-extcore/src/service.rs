@@ -36,7 +36,12 @@ pub use message_queries::{
 pub use resources::ResourceProjectFence;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::{
     process::Command,
     sync::{Mutex, RwLock},
@@ -130,6 +135,9 @@ pub struct Service {
     projects: Arc<RwLock<Projects>>,
     default_project_id: String,
     sessions: Arc<RwLock<HashMap<String, Arc<HostSession>>>>,
+    /// Monotonic Web/API activity used only for optional idle host retirement.
+    /// Native transcript timestamps remain the source of truth for history.
+    session_activity: Arc<RwLock<HashMap<String, Instant>>>,
     durable: Arc<RwLock<HashMap<String, Arc<DurableRuntime>>>>,
     durable_event_watchers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     session_lifecycle: Arc<Mutex<()>>,
@@ -171,6 +179,7 @@ impl Service {
             projects: Arc::new(RwLock::new(projects)),
             default_project_id,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            session_activity: Arc::new(RwLock::new(HashMap::new())),
             durable: Arc::new(RwLock::new(HashMap::new())),
             durable_event_watchers: Arc::new(Mutex::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
@@ -188,6 +197,46 @@ impl Service {
     pub async fn live_session(&self, id: &str) -> Option<Arc<HostSession>> {
         self.sessions.read().await.get(id).cloned()
     }
+
+    /// Mark a live session as recently used by a Web/API client. This is
+    /// deliberately separate from `live_session`: internal probes and the
+    /// reaper must not keep a session alive just by inspecting it.
+    pub async fn touch_session(&self, id: &str) {
+        if self.sessions.read().await.contains_key(id) {
+            self.session_activity
+                .write()
+                .await
+                .insert(id.to_owned(), Instant::now());
+        }
+    }
+
+    /// Start an optional service-owned reaper for idle native hosts. Closing a
+    /// host preserves its registry entry and native transcript; the next Web
+    /// open can restore it.
+    pub fn spawn_idle_reaper(self: &Arc<Self>, timeout: Duration) -> tokio::task::JoinHandle<()> {
+        let state = Arc::clone(self);
+        tokio::spawn(async move {
+            let interval = timeout
+                .min(Duration::from_secs(60))
+                .max(Duration::from_secs(1));
+            let mut ticker = tokio::time::interval(interval);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                if state.closing.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+                state.reap_idle_sessions(timeout).await;
+            }
+        })
+    }
+
+    /// Run one bounded idle-retirement pass. Exposed for deterministic tests;
+    /// the Web/HTTP adapter normally calls this through `spawn_idle_reaper`.
+    pub async fn reap_idle_sessions(&self, timeout: Duration) {
+        retirement::reap_idle(self, timeout).await;
+    }
+
     pub async fn subscribe_events(
         &self,
         id: &str,
@@ -684,6 +733,7 @@ async fn create_session_owned(
                 return resources::reply_error(error);
             }
             state.sessions.write().await.insert(id.clone(), session);
+            state.touch_session(&id).await;
             (
                 ReplyKind::Created,
                 json!({"sessionId": id, "projectId":project.id, "ready": ready, "status": "ready"}),
@@ -1064,6 +1114,7 @@ async fn fork_session_owned(
         .write()
         .await
         .insert(actual_id.clone(), session);
+    state.touch_session(&actual_id).await;
     (
         ReplyKind::Created,
         json!({
@@ -1116,6 +1167,7 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
     if let Some(session) = existing {
         let snapshot = session.snapshot().await;
         if snapshot.status != "closed" {
+            state.touch_session(&id).await;
             let entry = state.registry.read().await.get(&id).cloned();
             return (
                 ReplyKind::Success,
@@ -1137,6 +1189,7 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
         }
         detach_durable(state, &id).await;
         state.sessions.write().await.remove(&id);
+        state.session_activity.write().await.remove(&id);
     }
     let known = state.registry.read().await.get(&id).cloned();
     let Some(mut entry) = known else {
@@ -1185,6 +1238,7 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
                 return resources::reply_error(error);
             }
             state.sessions.write().await.insert(id.clone(), session);
+            state.touch_session(&id).await;
             (
                 ReplyKind::Success,
                 json!({
@@ -1428,6 +1482,7 @@ pub async fn delete_session(state: &Service, id: String) -> ServiceReply {
 }
 
 pub async fn command(state: &Service, id: String, command: ApiCommand) -> (ReplyKind, Value) {
+    state.touch_session(&id).await;
     if let Err(error) = state.check_session_admission(&id).await {
         return error;
     }
@@ -1514,6 +1569,7 @@ pub async fn snapshot_with_options(
     let Some(session) = session else {
         return (ReplyKind::NotFound, json!({"error":"session not found"})).into_reply();
     };
+    state.touch_session(&id).await;
     let host_snapshot = session.snapshot().await;
     let start = host_snapshot.last_seq;
     // These are independent read-only requests. Dispatch both after the same

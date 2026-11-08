@@ -1,5 +1,5 @@
 use super::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 struct Fixture {
@@ -165,6 +165,30 @@ async fn archive_idle_closes_preserves_history_and_restore_never_spawns() {
     assert_eq!(restored.0, ReplyKind::Success);
     assert_eq!(restored.1["archived"], false);
     assert!(f.service.sessions.read().await.is_empty());
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn idle_reaper_closes_expired_host_but_keeps_saved_session() {
+    let f = Fixture::new().await;
+    let (host, events, peer) = f.connect().await;
+    let peer = idle_peer(peer, events);
+    f.service.touch_session(&f.id).await;
+    f.service.reap_idle_sessions(Duration::from_secs(30)).await;
+    assert!(f.service.live_session(&f.id).await.is_some());
+
+    f.service
+        .session_activity
+        .write()
+        .await
+        .insert(f.id.clone(), Instant::now() - Duration::from_secs(60));
+    f.service.reap_idle_sessions(Duration::from_secs(30)).await;
+
+    assert!(*host.closed_receiver().borrow());
+    assert!(f.service.live_session(&f.id).await.is_none());
+    assert!(f.service.registry.read().await.get(&f.id).is_some());
+    let seen = bounded(peer).await.unwrap();
+    assert_eq!(&seen[..2], &["get_state", "get_history"]);
     f.finish().await;
 }
 

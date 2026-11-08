@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 pub const HELP: &str = "rpi-http [--config PATH] [--project PATH] [--rpi-bin PATH]
          [--bind IP] [--port N] [--registry PATH] [--session-dir PATH]
-         [--add-project PATH]... [--projects-root PATH] [--help] [--version]
+         [--session-timeout SECONDS] [--add-project PATH]... [--projects-root PATH] [--help] [--version]
 
 Serves /api/v1 over HTTP/SSE without frontend assets.
 JSON paths are relative to the config file; CLI paths use the working directory.
@@ -41,7 +41,7 @@ fn from_args_at(args: impl IntoIterator<Item = String>, cwd: &Path) -> Result<La
             "--help" | "-h" => return Ok(Launch::Help),
             "--version" | "-V" => return Ok(Launch::Version),
             "--config" | "--project" | "--rpi-bin" | "--bind" | "--port" | "--registry"
-            | "--session-dir" | "--add-project" | "--projects-root" => {
+            | "--session-dir" | "--session-timeout" | "--add-project" | "--projects-root" => {
                 let value = if let Some(value) = inline {
                     value
                 } else {
@@ -102,12 +102,22 @@ fn from_args_at(args: impl IntoIterator<Item = String>, cwd: &Path) -> Result<La
             }
             "--registry" => config.registry = resolve(cwd, Path::new(&value)),
             "--session-dir" => config.session_dir = Some(resolve(cwd, Path::new(&value))),
+            "--session-timeout" => {
+                config.session_timeout_seconds = parse_session_timeout(&value)?;
+            }
             "--add-project" => config.projects.push(resolve(cwd, Path::new(&value))),
             "--projects-root" => config.projects_root = Some(resolve(cwd, Path::new(&value))),
             _ => unreachable!(),
         }
     }
     Ok(Launch::Run(Box::new(config)))
+}
+
+fn parse_session_timeout(value: &str) -> Result<Option<u64>, String> {
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| "--session-timeout must be a non-negative number of seconds".to_string())?;
+    Ok((seconds > 0).then_some(seconds))
 }
 
 fn resolve_executable(base: &Path, path: &Path) -> PathBuf {
@@ -159,6 +169,16 @@ mod tests {
             ]
         );
         assert_eq!(config.session_dir, Some(directory.join("history")));
+        let Launch::Run(config) = from_args(["--session-timeout".into(), "120".into()]).unwrap()
+        else {
+            panic!("expected server config")
+        };
+        assert_eq!(config.session_timeout_seconds, Some(120));
+        let Launch::Run(config) = from_args(["--session-timeout".into(), "0".into()]).unwrap()
+        else {
+            panic!("expected server config")
+        };
+        assert_eq!(config.session_timeout_seconds, None);
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
