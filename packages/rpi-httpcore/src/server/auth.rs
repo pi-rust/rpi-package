@@ -1,8 +1,8 @@
 use super::{AppState, HttpReply};
 use crate::config::AppConfig;
-use crate::security;
+use crate::security::{self, RequestAuthorization};
 use axum::{
-    extract::{Json, State},
+    extract::{Extension, Json, State},
     response::IntoResponse,
 };
 use rpi_extcore::{
@@ -88,8 +88,12 @@ pub(super) async fn auth_logout(
 
 pub(super) async fn refresh_auth(
     State(state): State<AppState>,
+    Extension(authorization): Extension<RequestAuthorization>,
     Json(request): Json<AuthRefreshRequest>,
 ) -> axum::response::Response {
+    if !security::authorize_before_commit(&state.security, &authorization).await {
+        return security::unauthorized_response();
+    }
     HttpReply(
         service::refresh_auth(&state.backend, request)
             .await

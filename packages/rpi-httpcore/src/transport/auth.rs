@@ -35,8 +35,13 @@ async fn bearer_auth(
     let Ok(lease) = access.authenticate(credential).await else {
         return unauthorized();
     };
-    request.extensions_mut().insert(lease);
-    with_security_headers(next.run(request).await)
+    request.extensions_mut().insert(lease.clone());
+    let response = next.run(request).await;
+    if response.status().is_success() && !access.while_authorized(&lease).await {
+        unauthorized()
+    } else {
+        with_security_headers(response)
+    }
 }
 
 fn unauthorized() -> Response {

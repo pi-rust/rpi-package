@@ -1,7 +1,8 @@
 use super::{AppState, HttpReply};
+use crate::security::{self, RequestAuthorization};
 use axum::{
-    extract::{Json, Multipart, Path, Query, State},
-    response::IntoResponse,
+    extract::{Extension, Json, Multipart, Path, Query, State},
+    response::{IntoResponse, Response},
 };
 use rpi_extcore::{
     reply::{IntoReply, ReplyKind},
@@ -14,21 +15,30 @@ use serde_json::json;
 
 pub(super) async fn project_metadata(
     State(state): State<AppState>,
+    Extension(authorization): Extension<RequestAuthorization>,
     Path(id): Path<String>,
     Json(request): Json<ProjectMetadataRequest>,
-) -> HttpReply {
+) -> Response {
+    if !security::authorize_before_commit(&state.security, &authorization).await {
+        return security::unauthorized_response();
+    }
     HttpReply(
         service::project_metadata(&state.backend, id, request)
             .await
             .into_reply(),
     )
+    .into_response()
 }
 
 pub(super) async fn upload_project_file(
     State(state): State<AppState>,
+    Extension(authorization): Extension<RequestAuthorization>,
     Path(id): Path<String>,
     mut multipart: Multipart,
-) -> HttpReply {
+) -> Response {
+    if !security::authorize_before_commit(&state.security, &authorization).await {
+        return security::unauthorized_response();
+    }
     let Some(field) = (match multipart.next_field().await {
         Ok(field) => field,
         Err(error) => {
@@ -38,12 +48,14 @@ pub(super) async fn upload_project_file(
                     json!({"error": format!("invalid upload: {error}")}),
                 )
                     .into_reply(),
-            );
+            )
+            .into_response();
         }
     }) else {
         return HttpReply(
             (ReplyKind::InvalidInput, json!({"error":"file is required"})).into_reply(),
-        );
+        )
+        .into_response();
     };
     let filename = field.file_name().unwrap_or("upload").to_string();
     let bytes = match field.bytes().await {
@@ -55,7 +67,8 @@ pub(super) async fn upload_project_file(
                     json!({"error": format!("cannot read upload: {error}")}),
                 )
                     .into_reply(),
-            );
+            )
+            .into_response();
         }
     };
     HttpReply(
@@ -63,6 +76,7 @@ pub(super) async fn upload_project_file(
             .await
             .into_reply(),
     )
+    .into_response()
 }
 
 pub(super) async fn list_projects(State(state): State<AppState>) -> axum::response::Response {
@@ -83,8 +97,12 @@ pub(super) async fn list_project_folders(
 
 pub(super) async fn create_project(
     State(state): State<AppState>,
+    Extension(authorization): Extension<RequestAuthorization>,
     Json(request): Json<CreateProjectRequest>,
 ) -> axum::response::Response {
+    if !security::authorize_before_commit(&state.security, &authorization).await {
+        return security::unauthorized_response();
+    }
     HttpReply(
         service::create_project(&state.backend, request)
             .await
@@ -95,9 +113,13 @@ pub(super) async fn create_project(
 
 pub(super) async fn rename_project(
     State(state): State<AppState>,
+    Extension(authorization): Extension<RequestAuthorization>,
     Path(id): Path<String>,
     Json(request): Json<RenameProjectRequest>,
 ) -> axum::response::Response {
+    if !security::authorize_before_commit(&state.security, &authorization).await {
+        return security::unauthorized_response();
+    }
     HttpReply(
         service::rename_project(&state.backend, id, request)
             .await

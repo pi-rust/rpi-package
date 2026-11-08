@@ -1,6 +1,6 @@
 //! Password and same-origin protection for a public rpi-web deployment.
 use crate::{
-    access::{AccessState, PrincipalId},
+    access::{AccessState, AuthLease, PrincipalId},
     transport::HostOriginPolicy,
 };
 use axum::{
@@ -22,6 +22,11 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
 const SESSION_SECONDS: u64 = 12 * 60 * 60;
+
+#[derive(Clone, Default)]
+pub(crate) struct RequestAuthorization {
+    lease: Option<AuthLease>,
+}
 
 pub struct Security {
     host_policy: HostOriginPolicy,
@@ -116,7 +121,7 @@ fn request_marker_present(headers: &HeaderMap, method: &str) -> bool {
 
 pub async fn guard(
     State(security): State<Arc<Security>>,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Response {
     let headers = request.headers().clone();
@@ -126,15 +131,41 @@ pub async fn guard(
     let is_health = path == "/api/v1/health";
     let host_allowed = security.host_allowed(&headers);
     let origin_allowed = security.origin_allowed(&headers);
+    let lease = if security.enabled() {
+        security.lease_for(&headers).await
+    } else {
+        None
+    };
+    let protected_api = !is_auth && !is_health && path.starts_with("/api/");
     let allowed = host_allowed
         && origin_allowed
         && request_marker_present(&headers, method)
-        && (is_auth
-            || is_health
-            || !path.starts_with("/api/")
-            || security.authorized(&headers).await);
+        && (!protected_api || !security.enabled() || lease.is_some());
     let mut response = if allowed {
-        next.run(request).await
+        request.extensions_mut().insert(RequestAuthorization {
+            lease: lease.clone(),
+        });
+        if let Some(lease) = lease.clone() {
+            request.extensions_mut().insert(lease);
+        }
+        let response = next.run(request).await;
+        if protected_api && response.status().is_success() {
+            if let Some(lease) = lease {
+                if !security.access.while_authorized(&lease).await {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"error": "unauthorized"})),
+                    )
+                        .into_response()
+                } else {
+                    response
+                }
+            } else {
+                response
+            }
+        } else {
+            response
+        }
     } else {
         let status = if host_allowed && origin_allowed && request_marker_present(&headers, method) {
             StatusCode::UNAUTHORIZED
@@ -159,6 +190,24 @@ pub async fn guard(
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub password: String,
+}
+
+pub(crate) async fn authorize_before_commit(
+    security: &Security,
+    authorization: &RequestAuthorization,
+) -> bool {
+    match &authorization.lease {
+        Some(lease) => security.access.authorize_before_commit(lease).await.is_ok(),
+        None => !security.enabled(),
+    }
+}
+
+pub(crate) fn unauthorized_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({"error": "unauthorized"})),
+    )
+        .into_response()
 }
 
 pub async fn status_for(security: &Security, headers: &HeaderMap) -> Json<serde_json::Value> {
@@ -235,6 +284,23 @@ mod tests {
             .unwrap()
             .contains("Max-Age=0"));
         assert!(!security.authorized(&headers).await);
+    }
+
+    #[tokio::test]
+    async fn authorize_before_commit_rejects_a_revoked_lease() {
+        let security = Security::new(["example.test".to_string()], Some("secret"));
+        let token = security.login("secret").await.unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            format!("rpi_web_session={token}").parse().unwrap(),
+        );
+        let authorization = RequestAuthorization {
+            lease: security.lease_for(&headers).await,
+        };
+        assert!(authorize_before_commit(&security, &authorization).await);
+        security.logout(&headers).await;
+        assert!(!authorize_before_commit(&security, &authorization).await);
     }
 
     #[tokio::test]

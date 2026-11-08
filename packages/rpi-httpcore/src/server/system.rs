@@ -1,6 +1,7 @@
 use super::AppState;
+use crate::security::{self, RequestAuthorization};
 use axum::{
-    extract::{Json, State},
+    extract::{Extension, Json, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -22,7 +23,14 @@ pub(super) struct TtsRequest {
     voice: Option<String>,
 }
 
-pub(super) async fn tts(Json(request): Json<TtsRequest>) -> axum::response::Response {
+pub(super) async fn tts(
+    State(state): State<AppState>,
+    Extension(authorization): Extension<RequestAuthorization>,
+    Json(request): Json<TtsRequest>,
+) -> axum::response::Response {
+    if !security::authorize_before_commit(&state.security, &authorization).await {
+        return security::unauthorized_response();
+    }
     let text = request.text.trim().to_string();
     let voice = request
         .voice
