@@ -108,21 +108,23 @@ Web 0.1.1 supports `.rpi/web.json` startup settings. Run `rpi-web --init` once i
 
 ## Shared backend and HTTP API
 
-`rpi-extcore` now holds the common ACP/Web native RPC, run, session, history, event and workspace capabilities. `rpi-http` adapts those services to the existing HTTP/SSE API and provides an API-only executable. `rpi-web` adds the embedded browser frontend; `rpi-acp` maps the common runtime to ACP.
+`rpi-extcore` now holds the common ACP/Web native RPC, run, session, history, event and workspace capabilities. `rpi-httpcore` adapts those services to the existing HTTP/SSE API and provides an API-only executable. `rpi-web` adds the embedded browser frontend; `rpi-acp` maps the common runtime to ACP.
 
 ```bash
-cargo run --locked -p rpi-http -- --project /path/to/project --rpi-bin /path/to/rpi --port 3030
+cargo run --locked -p rpi-httpcore -- --project /path/to/project --rpi-bin /path/to/rpi --port 3030
 ```
 
-`rpi-http-extension` packages the same API-only service as a standard native
-plugin (`rpi --http`) and as the `rpi-http-service` executable. It only maps the
-existing plugin lifecycle onto `rpi-http`; it starts a separate core `Service`
-and does not share the live Agent session that loaded the extension.
+`rpi-http` packages the same API-only service as a standard native plugin
+(`rpi --http`) through the `rpi-httpcore` library. It only maps the existing
+plugin lifecycle onto `rpi-httpcore`; it starts a separate core `Service` and
+does not share the live Agent session that loaded the extension. The
+`rpi-http-service` executable ships the same API-only service without the plugin
+host.
 
 `rpi-extcore` is also published as a reusable crates.io library. Applications
 can depend on the compatible minor line with `rpi-extcore = "0.1"`; it requires
 Rust 1.78+ and a compatible native `rpi --mode rpc` executable at runtime. See
-[rpi-extcore](packages/rpi-extcore/README.md), [rpi-http](packages/rpi-http/README.md) and the [architecture contract](docs/architecture/extension-core.md). The new packages are ordinary Rust libraries; existing extension installation and startup commands remain the same.
+[rpi-extcore](packages/rpi-extcore/README.md), [rpi-httpcore](packages/rpi-httpcore/README.md) and the [architecture contract](docs/architecture/extension-core.md). The new packages are ordinary Rust libraries; existing extension installation and startup commands remain the same.
 
 ## Native ACP integration
 

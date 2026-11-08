@@ -8,6 +8,7 @@ on:
       - 'packages/rpi-extcore/**'
       - 'packages/rpi-acp/**'
       - 'packages/rpi-http/**'
+      - 'packages/rpi-httpcore/**'
       - 'packages/rpi-web/**'
       - 'docs/architecture/**'
       - 'Cargo.toml'
@@ -85,7 +86,7 @@ jobs:
       - name: Test default package compatibility and runtime ownership
         # Includes identity, ordered prompt/image and client text-I/O fixtures;
         # syntax checking the Windows native harness above is not executing it.
-        run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web
+        run: cargo test --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-httpcore -p rpi-http -p rpi-web
       - name: Test configured core HTTP transport with loopback fixtures
         run: cargo test --locked -p rpi-mcp-core configured_http_tests
       - name: Test stdio bridge with real MCP children and a fixture native peer
@@ -95,7 +96,7 @@ jobs:
       - name: Check all targets
         # Includes the test-only rpi-acp configuration_fixture example; checking
         # it is not native execution, installation, or runtime qualification.
-        run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-http -p rpi-web --all-targets
+        run: cargo check --locked -p rpi-mcp-core -p rpi-mcp-adapter -p rpi-extcore -p rpi-acp -p rpi-httpcore -p rpi-http -p rpi-web --all-targets
       # Only MCP core is an explicit Clippy gate. The compile/test commands
       # above still reject all compiler warnings via RUSTFLAGS.
       - name: Strict MCP core Clippy

@@ -45,13 +45,13 @@ async fn project_images_preserve_auth_scope_and_binary_responses() {
     let id = projects["projects"][0]["id"].as_str().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let config = rpi_http::AppConfig {
+    let config = rpi_httpcore::AppConfig {
         port: address.port(),
         allowed_hosts: Some(vec![address.to_string()]),
         ..Default::default()
     };
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
-    let app = rpi_http::router(core.clone(), &config, receiver.clone());
+    let app = rpi_httpcore::router(core.clone(), &config, receiver.clone());
     match previous {
         Some(value) => std::env::set_var("RPI_HTTP_PASSWORD", value),
         None => std::env::remove_var("RPI_HTTP_PASSWORD"),
@@ -179,8 +179,8 @@ async fn project_images_preserve_auth_scope_and_binary_responses() {
     // Its outer middleware must apply the same cache policy to failed image reads.
     let (listening, address) = tokio::sync::oneshot::channel();
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let standalone = tokio::spawn(rpi_http::serve_until(
-        rpi_http::AppConfig {
+    let standalone = tokio::spawn(rpi_httpcore::serve_until(
+        rpi_httpcore::AppConfig {
             project,
             registry: root.join("standalone-sessions.json"),
             port: 0,

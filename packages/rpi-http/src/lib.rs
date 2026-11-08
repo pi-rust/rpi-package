@@ -1,6 +1,14 @@
-//! HTTP/SSE adapter for rpi-extcore; does not embed a frontend or load plugins.
+//! Existing rpi plugin ABI entry point for the API-only HTTP/SSE service.
+//!
+//! The crate is a thin adapter: HTTP extraction, authentication, Host/Origin
+//! checks, SSE, listener lifecycle and the shared core service all live in
+//! `rpi-httpcore` and `rpi-extcore`. There is no Work node owner or Work-specific
+//! component protocol here.
+
 #![forbid(unsafe_code)]
-pub mod config;
-mod security;
-mod server;
-pub use server::{router, run, serve_until, AppConfig, Listening};
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
+mod plugin;
+
+/// Configuration and standalone launch support from the HTTP adapter library.
+pub use rpi_httpcore::config;

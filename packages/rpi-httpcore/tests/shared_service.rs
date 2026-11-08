@@ -17,12 +17,12 @@ async fn http_and_rust_share_project_state_without_frontend_or_plugin_runtime() 
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let config = rpi_http::AppConfig {
+    let config = rpi_httpcore::AppConfig {
         port: address.port(),
         ..Default::default()
     };
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
-    let app = rpi_http::router(core.clone(), &config, receiver.clone());
+    let app = rpi_httpcore::router(core.clone(), &config, receiver.clone());
     let server = tokio::spawn(async move {
         let mut receiver = receiver;
         axum::serve(listener, app)

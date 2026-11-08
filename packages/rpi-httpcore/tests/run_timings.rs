@@ -52,14 +52,14 @@ async fn run_timings_preserve_security_validation_and_paging() {
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let config = rpi_http::AppConfig {
+    let config = rpi_httpcore::AppConfig {
         port: address.port(),
         allowed_hosts: Some(vec![address.to_string()]),
         ..Default::default()
     };
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
     std::env::set_var("RPI_HTTP_PASSWORD", &password);
-    let app = rpi_http::router(core.clone(), &config, receiver.clone());
+    let app = rpi_httpcore::router(core.clone(), &config, receiver.clone());
     match previous {
         Some(value) => std::env::set_var("RPI_HTTP_PASSWORD", value),
         None => std::env::remove_var("RPI_HTTP_PASSWORD"),

@@ -150,11 +150,13 @@ jobs:
           # rpi-web-v0.1.48 points at a historical release commit whose local
           # rpi-web/rpi-http requirements were inconsistent. Keep the release
           # baseline equivalent to the current workspace versions so release-plz
-          # can package the baseline before comparing it.
+          # can package the baseline before comparing it. Baseline paths keep
+          # their pre-rename names; the current HTTP adapter library version is
+          # read from packages/rpi-httpcore.
           http_manifest = destination / "packages/rpi-http/Cargo.toml"
           http_text = http_manifest.read_text()
           current_http = tomllib.loads(
-              (root / "packages/rpi-http/Cargo.toml").read_text()
+              (root / "packages/rpi-httpcore/Cargo.toml").read_text()
           )["package"]["version"]
           http_text = http_text.replace(
               'version = "0.1.20"', f'version = "{current_http}"'

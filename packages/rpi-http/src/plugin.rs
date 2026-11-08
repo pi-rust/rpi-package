@@ -1,10 +1,10 @@
-//! `rpi --http` entry point: run the API-only HTTP/SSE adapter from `rpi-http`.
+//! `rpi --http` entry point: run the API-only HTTP/SSE adapter from `rpi-httpcore`.
 //!
 //! The plugin keeps the existing ABI contract (`ownsStdio`, `SessionStart`,
 //! `SessionShutdown` and `StdioLifecycle` exit reporting). It starts one
 //! `rpi-extcore::service::Service` in its own runtime; that service does not
 //! share live sessions with the Agent session that loaded the plugin.
-use rpi_http::config::{self, Launch};
+use rpi_httpcore::config::{self, Launch};
 use rpi_plugin_sdk::{
     EventTag, FreeStringFn, RuntimeActionFn, RuntimeActionId, StablePluginEvent, StbString,
     StbStringRef,
@@ -84,7 +84,7 @@ fn enabled(value: Option<&Value>) -> bool {
     }
 }
 
-/// Map the host `--http` value onto the existing `rpi-http` CLI contract.
+/// Map the host `--http` value onto the existing `rpi-httpcore` CLI contract.
 fn http_args(mode: Option<Value>) -> Vec<String> {
     match mode {
         Some(Value::String(mode)) if mode.eq_ignore_ascii_case("help") => vec!["--help".into()],
@@ -101,7 +101,7 @@ fn finish(code: i32) {
     );
 }
 
-fn report(info: rpi_http::Listening) {
+fn report(info: rpi_httpcore::Listening) {
     println!("rpi HTTP API listening on {}", info.address);
     let _ = std::io::stdout().flush();
 }
@@ -123,7 +123,7 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
     let mut config = match config::from_args(args) {
         Ok(Launch::Run(config)) => *config,
         Ok(Launch::Help) => {
-            println!("rpi --http[=CONFIG|help]\n{}", rpi_http::config::HELP);
+            println!("rpi --http[=CONFIG|help]\n{}", rpi_httpcore::config::HELP);
             finish(0);
             return 0;
         }
@@ -156,7 +156,7 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
             .enable_all()
             .build();
         let result = match runtime {
-            Ok(runtime) => runtime.block_on(rpi_http::serve_until(
+            Ok(runtime) => runtime.block_on(rpi_httpcore::serve_until(
                 config,
                 axum::Router::new(),
                 report,

@@ -1,8 +1,8 @@
 //! Standalone API configuration. Frontend settings remain in rpi-web.
-use crate::AppConfig;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-pub const HELP: &str = "rpi-http [--config PATH] [--project PATH] [--rpi-bin PATH]
+pub const HELP: &str = "rpi-httpcore [--config PATH] [--project PATH] [--rpi-bin PATH]
          [--bind IP] [--port N] [--registry PATH] [--session-dir PATH]
          [--session-timeout SECONDS] [--add-project PATH]... [--projects-root PATH] [--help] [--version]
 
@@ -11,6 +11,51 @@ JSON paths are relative to the config file; CLI paths use the working directory.
 CLI options override JSON. Bare executable names use PATH.
 Authentication: RPI_HTTP_PASSWORD and RPI_HTTP_ALLOWED_HOSTS.
 Legacy RPI_WEB_* variables remain accepted.";
+
+fn default_service_name() -> &'static str {
+    "rpi-http"
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppConfig {
+    #[serde(skip, default = "default_service_name")]
+    pub service_name: &'static str,
+    pub project: PathBuf,
+    /// Additional workspace roots explicitly made available to clients.
+    pub projects: Vec<PathBuf>,
+    pub projects_root: Option<PathBuf>,
+    pub rpi_bin: PathBuf,
+    pub bind: String,
+    pub port: u16,
+    /// Optional Host allowlist; RPI_WEB_ALLOWED_HOSTS takes precedence.
+    pub allowed_hosts: Option<Vec<String>>,
+    /// Optional `--session-dir` forwarded to the native host.
+    pub session_dir: Option<PathBuf>,
+    /// Where the bridge remembers session ids across restarts.
+    pub registry: PathBuf,
+    /// Optional idle timeout for live native hosts, in seconds. `None` keeps
+    /// the legacy behavior and retains live hosts until explicit close.
+    pub session_timeout_seconds: Option<u64>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            service_name: "rpi-http",
+            project: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            projects: Vec::new(),
+            projects_root: None,
+            rpi_bin: PathBuf::from("rpi"),
+            bind: "127.0.0.1".into(),
+            port: 3030,
+            allowed_hosts: None,
+            session_dir: None,
+            registry: rpi_extcore::registry::default_path(),
+            session_timeout_seconds: None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Launch {

@@ -2575,6 +2575,17 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "rpi-httpcore",
+ "rpi-plugin-sdk 0.3.20",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "rpi-httpcore"
 version = "0.1.20"
 dependencies = [
  "axum",
@@ -2588,17 +2599,6 @@ dependencies = [
  "subtle",
  "tokio",
  "uuid",
-]
-
-[[package]]
-name = "rpi-http-extension"
-version = "0.1.2"
-dependencies = [
- "axum",
- "rpi-http",
- "rpi-plugin-sdk 0.3.20",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -2849,7 +2849,7 @@ version = "0.1.49"
 dependencies = [
  "axum",
  "rpi-extcore",
- "rpi-http",
+ "rpi-httpcore",
  "rpi-plugin-sdk 0.3.20",
  "serde",
  "serde_json",
