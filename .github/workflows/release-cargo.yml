@@ -2,9 +2,10 @@ name: Version and publish crates
 
 on:
   schedule:
-    # Run daily at 00:00 UTC (08:00 Asia/Shanghai); the guard below skips
-    # days where main has not advanced since the last release commit.
-    - cron: '0 0 * * *'
+    # Run daily at 00:00 Asia/Shanghai (16:00 UTC on the previous day);
+    # the guard below skips days where main has not advanced since the last
+    # release commit.
+    - cron: '0 16 * * *'
   workflow_dispatch:
 
 permissions:
