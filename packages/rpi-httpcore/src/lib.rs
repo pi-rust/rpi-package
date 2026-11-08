@@ -4,5 +4,6 @@ pub mod access;
 pub mod config;
 mod security;
 mod server;
+pub mod transport;
 pub use config::AppConfig;
 pub use server::{router, run, serve_until, Listening};

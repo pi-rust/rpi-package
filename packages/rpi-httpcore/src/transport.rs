@@ -1,0 +1,274 @@
+//! Generic connection lifecycle primitives for SSE/WebSocket adapters.
+//!
+//! This module owns admission, authorization invalidation and bounded
+//! connection resources. It intentionally does not define frames, operations
+//! or a concrete protocol.
+
+use crate::access::{AccessError, AccessState, AuthLease};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionConfigError {
+    ZeroConnections,
+    ZeroMessageBytes,
+    ZeroSendBuffer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionError {
+    Access(AccessError),
+    AtCapacity,
+    ShuttingDown,
+    MessageTooLarge,
+}
+
+impl From<AccessError> for ConnectionError {
+    fn from(error: AccessError) -> Self {
+        Self::Access(error)
+    }
+}
+
+/// Limits that apply to each connection registry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConnectionPolicy {
+    pub max_connections: usize,
+    pub max_message_bytes: usize,
+    pub send_buffer: usize,
+}
+
+impl ConnectionPolicy {
+    pub fn new(
+        max_connections: usize,
+        max_message_bytes: usize,
+        send_buffer: usize,
+    ) -> Result<Self, ConnectionConfigError> {
+        if max_connections == 0 {
+            return Err(ConnectionConfigError::ZeroConnections);
+        }
+        if max_message_bytes == 0 {
+            return Err(ConnectionConfigError::ZeroMessageBytes);
+        }
+        if send_buffer == 0 {
+            return Err(ConnectionConfigError::ZeroSendBuffer);
+        }
+        Ok(Self {
+            max_connections,
+            max_message_bytes,
+            send_buffer,
+        })
+    }
+}
+
+struct Inner {
+    access: AccessState,
+    policy: ConnectionPolicy,
+    slots: Arc<Semaphore>,
+    accepting: AtomicBool,
+    gate: Mutex<()>,
+    shutdown: Notify,
+}
+
+/// Shared lifecycle state for a set of protocol connections.
+#[derive(Clone)]
+pub struct ConnectionRegistry {
+    inner: Arc<Inner>,
+}
+
+/// A connection slot bound to one authorization Lease generation.
+pub struct ConnectionPermit {
+    inner: Arc<Inner>,
+    lease: AuthLease,
+    _slot: OwnedSemaphorePermit,
+}
+
+impl ConnectionRegistry {
+    pub fn new(access: AccessState, policy: ConnectionPolicy) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                access,
+                slots: Arc::new(Semaphore::new(policy.max_connections)),
+                policy,
+                accepting: AtomicBool::new(true),
+                gate: Mutex::new(()),
+                shutdown: Notify::new(),
+            }),
+        }
+    }
+
+    pub fn policy(&self) -> ConnectionPolicy {
+        self.inner.policy
+    }
+
+    pub fn is_accepting(&self) -> bool {
+        self.inner.accepting.load(Ordering::Acquire)
+    }
+
+    /// Admit one connection after checking its Lease and generation.
+    pub async fn accept(&self, lease: &AuthLease) -> Result<ConnectionPermit, ConnectionError> {
+        let _gate = self.inner.gate.lock().await;
+        if !self.inner.accepting.load(Ordering::Acquire) {
+            return Err(ConnectionError::ShuttingDown);
+        }
+        self.inner.access.validate(lease).await?;
+        let slot = self
+            .inner
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ConnectionError::AtCapacity)?;
+        Ok(ConnectionPermit {
+            inner: self.inner.clone(),
+            lease: lease.clone(),
+            _slot: slot,
+        })
+    }
+
+    /// Reject new connections and wait for all admitted connections to drop.
+    pub async fn drain(&self) {
+        let _gate = self.inner.gate.lock().await;
+        self.inner.accepting.store(false, Ordering::Release);
+        self.inner.shutdown.notify_waiters();
+        drop(_gate);
+        if let Ok(all) = self
+            .inner
+            .slots
+            .clone()
+            .acquire_many_owned(self.inner.policy.max_connections as u32)
+            .await
+        {
+            drop(all);
+        }
+    }
+
+    pub fn validate_message_size(&self, bytes: usize) -> Result<(), ConnectionError> {
+        if bytes > self.inner.policy.max_message_bytes {
+            Err(ConnectionError::MessageTooLarge)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Create a bounded outbound queue for one connection.
+    pub fn channel<T>(&self) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+        mpsc::channel(self.inner.policy.send_buffer)
+    }
+}
+
+impl ConnectionPermit {
+    pub fn lease(&self) -> &AuthLease {
+        &self.lease
+    }
+
+    pub async fn authorized(&self) -> bool {
+        self.inner.access.while_authorized(&self.lease).await
+    }
+
+    /// Wait until the Lease is invalidated or the registry starts shutdown.
+    pub async fn wait_closed(&self) {
+        let invalidated = self.inner.access.wait_invalidated(&self.lease);
+        let shutdown = self.inner.shutdown.notified();
+        tokio::pin!(invalidated);
+        tokio::pin!(shutdown);
+        tokio::select! {
+            _ = &mut invalidated => {},
+            _ = &mut shutdown => {},
+        }
+    }
+
+    pub fn validate_message_size(&self, bytes: usize) -> Result<(), ConnectionError> {
+        if bytes > self.inner.policy.max_message_bytes {
+            Err(ConnectionError::MessageTooLarge)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    fn policy() -> ConnectionPolicy {
+        ConnectionPolicy::new(1, 64, 2).unwrap()
+    }
+
+    #[tokio::test]
+    async fn revoked_lease_closes_a_connection() {
+        let access = AccessState::new(true, 4);
+        let lease = access
+            .issue(
+                crate::access::PrincipalId::new("client").unwrap(),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        let registry = ConnectionRegistry::new(access.clone(), policy());
+        let permit = registry.accept(&lease).await.unwrap();
+        assert!(permit.authorized().await);
+        access.revoke(&lease).await;
+        timeout(Duration::from_secs(1), permit.wait_closed())
+            .await
+            .unwrap();
+        assert!(!permit.authorized().await);
+    }
+
+    #[tokio::test]
+    async fn drain_rejects_new_connections_and_waits_for_existing_ones() {
+        let access = AccessState::new(true, 4);
+        let lease = access
+            .issue(
+                crate::access::PrincipalId::new("client").unwrap(),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        let registry = ConnectionRegistry::new(access, policy());
+        let permit = registry.accept(&lease).await.unwrap();
+        let draining = {
+            let registry = registry.clone();
+            tokio::spawn(async move { registry.drain().await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!registry.is_accepting());
+        assert!(matches!(
+            registry.accept(&lease).await,
+            Err(ConnectionError::ShuttingDown)
+        ));
+        assert!(!draining.is_finished());
+        drop(permit);
+        timeout(Duration::from_secs(1), draining)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn connection_policy_bounds_messages_and_outbound_queue() {
+        let access = AccessState::new(true, 4);
+        let lease = access
+            .issue(
+                crate::access::PrincipalId::new("client").unwrap(),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        let registry = ConnectionRegistry::new(access, policy());
+        let permit = registry.accept(&lease).await.unwrap();
+        assert!(permit.validate_message_size(64).is_ok());
+        assert_eq!(
+            permit.validate_message_size(65),
+            Err(ConnectionError::MessageTooLarge)
+        );
+        let (sender, mut receiver) = registry.channel();
+        sender.send(1u8).await.unwrap();
+        sender.send(2u8).await.unwrap();
+        assert!(sender.try_send(3u8).is_err());
+        assert_eq!(receiver.recv().await, Some(1));
+    }
+}
