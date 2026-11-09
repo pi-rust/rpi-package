@@ -126,7 +126,7 @@ pub async fn guard(
 ) -> Response {
     let headers = request.headers().clone();
     let method = request.method().as_str();
-    let path = request.uri().path();
+    let path = request.uri().path().to_owned();
     let is_auth = path == "/api/v1/auth";
     let is_health = path == "/api/v1/health";
     let host_allowed = security.host_allowed(&headers);
@@ -184,6 +184,11 @@ pub async fn guard(
     response
         .headers_mut()
         .insert("x-frame-options", HeaderValue::from_static("DENY"));
+    if is_auth || path.starts_with("/api/v1/auth/") {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     response
 }
 
