@@ -18,7 +18,7 @@ default = ["local-stt"]
 local-stt = ["dep:sherpa-onnx"]
 # Musl builds use the hosted/API voice path and compile OpenSSL for the target
 # instead of trying to consume the host runner's glibc OpenSSL installation.
-musl-api = ["native-tls/vendored"]
+musl-api = ["rpi-tts/musl-api"]
 
 [package.metadata.rpi.prebuilt]
 supported-targets = [
@@ -34,16 +34,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rpi-plugin-sdk = "0.3.20"
+rpi-tts = { path = "../rpi-tts", version = "0.1.15" }
 serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
-# Named directly so the cached connector below can be built once and reused;
-# tokio-tungstenite's `native-tls` feature already pulls in the same version.
-native-tls = "0.2"
-futures-util = "0.3"
-uuid = { version = "1", features = ["v4"] }
-sha2 = "0.10"
+
 serde = { version = "1", features = ["derive"] }
 unicode-width = "0.2"
 

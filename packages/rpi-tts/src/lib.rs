@@ -1,6 +1,9 @@
 //! Small, API-key-free Microsoft Edge TTS client shared by Web and voice paths.
 
+mod drm;
 mod edge_tts;
+
+pub use edge_tts::{synthesize_stream, StreamEnd};
 
 /// Synthesize one utterance into an MP3 buffer.
 pub fn synthesize(text: &str, voice: &str) -> Result<Vec<u8>, String> {

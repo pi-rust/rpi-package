@@ -4,9 +4,10 @@
 //! Returns MP3 audio bytes (audio-24khz-48kbitrate-mono-mp3).
 
 use futures_util::{SinkExt, StreamExt};
-use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::drm;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -18,9 +19,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 const TRUSTED_CLIENT_TOKEN: &str = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const WSS_URL: &str = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 const CHROMIUM_MAJOR: &str = "143";
-const SEC_MS_GEC_VERSION: &str = "1-143.0.3650.75";
+const SEC_MS_GEC_VERSION: &str = "2-143.0.3650.75";
 const OUTPUT_FORMAT: &str = "audio-24khz-48kbitrate-mono-mp3";
-const WIN_EPOCH_SECS: f64 = 11_644_473_600.0;
 
 // ---------------------------------------------------------------------------
 // Connection reuse
@@ -277,18 +277,7 @@ async fn synthesize_stream_async(
 // ---------------------------------------------------------------------------
 
 fn generate_sec_ms_gec() -> String {
-    let unix_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64();
-
-    let mut ticks = unix_secs + WIN_EPOCH_SECS;
-    ticks -= ticks % 300.0;
-    let ticks_100ns = (ticks * 10_000_000.0) as u64;
-
-    let hash_input = format!("{ticks_100ns}{TRUSTED_CLIENT_TOKEN}");
-    let hash = Sha256::digest(hash_input.as_bytes());
-    hash.iter().map(|b| format!("{b:02X}")).collect()
+    drm::generate_sec_ms_gec()
 }
 
 fn generate_muid() -> String {

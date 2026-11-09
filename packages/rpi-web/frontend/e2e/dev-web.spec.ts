@@ -8776,7 +8776,7 @@ test.describe("shell command previews", () => {
 });
 
 test.describe("Mermaid diagrams", () => {
-  const flow = 'flowchart TD\n  start[开始] --> process[处理数据]\n  process --> done[完成]\n';
+  const flow = 'flowchart TD\n  start[开始] --> process[处理数据]\n  process --> done[完成]\n  classDef milestone fill:#eef2ff,stroke:#4f46e5\n  class start,done milestone\n';
   const sequence = 'sequenceDiagram\n  participant A as 用户\n  participant B as 服务\n  A->>B: 你好\n  B-->>A: 收到\n';
   const failure = "Unable to render this diagram. The syntax may be incomplete or unsupported; source is shown below.";
   const fence = (source: string) => `\`\`\`mermaid\n${source}\`\`\``;
