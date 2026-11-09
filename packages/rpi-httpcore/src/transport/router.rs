@@ -1,5 +1,5 @@
 use super::{middleware, ConnectionConfigError, ConnectionPolicy, ConnectionRegistry};
-use crate::access::{AccessState, Admission, AdmissionError};
+use crate::access::{AccessState, Admission, AdmissionError, PairingStore};
 use axum::{middleware::from_fn_with_state, Router};
 use std::future::Future;
 
@@ -14,6 +14,7 @@ pub enum TransportConfigError {
 pub struct TransportState {
     pub(crate) admission: Admission,
     pub(crate) connections: ConnectionRegistry,
+    pairing: Option<PairingStore>,
 }
 
 impl TransportState {
@@ -27,7 +28,15 @@ impl TransportState {
         Ok(Self {
             admission,
             connections: ConnectionRegistry::new(access, connection_policy),
+            pairing: None,
         })
+    }
+
+    /// Attach an optional pairing store so shutdown automatically stops new
+    /// ticket issuance and clears outstanding tickets.
+    pub fn with_pairing_store(mut self, pairing: PairingStore) -> Self {
+        self.pairing = Some(pairing);
+        self
     }
 
     pub fn admission(&self) -> &Admission {
@@ -51,6 +60,9 @@ impl TransportState {
         F: FnOnce() -> Fut,
         Fut: Future<Output = ()>,
     {
+        if let Some(pairing) = &self.pairing {
+            pairing.shutdown().await;
+        }
         // Flip both accepting gates before waiting. Otherwise a long-lived
         // connection could keep the first drain phase open while new owner
         // operations still enter through the second gate.
@@ -106,8 +118,14 @@ mod tests {
             )
             .await
             .unwrap();
-        let state =
-            TransportState::new(access, 1, ConnectionPolicy::new(1, 64, 1).unwrap()).unwrap();
+        let pairing = PairingStore::new(access.clone(), 8);
+        let ticket = pairing
+            .issue(std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        let state = TransportState::new(access, 1, ConnectionPolicy::new(1, 64, 1).unwrap())
+            .unwrap()
+            .with_pairing_store(pairing.clone());
         let operation = state.admission().try_admit().await.unwrap();
         let connection = state.connections().accept(&lease).await.unwrap();
         let called = Arc::new(AtomicBool::new(false));
@@ -134,6 +152,10 @@ mod tests {
             Err(crate::transport::ConnectionError::ShuttingDown)
         ));
         assert!(!draining.is_finished());
+        assert!(matches!(
+            pairing.issue(std::time::Duration::from_secs(60)).await,
+            Err(crate::access::PairingError::ShuttingDown)
+        ));
         drop(connection);
         drop(operation);
         tokio::time::timeout(std::time::Duration::from_secs(1), draining)
@@ -141,5 +163,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(called.load(Ordering::Acquire));
+        assert!(matches!(
+            pairing.redeem(ticket.credential()).await,
+            Err(crate::access::PairingError::ShuttingDown)
+        ));
     }
 }

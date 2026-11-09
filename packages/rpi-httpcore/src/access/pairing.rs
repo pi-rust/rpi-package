@@ -2,7 +2,10 @@ use super::{AccessState, Generation};
 use std::{
     collections::HashMap,
     fmt,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
@@ -15,6 +18,7 @@ pub enum PairingError {
     Expired,
     Revoked,
     GenerationMismatch,
+    ShuttingDown,
 }
 
 struct TicketRecord {
@@ -26,6 +30,7 @@ struct Inner {
     tickets: Mutex<HashMap<String, TicketRecord>>,
     access: AccessState,
     max_tickets: usize,
+    accepting: AtomicBool,
 }
 
 /// A short-lived, single-use credential that can be presented to a host for
@@ -83,17 +88,24 @@ impl PairingStore {
                 tickets: Mutex::new(HashMap::new()),
                 access,
                 max_tickets,
+                accepting: AtomicBool::new(true),
             }),
         }
     }
 
     pub async fn issue(&self, ttl: Duration) -> Result<PairingTicket, PairingError> {
+        if !self.inner.accepting.load(Ordering::Acquire) {
+            return Err(PairingError::ShuttingDown);
+        }
         let sharing = self.inner.access.sharing().await;
         if !sharing.enabled {
             return Err(PairingError::SharingDisabled);
         }
         let now = Instant::now();
         let mut tickets = self.inner.tickets.lock().await;
+        if !self.inner.accepting.load(Ordering::Acquire) {
+            return Err(PairingError::ShuttingDown);
+        }
         let current = self.inner.access.sharing().await;
         if !current.enabled || current.generation != sharing.generation {
             return Err(if !current.enabled {
@@ -125,11 +137,17 @@ impl PairingStore {
     /// Consume a ticket exactly once. The returned value contains no default
     /// authorization; the host must map it to its own permission set.
     pub async fn redeem(&self, credential: &str) -> Result<PairingRedemption, PairingError> {
+        if !self.inner.accepting.load(Ordering::Acquire) {
+            return Err(PairingError::ShuttingDown);
+        }
         let sharing = self.inner.access.sharing().await;
         if !sharing.enabled {
             return Err(PairingError::SharingDisabled);
         }
         let mut tickets = self.inner.tickets.lock().await;
+        if !self.inner.accepting.load(Ordering::Acquire) {
+            return Err(PairingError::ShuttingDown);
+        }
         let Some(ticket) = tickets.remove(credential) else {
             return Err(PairingError::Revoked);
         };
@@ -148,8 +166,16 @@ impl PairingStore {
         })
     }
 
+    /// Remove all outstanding tickets while keeping the store available.
     pub async fn clear(&self) {
         self.inner.tickets.lock().await.clear();
+    }
+
+    /// Permanently stop ticket issuance and clear outstanding tickets. Hosts
+    /// should call this as part of shutdown before awaiting owner cleanup.
+    pub async fn shutdown(&self) {
+        self.inner.accepting.store(false, Ordering::Release);
+        self.clear().await;
     }
 }
 
@@ -171,6 +197,22 @@ mod tests {
         }))
         .await;
         assert_eq!(results.into_iter().filter(|redeemed| *redeemed).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_redemption_and_clears_tickets() {
+        let access = AccessState::new(true, 8);
+        let store = PairingStore::new(access, 8);
+        let ticket = store.issue(Duration::from_secs(60)).await.unwrap();
+        store.shutdown().await;
+        assert!(matches!(
+            store.issue(Duration::from_secs(60)).await,
+            Err(PairingError::ShuttingDown)
+        ));
+        assert_eq!(
+            store.redeem(ticket.credential()).await,
+            Err(PairingError::ShuttingDown)
+        );
     }
 
     #[tokio::test]
