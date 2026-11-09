@@ -13,6 +13,9 @@ mod router;
 mod sse;
 mod websocket;
 
+#[cfg(test)]
+mod integration_tests;
+
 pub use auth::{bearer_auth_router, lease_from_request};
 pub use connection::{ConnectionPermit, ConnectionRegistry};
 pub use origin::{same_origin_router, HostOriginPolicy};

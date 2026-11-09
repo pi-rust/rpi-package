@@ -290,7 +290,14 @@ fn secure_request(headers: &HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header;
+    use axum::{
+        body::Body,
+        http::{header, Request},
+        routing::get,
+        Router,
+    };
+    use std::sync::Arc;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn password_sessions_are_scoped_and_logout_revokes_them() {
@@ -326,6 +333,40 @@ mod tests {
         assert!(authorize_before_commit(&security, &authorization).await);
         security.logout(&headers).await;
         assert!(!authorize_before_commit(&security, &authorization).await);
+    }
+
+    #[tokio::test]
+    async fn guard_suppresses_success_after_handler_revokes_lease() {
+        let security = Arc::new(Security::new(["example.test".to_string()], Some("secret")));
+        let token = security.login("secret").await.unwrap();
+        let handler_security = security.clone();
+        let app = Router::new()
+            .route(
+                "/api/v1/mutation",
+                get(move || {
+                    let security = handler_security.clone();
+                    async move {
+                        security.access.revoke_all().await;
+                        StatusCode::OK
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                security.clone(),
+                guard,
+            ));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("http://example.test/api/v1/mutation")
+                    .header(header::HOST, "example.test")
+                    .header(header::COOKIE, format!("rpi_web_session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

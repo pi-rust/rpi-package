@@ -174,8 +174,9 @@ impl PairingStore {
     /// Permanently stop ticket issuance and clear outstanding tickets. Hosts
     /// should call this as part of shutdown before awaiting owner cleanup.
     pub async fn shutdown(&self) {
+        let mut tickets = self.inner.tickets.lock().await;
         self.inner.accepting.store(false, Ordering::Release);
-        self.clear().await;
+        tickets.clear();
     }
 }
 
@@ -213,6 +214,43 @@ mod tests {
             store.redeem(ticket.credential()).await,
             Err(PairingError::ShuttingDown)
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_shutdown_linearizes_with_issue_and_redeem() {
+        for _ in 0..32 {
+            let access = AccessState::new(true, 8);
+            let store = PairingStore::new(access, 8);
+            let barrier = Arc::new(tokio::sync::Barrier::new(2));
+            let issuer = {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    store.issue(Duration::from_secs(60)).await
+                })
+            };
+            let shutdown = {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    store.shutdown().await;
+                })
+            };
+            let ticket = issuer.await.unwrap();
+            shutdown.await.unwrap();
+            if let Ok(ticket) = ticket {
+                assert_eq!(
+                    store.redeem(ticket.credential()).await,
+                    Err(PairingError::ShuttingDown)
+                );
+            }
+            assert!(matches!(
+                store.issue(Duration::from_secs(60)).await,
+                Err(PairingError::ShuttingDown)
+            ));
+        }
     }
 
     #[tokio::test]
