@@ -121,7 +121,9 @@ tools, only observe stray records in its transcript.
   `jobs`. Use `action: "kill"` to stop it.
 - **Session shutdown** (`SessionShutdown`) marks that session's still-running
   jobs as `interrupted` and appends one final snapshot per affected session, so
-  a supervisor never sees a finished session that looks permanently busy. Jobs
+  a supervisor never sees a finished session that looks permanently busy. It
+  also terminates retained process trees for jobs whose shell leader already
+  exited, preventing detached descendants from surviving shutdown. Jobs
   belonging to another session are left alone: the host can serve several
   sessions from one process, and closing one must not stop the others' work.
 - **Extension reload** (`/reload`) also dispatches `SessionShutdown`, because

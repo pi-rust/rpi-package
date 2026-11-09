@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether a session still has running work.
 - Terminal statuses (`completed`, `failed`) recorded by a watcher thread, so
   status is correct without polling from a tool.
-- `SessionShutdown` marks still-running jobs as `interrupted` and appends a final
-  snapshot.
+- `SessionShutdown` marks still-running jobs as `interrupted`, terminates retained
+  process trees for settled jobs, and appends a final snapshot.
 - Bounded per-job output retention (500 lines / 256 KiB) with truncation
   reporting in `tail`.

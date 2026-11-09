@@ -64,12 +64,11 @@ struct Output {
 
 impl Output {
     fn push(&mut self, line: String) {
-        let len = line.len() + 1;
-        // A single oversized line is clipped rather than retained whole.
-        let line = if len > MAX_OUTPUT_BYTES {
+        // Keep the byte budget strict even for multi-byte UTF-8 output. Taking
+        // a number of chars is not a byte bound and can still overshoot it.
+        let line = if line.len() + 1 > MAX_OUTPUT_BYTES {
             self.truncated = true;
-            let clipped: String = line.chars().take(MAX_OUTPUT_BYTES / 2).collect();
-            clipped
+            truncate_utf8_bytes(&line, MAX_OUTPUT_BYTES.saturating_sub(1))
         } else {
             line
         };
@@ -180,6 +179,19 @@ fn truncate_chars(text: &str, max: usize) -> String {
     }
     let clipped: String = text.chars().take(max).collect();
     format!("{clipped}…")
+}
+
+/// Truncate a UTF-8 string without exceeding a byte budget or splitting a
+/// codepoint. The caller adds any user-facing marker separately.
+fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +443,7 @@ fn spawn_reader<R: Read + Send + 'static>(
                             match (&mut reader).take(64 * 1024).read_until(b'\n', &mut sink) {
                                 Ok(0) => break,
                                 Ok(m) => {
-                                    dropped += m as u64;
+                                    dropped = dropped.saturating_add(m as u64);
                                     if sink.last() == Some(&b'\n') {
                                         break;
                                     }
@@ -448,8 +460,7 @@ fn spawn_reader<R: Read + Send + 'static>(
                         // oversized line would be the first thing discarded.
                         let keep = MAX_OUTPUT_BYTES / 2;
                         if line.len() > keep {
-                            let clipped: String = line.chars().take(keep).collect();
-                            line = clipped;
+                            line = truncate_utf8_bytes(&line, keep);
                         }
                         line.push_str(&format!(" … [{dropped} bytes dropped]"));
                         dropped = 0;
@@ -1191,17 +1202,17 @@ fn shutdown_jobs() -> i32 {
         for job in table
             .jobs
             .iter_mut()
-            .filter(|job| job.is_active() && mine(job))
+            .filter(|job| mine(job) && (job.is_active() || job.tree.is_some()))
         {
-            job.status = STATUS_INTERRUPTED;
-            job.finished_ms = Some(now_ms());
-            // The tree handle is kept (not cleared): the leader may exit before
-            // its descendants do, and the sweep below runs after this lock is
-            // gone. It is the only thing that reaches those descendants.
-            if let Some(child) = job.child.take() {
-                children.push((child, job.tree.clone()));
+            if job.is_active() {
+                job.status = STATUS_INTERRUPTED;
+                job.finished_ms = Some(now_ms());
+                owners.insert(job.owner.clone());
             }
-            owners.insert(job.owner.clone());
+            // A terminal leader can still own live descendants. Keep both
+            // handles, when present: the process tree is the authority for
+            // descendants and the Child is needed to reap a live leader.
+            children.push((job.child.take(), job.tree.clone()));
         }
         (owners, children)
     };
@@ -1216,12 +1227,16 @@ fn shutdown_jobs() -> i32 {
     let deadline = Instant::now() + Duration::from_secs(10);
     for (child, tree) in children {
         if !kill_process_tree(tree.as_ref()) {
-            if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
+            if let Some(child) = &child {
+                if let Ok(mut child) = child.lock() {
+                    let _ = child.kill();
+                }
             }
         }
-        if let Ok(mut child) = child.lock() {
-            reap_until(&mut child, deadline);
+        if let Some(child) = child {
+            if let Ok(mut child) = child.lock() {
+                reap_until(&mut child, deadline);
+            }
         }
     }
     {
@@ -1633,16 +1648,27 @@ mod tests {
     #[test]
     fn settled_job_can_still_terminate_its_surviving_descendants() {
         let _guard = table_guard();
-        let before = count_sleepers();
+        let pid_file = std::env::temp_dir().join(format!(
+            "rpi-bg-settled-pid-{}-{}",
+            std::process::id(),
+            next_unique_suffix()
+        ));
+        let _ = std::fs::remove_file(&pid_file);
         install_host();
         let payload: Value = serde_json::from_str(
-            &background_tool(&with_session(
-                json!({"command": "sleep 60 &", "label": "orphan"}),
-            ))
+            &background_tool(&with_session(json!({
+                "command": record_pid_command(&pid_file),
+                "label": "orphan"
+            })))
             .unwrap(),
         )
         .unwrap();
         let id = payload["details"]["jobId"].as_u64().unwrap();
+        let pid = wait_for_pid_file(&pid_file);
+        assert!(
+            pid_is_running(pid),
+            "the descendant must start before settlement"
+        );
 
         // The shell exits immediately; its background child keeps running.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1667,7 +1693,7 @@ mod tests {
             "the shell must settle while the child keeps running"
         );
         assert!(
-            count_sleepers() > before,
+            pid_is_running(pid),
             "the descendant must still be running after settlement"
         );
 
@@ -1678,12 +1704,61 @@ mod tests {
                 || reply.contains("no process tree remained"),
             "a settled job with a live tree must not report a plain no-op: {reply}"
         );
-        std::thread::sleep(std::time::Duration::from_millis(600));
-        assert_eq!(
-            count_sleepers(),
-            before,
-            "kill on a settled job must reap the surviving descendants"
-        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while pid_is_running(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "kill on a settled job must terminate descendant pid {pid}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_file(&pid_file);
+    }
+
+    /// Shutdown must also terminate descendants whose shell leader already
+    /// exited. Those rows are terminal, but their retained tree is still live.
+    #[test]
+    fn shutdown_terminates_a_settled_jobs_surviving_descendants() {
+        let _guard = table_guard();
+        let pid_file = std::env::temp_dir().join(format!(
+            "rpi-bg-shutdown-pid-{}-{}",
+            std::process::id(),
+            next_unique_suffix()
+        ));
+        let _ = std::fs::remove_file(&pid_file);
+        install_host();
+        reset();
+        let payload: Value = serde_json::from_str(
+            &background_tool(&with_session(json!({
+                "command": record_pid_command(&pid_file),
+                "label": "shutdown-orphan"
+            })))
+            .unwrap(),
+        )
+        .unwrap();
+        let id = payload["details"]["jobId"].as_u64().unwrap();
+        let pid = wait_for_pid_file(&pid_file);
+        assert!(pid_is_running(pid));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while find_job(id, TEST_SESSION).unwrap()["status"] == STATUS_RUNNING {
+            assert!(Instant::now() < deadline, "the shell never settled");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        std::env::set_var(rpi_plugin_sdk::SESSION_ID_ENV, TEST_SESSION);
+        shutdown_jobs();
+        std::env::remove_var(rpi_plugin_sdk::SESSION_ID_ENV);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pid_is_running(pid) {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown must terminate settled descendant pid {pid}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(find_job(id, TEST_SESSION).unwrap()["status"] != STATUS_RUNNING);
+        let _ = std::fs::remove_file(&pid_file);
     }
 
     /// The resolved shell must be bash, and it must accept a POSIX command.
@@ -1701,8 +1776,8 @@ mod tests {
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        assert_eq!(
-            name, "bash",
+        assert!(
+            name == "bash" || name == "bash.exe",
             "background must run under bash like the `bash` tool does, got {:?}",
             config.shell
         );
@@ -1789,19 +1864,19 @@ mod tests {
 
     /// A command that starts a long-lived grandchild and records its pid.
     ///
-    /// `&` backgrounds it under `sh`, and under `cmd` it starts a second
-    /// process instead — the pid written is the one the shell reports, which is
-    /// the process the tree kill has to reach.
+    /// Unix can use Bash's `$!` directly. Git Bash reports MSYS pids for native
+    /// Windows children, while the SDK's process probe expects native pids, so
+    /// the Windows fixture asks PowerShell to write its own pid.
     #[cfg(unix)]
     fn record_pid_command(pid_file: &std::path::Path) -> String {
-        format!("sleep 60 & echo $! > {}", pid_file.display())
+        format!("sleep 60 & echo $! > '{}'", pid_file.display())
     }
 
     #[cfg(windows)]
     fn record_pid_command(pid_file: &std::path::Path) -> String {
+        let path = pid_file.to_string_lossy().replace('\\', "/");
         format!(
-            "start /B cmd /C \"ping -n 61 127.0.0.1 > nul\" & for /f \"tokens=2 delims=\" \" %i in ('wmic process where \"name='ping.exe'\" get processid /value\"') do @echo %i > {}",
-            pid_file.display()
+            "powershell.exe -NoProfile -Command \"\\$PID | Set-Content -LiteralPath '{path}'; Start-Sleep -Seconds 60\" &"
         )
     }
 
@@ -1823,18 +1898,6 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-    }
-
-    fn count_sleepers() -> usize {
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("ps -A -o command | grep -c '^sleep 60' || true")
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(0)
     }
 
     #[test]
