@@ -1,0 +1,30 @@
+[package]
+name = "rpi-codemode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bounded native JavaScript tool programs for rpi"
+readme = "README.md"
+keywords = ["rpi", "javascript", "tools", "plugin"]
+categories = ["development-tools"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }
+rquickjs = { version = "=0.8.1", default-features = false, features = ["allocator"] }

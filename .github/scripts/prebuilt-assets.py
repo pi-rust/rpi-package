@@ -2,20 +2,40 @@
 
 import argparse
 import hashlib
+import hmac
 import json
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tarfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 
-TARGETS = {
+GNU_TARGETS = {
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
 }
+
+# The first musl release is intentionally x86_64-only. The build is native in
+# the musl container, which is required for cdylib/unwind and native package
+# detection. Add another target only together with a native toolchain and
+# runtime smoke test for that architecture.
+MUSL_TARGETS = {
+    "x86_64-unknown-linux-musl",
+}
+TARGETS = GNU_TARGETS | MUSL_TARGETS
+# Full bundles use the installer/catalog and therefore remain GNU-only until
+# the installer can filter catalog entries by target. Individual package
+# releases use each crate's declared target matrix below.
+BUNDLE_TARGETS = GNU_TARGETS
+WEB_TARGETS = GNU_TARGETS | MUSL_TARGETS
 
 
 def command(*args):
@@ -41,6 +61,16 @@ def asset(path, repository, tag):
     }
 
 
+def platform_slug(target):
+    """Return the installer/archive slug without conflating GNU and musl."""
+    windows = "windows" in target
+    macos = "apple-darwin" in target
+    os_name = "windows" if windows else "macos" if macos else "linux"
+    arch = target.split("-", 1)[0]
+    suffix = "-musl" if target.endswith("-unknown-linux-musl") else ""
+    return f"{os_name}-{arch}{suffix}"
+
+
 def archive_library(library, destination):
     if destination.suffix == ".zip":
         with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -48,6 +78,40 @@ def archive_library(library, destination):
     else:
         with tarfile.open(destination, "w:gz") as archive:
             archive.add(library, arcname=library.name)
+
+
+def package_supported_targets(package):
+    """Read the crate-owned prebuilt target contract.
+
+    Missing metadata is deliberately conservative: it preserves the historical
+    GNU/Windows/macOS set but never opts an unreviewed crate into musl.
+    """
+    package_metadata = package.get("metadata") or {}
+    rpi_metadata = package_metadata.get("rpi") or {}
+    prebuilt = rpi_metadata.get("prebuilt") or {}
+    if not isinstance(prebuilt, dict):
+        return set(GNU_TARGETS)
+    declared = prebuilt.get("supported-targets")
+    if not isinstance(declared, list) or not all(isinstance(target, str) for target in declared):
+        return set(GNU_TARGETS)
+    unknown = set(declared) - TARGETS
+    if unknown:
+        raise ValueError(f"{package['name']} declares unknown prebuilt targets: {sorted(unknown)}")
+    return set(declared)
+
+
+def workspace_metadata(root=None):
+    args = ["cargo", "metadata", "--format-version", "1", "--locked"]
+    if root:
+        args.extend(["--manifest-path", str(pathlib.Path(root) / "Cargo.toml")])
+    return json.loads(subprocess.check_output(args, text=True, encoding="utf-8"))
+
+
+def package_targets_by_name(metadata, name):
+    for package in metadata.get("packages", []):
+        if package.get("name") == name:
+            return package_supported_targets(package)
+    return set(TARGETS)
 
 
 def sdk_identity(package, metadata):
@@ -79,6 +143,8 @@ def build(args):
     output.mkdir(parents=True, exist_ok=True)
     selected = set(json.loads(args.tags))
     found = set()
+    known_tags = set()
+    eligible_selected = set()
     packages = []
     for package in metadata["packages"]:
         if package["id"] not in metadata["workspace_members"]:
@@ -87,6 +153,12 @@ def build(args):
         if not library_target:
             continue
         tag = f"{package['name']}-v{package['version']}"
+        known_tags.add(tag)
+        supported_targets = package_supported_targets(package)
+        if args.target not in supported_targets:
+            continue
+        if tag in selected:
+            eligible_selected.add(tag)
         if getattr(args, "packages_only", False) and tag not in selected:
             continue
         stem = library_target["name"] if windows else "lib" + library_target["name"]
@@ -116,16 +188,20 @@ def build(args):
             "sdk": record["sdk"], "target": args.target, "distribution": distribution,
         }
         write_json(output / f"{package['name']}.{args.target}.json", fragment)
-    if selected != found:
-        raise ValueError(f"Release tags do not match workspace versions: {sorted(selected - found)}")
+    unknown = selected - known_tags
+    if unknown:
+        raise ValueError(f"Release tags do not match workspace versions: {sorted(unknown)}")
+    if eligible_selected != found:
+        raise ValueError(f"Missing supported release tags: {sorted(eligible_selected - found)}")
     if getattr(args, "packages_only", False):
         if not selected:
             raise ValueError("Package-only builds require at least one release tag")
         return
 
-    os_name = "windows" if windows else "macos" if macos else "linux"
-    arch = args.target.split("-")[0]
-    platform = f"{os_name}-{arch}"
+    if args.target not in BUNDLE_TARGETS:
+        return
+
+    platform = platform_slug(args.target)
     bundle = pathlib.Path("dist") / f"rpi-packages-{platform}.{archive_extension}"
     bridge = pathlib.Path("dist") / f"rpi-acp-{platform}.{archive_extension}"
     # The installer has already produced the bundle and standalone ACP bridge.
@@ -158,10 +234,11 @@ def upload(tag, paths):
     subprocess.run(["gh", "release", "upload", tag, *map(str, paths), "--clobber"], check=True)
 
 
-def collect(root, pattern, source_ref):
+def collect(root, pattern, source_ref, expected_targets=None):
+    expected_targets = TARGETS if expected_targets is None else expected_targets
     fragments = [json.loads(path.read_text(encoding="utf-8")) for path in root.glob(pattern)]
     targets = [fragment["target"] for fragment in fragments]
-    if set(targets) != TARGETS or len(targets) != len(TARGETS):
+    if set(targets) != expected_targets or len(targets) != len(expected_targets):
         raise ValueError(f"Missing or duplicate platform artifacts for {pattern}: {targets}")
     if any(fragment["source_commit"] != source_ref for fragment in fragments):
         raise ValueError("Platform artifacts were built from different source commits")
@@ -176,13 +253,220 @@ def checked_archive(root, distribution):
     return path
 
 
+RUSTFS_CORE_ENV = (
+    "RPI_RUSTFS_ENDPOINT",
+    "RPI_RUSTFS_BUCKET",
+    "RPI_RUSTFS_ACCESS_KEY",
+    "RPI_RUSTFS_SECRET_KEY",
+)
+
+
+def rustfs_configuration(environ=None):
+    """Read optional mirror settings without ever logging credentials."""
+    environ = os.environ if environ is None else environ
+    values = {name: environ.get(name, "").strip() for name in RUSTFS_CORE_ENV}
+    public_url = environ.get("RPI_CDN_BASE_URL", "").strip()
+    if not any(values.values()):
+        return None
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise ValueError("RustFS mirror is partially configured; missing " + ", ".join(missing))
+    parsed_endpoint = urllib.parse.urlparse(values["RPI_RUSTFS_ENDPOINT"])
+    if (parsed_endpoint.scheme not in ("http", "https") or not parsed_endpoint.netloc
+            or parsed_endpoint.username or parsed_endpoint.password
+            or parsed_endpoint.query or parsed_endpoint.fragment):
+        raise ValueError("RPI_RUSTFS_ENDPOINT must be an http(s) URL without credentials or query")
+    if public_url:
+        parsed_public = urllib.parse.urlparse(public_url)
+        if (parsed_public.scheme not in ("http", "https") or not parsed_public.netloc
+                or parsed_public.username or parsed_public.password
+                or parsed_public.query or parsed_public.fragment):
+            raise ValueError("RPI_CDN_BASE_URL must be an http(s) URL without credentials or query")
+    values["RPI_CDN_BASE_URL"] = public_url.rstrip("/")
+    return values
+
+
+def _distribution_files(root, distribution):
+    path = checked_archive(root, distribution)
+    if path.name != pathlib.Path(path.name).name:
+        raise ValueError(f"Release asset name must not contain a path: {path.name}")
+    files = [path]
+    checksum = root / (path.name + ".sha256")
+    if checksum.is_file():
+        files.append(checksum)
+    return files
+
+
+def mirror_files(root, tags, bundle_tag=None):
+    """Return (release tag, local path) pairs for the exact published assets."""
+    files = []
+    for tag in tags:
+        manifest_path = root / "manifests" / tag / "rpi-extension.json"
+        if not manifest_path.is_file():
+            raise ValueError(f"Missing package discovery manifest for mirror: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("tag") != tag:
+            raise ValueError(f"Package manifest tag does not match mirror tag: {tag}")
+        for distribution in manifest.get("targets", {}).values():
+            files.extend((tag, path) for path in _distribution_files(root, distribution))
+        files.append((tag, manifest_path))
+
+    if bundle_tag and bundle_tag != "unused":
+        manifest_path = root / "rpi-packages.json"
+        if not manifest_path.is_file():
+            raise ValueError(f"Missing bundle discovery manifest for mirror: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("tag") != bundle_tag:
+            raise ValueError("Bundle manifest tag does not match mirror tag")
+        for target in manifest.get("targets", {}).values():
+            for name in ("archive", "acp_bridge"):
+                files.extend((bundle_tag, path) for path in _distribution_files(root, target[name]))
+        files.append((bundle_tag, manifest_path))
+    return files
+
+
+def _object_key(tag, path):
+    return f"rpi-package/releases/{tag}/{path.name}"
+
+
+def _aws_head_command(aws, config, key):
+    return [aws, "s3api", "head-object", "--bucket", config["RPI_RUSTFS_BUCKET"],
+            "--key", key, "--endpoint-url", config["RPI_RUSTFS_ENDPOINT"], "--no-cli-pager"]
+
+
+def _aws_copy_command(aws, config, tag, path):
+    key = _object_key(tag, path)
+    if path.suffix == ".json":
+        content_type = "application/json"
+        cache_control = "public,max-age=60,s-maxage=60,must-revalidate"
+    elif path.name.endswith(".sha256"):
+        content_type = "text/plain"
+        cache_control = "public,max-age=31536000,immutable"
+    else:
+        content_type = "application/octet-stream"
+        cache_control = "public,max-age=31536000,immutable"
+    return [aws, "s3", "cp", str(path),
+            f"s3://{config['RPI_RUSTFS_BUCKET']}/{key}",
+            "--endpoint-url", config["RPI_RUSTFS_ENDPOINT"], "--only-show-errors",
+            "--content-type", content_type, "--cache-control", cache_control,
+            "--metadata", f"sha256={digest(path)}"]
+
+
+def _is_missing_object(result):
+    output = ((result.stdout or "") + "\\n" + (result.stderr or "")).lower()
+    return "nosuchkey" in output or "status code: 404" in output or "(404)" in output
+
+
+def _verify_existing_object(result, path):
+    try:
+        metadata = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Cannot verify existing immutable CDN object: {path.name}") from error
+    if metadata.get("ContentLength") != path.stat().st_size:
+        raise ValueError(f"Immutable CDN object has a different size: {path.name}")
+    remote_sha = (metadata.get("Metadata") or {}).get("sha256")
+    if remote_sha and remote_sha != digest(path):
+        raise ValueError(f"Immutable CDN object has a different checksum: {path.name}")
+
+
+def _sign_request(config, method, key, body=b""):
+    """Minimal S3 Signature V4 request for the no-AWS-CLI fallback."""
+    endpoint = urllib.parse.urlparse(config["RPI_RUSTFS_ENDPOINT"])
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    date = now.strftime("%Y%m%d")
+    payload_hash = hashlib.sha256(body).hexdigest()
+    path = "/" + urllib.parse.quote(config["RPI_RUSTFS_BUCKET"] + "/" + key, safe="/-_.~")
+    host = endpoint.netloc
+    headers = {"host": host, "x-amz-content-sha256": payload_hash, "x-amz-date": amz_date}
+    canonical_headers = "".join(f"{name}:{headers[name]}\n" for name in sorted(headers))
+    signed_headers = ";".join(sorted(headers))
+    canonical = "\n".join((method, path, "", canonical_headers, signed_headers, payload_hash))
+    scope = f"{date}/us-east-1/s3/aws4_request"
+    string_to_sign = "\n".join(("AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(canonical.encode()).hexdigest()))
+    def sign(key_bytes, value):
+        return hmac.new(key_bytes, value.encode(), hashlib.sha256).digest()
+    signing_key = sign(sign(sign(sign(("AWS4" + config["RPI_RUSTFS_SECRET_KEY"]).encode(), date), "us-east-1"), "s3"), "aws4_request")
+    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+    headers["Authorization"] = f"AWS4-HMAC-SHA256 Credential={config['RPI_RUSTFS_ACCESS_KEY']}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
+    return urllib.parse.urlunparse((endpoint.scheme, endpoint.netloc, path, "", "", "")), headers
+
+
+def _stdlib_mirror(config, tag, path):
+    key = _object_key(tag, path)
+    try:
+        url, headers = _sign_request(config, "HEAD", key)
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers, method="HEAD")) as response:
+            length = response.headers.get("Content-Length")
+            if length and int(length) != path.stat().st_size:
+                raise ValueError(f"Immutable CDN object has a different size: {path.name}")
+            remote_sha = response.headers.get("x-amz-meta-sha256")
+            if remote_sha and remote_sha != digest(path):
+                raise ValueError(f"Immutable CDN object has a different checksum: {path.name}")
+            print(f"Preserving existing immutable CDN object: {key}")
+            return
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise RuntimeError(f"CDN HEAD request failed for {key}: HTTP {error.code}") from error
+    body = path.read_bytes()
+    url, headers = _sign_request(config, "PUT", key, body)
+    headers["content-type"] = "application/json" if path.suffix == ".json" else (
+        "text/plain" if path.name.endswith(".sha256") else "application/octet-stream")
+    headers["cache-control"] = ("public,max-age=60,s-maxage=60,must-revalidate"
+                                 if path.suffix == ".json" else "public,max-age=31536000,immutable")
+    headers["x-amz-meta-sha256"] = digest(path)
+    headers["content-length"] = str(len(body))
+    request = urllib.request.Request(url, data=body, headers=headers, method="PUT")
+    with urllib.request.urlopen(request):
+        pass
+
+
+def mirror(args):
+    config = rustfs_configuration()
+    if config is None:
+        print("RustFS mirror not configured; skipping optional CDN mirror.")
+        return
+    root = pathlib.Path(args.output)
+    files = mirror_files(root, json.loads(args.tags), args.bundle_tag)
+    base = config["RPI_CDN_BASE_URL"]
+    destination = base + "/rpi-package/releases/" if base else "configured S3 endpoint"
+    print(f"RustFS mirror enabled for {len(files)} immutable release files ({destination})")
+    aws = shutil.which("aws")
+    if args.dry_run:
+        for tag, path in files:
+            print("DRY-RUN", " ".join(_aws_copy_command(aws or "aws", config, tag, path)))
+        return
+    if aws:
+        command_env = os.environ.copy()
+        command_env.update({"AWS_ACCESS_KEY_ID": config["RPI_RUSTFS_ACCESS_KEY"],
+                            "AWS_SECRET_ACCESS_KEY": config["RPI_RUSTFS_SECRET_KEY"],
+                            "AWS_EC2_METADATA_DISABLED": "true"})
+        for tag, path in files:
+            key = _object_key(tag, path)
+            head = subprocess.run(_aws_head_command(aws, config, key), env=command_env,
+                                  capture_output=True, text=True)
+            if head.returncode == 0:
+                _verify_existing_object(head, path)
+                print(f"Preserving existing immutable CDN object: {key}")
+                continue
+            if not _is_missing_object(head):
+                raise RuntimeError(f"Cannot inspect CDN object before immutable upload: {key}")
+            subprocess.run(_aws_copy_command(aws, config, tag, path), env=command_env, check=True)
+    else:
+        print("AWS CLI unavailable; using the standard-library S3 uploader.")
+        for tag, path in files:
+            _stdlib_mirror(config, tag, path)
+
+
 def publish(args):
     root = pathlib.Path(args.output)
     # Validate all platforms and prepare all manifests before any upload.
     prepared = []
     for tag in json.loads(args.tags):
         name, version = tag.rsplit("-v", 1)
-        fragments = collect(root, f"{name}.*.json", args.source_ref)
+        metadata = workspace_metadata(getattr(args, "metadata_root", None))
+        expected_targets = package_targets_by_name(metadata, name)
+        fragments = collect(root, f"{name}.*.json", args.source_ref, expected_targets)
         first = fragments[0]
         identity = (name, version, first["repository"], tag, first["sdk"])
         for fragment in fragments:
@@ -211,7 +495,7 @@ def publish(args):
             upload(tag, [manifest])
         return
 
-    bundles = collect(root, "bundle.*.json", args.source_ref)
+    bundles = collect(root, "bundle.*.json", args.source_ref, BUNDLE_TARGETS)
     bundle_manifest = {
         "schema_version": 1, "repository": f"https://github.com/{args.repository}",
         "tag": args.bundle_tag, "source_commit": args.source_ref,
@@ -239,7 +523,7 @@ def publish(args):
             print(f"Preserving already published immutable assets: {tag}")
             continue
         upload(tag, paths)
-        # Publish the discovery manifest last, after all five archives exist.
+        # Publish the discovery manifest last, after all supported archives exist.
         upload(tag, [manifest])
 
     if not bundle_exists:
@@ -253,18 +537,22 @@ def publish(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("build", "publish"))
+    parser.add_argument("command", choices=("build", "publish", "mirror"))
     parser.add_argument("--target", choices=sorted(TARGETS))
-    parser.add_argument("--repository", required=True)
-    parser.add_argument("--source-ref", required=True)
-    parser.add_argument("--bundle-tag", required=True)
+    parser.add_argument("--repository")
+    parser.add_argument("--source-ref")
+    parser.add_argument("--bundle-tag", default="unused")
     parser.add_argument("--tags", default="[]", help="JSON array of per-package release tags")
     parser.add_argument("--packages-only", action="store_true", help="Build/publish selected packages without the full workspace bundle")
     parser.add_argument("--output", default="dist/release-assets")
+    parser.add_argument("--dry-run", action="store_true", help="Print mirror commands without uploading")
+    parser.add_argument("--metadata-root", help="workspace checkout used for package target declarations")
     args = parser.parse_args()
-    if args.command == "build" and not args.target:
-        parser.error("build requires --target")
-    (build if args.command == "build" else publish)(args)
+    if args.command == "build" and (not args.target or not args.repository or not args.source_ref):
+        parser.error("build requires --target, --repository and --source-ref")
+    if args.command == "publish" and (not args.repository or not args.source_ref):
+        parser.error("publish requires --repository and --source-ref")
+    (build if args.command == "build" else publish if args.command == "publish" else mirror)(args)
 
 
 if __name__ == "__main__":

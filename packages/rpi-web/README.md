@@ -28,9 +28,52 @@ Tool headers show exact **native tool names by default**, including prefixes and
 
 Long shell commands inside tool details default to a four-line visual preview. Use **Show full command / 展开完整命令** to reveal the complete command and collapse it again when finished. Short commands need no extra click; copying always retains the full original command, including quotes and newlines.
 
-Completed conversation runs also show a compact **Worked for … / 已用时 …** divider, including failed and stopped runs. This is the native run's persisted finish timestamp minus its start timestamp, including model calls, tools and waiting—not a sum of tool timings or a browser stopwatch. Live completion and historical/reloaded messages use the same metadata. Requires the matching `rpi-http`/`rpi-extcore` backend update; an older backend quietly omits the divider. Incomplete or imported histories without authoritative run records do not display estimated times. Timing lookups run separately from the bounded transcript snapshot and resume in bounded chunks; they never block opening the conversation or change its SSE sequence boundary. Installing/restarting the backend is a separate operator step.
+Completed conversation runs also show a compact **Worked for … / 已用时 …** divider, including failed and stopped runs. This is the native run's persisted finish timestamp minus its start timestamp, including model calls, tools and waiting—not a sum of tool timings or a browser stopwatch. Live completion and historical/reloaded messages use the same metadata. Requires the matching `rpi-httpcore`/`rpi-extcore` backend update; an older backend quietly omits the divider. Incomplete or imported histories without authoritative run records do not display estimated times. Timing lookups run separately from the bounded transcript snapshot and resume in bounded chunks; they never block opening the conversation or change its SSE sequence boundary. Installing/restarting the backend is a separate operator step.
 
 Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
+
+### Idle session timeout
+
+Web automatically releases an **idle native host** after 30 minutes without a
+request for that session. This closes the child process but preserves the
+session registry entry and native transcript; opening the chat again restores
+it. A running operation, pending dialog, queued work, or uncertain native idle
+state is never interrupted. Set `"sessionTimeoutSeconds": 0` in `.rpi/web.json`
+to disable the reaper, or choose another positive number of seconds. The
+command-line override is `--session-timeout SECONDS` (use `0` to disable).
+This is a resource cleanup timeout, not permanent session deletion.
+
+## Code Mode child inspection
+
+Native-identified tool rows offer **Inspect child calls / 查看子调用**. Opening it
+requests a separate bounded, read-only child snapshot/feed and groups children
+only by the exact native parent call ID and tool name. Synthetic row IDs are not
+native identity. One visible session scope owns the feed and aborts it on
+navigation; ordinary transcript messages, timings and SSE stay unchanged.
+
+The window holds at most eight children / eight phases each. Earlier child and
+phase pages are explicit, pinned replacements, not an automatic history scan.
+Outcomes come from core observations; unknown, final-only and historical fork
+copies remain distinct from established completion or destination execution.
+Bodies are never fetched automatically. **Read body page** requests at most two
+chunks / 64 KiB; each subsequent page replaces the prior byte fragment. This is
+not whole-body decoding/integrity verification or an image/result reconstruction.
+Live/replayed phases do not borrow an older page's leaf: their first explicit
+body read independently pins the current native branch; body continuations keep
+that returned leaf without rebasing historical cursors.
+
+A dedicated SSE snapshot wins its own handoff. Resync/disconnection retires the
+old feed before fresh bounded recovery; transcript `Last-Event-ID` is never used
+for child replay. Retries are bounded, auth failures stop, and unsupported/error
+states never become a successful empty child list or erase ordinary tool output.
+Refresh/reload does not execute or replay a tool.
+
+This frontend requires matching core/HTTP/native layers. Local and public-dev
+browser fixtures exercise rendering, pagination, reconnect/reload, cancellation,
+errors and new-leaf body reads; public CSS HMR was observed and restored. Those
+fixtures mock the API: they do **not** qualify real-native ongoing Web overlap or
+upgrade the shared Rust backend. No backend installation/restart/deployment is
+performed. See [qualification](../../docs/codemode-full-parity-matrix.md#current-child-adapter-and-web-increment).
 
 ## Message links and branding
 
@@ -127,8 +170,10 @@ After the listener binds successfully, the terminal shows a server status page:
 The standalone program remains available for direct execution and container deployments:
 
 1. Download and extract `rpi` for your platform from the [host v0.7.0 release](https://github.com/bigfish1913/pi-rust/releases/tag/v0.7.0).
-2. Download and extract `rpi-web` from the [Web releases](https://github.com/pi-rust/rpi-package/releases?q=rpi-web-v). Builds are available for Windows x64, Linux x64 / ARM64, and macOS Intel / Apple Silicon.
+2. Download and extract `rpi-web` from the [Web releases](https://github.com/pi-rust/rpi-package/releases?q=rpi-web-v). Builds are available for Windows x64, Linux GNU x64 / ARM64, Linux musl x64, and macOS Intel / Apple Silicon.
 3. The archive includes a complete `assets/` directory for external frontend overrides. Place the host executable alongside the Web executable, or select it with an absolute `--rpi-bin` path. The release's `rpi-web-release.json` contains checksums.
+
+The musl extension requires a musl `rpi` host; GNU and musl libraries are not interchangeable. The musl standalone program and extension use the dynamic musl runtime (and `libgcc_s`), rather than a fully static executable. On Alpine, install `libgcc`. Release CI builds both entrypoints with a native musl Rust compiler, tests the packages, loads the extension with a musl `dlopen` fixture, and checks the standalone HTTP listener before publishing. The CDN mirror includes both standalone archives and installable extension archives with their manifests.
 
 For example, a Windows installation can use this layout:
 
@@ -361,9 +406,9 @@ and `--assets` can point at an existing bundle.
 
 ### Shared backend
 
-The source implementation now composes the `rpi-http` API adapter with the frontend routes in this package. Shared native RPC, runs, session/workspace services, history, events and timing belong to `rpi-extcore`; ACP uses the same native driver and run/message semantics. The existing Web executable and extension still include everything needed to run the browser workspace.
+The source implementation now composes the `rpi-httpcore` API adapter with the frontend routes in this package. Shared native RPC, runs, session/workspace services, history, events and timing belong to `rpi-extcore`; ACP uses the same native driver and run/message semantics. The existing Web executable and extension still include everything needed to run the browser workspace.
 
-For an API-only service, see [rpi-http](../rpi-http/README.md). The dependency boundaries and compatibility contract are documented in [the architecture guide](../../docs/architecture/extension-core.md).
+For an API-only service, see [rpi-httpcore](../rpi-httpcore/README.md). The dependency boundaries and compatibility contract are documented in [the architecture guide](../../docs/architecture/extension-core.md).
 
 ### How the frontend is built and served
 

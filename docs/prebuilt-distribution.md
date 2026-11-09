@@ -37,12 +37,13 @@ If organization policy blocks Actions PR creation, set the optional
 permissions instead.
 
 After crate publishing, `release-assets.yml` automatically builds Windows x64,
-Linux x64/ARM64, and macOS Intel/Apple Silicon binaries from the exact release
-commit. Each package Release receives individual extension archives and an
-`rpi-extension.json` manifest with download URLs, SHA-256 hashes, target triples,
-library names and SDK ABI. A separate bundle Release contains the full
-collection, installer and standalone ACP bridge. The existing
-`release-unix.yml` manual entry point now uses the same five-platform pipeline.
+Linux x64/ARM64 GNU, Linux x64 musl, and macOS Intel/Apple Silicon binaries
+from the exact release commit. Each package Release receives individual
+extension archives and an `rpi-extension.json` manifest with download URLs,
+SHA-256 hashes, target triples, library names and SDK ABI. A separate bundle
+Release contains the catalog collection, installer and standalone ACP bridge;
+archived host-owned packages are intentionally omitted. The existing
+`release-unix.yml` manual entry point uses the same target set.
 
 Host developers can implement prebuilt installation using the discovery
 protocol below and its [JSON schema](rpi-extension.schema.json). Discover the
@@ -82,6 +83,27 @@ resolve to the same repository, and third-party repositories can implement the
 same protocol. A host may provide an explicit repository override or trusted
 registry mapping for extensions that have not been published to crates.io.
 
+Each extension crate owns its prebuilt support declaration in `Cargo.toml`:
+
+```toml
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+```
+
+The default for a missing declaration is the five historical GNU/Windows/macOS
+targets; it never opts a crate into musl. Release CI reads this metadata from
+the exact source checkout, builds only declared target/package combinations,
+and validates each package manifest against the same declaration. A crate such
+as `rpi-voice` can therefore remain GNU-only without blocking musl artifacts
+for other crates.
+
 `rpi-extension.json` is uploaded **after all platform archives are available**.
 A missing manifest means the requested version has no complete prebuilt release
 yet. Report that state or retry later; never silently install another package's
@@ -99,6 +121,7 @@ Release tag: rpi-goal-v0.1.7
   rpi-goal-0.1.7-x86_64-pc-windows-msvc.zip
   rpi-goal-0.1.7-x86_64-unknown-linux-gnu.tar.gz
   rpi-goal-0.1.7-aarch64-unknown-linux-gnu.tar.gz
+  rpi-goal-0.1.7-x86_64-unknown-linux-musl.tar.gz
   rpi-goal-0.1.7-x86_64-apple-darwin.tar.gz
   rpi-goal-0.1.7-aarch64-apple-darwin.tar.gz
 ```
@@ -107,7 +130,7 @@ Each package archive is flat and contains only that extension's library. Cargo
 library target names determine file names, including `lib` on Unix; consumers
 must read `library.path` rather than derive it from the package name.
 
-Example manifest showing one target (real releases include all five):
+Example manifest showing one target (each package lists only its declared supported targets):
 
 ```json
 {
@@ -139,18 +162,32 @@ Unknown fields may be ignored; unknown schema versions must be rejected.
 ## Bundles and build provenance
 
 The aggregate Release `rpi-packages-<first 12 characters of source commit>`
-contains `rpi-packages.json`, five full platform bundles, and five standalone
-ACP bridge archives. Bundles contain all workspace cdylibs, the installer, and
+contains `rpi-packages.json`, five full GNU platform bundles, and five
+standalone ACP bridge archives. Individual package Releases may additionally
+contain musl archives when that crate declares musl support. Bundles contain
+all workspace cdylibs for their GNU targets, the installer, and
 the catalog. `rpi-packages.json` maps target triples to archive checksums and
 the individual package versions, SDK identities and library checksums.
 It is a convenience distribution for installing the whole collection; single
 package installation uses the package Release above.
 
-All five builds use the same exact Git commit. Linux GNU builds use Ubuntu
-22.04; normal runtime dependencies such as glibc, ALSA and OpenSSL still apply.
-The supported targets are Windows x64 MSVC, Linux x64/ARM64 GNU, and macOS
-Intel/Apple Silicon. Windows ARM64, Linux musl and 32-bit platforms are not
-currently built. The loader performs the final host compatibility check.
+All GNU builds use the same exact Git commit. Linux GNU builds use Ubuntu
+22.04. The x86_64 musl job uses a native musl toolchain container and builds
+only crates that explicitly declare `x86_64-unknown-linux-musl` support in
+`[package.metadata.rpi.prebuilt].supported-targets`. All workspace extension
+crates except `rpi-voice` declare x86_64 musl support.
+`rpi-voice` remains GNU-only because of its ALSA, native-tls/OpenSSL and
+sherpa-onnx native dependencies. A native Alpine Rust toolchain builds the
+complete selected package list; each library must exist and pass ELF dependency,
+export, and musl `dlopen` checks before it can be packaged. Windows ARM64,
+Linux aarch64 musl and 32-bit platforms are
+not currently built. The loader performs the final host compatibility check.
+
+Musl builds use `-C target-feature=-crt-static` because Rust otherwise drops
+`cdylib` targets for the musl target. Individual package manifests are the
+source of truth; a missing declaration never opts a crate into musl. Do not
+mix GNU and musl plugins or hosts: the libc variant is part of the exact target
+triple and the archive slug.
 
 ## Release automation
 
@@ -174,16 +211,52 @@ API only; it does not bypass `main` protection. A version-PR push triggered by
 that token is skipped by the release workflow because the original run already
 publishes the merged commit. `workflow_dispatch` can always retry that commit.
 
-The build pipeline preserves Actions artifacts for 14 days. Five-platform
-assembly verifies source commit, package identity, SDK identity and checksums
-before uploading discovery manifests. A completed manifest and its archives
-are preserved on retry; unfinished releases can finish uploading safely.
+The build pipeline preserves Actions artifacts for 14 days. GNU bundle
+assembly and per-package target matrices verify source commit, package
+identity, SDK identity and checksums before uploading discovery manifests. The
+musl build also uses a native musl `dlopen`/`dlsym` smoke loader against
+`rpi-goal` before packaging. A completed manifest and its archives are
+preserved on retry; unfinished releases can finish uploading safely.
 To recover a failed asset build, rerun the failed jobs or manually invoke
 `release-assets.yml` with the published commit and a JSON array of its package
-tags. The existing `release-unix.yml` entry point now manually builds all five
-platform bundles from its supplied tag.
+tags. The existing `release-unix.yml` entry point now manually builds the
+GNU platform bundles from its supplied tag; individual musl package assets are
+built according to each crate's target declaration.
 
 Repository prerequisites: `CARGO_REGISTRY_TOKEN` with publishing permission
 for all extension crates, Actions PR creation enabled or `RELEASE_GITHUB_TOKEN`,
 and permission for the workflow token to push its release branch and create
 Releases. `main` remains protected against direct pushes, including bot pushes.
+
+## Optional RustFS/CDN mirror
+
+GitHub Releases remain the canonical package source. The asset workflow can
+also copy the exact validated archives and discovery manifests to an optional
+S3-compatible RustFS bucket. Configure these repository Actions secrets to
+enable it:
+
+```text
+RPI_RUSTFS_ENDPOINT
+RPI_RUSTFS_BUCKET
+RPI_RUSTFS_ACCESS_KEY
+RPI_RUSTFS_SECRET_KEY
+RPI_CDN_BASE_URL=https://assets.bigfisharc.cn
+```
+
+Objects use the shared public layout:
+
+```text
+rpi-package/releases/<package-tag>/rpi-extension.json
+rpi-package/releases/<package-tag>/<archive>
+rpi-package/releases/<bundle-tag>/rpi-packages.json
+rpi-package/releases/<bundle-tag>/<archive>
+```
+
+The mirror is skipped when no RustFS settings are present. A partial
+configuration fails clearly rather than silently publishing an incomplete
+mirror. Existing objects are checked for size and the recorded SHA-256 before
+they are preserved; versioned objects are never overwritten with different
+content. Configure the RustFS bucket/CDN for public object reads without
+public listing, writing or deleting, and use a short cache for manifests and
+long immutable caching for versioned archives. The client continues to trust
+the GitHub manifest and uses the CDN only as an optional archive accelerator.

@@ -33,12 +33,15 @@ import {
   ListTodo,
   Loader2,
   LogOut,
+  Maximize2,
+  Minimize2,
   Moon,
   Paperclip,
   PanelLeft,
   Play,
   RefreshCw,
   RotateCcw,
+  Search,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -46,12 +49,15 @@ import {
   Sigma,
   Sun,
   Wrench,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { ShellCommand } from "./ShellCommand";
-import { SessionIssueBadge } from "./SessionIssueBadge";
+import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
+import { MessageSearch } from "./MessageSearchPanel";
 import { ProviderManager } from "./ProviderManager";
 import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
@@ -95,6 +101,8 @@ import { useRunTimings, timingByRow } from "./useRunTimings";
 import { groupTodoUpdates, isTodoTool } from "./todoGroups";
 import { RunElapsed } from "./RunElapsed";
 import { ExecutionTrace } from "./ExecutionTracePanel";
+import { ToolProgramChildren, ToolProgramProvider } from "./ToolProgramChildren";
+import { parentToolCallId } from "./toolProgram";
 import { useExecutionTrace } from "./useExecutionTrace";
 import { traceView } from "./executionTrace";
 import { AttachmentCard, UserMessageBody } from "./AttachmentCard";
@@ -117,6 +125,11 @@ import {
   RenameDialog,
   TagsDialog,
 } from "./ProjectSidebar";
+import {
+  loadedSearchResults,
+  summaryMatches,
+  type MessageSearchResult,
+} from "./messageSearch";
 import {
   rowsFromAssistant,
   rowsFromMessages,
@@ -570,6 +583,7 @@ function latestMessageStats(messages: unknown[]): RuntimeState["stats"] {
 
 /** One line of a provider error, for a transcript row. */
 function shortReason(value: unknown) {
+  if (value == null) return "";
   const text = typeof value === "string" ? value : errorText(value);
   const line = text.split("\n")[0] ?? "";
   return line.length > 160 ? `${line.slice(0, 157)}…` : line;
@@ -579,11 +593,78 @@ function errorText(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+function sessionLifecycleError(cause: unknown, language: Language) {
+  if (!(cause instanceof ApiError)) return null;
+  const zh = language === "zh";
+  switch (cause.code) {
+    case "session_busy":
+      return zh ? "会话仍在运行，请先停止并等待结束后再操作。" : "Session is running. Stop it and wait for it to settle before trying again.";
+    case "session_idle_unknown":
+      return zh ? "暂时无法确认会话是否空闲，请稍后重试。" : "Cannot confirm the session is idle. Try again later.";
+    case "session_deleting":
+      return zh ? "会话正在删除，无法打开或操作。请在会话操作菜单中重试永久删除。" : "Session deletion is incomplete. Retry permanent deletion from Session actions before opening or using it.";
+    case "session_archived":
+      return zh ? "请先恢复会话再打开（会话操作 → 恢复会话）。" : "Restore the chat before opening it (Session actions → Restore chat).";
+    default:
+      // Never display remote deletion diagnostics (which may contain private paths).
+      if (cause.code?.includes("delet"))
+        return zh ? "永久删除未完成。请检查会话状态后手动重试。" : "Permanent deletion did not complete. Check the session state, then retry manually.";
+      return null;
+  }
+}
+
+function sessionSelectionError(session?: SessionSummary) {
+  return session?.deleting ? new ApiError("", 409, "session_deleting")
+    : session?.archived ? new ApiError("", 409, "session_archived") : null;
+}
+
+type SessionCompletionNotification = {
+  id: string;
+  sessionId: string;
+  title: string;
+  outcome: string;
+  error: string;
+};
+
+function isFailedOutcome(outcome: string) {
+  return ["failed", "error", "interrupted", "aborted", "stopped"].includes(
+    outcome,
+  );
+}
+
+type SettlementIdentity = NonNullable<SessionSummary["latestSettlement"]>;
+const SESSION_NOTIFICATION_SUCCESS_TIMEOUT_MS = 6_000;
+const SESSION_NOTIFICATION_ERROR_TIMEOUT_MS = 12_000;
+
+function settlementKey(
+  settlement: SettlementIdentity | null | undefined,
+  fallbackSeq?: number,
+) {
+  if (!settlement) return null;
+  if (settlement.runId) return `run:${settlement.runId}`;
+  if (settlement.seq != null) return `seq:${settlement.seq}`;
+  // Older native settlement payloads do not carry a run ID or their SSE
+  // sequence. The session summary still exposes the sequence as lastSeq;
+  // use it so the live event and the polling refresh share one identity.
+  if (fallbackSeq != null) return `seq:${fallbackSeq}`;
+  if (settlement.outcome) return `outcome:${settlement.outcome}`;
+  return null;
+}
+
 function normalizeLevel(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
 export default function App() {
+  function errorText(cause: unknown) {
+    return sessionLifecycleError(cause, language) ?? (cause instanceof Error ? cause.message : String(cause));
+  }
+
+  function retirementError(cause: unknown, deleting = false) {
+    return sessionLifecycleError(cause, language) ?? (language === "zh"
+      ? deleting ? "永久删除未完成。请检查会话状态后手动重试。" : "无法更新会话，请稍后重试。"
+      : deleting ? "Permanent deletion did not complete. Check the session state, then retry manually." : "Could not update the chat. Try again later.");
+  }
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [nativeMessageQueries, setNativeMessageQueries] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
@@ -595,11 +676,23 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  // Carry a blocked-link explanation through the first conversation reset.
+  const initialSelectionError = useRef("");
   const [sessionId, setSessionId] = useState("");
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [immersive, setImmersive] = useState(false);
   useEffect(() => {
     setTimelineOpen(false);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!immersive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setImmersive(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [immersive]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsRoot, setProjectsRoot] = useState("");
   const [projectDialog, setProjectDialog] = useState(false);
@@ -608,6 +701,8 @@ export default function App() {
   const [renameTarget, setRenameTarget] = useState<SessionSummary | null>(null);
   const [tagsTarget, setTagsTarget] = useState<SessionSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const deleteInFlight = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toolNameMode, setToolNameMode] = useState<ToolNameMode>(() => {
     try {
@@ -651,6 +746,76 @@ export default function App() {
     null,
   );
   const sessionListValue = useRef<SessionSummary[] | null>(null);
+  const sessionListInitialized = useRef(false);
+  const sessionTitles = useRef(new Map<string, string>());
+  const notifiedSettlements = useRef(new Set<string>());
+  const pendingNotificationContinue = useRef<string | null>(null);
+  const [sessionNotifications, setSessionNotifications] = useState<
+    SessionCompletionNotification[]
+  >([]);
+  const notificationTimers = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
+  const notifySessionCompletion = useCallback(
+    (
+      sessionId: string,
+      title: string | null | undefined,
+      settlement: SettlementIdentity | null | undefined,
+      fallbackSeq?: number,
+    ) => {
+      const identity = settlementKey(settlement, fallbackSeq) ??
+        (fallbackSeq != null ? `seq:${fallbackSeq}` : null);
+      if (!identity) return;
+      const id = `${sessionId}:${identity}`;
+      if (notifiedSettlements.current.has(id)) return;
+      notifiedSettlements.current.add(id);
+      setSessionNotifications((previous) => [
+        ...previous,
+        {
+          id,
+          sessionId,
+          title: title?.trim() || "",
+          outcome: settlement?.outcome || "completed",
+          error: shortReason(settlement?.error),
+        },
+      ].slice(-8));
+    },
+    [],
+  );
+  useEffect(() => {
+    const timers = notificationTimers.current;
+    const activeIds = new Set(sessionNotifications.map((item) => item.id));
+    for (const [id, timer] of timers) {
+      if (!activeIds.has(id)) {
+        clearTimeout(timer);
+        timers.delete(id);
+      }
+    }
+    for (const notification of sessionNotifications) {
+      if (timers.has(notification.id)) continue;
+      const timeout = isFailedOutcome(notification.outcome)
+        ? SESSION_NOTIFICATION_ERROR_TIMEOUT_MS
+        : SESSION_NOTIFICATION_SUCCESS_TIMEOUT_MS;
+      timers.set(
+        notification.id,
+        setTimeout(() => {
+          timers.delete(notification.id);
+          setSessionNotifications((previous) =>
+            previous.filter((item) => item.id !== notification.id),
+          );
+        }, timeout),
+      );
+    }
+  }, [sessionNotifications]);
+  useEffect(
+    () => () => {
+      for (const timer of notificationTimers.current.values()) {
+        clearTimeout(timer);
+      }
+      notificationTimers.current.clear();
+    },
+    [],
+  );
   const draftBySession = useRef(loadDrafts());
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -756,6 +921,22 @@ export default function App() {
   const traceBinding = `${sessionId}:${connectionRevision}:${navigationRevision.current}`;
   const historical = useHistoricalMessages(sessionId, traceBinding);
   const displayedRows = historical.active ? historical.rows : rows;
+  const [messageSearchOpen, setMessageSearchOpen] = useState(false);
+  const [messageSearchQuery, setMessageSearchQuery] = useState("");
+  const [messageSearchHistory, setMessageSearchHistory] = useState<MessageSearchResult[]>([]);
+  const [messageSearchLoading, setMessageSearchLoading] = useState(false);
+  const [messageSearchIndex, setMessageSearchIndex] = useState(0);
+  const messageSearchAbort = useRef<AbortController | null>(null);
+  const messageSearchLoaded = useMemo(
+    () => loadedSearchResults(displayedRows, messageSearchQuery, leafId),
+    [displayedRows, messageSearchQuery, leafId],
+  );
+  const messageSearchResults = useMemo(() => {
+    const seen = new Set(messageSearchLoaded.map((result) => result.entryId));
+    return messageSearchLoaded.concat(
+      messageSearchHistory.filter((result) => !seen.has(result.entryId)),
+    );
+  }, [messageSearchHistory, messageSearchLoaded]);
   const runTimings = useRunTimings(
     sessionId, rows, `${connectionRevision}:${navigationRevision.current}`,
     !loadingSession && Boolean(capabilities), settleTick,
@@ -766,6 +947,74 @@ export default function App() {
   );
   const displayedTimings = historical.active ? historicalRunTimings : runTimings;
   const runFooters = useMemo(() => timingByRow(displayedRows, displayedTimings), [displayedRows, displayedTimings]);
+  useEffect(() => {
+    messageSearchAbort.current?.abort();
+    setMessageSearchHistory([]);
+    setMessageSearchIndex(0);
+    const query = messageSearchQuery.trim();
+    if (!messageSearchOpen || query.length < 2 || !nativeMessageQueries || !sessionId) {
+      setMessageSearchLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    messageSearchAbort.current = controller;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const matches: MessageSearchResult[] = [];
+        let beforeId: string | undefined;
+        try {
+          setMessageSearchLoading(true);
+          for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+            const page = await api.messageSummaries(
+              sessionId,
+              { beforeId, leafId, limit: 100 },
+              controller.signal,
+            );
+            matches.push(...summaryMatches(page.messages, query, page.leafId ?? leafId));
+            if (matches.length >= 100 || !page.hasMore || !page.nextBeforeId || page.nextBeforeId === beforeId) break;
+            beforeId = page.nextBeforeId;
+          }
+          if (!controller.signal.aborted) setMessageSearchHistory(matches.slice(0, 100));
+        } catch (cause) {
+          if (!controller.signal.aborted) {
+            setMessageSearchHistory([]);
+            setError(errorText(cause));
+          }
+        } finally {
+          if (!controller.signal.aborted) setMessageSearchLoading(false);
+        }
+      })();
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+      if (messageSearchAbort.current === controller) messageSearchAbort.current = null;
+    };
+  }, [leafId, messageSearchOpen, messageSearchQuery, nativeMessageQueries, sessionId]);
+  useEffect(() => {
+    setMessageSearchOpen(false);
+    setMessageSearchQuery("");
+    setMessageSearchHistory([]);
+  }, [sessionId]);
+  const selectMessageSearch = useCallback((index: number) => {
+    const result = messageSearchResults[index];
+    if (!result) return;
+    setMessageSearchIndex(index);
+    const target = result.rowId
+      ? Array.from(document.querySelectorAll<HTMLElement>("[data-transcript-row]"))
+          .find((element) => element.dataset.transcriptRow === result.rowId)
+      : null;
+    if (target && transcriptRef.current) {
+      followingRef.current = false;
+      setFollowing(false);
+      transcriptRef.current.scrollTop +=
+        target.getBoundingClientRect().top -
+        transcriptRef.current.getBoundingClientRect().top -
+        12;
+      return;
+    }
+    if (result.leafId) historical.open({ entryId: result.entryId, leafId: result.leafId });
+  }, [historical, messageSearchResults]);
   const { state: traceState, snapshot: traceSnapshot, event: traceEvent, clear: clearTrace } =
     useExecutionTrace(traceBinding);
   const executionTrace = useMemo(() => traceView(traceState, runTimings), [traceState, runTimings]);
@@ -819,11 +1068,88 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
+  const [forkPending, setForkPending] = useState(false);
+  const forkInFlight = useRef(false);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
   const [levels, setLevels] = useState<string[]>([]);
   const [modelPending, setModelPending] = useState(false);
   const [thinkingPending, setThinkingPending] = useState(false);
   const [language, setLanguage] = useState<Language>(() => detectLanguage());
+  const [autoRead, setAutoRead] = useState(() => {
+    try { return localStorage.getItem("rpi-auto-read") === "1"; } catch { return false; }
+  });
+  const [readingRowId, setReadingRowId] = useState<string | null>(null);
+  const ttsAudio = useRef<HTMLAudioElement | null>(null);
+  const ttsUrl = useRef<string | null>(null);
+  const ttsAbort = useRef<AbortController | null>(null);
+  const autoReadLast = useRef("");
+  const autoReadSettlement = useRef(0);
+  const stopReading = useCallback(() => {
+    ttsAbort.current?.abort();
+    ttsAbort.current = null;
+    ttsAudio.current?.pause();
+    ttsAudio.current = null;
+    if (ttsUrl.current) URL.revokeObjectURL(ttsUrl.current);
+    ttsUrl.current = null;
+    setReadingRowId(null);
+  }, []);
+  const speakMessage = useCallback(async (rowId: string, text: string) => {
+    if (readingRowId === rowId) {
+      stopReading();
+      return;
+    }
+    stopReading();
+    const controller = new AbortController();
+    ttsAbort.current = controller;
+    try {
+      const voice = language === "zh" ? "zh-CN-XiaoxiaoNeural" : "en-US-AriaNeural";
+      const blob = await api.tts(text, voice, controller.signal);
+      if (controller.signal.aborted) return;
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      ttsUrl.current = url;
+      ttsAudio.current = audio;
+      setReadingRowId(rowId);
+      audio.onended = stopReading;
+      audio.onerror = stopReading;
+      await audio.play();
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(errorText(cause));
+      stopReading();
+    }
+  }, [language, readingRowId, stopReading]);
+  useEffect(() => {
+    try { localStorage.setItem("rpi-auto-read", autoRead ? "1" : "0"); } catch { /* optional browser persistence */ }
+  }, [autoRead]);
+  useEffect(() => {
+    stopReading();
+    autoReadLast.current = "";
+    autoReadSettlement.current = 0;
+  }, [sessionId, stopReading]);
+  useEffect(() => () => stopReading(), [stopReading]);
+  useEffect(() => {
+    if (!sessionHydrated || historical.active || !sessionId) return;
+    const row = [...displayedRows].reverse().find(
+      (candidate): candidate is Extract<Row, { kind: "text" }> =>
+        candidate.kind === "text" && candidate.role === "assistant" && Boolean(candidate.text.trim()),
+    );
+    if (row) autoReadLast.current = `${sessionId}:${row.id}`;
+    autoReadSettlement.current = settleTick;
+  }, [historical.active, sessionHydrated, sessionId]);
+  useEffect(() => {
+    if (!autoRead || !sessionHydrated || historical.active || !sessionId || settleTick === 0) return;
+    if (autoReadSettlement.current === settleTick) return;
+    autoReadSettlement.current = settleTick;
+    const row = [...displayedRows].reverse().find(
+      (candidate): candidate is Extract<Row, { kind: "text" }> =>
+        candidate.kind === "text" && candidate.role === "assistant" && Boolean(candidate.text.trim()),
+    );
+    if (!row) return;
+    const key = `${sessionId}:${row.id}`;
+    if (autoReadLast.current === key) return;
+    autoReadLast.current = key;
+    void speakMessage(row.id, row.text);
+  }, [autoRead, displayedRows, historical.active, sessionId, settleTick, speakMessage]);
   const [dialog, setDialog] = useState<UiDialog | null>(null);
   const dialogRequests = useRef(new Map<string, UiDialog>());
   const activeDialogId = useRef("");
@@ -848,6 +1174,8 @@ export default function App() {
     };
   }, [sessionId, projectId]);
   function requestText(request: TextRequest) {
+    // Replacing the shared prompt must also release the previous caller.
+    textRequestResolver.current?.(null);
     return new Promise<string | null>((resolve) => {
       textRequestResolver.current = resolve;
       setTextRequest(request);
@@ -903,9 +1231,11 @@ export default function App() {
   const sidebarSessions = useMemo(
     () =>
       sessions.map((entry) =>
-        entry.sessionId === sessionId ? { ...entry, status } : entry,
+        entry.sessionId === sessionId
+          ? { ...entry, status: dialog ? "awaiting_input" : status }
+          : entry,
       ),
-    [sessions, sessionId, status],
+    [sessions, sessionId, status, dialog],
   );
   const mobileSessionResults = useMemo(() => {
     const query = mobileSessionQuery.trim().toLowerCase();
@@ -1015,6 +1345,7 @@ export default function App() {
       switch (event.type) {
         case "agent_start":
         case "operation_accepted":
+          setRows((previous) => previous.filter((row) => row.id !== "retry-note"));
           setRunActive(true);
           setStatus("running");
           setInterrupted(false);
@@ -1032,22 +1363,40 @@ export default function App() {
           setInterrupted(Boolean(event.pendingResume));
           setRecoveryNoticeDismissed(false);
           const outcome = String(event.outcome ?? "settled");
-          setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(outcome) || event.aborted === true);
+          const settlement: SettlementIdentity = {
+            outcome,
+            error: shortReason(event.error) || undefined,
+            runId: typeof event.runId === "string" ? event.runId : undefined,
+            seq: seq > 0 ? seq : undefined,
+          };
+          notifySessionCompletion(
+            activeSessionRef.current,
+            sessionTitles.current.get(activeSessionRef.current),
+            settlement,
+            seq,
+          );
           const aborted =
             event.aborted && outcome !== "aborted" ? " · aborted" : "";
-          const reason =
-            typeof event.error === "string" && event.error.trim()
-              ? ` · ${shortReason(event.error)}`
-              : "";
+          const failure = [
+            "failed",
+            "error",
+            "interrupted",
+            "aborted",
+            "stopped",
+          ].includes(outcome) || event.aborted === true;
+          setFailedRun(failure);
+          const errorReason = shortReason(event.error);
+          const reason = errorReason ? ` · ${errorReason}` : "";
           const summary =
             typeof event.summary === "string" && event.summary.trim()
               ? event.summary
               : `Run ${outcome}${aborted}${reason}`;
-          if (reason) setError(String(event.error));
+          if (failure && errorReason) setError(errorReason);
+          else if (outcome === "completed") setError("");
           setRows((previous) => [
             ...previous.filter(
               (row) =>
-                row.id !== "retry-note" &&
+                (failure || row.id !== "retry-note") &&
                 row.id !== `settled-${String(event.runId ?? seq)}` &&
                 (row.kind !== "note" ||
                   row.translation?.key !== "restoredRun" ||
@@ -1109,6 +1458,8 @@ export default function App() {
         case "retry_scheduled": {
           const attempt = Number(event.attempt ?? 1);
           const max = Number(event.maxRetries ?? 0);
+          const retryReason = shortReason(event.error);
+          if (retryReason) setError(retryReason);
           setRows((previous) => [
             ...previous.filter((row) => row.id !== "retry-note"),
             {
@@ -1223,6 +1574,7 @@ export default function App() {
         case "tool_execution_start":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               args: event.args,
               timing: toolTiming(event.webTiming),
@@ -1233,6 +1585,7 @@ export default function App() {
         case "tool_execution_update":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               args: event.args,
               result: event.partialResult,
@@ -1245,6 +1598,7 @@ export default function App() {
         case "tool_execution_end":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
+              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
               name: String(event.toolName ?? "tool"),
               result: event.result,
               images: imageBlocksOf(event.result),
@@ -1257,7 +1611,7 @@ export default function App() {
           break;
       }
     },
-    [showNextDialog, traceEvent],
+    [notifySessionCompletion, showNextDialog, traceEvent],
   );
 
   const handleEvent = useCallback(
@@ -1284,6 +1638,11 @@ export default function App() {
     sessionListRevision.current++;
     sessionListRequest.current = null;
     sessionListValue.current = null;
+    sessionListInitialized.current = false;
+    sessionTitles.current.clear();
+    notifiedSettlements.current.clear();
+    setSessionNotifications([]);
+    initialSelectionError.current = "";
     activeSessionRef.current = "";
     sessionReadsAbort.current?.abort();
     diagnosticsAbort.current?.abort();
@@ -1329,6 +1688,46 @@ export default function App() {
         .then(
           ({ sessions: list }) => {
             if (revision !== sessionListRevision.current) return latest();
+            const previous = sessionListValue.current;
+            if (sessionListInitialized.current) {
+              for (const entry of list) {
+                const currentKey = settlementKey(
+                  entry.latestSettlement,
+                  entry.lastSeq,
+                );
+                if (!currentKey) continue;
+                const previousEntry = previous?.find(
+                  (item) => item.sessionId === entry.sessionId,
+                );
+                if (
+                  currentKey ===
+                  settlementKey(
+                    previousEntry?.latestSettlement,
+                    previousEntry?.lastSeq,
+                  )
+                )
+                  continue;
+                notifySessionCompletion(
+                  entry.sessionId,
+                  entry.title,
+                  entry.latestSettlement,
+                  entry.lastSeq,
+                );
+              }
+            } else {
+              for (const entry of list) {
+                const currentKey = settlementKey(
+                  entry.latestSettlement,
+                  entry.lastSeq,
+                );
+                if (currentKey)
+                  notifiedSettlements.current.add(`${entry.sessionId}:${currentKey}`);
+              }
+            }
+            for (const entry of list) {
+              if (entry.title) sessionTitles.current.set(entry.sessionId, entry.title);
+            }
+            sessionListInitialized.current = true;
             sessionListValue.current = list;
             setSessions(list);
             return list;
@@ -1349,7 +1748,7 @@ export default function App() {
       sessionListRequest.current = pending;
       return pending;
     },
-    [clearAccess],
+    [clearAccess, notifySessionCompletion],
   );
 
   const createSession = useCallback(
@@ -1487,20 +1886,35 @@ export default function App() {
         const list = await refreshSessions();
         if (cancelled || !list) return;
         const requested = new URLSearchParams(location.search).get("session");
+        const requestedSession = list.find((session) => session.sessionId === requested);
+        const blockedRequest = sessionSelectionError(requestedSession);
         const reusable = list.filter(
           (session) =>
             session.status !== "closed" &&
-            !session.archived &&
+            !session.archived && !session.deleting &&
             (!session.projectId ||
               availableProjects.some((project) =>
                 project.id === session.projectId && !project.archived,
               )),
         );
         const match =
-          list.find((session) => session.sessionId === requested) ??
+          (blockedRequest ? undefined : requestedSession) ??
+          reusable.find((session) => session.sessionId === activeSessionRef.current) ??
           reusable.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        const blocked = blockedRequest ?? (!match
+          ? sessionSelectionError(list.find((session) => session.archived || session.deleting))
+          : null);
+        const selectionChanges = match && match.sessionId !== activeSessionRef.current;
         if (match) select(match.sessionId, match.projectId);
-        else await createSession();
+        else if (blocked) {
+          select("");
+          setLoadingSession(false);
+        } else await createSession();
+        if (blocked) {
+          const message = errorText(blocked);
+          initialSelectionError.current = selectionChanges ? message : "";
+          setError(message);
+        }
       } catch (cause) {
         if (cancelled) return;
         setStatus("error");
@@ -1556,7 +1970,8 @@ export default function App() {
     setSending(false);
     setLevels([]);
     setSeen(0);
-    setError("");
+    setError(initialSelectionError.current);
+    initialSelectionError.current = "";
     setConnectionFailed(false);
     setStatus("connecting");
     setLoadingSession(Boolean(sessionId));
@@ -1651,14 +2066,13 @@ export default function App() {
           earlierPage.current?.rows ?? [],
           rowsFromMessages(snapshot.messages),
         );
-        setRows((previous) => restoreRowsWithNotes(
-          restored,
-          previous.filter((row) => row.id !== "retry-note"),
-        ));
+        setRows((previous) => restoreRowsWithNotes(restored, previous));
         setPersistedHistory(snapshot.history ?? null);
         setLeafId(snapshot.leafId ?? "");
         setInterrupted(Boolean(snapshot.pendingResume));
         setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(String(snapshot.latestSettlement?.outcome ?? "")) || snapshot.latestSettlement?.aborted === true);
+        const snapshotError = shortReason(snapshot.latestSettlement?.error);
+        if (snapshotError) setError(snapshotError);
         setRecoveryNoticeDismissed(false);
         setFirstId(earlierPage.current?.firstId ?? snapshot.firstId ?? "");
         setHasMore(earlierPage.current?.hasMore ?? Boolean(snapshot.hasMore));
@@ -1781,6 +2195,8 @@ export default function App() {
           setLeafId(snapshot.leafId ?? "");
           setInterrupted(Boolean(snapshot.pendingResume));
           setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(String(snapshot.latestSettlement?.outcome ?? "")) || snapshot.latestSettlement?.aborted === true);
+          const snapshotError = shortReason(snapshot.latestSettlement?.error);
+          if (snapshotError) setError(snapshotError);
           setRecoveryNoticeDismissed(false);
           setFirstId(snapshot.firstId ?? "");
           setHasMore(Boolean(snapshot.hasMore));
@@ -1904,7 +2320,14 @@ export default function App() {
       if (supported.has("get_queue")) {
         jobs.push(async () => {
           const value = await api.queue(id, showQueueHistory, controller.signal);
-          if (current()) setQueueItems(value.items ?? []);
+          if (!current()) return;
+          const items = value.items ?? [];
+          setQueueItems((previous) =>
+            items.length === 0 &&
+            (runActive || queueRunSubmission.current.has(id))
+              ? previous.filter(isEditableQueueItem)
+              : items,
+          );
         });
       }
       if (supported.has("get_stats")) {
@@ -1951,7 +2374,7 @@ export default function App() {
         if (diagnosticsAbort.current === controller) diagnosticsAbort.current = null;
       }
     },
-    [supported, actions, showQueueHistory, clearAccess],
+    [supported, actions, showQueueHistory, clearAccess, runActive],
   );
 
   useEffect(() => {
@@ -2289,7 +2712,7 @@ export default function App() {
     });
   }
 
-  async function submit(event?: FormEvent) {
+  async function submit(event?: FormEvent, forceContinue = false) {
     event?.preventDefault();
     if (uploadScope.current?.pending) return;
     if (composerContinue) {
@@ -2299,7 +2722,7 @@ export default function App() {
         return;
       }
     }
-    const continuing = composerContinue;
+    const continuing = forceContinue || composerContinue;
     const message = continuing ? t("continueTaskPrompt") : draft.trim();
     if (
       (!message && attachments.length === 0) ||
@@ -2458,6 +2881,45 @@ export default function App() {
       }
     }
   }
+
+  async function continueCurrent(forcePrompt = false) {
+    if (interrupted && supported.has("resume_pending")) {
+      await resumePending();
+      return;
+    }
+    if ((failedRun || forcePrompt) && supported.has("prompt"))
+      await submit(undefined, forcePrompt);
+  }
+
+  function continueFromNotification(
+    notification: SessionCompletionNotification,
+  ) {
+    setSessionNotifications((previous) =>
+      previous.filter((item) => item.id !== notification.id),
+    );
+    if (notification.sessionId === activeSessionRef.current) {
+      if (loadingSession || !sessionHydrated || busy) {
+        pendingNotificationContinue.current = notification.sessionId;
+        return;
+      }
+      void continueCurrent(true);
+      return;
+    }
+    select(notification.sessionId);
+    pendingNotificationContinue.current = notification.sessionId;
+  }
+
+  useEffect(() => {
+    if (
+      !pendingNotificationContinue.current ||
+      pendingNotificationContinue.current !== sessionId ||
+      loadingSession ||
+      !sessionHydrated
+    )
+      return;
+    pendingNotificationContinue.current = null;
+    void continueCurrent(true);
+  }, [sessionHydrated, sessionId, loadingSession, interrupted, failedRun]);
 
   /** Page backwards through the branch, prepending entries older than the
    * current first row. The bridge forwards `get_messages` unchanged, so this is
@@ -2830,27 +3292,44 @@ export default function App() {
     }
   }
 
-  async function forkCurrent(entryId?: string) {
-    if (!sessionId || !actions.has("fork")) return;
+  async function forkSession(
+    source: Pick<SessionSummary, "sessionId" | "title">,
+    entryId?: string,
+  ) {
+    if (!source.sessionId || !actions.has("fork") || forkInFlight.current) return;
+    const sourceSessionId = source.sessionId;
     const navigation = navigationRevision.current;
-    const defaultTitle = t("forkOf", {
-      title: current?.title ?? sessionId.slice(0, 8),
-    });
-    const title = await requestText({
-      kind: "prompt",
-      title: t("forkName"),
-      defaultValue: defaultTitle,
-    });
-    if (title === null) return;
+    forkInFlight.current = true;
+    setForkPending(true);
     try {
-      const created = await api.fork(sessionId, entryId, title);
+      const title = await requestText({
+        kind: "prompt",
+        title: t("forkName"),
+        defaultValue: t("forkOf", {
+          title: source.title ?? sourceSessionId.slice(0, 8),
+        }),
+      });
+      if (title === null || navigation !== navigationRevision.current) return;
+      // A sent fork creates a durable session: never retry it automatically.
+      const created = await api.fork(sourceSessionId, entryId, title);
       await refreshSessions();
       if (navigation !== navigationRevision.current) return;
       select(created.sessionId);
     } catch (cause) {
       if (navigation !== navigationRevision.current) return;
       setError(errorText(cause));
+    } finally {
+      forkInFlight.current = false;
+      setForkPending(false);
     }
+  }
+
+  async function forkCurrent(entryId?: string) {
+    if (!sessionId) return;
+    await forkSession(
+      { sessionId, title: current?.title ?? null },
+      entryId,
+    );
   }
 
   async function cloneCurrent() {
@@ -2980,9 +3459,17 @@ export default function App() {
   }
 
   function select(id: string, selectedProjectId?: string) {
-    const nextProject =
-      selectedProjectId ??
-      sessions.find((entry) => entry.sessionId === id)?.projectId;
+    pendingNotificationContinue.current = null;
+    // refreshSessions publishes this ref before React renders: URL initialization
+    // and post-mutation fallbacks must guard against that latest list too.
+    const known = (sessionListValue.current ?? sessions).find((entry) => entry.sessionId === id);
+    const blocked = sessionSelectionError(known);
+    if (blocked) {
+      setError(errorText(blocked));
+      if (window.innerWidth < 768) setSidebar(false);
+      return;
+    }
+    const nextProject = selectedProjectId ?? known?.projectId;
     if (activeSessionRef.current === id && (!nextProject || projectRef.current === nextProject)) {
       setPanel(false);
       if (window.innerWidth < 768) setSidebar(false);
@@ -3011,7 +3498,8 @@ export default function App() {
     setPanel(false);
     if (window.innerWidth < 768) setSidebar(false);
     const url = new URL(location.href);
-    url.searchParams.set("session", id);
+    if (id) url.searchParams.set("session", id);
+    else url.searchParams.delete("session");
     history.replaceState(null, "", url);
   }
 
@@ -3030,10 +3518,23 @@ export default function App() {
     history.replaceState(null, "", url);
   }
 
+  function selectSidebarSession(session: SessionSummary) {
+    select(session.sessionId, session.projectId);
+  }
+
+  function retirementBusy(session: SessionSummary) {
+    const state = session.sessionId === activeSessionRef.current ? status : session.status;
+    if (!["running", "starting", "awaiting_input"].includes(state)) return false;
+    setError(errorText(new ApiError("", 409, "session_busy")));
+    if (window.innerWidth < 768) setSidebar(false);
+    return true;
+  }
+
   async function updateSessionMetadata(
     session: SessionSummary,
     patch: { pinned?: boolean; archived?: boolean; tags?: string[] },
   ) {
+    if (patch.archived && retirementBusy(session)) return;
     const id = session.sessionId;
     const navigation = navigationRevision.current;
     const revision = (metadataRevisions.current.get(id) ?? 0) + 1;
@@ -3054,23 +3555,17 @@ export default function App() {
           ) {
             const next = list.find(
               (entry) =>
-                entry.projectId === session.projectId && !entry.archived,
+                entry.projectId === session.projectId && !entry.archived && !entry.deleting,
             );
-            if (next) select(next.sessionId, next.projectId);
-            else {
-              activeSessionRef.current = "";
-              setSessionId("");
-              const url = new URL(location.href);
-              url.searchParams.delete("session");
-              history.replaceState(null, "", url);
-            }
+            select(next?.sessionId ?? "", next?.projectId ?? session.projectId);
           }
         } catch (cause) {
           if (
             metadataRevisions.current.get(id) === revision &&
             navigation === navigationRevision.current
           )
-            setError(errorText(cause));
+            setError(retirementError(cause));
+          if (navigation === navigationRevision.current && window.innerWidth < 768) setSidebar(false);
         }
       },
     );
@@ -3083,29 +3578,33 @@ export default function App() {
   }
 
   async function permanentlyDeleteSession(session: SessionSummary) {
+    if (deleteInFlight.current || retirementBusy(session)) return;
     const id = session.sessionId;
+    const navigation = navigationRevision.current;
     const wasActive = activeSessionRef.current === id;
+    deleteInFlight.current = true;
+    setDeletePending(true);
     try {
+      // A sent DELETE may already have landed even if the response fails. Never auto-retry.
       await api.deleteSession(id);
       draftBySession.current.delete(id);
       saveDrafts(draftBySession.current);
       rowsBySession.current.delete(id);
+      setSessions((previous) => previous.filter((entry) => entry.sessionId !== id));
       const list = await refreshSessions();
-      if (!wasActive) return;
+      if (!wasActive || navigation !== navigationRevision.current || activeSessionRef.current !== id) return;
       const next = list?.find(
-        (entry) => entry.projectId === session.projectId && !entry.archived,
+        (entry) => entry.sessionId !== id && entry.projectId === session.projectId && !entry.archived && !entry.deleting,
       );
-      if (next) select(next.sessionId, next.projectId);
-      else {
-        activeSessionRef.current = "";
-        setSessionId("");
-        setRows([]);
-        const url = new URL(location.href);
-        url.searchParams.delete("session");
-        history.replaceState(null, "", url);
-      }
+      select(next?.sessionId ?? "", next?.projectId ?? session.projectId);
     } catch (cause) {
-      setError(errorText(cause));
+      if (navigation !== navigationRevision.current) return;
+      setError(retirementError(cause, true));
+      if (window.innerWidth < 768) setSidebar(false);
+    } finally {
+      deleteInFlight.current = false;
+      setDeletePending(false);
+      setDeleteTarget(null);
     }
   }
 
@@ -3161,7 +3660,7 @@ export default function App() {
 
   return (
     <div
-      className="workspace"
+      className={`workspace${immersive ? " workspace--immersive" : ""}`}
       style={
         {
           "--sidebar-width": `${sidebarWidth}px`,
@@ -3169,6 +3668,86 @@ export default function App() {
         } as CSSProperties
       }
     >
+      {sessionNotifications.length > 0 &&
+        createPortal(
+          <div
+            className="session-notification-stack"
+            aria-label={t("sessionNotifications")}
+            aria-live="polite"
+          >
+            {sessionNotifications.map((notification) => {
+              const failed = isFailedOutcome(notification.outcome);
+              const statusLabel = failed
+                ? t("sessionFailed")
+                : t("sessionCompleted");
+              return (
+                <div
+                  className={`session-notification ${failed ? "session-notification--error" : "session-notification--success"}`}
+                  key={notification.id}
+                >
+                  <button
+                    type="button"
+                    className="session-notification-main"
+                    aria-label={`${statusLabel}: ${notification.title || t("newSession")}`}
+                    onClick={() => {
+                      select(notification.sessionId);
+                      setSessionNotifications((previous) =>
+                        previous.filter((item) => item.id !== notification.id),
+                      );
+                    }}
+                  >
+                    {failed ? (
+                      <AlertTriangle size={16} aria-hidden="true" />
+                    ) : (
+                      <Check size={16} aria-hidden="true" />
+                    )}
+                    <span className="session-notification-copy">
+                      <strong>{notification.title || t("newSession")}</strong>
+                      <span>{statusLabel}</span>
+                      <span>
+                        {t("sessionCompletedOutcome", {
+                          outcome: valueLabel(
+                            language,
+                            notification.outcome,
+                          ),
+                        })}
+                      </span>
+                      {notification.error && <span>{notification.error}</span>}
+                    </span>
+                  </button>
+                  {failed &&
+                    (supported.has("prompt") ||
+                      supported.has("resume_pending")) && (
+                      <button
+                        type="button"
+                        className="session-notification-continue"
+                        aria-label={t("continue")}
+                        title={t("continue")}
+                        onClick={() => continueFromNotification(notification)}
+                      >
+                        <Play size={14} aria-hidden="true" />
+                        <span>{t("continue")}</span>
+                      </button>
+                    )}
+                  <button
+                    type="button"
+                    className="icon-button session-notification-close"
+                    aria-label={t("closeNotification")}
+                    title={t("closeNotification")}
+                    onClick={() =>
+                      setSessionNotifications((previous) =>
+                        previous.filter((item) => item.id !== notification.id),
+                      )
+                    }
+                  >
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
       {dialog && (
         <DialogOverlay
           key={dialog.requestId}
@@ -3206,15 +3785,14 @@ export default function App() {
           title={language === "zh" ? "永久删除会话" : "Delete session permanently"}
           message={
             language === "zh"
-              ? `确定要永久删除“${deleteTarget.title || "新会话"}”吗？此操作无法撤销。`
-              : `Permanently delete “${deleteTarget.title || "New session"}”? This cannot be undone.`
+              ? `确定要永久删除“${deleteTarget.title || "新会话"}”吗？此操作将删除会话历史记录并释放 RPC 连接，不会删除项目文件，且无法撤销。运行中的会话请先停止并等待结束。`
+              : `Permanently delete “${deleteTarget.title || "New session"}”? This deletes session history and releases the RPC connection, but does not delete project files. This cannot be undone. Stop running sessions and wait for them to settle first.`
           }
           confirmLabel={language === "zh" ? "永久删除" : "Delete permanently"}
+          busy={deletePending}
           onClose={() => setDeleteTarget(null)}
           onConfirm={() => {
-            const target = deleteTarget;
-            setDeleteTarget(null);
-            void permanentlyDeleteSession(target);
+            void permanentlyDeleteSession(deleteTarget);
           }}
         />
       )}
@@ -3341,7 +3919,7 @@ export default function App() {
           </div>
         </Modal>
       )}
-      {sidebar && (
+      {sidebar && !immersive && (
         <>
           <button
             className="sidebar-backdrop mobile-only"
@@ -3369,18 +3947,20 @@ export default function App() {
               language={language}
               creating={creatingSession}
               canManage={actions.has("session_organization")}
+              canFork={actions.has("fork")}
               canCreate={actions.has("create_project")}
               onSelectProject={selectProject}
-              onSelectSession={(session) =>
-                select(session.sessionId, session.projectId)
-              }
+              onSelectSession={selectSidebarSession}
               onNewSession={(id) => void createSession(id)}
               onNewProject={() => setProjectDialog(true)}
               onRename={setRenameTarget}
+              onFork={(session) => void forkSession(session)}
               onRenameProject={setProjectRenameTarget}
               onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}
-              onDelete={setDeleteTarget}
+              onDelete={(session) => {
+                if (!deleteInFlight.current && !retirementBusy(session)) setDeleteTarget(session);
+              }}
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom">
@@ -3470,6 +4050,17 @@ export default function App() {
       )}
 
       <section className="main-shell">
+        {immersive && (
+          <button
+            type="button"
+            className="icon-button immersive-exit"
+            aria-label={t("exitImmersiveView")}
+            title={t("exitImmersiveView")}
+            onClick={() => setImmersive(false)}
+          >
+            <Minimize2 size={17} aria-hidden="true" />
+          </button>
+        )}
         <header className="toolbar">
           <div className="toolbar-left">
             <button
@@ -3510,8 +4101,8 @@ export default function App() {
                 <small>{project?.name ?? "rpi"}</small>
                 <strong>{current?.title ?? t("newSession")}</strong>
                 {activeSessionRunning && (
-                  <small className="mobile-session-status">
-                    <span className="status-dot" /> {t("running")}
+                  <small className={`mobile-session-status${activeSession?.status === "awaiting_input" ? " awaiting-input" : ""}`}>
+                    <span className="status-dot" /> {t(activeSession?.status === "awaiting_input" ? "sessionAwaitingAnswer" : "running")}
                   </small>
                 )}
               </span>
@@ -3519,6 +4110,25 @@ export default function App() {
             </button>
           </div>
           <div className="toolbar-actions">
+            <button
+              type="button"
+              className={`icon-button ${immersive ? "selected" : ""}`}
+              disabled={!sessionId}
+              aria-label={t("immersiveView")}
+              title={t("immersiveView")}
+              aria-pressed={immersive}
+              onClick={() => {
+                setImmersive(true);
+                setSidebar(false);
+                setTimelineOpen(false);
+                setPanel(false);
+                setInspector(false);
+                setTraceOpen(false);
+                setWorkbenchOpen(false);
+              }}
+            >
+              <Maximize2 size={17} aria-hidden="true" />
+            </button>
             {!activeSessionRunning && (
               <span
                 className={`connection ${status === "error" ? "offline" : ""}`}
@@ -3529,7 +4139,8 @@ export default function App() {
             )}
             {actions.has("fork") && (
               <button
-                disabled={!sessionId}
+                type="button"
+                disabled={!sessionId || forkPending}
                 className="icon-button toolbar-fork"
                 title={t("forkSession")}
                 aria-label={t("forkSession")}
@@ -3549,6 +4160,17 @@ export default function App() {
                 <Copy size={16} />
               </button>
             )}
+            <button
+              type="button"
+              className={`icon-button ${messageSearchOpen ? "selected" : ""}`}
+              disabled={!sessionId}
+              aria-label={t("messageSearch")}
+              title={t("messageSearch")}
+              aria-pressed={messageSearchOpen}
+              onClick={() => setMessageSearchOpen((open) => !open)}
+            >
+              <Search size={17} aria-hidden="true" />
+            </button>
             <button
               type="button"
               className={`icon-button ${timelineOpen ? "selected" : ""}`}
@@ -3607,6 +4229,22 @@ export default function App() {
           </div>
         </header>
 
+        <MessageSearch
+          open={messageSearchOpen}
+          query={messageSearchQuery}
+          results={messageSearchResults}
+          activeIndex={messageSearchIndex}
+          loading={messageSearchLoading}
+          historySupported={nativeMessageQueries}
+          language={language}
+          onQuery={(value) => {
+            setMessageSearchQuery(value);
+            setMessageSearchIndex(0);
+          }}
+          onClose={() => setMessageSearchOpen(false)}
+          onSelect={selectMessageSearch}
+        />
+
         {mobileSessionPicker && (
           <div
             className="mobile-session-backdrop"
@@ -3645,11 +4283,8 @@ export default function App() {
                       (item) => item.id === entry.projectId,
                     );
                     const selected = entry.sessionId === sessionId;
-                    const entryRunning = [
-                      "running",
-                      "starting",
-                      "awaiting_input",
-                    ].includes(entry.status ?? "");
+                    const entryAwaitingAnswer = entry.status === "awaiting_input";
+                    const entryRunning = ["running", "starting"].includes(entry.status ?? "");
                     return (
                       <button
                         type="button"
@@ -3661,7 +4296,7 @@ export default function App() {
                         }}
                       >
                         <span
-                          className={`mobile-session-option-status${entryRunning ? " running" : ""}`}
+                          className={`mobile-session-option-status${entryAwaitingAnswer ? " awaiting-input" : entryRunning ? " running" : ""}`}
                         />
                         <span className="mobile-session-option-copy">
                           <strong>{entry.title || t("newSession")}</strong>
@@ -3670,6 +4305,7 @@ export default function App() {
                             {entryRunning && ` · ${t("running")}`}
                           </small>
                         </span>
+                        <SessionAnswerBadge session={entry} language={language} />
                         <SessionIssueBadge session={entry} language={language} />
                         {selected && <Check size={15} />}
                       </button>
@@ -3912,6 +4548,7 @@ export default function App() {
 
                 <ProjectImageContext.Provider value={project}>
                   <ToolNameModeContext.Provider value={toolNameMode}>
+                    <ToolProgramProvider key={`${traceBinding}:${historical.active}:${historical.target?.entryId ?? ""}:${historical.page?.firstId ?? ""}`} sessionId={sessionId} enabled={!loadingSession && !connectionFailed}>
                     {displayedRows.map((row) => {
                       // A historical window may begin mid-run, without all run
                       // boundaries. Keep every update visible instead of folding
@@ -3928,7 +4565,12 @@ export default function App() {
                               row={group?.latest ?? row}
                               todoHistory={group?.previous}
                               language={language}
+                              onSpeak={speakMessage}
+                              readingRowId={readingRowId}
                             />
+                          )}
+                          {group !== null && row.kind === "tool" && parentToolCallId(row) && (
+                            <ToolProgramChildren rootCallId={parentToolCallId(row)!} rootToolName={row.name} language={language} />
                           )}
                           {runFooters.get(row.id)?.map((timing) => (
                             <RunElapsed key={timing.runId} timing={timing} language={language} />
@@ -3936,6 +4578,7 @@ export default function App() {
                         </div>
                       );
                     })}
+                    </ToolProgramProvider>
                   </ToolNameModeContext.Provider>
                 </ProjectImageContext.Provider>
 
@@ -4432,6 +5075,8 @@ export default function App() {
               runtime={runtime}
               onChange={setRuntime}
               onError={setError}
+              autoRead={autoRead}
+              onAutoRead={setAutoRead}
               onClose={() => setPanel(false)}
             />
           )}
@@ -4922,7 +5567,7 @@ export default function App() {
                                 <div className="history-actions">
                                   <button
                                     title={t("forkHere")}
-                                    disabled={mutationPending}
+                                    disabled={mutationPending || forkPending}
                                     onClick={() => void forkCurrent(target)}
                                   >
                                     <GitBranch size={12} /> {t("fork")}
@@ -5411,10 +6056,14 @@ const RowView = memo(function RowView({
   row,
   language,
   todoHistory,
+  onSpeak,
+  readingRowId,
 }: {
   row: Row;
   language: Language;
   todoHistory?: ToolRow[];
+  onSpeak?: (rowId: string, text: string) => void;
+  readingRowId?: string | null;
 }) {
   const t = (key: MessageKey) => translate(language, key);
   if (row.kind === "boundary") return null;
@@ -5466,7 +6115,14 @@ const RowView = memo(function RowView({
       <ToolRowView row={row} language={language} todoHistory={todoHistory} />
     );
 
-  return <MessageRow row={row} language={language} />;
+  return (
+    <MessageRow
+      row={row}
+      language={language}
+      onSpeak={onSpeak}
+      reading={readingRowId === row.id}
+    />
+  );
 });
 
 function ToolRowView({
@@ -5621,9 +6277,13 @@ function ToolRowView({
 function MessageRow({
   row,
   language,
+  onSpeak,
+  reading,
 }: {
   row: Extract<Row, { kind: "text" }>;
   language: Language;
+  onSpeak?: (rowId: string, text: string) => void;
+  reading?: boolean;
 }) {
   const t = (key: MessageKey) => translate(language, key);
   const [copiedMarkdown, setCopiedMarkdown] = useState(false);
@@ -5662,6 +6322,16 @@ function MessageRow({
           >
             {copiedMarkdown ? <Check size={12} /> : <Copy size={12} />}
             <span>{copiedMarkdown ? t("copied") : t("copyMarkdown")}</span>
+          </button>
+          <button
+            type="button"
+            className="message-copy message-copy-markdown"
+            onClick={() => onSpeak?.(row.id, row.text)}
+            aria-label={reading ? t("stopReading") : t("readAloud")}
+            title={reading ? t("stopReading") : t("readAloud")}
+          >
+            {reading ? <VolumeX size={12} /> : <Volume2 size={12} />}
+            <span>{reading ? t("stopReading") : t("readAloud")}</span>
           </button>
         </div>
       )}
@@ -6027,6 +6697,8 @@ function RuntimePanel({
   runtime,
   onChange,
   onError,
+  autoRead,
+  onAutoRead,
   onClose,
 }: {
   language: Language;
@@ -6036,6 +6708,8 @@ function RuntimePanel({
   runtime: RuntimeState | null;
   onChange: (value: RuntimeState) => void;
   onError: (message: string) => void;
+  autoRead: boolean;
+  onAutoRead: (value: boolean) => void;
   onClose: () => void;
 }) {
   const zh = language === "zh";
@@ -6161,6 +6835,14 @@ function RuntimePanel({
   return (
     <aside className="inspector">
       {heading}
+      <label className="settings-toggle">
+        <input
+          type="checkbox"
+          checked={autoRead}
+          onChange={(event) => onAutoRead(event.target.checked)}
+        />
+        <span>{t("autoRead")}</span>
+      </label>
       <button
         type="button"
         className="provider-manager-entry"

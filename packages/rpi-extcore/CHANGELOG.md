@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.12...rpi-extcore-v0.2.13) - 2026-11-08
+
+### Other
+
+- Fix native saved-read request and resource tests
+- Remove legacy durable runtime from package adapters
+
+## [0.2.12](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.11...rpi-extcore-v0.2.12) - 2026-11-07
+
+### Added
+
+- *(web)* release idle session hosts
+
+## [0.2.11](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.10...rpi-extcore-v0.2.11) - 2026-11-05
+
+### Added
+
+- *(web)* edit and delete provider configurations
+- *(web)* add provider model discovery and connection test
+- *(web)* add provider configuration form
+- *(web)* add paged history, file previews and execution traces
+
+### Fixed
+
+- *(test)* tolerate Windows process startup jitter
+- *(acp)* sync inline image prompt limits
+- *(extcore)* gate Windows-only test imports
+
+### Other
+
+- sync dev web branch with main
+- Merge remote-tracking branch 'origin/main' into dev/web-hmr
+- *(web)* make branding checks portable across clean checkouts
+
+## [0.2.10](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.9...rpi-extcore-v0.2.10) - 2026-11-05
+
+### Fixed
+
+- *(extcore)* prove live children with native branch identity
+
+## [0.2.9](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.8...rpi-extcore-v0.2.9) - 2026-11-04
+
+### Added
+
+- *(adapters)* expose bounded Code Mode child queries and live feed
+- *(extcore)* reconcile bounded child snapshots with native commit replay
+- *(extcore)* add capability-gated native ToolProgram child readers
+
+### Fixed
+
+- *(catalog)* reject duplicate headers and page test scans
+- *(extcore)* reprove every selected child before live delivery
+
+### Other
+
+- tolerate Windows process cleanup latency
+
+## [0.2.8](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.7...rpi-extcore-v0.2.8) - 2026-11-03
+
+### Fixed
+
+- *(web)* retire archived sessions and permanently delete native history ([#183](https://github.com/pi-rust/rpi-package/pull/183))
+
+## [0.2.7](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.6...rpi-extcore-v0.2.7) - 2026-11-02
+
+### Added
+
+- *(extcore)* own exact session resource lifecycle and recovery
+
+### Fixed
+
+- *(extcore)* retain resource authority across fork and recovery failures
+- *(extcore)* inspect safe legacy package names
+
+### Other
+
+- *(extcore)* synchronize fork capacity admission deterministically
+
 ## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.5...rpi-extcore-v0.2.6) - 2026-11-01
 
 ### Added
@@ -150,7 +228,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocol-neutral custom entries.
 - Add protocol-neutral durable control-plane mutations for run recovery and
   branch-scoped queue operations.
-- Add `DurableRuntime` so Service and ACP share branch recovery, event
   observation, mutation persistence and append-failure rollback.
 - Publish bounded revision-based durable changes for reconnectable adapters.
 - Detect optional durable branch support from the native ready capability list

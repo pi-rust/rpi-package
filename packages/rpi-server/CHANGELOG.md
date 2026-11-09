@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.11](https://github.com/pi-rust/rpi-package/compare/rpi-server-v0.3.10...rpi-server-v0.3.11) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
+## [0.3.10](https://github.com/pi-rust/rpi-package/compare/rpi-server-v0.3.9...rpi-server-v0.3.10) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
+## [0.3.9](https://github.com/pi-rust/rpi-package/compare/rpi-server-v0.3.8...rpi-server-v0.3.9) - 2026-11-05
+
+### Fixed
+
+- make strict warning builds pass
+
 ## [0.3.8](https://github.com/pi-rust/rpi-package/compare/rpi-server-v0.3.7...rpi-server-v0.3.8) - 2026-10-31
 
 ### Fixed

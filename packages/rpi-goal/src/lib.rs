@@ -1659,7 +1659,7 @@ mod tests {
                 }]});
                 return 0;
             }
-            if FAIL_APPENDS.fetch_update(Ordering::SeqCst, Ordering::SeqCst,
+            if FAIL_APPENDS.try_update(Ordering::SeqCst, Ordering::SeqCst,
                 |remaining| remaining.checked_sub(1)).is_ok() {
                 return 1;
             }

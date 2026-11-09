@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.14...rpi-acp-v0.2.15) - 2026-11-08
+
+### Other
+
+- Remove legacy durable runtime from package adapters
+
+## [0.2.14](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.13...rpi-acp-v0.2.14) - 2026-11-07
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.2.13](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.12...rpi-acp-v0.2.13) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
+## [0.2.12](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.11...rpi-acp-v0.2.12) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
+## [0.2.11](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.10...rpi-acp-v0.2.11) - 2026-11-05
+
+### Fixed
+
+- *(acp)* sync inline image prompt limits
+- *(acp)* keep test-only response helper out of release builds
+
+## [0.2.10](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.9...rpi-acp-v0.2.10) - 2026-11-05
+
+### Fixed
+
+- *(extcore)* prove live children with native branch identity
+
+## [0.2.9](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.8...rpi-acp-v0.2.9) - 2026-11-04
+
+### Added
+
+- *(acp)* add optional live child subscriptions
+- *(adapters)* expose bounded Code Mode child queries and live feed
+
+### Fixed
+
+- *(acp)* bound live subscription shutdown
+
+## [0.2.8](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.7...rpi-acp-v0.2.8) - 2026-11-03
+
+### Other
+
+- updated the following local packages: rpi-extcore
+
+## [0.2.7](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.6...rpi-acp-v0.2.7) - 2026-11-02
+
+### Added
+
+- *(extcore)* own exact session resource lifecycle and recovery
+
 ## [0.2.6](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.5...rpi-acp-v0.2.6) - 2026-11-01
 
 ### Added
@@ -62,46 +122,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cover compact native text/thinking updates with nonempty initial content and authoritative final suffixes, without duplicate ACP chunks. Shared reconciliation is provided by rpi-extcore; native prompt acceptance and settlement semantics are unchanged.
 
-## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.2.0...rpi-acp-v0.2.1) - 2026-10-29
-
-### Added
-
-- *(acp)* harden protocol lifecycle and capability coverage
-
-### Other
-
-- Merge main into feature-1028 and preserve canonical durable recovery
-
-## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.23...rpi-acp-v0.2.0) - 2026-10-29
-
-### Other
-
-- *(durable)* [**breaking**] require canonical filtered branch recovery ([#109](https://github.com/pi-rust/rpi-package/pull/109))
-
-## [0.1.23](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.22...rpi-acp-v0.1.23) - 2026-10-28
-
-### Other
-
-- use canonical durable events in ACP
-
-## [0.1.22](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.21...rpi-acp-v0.1.22) - 2026-10-28
-
-### Other
-
-- Merge pull request #99 from pi-rust/feature-1028
-- *(durable)* remove background polling
-
 ## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.20...rpi-acp-v0.1.21) - 2026-10-28
 
 ### Other
 
 - *(transcript)* reduce session snapshot and branch polling cost
-
-## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.19...rpi-acp-v0.1.20) - 2026-10-28
-
-### Added
-
-- consolidate durable state and publish commit updates ([#91](https://github.com/pi-rust/rpi-package/pull/91))
 
 ## [0.1.19](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.18...rpi-acp-v0.1.19) - 2026-10-26
 
@@ -114,21 +139,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - remove rpi-acp changelog conflict markers and an orchestrator -D warnings error ([#77](https://github.com/pi-rust/rpi-package/pull/77))
-
-## [0.1.17](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.16...rpi-acp-v0.1.17) - 2026-10-25
-
-### Added
-
-- *(durable)* add branch-backed durable runtime
-
-### Added
-
-- Add the optional ACP `session/durable` extension for branch-backed durable
-  state, run recovery and queue coordination; hosts without branch support
-  continue to serve ordinary ACP sessions.
-- Add the optional `session/durable_update` notification after durable state is
-  successfully persisted, including its revision and complete branch-backed
-  state snapshot.
 
 ## [0.1.16](https://github.com/pi-rust/rpi-package/compare/rpi-acp-v0.1.15...rpi-acp-v0.1.16) - 2026-10-25
 

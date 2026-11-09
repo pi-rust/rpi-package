@@ -1,6 +1,6 @@
 [package]
 name = "rpi-goal"
-version = "0.2.2"
+version = "0.2.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,6 +10,16 @@ description = "Codex-style goal mode for the rpi Rust agent: a persistent, conte
 readme = "README.md"
 keywords = ["rpi", "goal", "objective", "autonomous", "plugin"]
 categories = ["development-tools"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -32,7 +32,7 @@ def build(args):
     if assets.command("git", "rev-parse", "HEAD") != args.source_ref:
         raise ValueError("Checkout differs from the release commit")
     host = re.search(r"^host: (.+)$", assets.command("rustc", "-vV"), re.MULTILINE).group(1)
-    if args.target not in assets.TARGETS or args.target != host:
+    if args.target not in assets.WEB_TARGETS or args.target != host:
         raise ValueError("The build target must match the native compiler")
     windows = "windows" in args.target
     binary_name = "rpi-web.exe" if windows else "rpi-web"
@@ -67,9 +67,69 @@ def build(args):
     })
 
 
+def mirror_files(root, tag):
+    manifest_path = root / "rpi-web-release.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"Missing Web release manifest for mirror: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("tag") != tag:
+        raise ValueError(f"Web release manifest tag does not match mirror tag: {tag}")
+    files = []
+    for distribution in manifest.get("targets", {}).values():
+        files.extend((tag, path) for path in assets._distribution_files(root, distribution))
+    files.append((tag, manifest_path))
+    return files
+
+
+def mirror(args):
+    config = assets.rustfs_configuration()
+    if config is None:
+        print("RustFS mirror not configured; skipping optional CDN mirror.")
+        return
+    root = Path(args.output)
+    files = mirror_files(root, args.tag)
+    destination = config["RPI_CDN_BASE_URL"] + "/rpi-package/releases/" if config["RPI_CDN_BASE_URL"] else "configured S3 endpoint"
+    print(f"RustFS mirror enabled for {len(files)} immutable Web release files ({destination})")
+    aws = assets.shutil.which("aws")
+    if args.dry_run:
+        for tag, path in files:
+            print("DRY-RUN", " ".join(assets._aws_copy_command(aws or "aws", config, tag, path)))
+        return
+    if aws:
+        command_env = assets.os.environ.copy()
+        command_env.update({
+            "AWS_ACCESS_KEY_ID": config["RPI_RUSTFS_ACCESS_KEY"],
+            "AWS_SECRET_ACCESS_KEY": config["RPI_RUSTFS_SECRET_KEY"],
+            "AWS_EC2_METADATA_DISABLED": "true",
+        })
+        for tag, path in files:
+            key = assets._object_key(tag, path)
+            head = subprocess.run(
+                assets._aws_head_command(aws, config, key),
+                env=command_env,
+                capture_output=True,
+                text=True,
+            )
+            if head.returncode == 0:
+                assets._verify_existing_object(head, path)
+                print(f"Preserving existing immutable CDN object: {key}")
+                continue
+            if not assets._is_missing_object(head):
+                raise RuntimeError(f"Cannot inspect CDN object before immutable upload: {key}")
+            subprocess.run(
+                assets._aws_copy_command(aws, config, tag, path),
+                env=command_env,
+                check=True,
+            )
+    else:
+        print("AWS CLI unavailable; using the standard-library S3 uploader.")
+        for tag, path in files:
+            assets._stdlib_mirror(config, tag, path)
+
+
 def publish(args):
     root = Path(args.output)
-    fragments = assets.collect(root, "rpi-web.*.json", args.source_ref)
+    fragments = assets.collect(root, "rpi-web.*.json", args.source_ref, assets.WEB_TARGETS)
     first = fragments[0]
     if not re.fullmatch(r"rpi-web-v\d+\.\d+\.\d+", args.tag):
         raise ValueError("Invalid Web release tag")
@@ -97,12 +157,19 @@ def publish(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("build", "publish"))
-    parser.add_argument("--source-ref", required=True)
-    parser.add_argument("--repository", required=True)
+    parser.add_argument("command", choices=("build", "publish", "mirror"))
+    parser.add_argument("--source-ref")
+    parser.add_argument("--repository")
     parser.add_argument("--tag", required=True)
     parser.add_argument("--target")
     parser.add_argument("--assets", default="packages/rpi-web/assets")
     parser.add_argument("--output", default="dist/web-release")
+    parser.add_argument("--dry-run", action="store_true", help="Print mirror commands without uploading")
     args = parser.parse_args()
-    (build if args.command == "build" else publish)(args)
+    if args.command == "build" and (
+        not args.target or not args.source_ref or not args.repository
+    ):
+        parser.error("build requires --target, --source-ref and --repository")
+    if args.command == "publish" and (not args.source_ref or not args.repository):
+        parser.error("publish requires --source-ref and --repository")
+    (build if args.command == "build" else publish if args.command == "publish" else mirror)(args)

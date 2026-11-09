@@ -3,15 +3,13 @@
 //! `rpi-extcore` is the protocol-neutral layer used by the Web and ACP
 //! adapters. It owns native `rpi --mode rpc` child processes, request
 //! correlation, prompt run settlement, event replay, bounded transcript
-//! snapshots, workspace services and durable projection semantics.
+//! snapshots and workspace services.
 //!
 //! The crate deliberately has no Axum, ACP, frontend or plugin-ABI dependency.
 //! Native session files remain owned by the native rpi host; this crate reads,
 //! validates and bounds that data rather than creating a second transcript. The
-//! durable service integration optionally uses the native `get_session_branch`
-//! RPC plus the host `execute_command` bridge. The `rpi-durable` extension is
-//! the only writer of durable business entries.
-//! Hosts without those optional commands continue to support ordinary sessions.
+//! Durable workflow state is owned exclusively by the native host. This crate
+//! preserves ordinary JSONL/session behavior without a durable projection.
 //!
 //! # Versioning
 //!
@@ -24,9 +22,9 @@
 #![forbid(unsafe_code)]
 pub mod configuration;
 pub mod context_usage;
+pub mod deletion;
 pub use context_usage::{parse_context_usage, ContextUsage};
 pub mod dialogs;
-pub mod durable;
 pub mod events;
 pub mod external_tools;
 pub mod file_io;
@@ -39,6 +37,7 @@ pub mod prompt;
 pub mod protocol;
 pub mod registry;
 pub mod reply;
+pub mod resources;
 pub mod run;
 pub mod run_timing;
 pub mod service;

@@ -337,16 +337,16 @@ mod file_io_runtime_tests {
 
     fn prompt_profile() -> Value {
         json!({"contentBlocksVersion":1,"image":true,"imageMimeTypes":["image/png","image/jpeg"],
-            "maxImages":4,"maxImageBytes":262144,"maxTotalImageBytes":524288,"maxImageBase64Bytes":349528,
-            "maxPromptBytes":786432,"maxTextBytes":32768,"maxContentBlocks":64,"maxImageSide":2000,
-            "maxImagePixels":4000000,"imageDecodeAllocBudgetBytes":33554432,"frameBytes":1048576})
+            "maxImages":4,"maxImageBytes":1048576,"maxTotalImageBytes":2097152,"maxImageBase64Bytes":1398104,
+            "maxPromptBytes":3145728,"maxTextBytes":32768,"maxContentBlocks":64,"maxImageSide":2000,
+            "maxImagePixels":4000000,"imageDecodeAllocBudgetBytes":67108864,"frameBytes":4194304})
     }
 
     #[tokio::test]
     async fn ordered_prompt_keeps_image_order_and_checks_final_uuid_type_and_lf() {
         use crate::prompt::{PromptBlock, PromptContent, MAX_PROMPT_BYTES};
         let (writer, reader) = tokio::io::duplex(2 * 1024 * 1024);
-        let (host, _) = HostSession::test_connection_with_ready(
+        let (host, events) = HostSession::test_connection_with_ready(
             writer,
             8,
             json!({"promptContent":prompt_profile()}),
@@ -370,6 +370,8 @@ mod file_io_runtime_tests {
         assert_eq!(frame["contentBlocks"], json!(content));
         assert!(frame.get("message").is_none());
         assert!(uuid::Uuid::parse_str(frame["id"].as_str().unwrap()).is_ok());
+        events.send(json!({"type":"response","id":frame["id"],"success":true,"data":{"accepted":true}})).unwrap();
+        events.send(json!({"type":"agent_settled","outcome":"completed"})).unwrap();
         drop(run);
         let mut command = json!({"contentBlocks":content,"extensionPadding":""});
         let mut envelope = command.clone();

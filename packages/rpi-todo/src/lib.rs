@@ -377,7 +377,7 @@ fn tool_schema() -> StableToolSchema {
             "properties": {
                 "action": {"type": "string", "enum": ["list", "add", "update", "toggle", "clear"], "default": "list", "description": "Operation. clear deletes all tasks, including completed ones, and resets the next ID."},
                 "text": {"type": "string", "pattern": "\\S", "description": "Required for add: concrete task and acceptance check. Trimmed before storage; whitespace-only text is rejected. Ignored by other actions."},
-                "id": {"type": "integer", "minimum": 0, "maximum": u64::MAX, "description": "Required for update/toggle: exact ID returned by list/add. IDs start at 0; clear resets them. Not an array index."},
+                "id": {"type": "integer", "minimum": 0, "maximum": u32::MAX, "description": "Required for update/toggle: exact ID returned by list/add. IDs start at 0; clear resets them. Not an array index."},
                 "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Required for update. completed means the task's acceptance checks have passed. Ignored by other actions."},
                 "includeDone": {"type": "boolean", "default": false, "description": "For list only: include completed tasks in displayed text. Result details always contain the full state."}
             },
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(props["includeDone"]["default"], false);
         assert_eq!(props["text"]["pattern"], "\\S");
         assert_eq!(props["id"]["minimum"], 0);
-        assert_eq!(props["id"]["maximum"], json!(u64::MAX));
+        assert_eq!(props["id"]["maximum"], json!(u32::MAX));
         assert_eq!(
             props["status"]["enum"],
             json!(["pending", "in_progress", "completed"])

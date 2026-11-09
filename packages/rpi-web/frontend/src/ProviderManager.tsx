@@ -34,24 +34,54 @@ const copy = {
     settings: "Connection settings",
     settingsLabel: "Connection settings: ",
     provider: "Provider ID",
+    protocol: "Protocol",
+    openaiCompletions: "OpenAI-compatible Chat Completions",
+    openaiResponses: "OpenAI Responses",
+    anthropicMessages: "Anthropic Messages",
     key: "API Key",
-    base: "Custom Base URL · local draft",
+    base: "Base URL",
+    baseDraft: "Custom Base URL · local draft",
+    modelId: "Model ID",
+    modelName: "Model name (optional)",
+    contextWindow: "Context window (tokens, optional)",
+    maxOutputTokens: "Max output tokens (optional)",
+    supportsImages: "Supports image input",
+    availableModels: "Available models",
     draftNote:
       "Base URL changes and provider deletion are not supported by the node. This URL is a page-local draft only; it is never sent or persisted.",
     keyNote:
-      "Only the key you explicitly enter is submitted. The secret is cleared on submission, even if saving fails. Saving a key does not add a discovered provider or validate remote access.",
+      "Only the key you explicitly enter is submitted. When editing a provider, leave it blank to preserve the existing key. The secret is cleared on submission, even if saving fails. Saving a key does not add a discovered provider or validate remote access.",
     cancelNote:
       "Closing or editing stops waiting for the request; it does not undo a change the node may already have accepted.",
     save: "Save API Key",
-    saving: "Saving API Key…",
+    addProvider: "Save provider",
+    updateProvider: "Save changes",
+    deleteProvider: "Delete provider",
+    deleting: "Deleting…",
+    deleteConfirm: "Delete this provider configuration from models.json?",
+    saving: "Saving…",
     clear: "Clear local draft",
     cleared: "Local draft cleared.",
     close: "Close",
     help: "Usage notes",
     saved:
       "The node saved the API Key. Refresh providers to read credential metadata.",
+    providerSaved:
+      "Provider and model saved to models.json. Restart the runtime, then refresh providers.",
+    fetchModels: "Fetch models",
+    fetchingModels: "Fetching models…",
+    fetchedModels: "Models fetched. Select one or enter a custom model ID.",
+    testConnection: "Test connection",
+    testingConnection: "Testing connection…",
+    connectionPassed: "Connection succeeded · {{latency}} ms · {{count}} models reported.",
+    connectionFailed: "Connection test failed. Check the endpoint and API key.",
+    fetchModelsError: "Could not fetch models. Check the endpoint and API key.",
     saveError:
       "API Key submission failed. Check the node connection and permissions, then enter the key again.",
+    providerSaveError:
+      "Provider configuration failed. Check the node connection and configuration values, then try again.",
+    contextWindowError: "Context window must be a positive whole number.",
+    maxOutputTokensError: "Max output tokens must be a positive whole number.",
     restart:
       "The node requires a runtime restart for this change. Restart on the node, then refresh; this page will not restart it automatically.",
     modelSaved: "Model selection submitted and runtime state read back.",
@@ -67,6 +97,8 @@ const copy = {
       "Credential metadata is unavailable on this node. Models can still be viewed; credentials must be managed on the node when API Key configuration is unavailable.",
     keyUnsupported:
       "This node does not support API Key configuration here. Configure credentials on the node.",
+    providerUnsupported:
+      "This node does not support adding provider configurations. Configure models.json on the node.",
     modelUnsupported:
       "Model selection requires both set_model and get_state support on this node.",
     stateUnsupported: "This node does not support reading runtime state.",
@@ -95,21 +127,50 @@ const copy = {
     settings: "连接设置",
     settingsLabel: "连接设置：",
     provider: "Provider 标识",
+    protocol: "协议",
+    openaiCompletions: "OpenAI 兼容 Chat Completions",
+    openaiResponses: "OpenAI Responses",
+    anthropicMessages: "Anthropic Messages",
     key: "API Key",
-    base: "自定义 Base URL · 本地草稿",
+    base: "Base URL",
+    baseDraft: "自定义 Base URL · 本地草稿",
+    modelId: "模型 ID",
+    modelName: "模型名称（可选）",
+    contextWindow: "上下文大小（tokens，可选）",
+    maxOutputTokens: "最大输出 tokens（可选）",
+    supportsImages: "支持图片输入",
+    availableModels: "可用模型",
     draftNote:
       "节点暂不支持修改 Base URL 或删除供应商。此地址仅为当前页面草稿，不会发送或持久化。",
     keyNote:
-      "仅提交你主动输入的 API Key；提交时清空密钥，即使保存失败也不保留。保存密钥不代表已添加发现的供应商或通过远端验证。",
+      "仅提交你主动输入的 API Key；修改服务商时留空会保留已有 Key。提交时清空密钥，即使保存失败也不保留。保存密钥不代表已添加发现的供应商或通过远端验证。",
     cancelNote: "关闭或编辑只会停止等待请求，不能撤销节点可能已接受的更改。",
     save: "保存 API Key",
-    saving: "正在保存 API Key…",
+    addProvider: "保存服务商",
+    updateProvider: "保存修改",
+    deleteProvider: "删除服务商",
+    deleting: "正在删除…",
+    deleteConfirm: "确定从 models.json 删除这个服务商配置吗？",
+    saving: "正在保存…",
     clear: "清除本地草稿",
     cleared: "已清除本地草稿。",
     close: "关闭",
     help: "使用说明",
     saved: "节点已保存 API Key。请刷新供应商以读取凭据元数据。",
+    providerSaved: "服务商和模型已写入 models.json。请重启运行时后刷新供应商。",
+    fetchModels: "获取模型",
+    fetchingModels: "正在获取模型…",
+    fetchedModels: "模型获取成功，请选择模型或手动输入模型 ID。",
+    testConnection: "测试连接",
+    testingConnection: "正在测试连接…",
+    connectionPassed: "连接成功 · {{latency}} ms · 返回 {{count}} 个模型。",
+    connectionFailed: "连接测试失败，请检查地址和 API Key。",
+    fetchModelsError: "获取模型失败，请检查地址和 API Key。",
     saveError: "API Key 提交失败，请检查节点连接与配置权限后重新输入。",
+    providerSaveError:
+      "服务商配置失败，请检查节点连接和配置内容后重试。",
+    contextWindowError: "上下文大小必须是大于 0 的整数。",
+    maxOutputTokensError: "最大输出 tokens 必须是大于 0 的整数。",
     restart:
       "节点要求重启运行时后生效。请在节点端重启，然后刷新检测；此页面不会自动重启。",
     modelSaved: "模型选择已提交并回读运行状态。",
@@ -122,6 +183,8 @@ const copy = {
     authUnsupported:
       "当前节点无法读取凭据元数据，仍可查看模型；若不支持 API Key 配置，请在节点端管理凭据。",
     keyUnsupported: "当前节点未提供 API Key 配置能力，请在节点端配置凭据。",
+    providerUnsupported:
+      "当前节点未提供添加服务商配置的能力，请在节点端配置 models.json。",
     modelUnsupported: "模型切换要求当前节点同时支持 set_model 和 get_state。",
     stateUnsupported: "当前节点未提供读取运行状态能力。",
     reasoning: "推理",
@@ -137,6 +200,8 @@ type Owner = {
   readRevision: number;
   modelRevision: number;
   draftRevision: number;
+  providerProbeRevision: number;
+  providerProbeController?: AbortController;
   saveController?: AbortController;
   modelController?: AbortController;
 };
@@ -181,6 +246,8 @@ export function ProviderManager({
   const [modelNotice, setModelNotice] = useState<Message | null>(null);
   const [modelRestart, setModelRestart] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+  const [configIsNew, setConfigIsNew] = useState(false);
+  const [configIsEditable, setConfigIsEditable] = useState(false);
   const configOpenRef = useRef(false);
   const dialogBody = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -221,16 +288,46 @@ export function ProviderManager({
     };
   }, [configOpen]);
   const [provider, setProvider] = useState("");
+  const [protocol, setProtocol] = useState("openai-completions");
   const [secret, setSecret] = useState("");
   const [baseDrafts, setBaseDrafts] = useState(() => new Map<string, string>());
+  const [baseUrl, setBaseUrl] = useState("");
+  const [modelId, setModelId] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [contextWindow, setContextWindow] = useState("");
+  const [maxOutputTokens, setMaxOutputTokens] = useState("");
+  const [supportsImages, setSupportsImages] = useState(false);
+  const [fetchedModels, setFetchedModels] = useState<
+    Array<{
+      id: string;
+      ownedBy?: string | null;
+      contextWindow?: number | null;
+      maxTokens?: number | null;
+      supportsImages?: boolean | null;
+    }>
+  >([]);
+  const [providerProbePending, setProviderProbePending] = useState(false);
+  const [providerProbeAction, setProviderProbeAction] = useState<
+    "fetch" | "test" | null
+  >(null);
+  const [providerProbeError, setProviderProbeError] = useState(false);
+  const [connectionError, setConnectionError] = useState(false);
+  const [connectionResult, setConnectionResult] = useState<{
+    latencyMs: number;
+    modelCount: number;
+  } | null>(null);
   const [savePending, setSavePending] = useState(false);
   const [saveError, setSaveError] = useState<Message | null>(null);
   const [saveNotice, setSaveNotice] = useState<Message | null>(null);
   const [saveRestart, setSaveRestart] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
   const canReadModels = supported.has("get_available_models");
   const canReadState = supported.has("get_state");
   const canReadAuth = canAuth && supported.has("get_auth_status");
   const canSave = canAuth && supported.has("set_api_key");
+  const canAddProvider = canAuth && supported.has("set_provider_config");
+  const canUpdateProvider = canAuth && supported.has("update_provider_config");
+  const canDeleteProvider = canAuth && supported.has("delete_provider_config");
   const canSelect = supported.has("set_model") && canReadState;
 
   const owns = (owner: Owner) =>
@@ -302,6 +399,7 @@ export function ProviderManager({
       readRevision: 0,
       modelRevision: 0,
       draftRevision: 0,
+      providerProbeRevision: 0,
     };
     ownerRef.current = owner;
     setModels([]);
@@ -310,12 +408,26 @@ export function ProviderManager({
     setModelError(null);
     setModelNotice(null);
     setModelRestart(false);
+    setFetchedModels([]);
+    setProviderProbePending(false);
+    setProviderProbeAction(null);
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
+    setBaseDrafts(new Map());
     configOpenRef.current = false;
     setConfigOpen(false);
     setProvider("");
+    setProtocol("openai-completions");
     setSecret("");
-    setBaseDrafts(new Map());
+    setBaseUrl("");
+    setModelId("");
+    setModelName("");
+    setContextWindow("");
+    setMaxOutputTokens("");
+    setSupportsImages(false);
     setSavePending(false);
+    setDeletePending(false);
     setSaveError(null);
     setSaveNotice(null);
     setSaveRestart(false);
@@ -331,23 +443,47 @@ export function ProviderManager({
       ++owner.draftRevision;
       owner.saveController?.abort();
       owner.saveController = undefined;
+      owner.providerProbeController?.abort();
+      owner.providerProbeController = undefined;
     }
     setSavePending(false);
+    setDeletePending(false);
     setSaveError(null);
     setSaveNotice(null);
     setSaveRestart(false);
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
   }
 
   function openConfig(value: string) {
     const owner = ownerRef.current;
     if (!owner || !owns(owner) || loading || owner.modelController) return;
     invalidateDraft();
+    const isNew = !value.trim();
+    const firstModel = models.find((model) => model.provider === value);
     returnFocus.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    const editable = !isNew && Boolean(firstModel) && canUpdateProvider;
+    setConfigIsNew(isNew);
+    setConfigIsEditable(editable);
     setProvider(value);
+    setProtocol(firstModel?.api || "openai-completions");
     setSecret("");
+    setBaseUrl(
+      isNew ? "" : editable ? firstModel?.baseUrl || "" : baseDrafts.get(value) || "",
+    );
+    setModelId(isNew ? "" : firstModel?.id || "");
+    setModelName(isNew ? "" : firstModel?.name || "");
+    setContextWindow(firstModel?.contextWindow ? String(firstModel.contextWindow) : "");
+    setMaxOutputTokens(firstModel?.maxTokens ? String(firstModel.maxTokens) : "");
+    setSupportsImages(firstModel?.input?.includes("image") ?? false);
+    setFetchedModels([]);
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
     configOpenRef.current = true;
     setConfigOpen(true);
   }
@@ -356,8 +492,21 @@ export function ProviderManager({
     invalidateDraft();
     configOpenRef.current = false;
     setConfigOpen(false);
+    setConfigIsNew(false);
+    setConfigIsEditable(false);
     setSecret("");
     setProvider("");
+    setProtocol("openai-completions");
+    setBaseUrl("");
+    setModelId("");
+    setModelName("");
+    setContextWindow("");
+    setMaxOutputTokens("");
+    setSupportsImages(false);
+    setFetchedModels([]);
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
   }
 
   async function saveKey() {
@@ -403,6 +552,236 @@ export function ProviderManager({
       setSaveRestart(result.requiresRestart === true);
     } catch {
       // Never render server error text: it could echo credentials.
+      if (current()) setSaveError("saveError");
+    } finally {
+      owner.controllers.delete(controller);
+      if (owner.saveController === controller) owner.saveController = undefined;
+      if (current()) setSavePending(false);
+    }
+  }
+
+  async function fetchProviderModels() {
+    const owner = ownerRef.current;
+    const input = {
+      api: protocol,
+      baseUrl: baseUrl.trim(),
+      apiKey: secret,
+    };
+    if (
+      !owner ||
+      !owns(owner) ||
+      !configOpenRef.current ||
+      (!configIsNew && !configIsEditable) ||
+      (configIsNew ? !canAddProvider : !canUpdateProvider) ||
+      !input.baseUrl ||
+      !input.apiKey.trim() ||
+      owner.providerProbeController
+    )
+      return;
+    const revision = ++owner.providerProbeRevision;
+    const controller = new AbortController();
+    owner.providerProbeController = controller;
+    owner.controllers.add(controller);
+    const current = () =>
+      owns(owner) &&
+      !controller.signal.aborted &&
+      configOpenRef.current &&
+      (configIsNew || configIsEditable) &&
+      owner.providerProbeRevision === revision;
+    setProviderProbePending(true);
+    setProviderProbeAction("fetch");
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
+    try {
+      const result = await api.getProviderModels(owner.sessionId, input, controller.signal);
+      if (!current()) return;
+      setFetchedModels(result.models);
+      if (!modelId.trim() && result.models[0]) setModelId(result.models[0].id);
+      if (!contextWindow.trim() && result.models[0]?.contextWindow)
+        setContextWindow(String(result.models[0].contextWindow));
+      if (!maxOutputTokens.trim() && result.models[0]?.maxTokens)
+        setMaxOutputTokens(String(result.models[0].maxTokens));
+      if (result.models[0]?.supportsImages != null)
+        setSupportsImages(result.models[0].supportsImages);
+    } catch {
+      if (current()) setProviderProbeError(true);
+    } finally {
+      owner.controllers.delete(controller);
+      if (owner.providerProbeController === controller)
+        owner.providerProbeController = undefined;
+      if (current()) {
+        setProviderProbePending(false);
+        setProviderProbeAction(null);
+      }
+    }
+  }
+
+  async function testProviderConnection() {
+    const owner = ownerRef.current;
+    const input = {
+      api: protocol,
+      baseUrl: baseUrl.trim(),
+      apiKey: secret,
+    };
+    if (
+      !owner ||
+      !owns(owner) ||
+      !configOpenRef.current ||
+      (!configIsNew && !configIsEditable) ||
+      (configIsNew ? !canAddProvider : !canUpdateProvider) ||
+      !input.baseUrl ||
+      !input.apiKey.trim() ||
+      owner.providerProbeController
+    )
+      return;
+    const revision = ++owner.providerProbeRevision;
+    const controller = new AbortController();
+    owner.providerProbeController = controller;
+    owner.controllers.add(controller);
+    const current = () =>
+      owns(owner) &&
+      !controller.signal.aborted &&
+      configOpenRef.current &&
+      (configIsNew || configIsEditable) &&
+      owner.providerProbeRevision === revision;
+    setProviderProbePending(true);
+    setProviderProbeAction("test");
+    setProviderProbeError(false);
+    setConnectionError(false);
+    setConnectionResult(null);
+    try {
+      const result = await api.testProviderConfig(
+        owner.sessionId,
+        input,
+        controller.signal,
+      );
+      if (!current()) return;
+      setConnectionResult({
+        latencyMs: result.latencyMs,
+        modelCount: result.modelCount ?? 0,
+      });
+    } catch {
+      if (current()) setConnectionError(true);
+    } finally {
+      owner.controllers.delete(controller);
+      if (owner.providerProbeController === controller)
+        owner.providerProbeController = undefined;
+      if (current()) {
+        setProviderProbePending(false);
+        setProviderProbeAction(null);
+      }
+    }
+  }
+
+  async function deleteProviderConfig() {
+    const owner = ownerRef.current;
+    if (
+      !owner ||
+      !owns(owner) ||
+      !configOpenRef.current ||
+      !configIsEditable ||
+      !canDeleteProvider ||
+      deletePending ||
+      !window.confirm(t.deleteConfirm)
+    )
+      return;
+    const controller = new AbortController();
+    owner.saveController = controller;
+    owner.controllers.add(controller);
+    setDeletePending(true);
+    setSaveError(null);
+    try {
+      await api.deleteProviderConfig(owner.sessionId, provider.trim(), controller.signal);
+      if (!owns(owner) || controller.signal.aborted) return;
+      closeConfig();
+      void readProviders(owner);
+    } catch {
+      if (owns(owner) && !controller.signal.aborted) setSaveError("providerSaveError");
+    } finally {
+      owner.controllers.delete(controller);
+      if (owner.saveController === controller) owner.saveController = undefined;
+      setDeletePending(false);
+    }
+  }
+
+  async function saveProvider() {
+    const owner = ownerRef.current;
+    const parsedContextWindow = contextWindow.trim()
+      ? Number(contextWindow.trim())
+      : undefined;
+    const parsedMaxOutputTokens = maxOutputTokens.trim()
+      ? Number(maxOutputTokens.trim())
+      : undefined;
+    if (
+      parsedContextWindow !== undefined &&
+      (!Number.isSafeInteger(parsedContextWindow) || parsedContextWindow <= 0)
+    ) {
+      setSaveError("contextWindowError");
+      return;
+    }
+    if (
+      parsedMaxOutputTokens !== undefined &&
+      (!Number.isSafeInteger(parsedMaxOutputTokens) || parsedMaxOutputTokens <= 0)
+    ) {
+      setSaveError("maxOutputTokensError");
+      return;
+    }
+    const values = {
+      provider: provider.trim(),
+      api: protocol,
+      baseUrl: baseUrl.trim(),
+      apiKey: secret,
+      modelId: modelId.trim(),
+      modelName: modelName.trim(),
+      ...(parsedContextWindow !== undefined
+        ? { contextWindow: parsedContextWindow }
+        : {}),
+      ...(parsedMaxOutputTokens !== undefined
+        ? { maxOutputTokens: parsedMaxOutputTokens }
+        : {}),
+      supportsImages,
+    };
+    setSecret("");
+    if (
+      !owner ||
+      !owns(owner) ||
+      !configOpenRef.current ||
+      (!configIsNew && !configIsEditable) ||
+      (configIsNew ? !canAddProvider : !canUpdateProvider) ||
+      owner.saveController ||
+      !values.provider ||
+      !values.baseUrl ||
+      !values.modelId ||
+      (configIsNew && !values.apiKey.trim())
+    )
+      return;
+    const revision = ++owner.draftRevision;
+    const controller = new AbortController();
+    owner.saveController = controller;
+    owner.controllers.add(controller);
+    const current = () =>
+      owns(owner) &&
+      !controller.signal.aborted &&
+      configOpenRef.current &&
+      (configIsNew || configIsEditable) &&
+      owner.draftRevision === revision;
+    setSavePending(true);
+    setSaveError(null);
+    setSaveNotice(null);
+    setSaveRestart(false);
+    try {
+      await Promise.resolve();
+      if (!current()) return;
+      if (configIsNew) {
+        await api.setProviderConfig(owner.sessionId, values, controller.signal);
+      } else {
+        await api.updateProviderConfig(owner.sessionId, values, controller.signal);
+      }
+      if (!current()) return;
+      setSaveNotice("providerSaved");
+      setSaveRestart(true);
+    } catch {
       if (current()) setSaveError("saveError");
     } finally {
       owner.controllers.delete(controller);
@@ -475,8 +854,6 @@ export function ProviderManager({
     ]),
   ].sort();
   const pending = loading || modelPending || savePending;
-  const baseDraft = baseDrafts.get(provider.trim()) ?? "";
-
   return (
     <section className="provider-manager" aria-label={t.title}>
       <header className="provider-manager-header">
@@ -582,6 +959,10 @@ export function ProviderManager({
                   <dd>{credential?.source || t.unknown}</dd>
                 </div>
                 <div>
+                  <dt>{t.protocol}</dt>
+                  <dd>{available[0]?.api || t.unknown}</dd>
+                </div>
+                <div>
                   <dt>{t.models}</dt>
                   <dd>{available.length}</dd>
                 </div>
@@ -654,6 +1035,7 @@ export function ProviderManager({
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
+              readOnly={configIsEditable}
               value={provider}
               onChange={(event) => {
                 invalidateDraft();
@@ -661,6 +1043,204 @@ export function ProviderManager({
                 setSecret("");
               }}
             />
+            {(configIsNew || configIsEditable) && (
+              <>
+                <label htmlFor={`${id}-protocol`}>{t.protocol}</label>
+                <select
+                  id={`${id}-protocol`}
+                  value={protocol}
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setProtocol(event.target.value);
+                  }}
+                >
+                  <option value="openai-completions">
+                    {t.openaiCompletions}
+                  </option>
+                  <option value="openai-responses">{t.openaiResponses}</option>
+                  <option value="anthropic-messages">
+                    {t.anthropicMessages}
+                  </option>
+                </select>
+                <label htmlFor={`${id}-base`}>{t.base}</label>
+                <input
+                  id={`${id}-base`}
+                  type="url"
+                  required
+                  value={baseUrl}
+                  placeholder="https://api.example.com/v1"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setBaseUrl(event.target.value);
+                  }}
+                />
+                <label htmlFor={`${id}-model-id`}>{t.modelId}</label>
+                <input
+                  id={`${id}-model-id`}
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  required
+                  value={modelId}
+                  placeholder="my-model"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setModelId(event.target.value);
+                  }}
+                />
+                <div className="provider-manager-inline-actions">
+                  <button
+                    type="button"
+                    disabled={providerProbePending || !baseUrl.trim() || !secret.trim()}
+                    onClick={() => void fetchProviderModels()}
+                  >
+                    {providerProbeAction === "fetch"
+                      ? t.fetchingModels
+                      : t.fetchModels}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={providerProbePending || !baseUrl.trim() || !secret.trim()}
+                    onClick={() => void testProviderConnection()}
+                  >
+                    {providerProbeAction === "test"
+                      ? t.testingConnection
+                      : t.testConnection}
+                  </button>
+                </div>
+                {fetchedModels.length > 0 && (
+                  <>
+                    <p role="status">{t.fetchedModels}</p>
+                    <label htmlFor={`${id}-available-models`}>{t.availableModels}</label>
+                    <select
+                      id={`${id}-available-models`}
+                      value={fetchedModels.some((model) => model.id === modelId) ? modelId : ""}
+                      onChange={(event) => {
+                        const selected = fetchedModels.find(
+                          (model) => model.id === event.target.value,
+                        );
+                        setModelId(event.target.value);
+                        if (selected?.contextWindow)
+                          setContextWindow(String(selected.contextWindow));
+                        if (selected?.maxTokens)
+                          setMaxOutputTokens(String(selected.maxTokens));
+                        if (selected?.supportsImages != null)
+                          setSupportsImages(selected.supportsImages);
+                      }}
+                    >
+                      <option value="">{t.availableModels}</option>
+                      {fetchedModels.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.id}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
+                {providerProbeError && (
+                  <p className="provider-manager-error" role="alert">
+                    {t.fetchModelsError}
+                  </p>
+                )}
+                {connectionError && (
+                  <p className="provider-manager-error" role="alert">
+                    {t.connectionFailed}
+                  </p>
+                )}
+                {connectionResult && (
+                  <p role="status">
+                    {t.connectionPassed
+                      .replace("{{latency}}", String(connectionResult.latencyMs))
+                      .replace("{{count}}", String(connectionResult.modelCount))}
+                  </p>
+                )}
+                <label htmlFor={`${id}-model-name`}>{t.modelName}</label>
+                <input
+                  id={`${id}-model-name`}
+                  autoComplete="off"
+                  value={modelName}
+                  placeholder={modelId || "My Model"}
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setModelName(event.target.value);
+                  }}
+                />
+                <label htmlFor={`${id}-context-window`}>{t.contextWindow}</label>
+                <input
+                  id={`${id}-context-window`}
+                  type="number"
+                  min="1"
+                  step="1"
+                  inputMode="numeric"
+                  value={contextWindow}
+                  placeholder="128000"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setContextWindow(event.target.value);
+                  }}
+                />
+                <label htmlFor={`${id}-max-output-tokens`}>{t.maxOutputTokens}</label>
+                <input
+                  id={`${id}-max-output-tokens`}
+                  type="number"
+                  min="1"
+                  step="1"
+                  inputMode="numeric"
+                  value={maxOutputTokens}
+                  placeholder="4096"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    setMaxOutputTokens(event.target.value);
+                  }}
+                />
+                <label htmlFor={`${id}-supports-images`}>
+                  <input
+                    id={`${id}-supports-images`}
+                    type="checkbox"
+                    checked={supportsImages}
+                    onChange={(event) => {
+                      invalidateDraft();
+                      setSupportsImages(event.target.checked);
+                    }}
+                  />{" "}
+                  {t.supportsImages}
+                </label>
+              </>
+            )}
+            {!configIsNew && !configIsEditable && (
+              <>
+                <label htmlFor={`${id}-base`}>{t.baseDraft}</label>
+                <input
+                  id={`${id}-base`}
+                  type="url"
+                  value={baseUrl}
+                  placeholder="https://api.example.com/v1"
+                  onChange={(event) => {
+                    invalidateDraft();
+                    const value = event.target.value;
+                    setBaseUrl(value);
+                    setBaseDrafts((drafts) =>
+                      new Map(drafts).set(provider.trim(), value),
+                    );
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    invalidateDraft();
+                    setBaseUrl("");
+                    setBaseDrafts((drafts) => {
+                      const next = new Map(drafts);
+                      next.delete(provider.trim());
+                      return next;
+                    });
+                    setSaveNotice("cleared");
+                  }}
+                >
+                  {t.clear}
+                </button>
+              </>
+            )}
             <label htmlFor={`${id}-key`}>{t.key}</label>
             <input
               id={`${id}-key`}
@@ -674,53 +1254,65 @@ export function ProviderManager({
             />
             <button
               type="button"
-              aria-label={t.save}
-              disabled={
-                savePending || !canSave || !provider.trim() || !secret.trim()
+              aria-label={
+                configIsNew
+                  ? t.addProvider
+                  : configIsEditable
+                    ? t.updateProvider
+                    : t.save
               }
-              onClick={() => void saveKey()}
+              disabled={
+                savePending ||
+                deletePending ||
+                (configIsNew || configIsEditable
+                  ? (configIsNew ? !canAddProvider : !canUpdateProvider) ||
+                    !provider.trim() ||
+                    !baseUrl.trim() ||
+                    !modelId.trim() ||
+                    (configIsNew && !secret.trim())
+                  : !canSave || !provider.trim() || !secret.trim())
+              }
+              onClick={() =>
+                void (configIsNew || configIsEditable ? saveProvider() : saveKey())
+              }
             >
-              {savePending ? t.saving : t.save}
+              {savePending
+                ? t.saving
+                : configIsNew
+                  ? t.addProvider
+                  : configIsEditable
+                    ? t.updateProvider
+                    : t.save}
             </button>
-            {!canSave && (
+            {configIsNew && !canAddProvider && (
+              <p className="provider-manager-note">{t.providerUnsupported}</p>
+            )}
+            {configIsEditable && !canUpdateProvider && (
+              <p className="provider-manager-note">{t.providerUnsupported}</p>
+            )}
+            {!configIsNew && !configIsEditable && !canSave && (
               <p className="provider-manager-note">{t.keyUnsupported}</p>
             )}
             {saveError && (
               <p className="provider-manager-error" role="alert">
-                {t[saveError]}
+                {t[configIsNew || configIsEditable ? "providerSaveError" : saveError]}
               </p>
             )}
             {saveNotice && <p role="status">{t[saveNotice]}</p>}
             {saveRestart && <p role="status">{t.restart}</p>}
-            <label htmlFor={`${id}-base`}>{t.base}</label>
-            <input
-              id={`${id}-base`}
-              type="url"
-              value={baseDraft}
-              placeholder="https://api.example.com"
-              onChange={(event) => {
-                invalidateDraft();
-                setBaseDrafts((drafts) =>
-                  new Map(drafts).set(provider.trim(), event.target.value),
-                );
-              }}
-            />
-            <p className="provider-manager-note">{t.draftNote}</p>
-            <button
-              type="button"
-              onClick={() => {
-                invalidateDraft();
-                setSecret("");
-                setBaseDrafts((drafts) => {
-                  const next = new Map(drafts);
-                  next.delete(provider.trim());
-                  return next;
-                });
-                setSaveNotice("cleared");
-              }}
-            >
-              {t.clear}
-            </button>
+            {!configIsNew && !configIsEditable && (
+              <p className="provider-manager-note">{t.draftNote}</p>
+            )}
+            {configIsEditable && (
+              <button
+                type="button"
+                className="provider-manager-danger"
+                disabled={savePending || deletePending || !canDeleteProvider}
+                onClick={() => void deleteProviderConfig()}
+              >
+                {deletePending ? t.deleting : t.deleteProvider}
+              </button>
+            )}
             <details className="provider-manager-help">
               <summary>{t.help}</summary>
               <p className="provider-manager-note">{t.keyNote}</p>

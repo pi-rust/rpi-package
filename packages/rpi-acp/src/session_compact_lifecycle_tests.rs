@@ -9,7 +9,6 @@ async fn compact_reuses_dialog_and_tool_updates_then_settles() {
     let session = Arc::new(Session {
         rpc,
         context_presentation: tokio::sync::Mutex::default(),
-        durable: None,
         file_io: tokio::sync::OnceCell::new(),
         configuration: tokio::sync::OnceCell::new(),
         events: Some(events),
@@ -71,7 +70,6 @@ async fn compact_stream_lag_and_host_closure_are_errors() {
         let session = Arc::new(Session {
             rpc,
             context_presentation: tokio::sync::Mutex::default(),
-            durable: None,
             file_io: tokio::sync::OnceCell::new(),
             configuration: tokio::sync::OnceCell::new(),
             events: Some(events),
@@ -112,11 +110,13 @@ async fn compact_stream_lag_and_host_closure_are_errors() {
             "session ended"
         }));
         if lag {
-            assert!(session
-                .state()
-                .await
-                .unwrap_err()
-                .contains("backend stopped"));
+            assert!(
+                session
+                    .state()
+                    .await
+                    .unwrap_err()
+                    .contains("backend stopped")
+            );
         }
     }
 }

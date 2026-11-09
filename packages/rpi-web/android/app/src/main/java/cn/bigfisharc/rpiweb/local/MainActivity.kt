@@ -174,8 +174,8 @@ class MainActivity : Activity() {
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
             webViewClient = client()
             webChromeClient = chrome()
-            setDownloadListener { _, _, _, _, _ ->
-                Toast.makeText(this@MainActivity, "本版不提供应用内下载，请在浏览器中打开站点下载。", Toast.LENGTH_LONG).show()
+            setDownloadListener { url, _, _, _, _ ->
+                if (this === web) confirmExternal(url)
             }
         }
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
@@ -191,9 +191,10 @@ class MainActivity : Activity() {
 
     private fun client() = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            if (view !== web) return true
             val url = request.url.toString()
             if (OriginPolicy.isInternal(url, origin)) return false
-            if (request.isForMainFrame && request.hasGesture() && OriginPolicy.isHttps(url)) confirmExternal(url)
+            if (request.isForMainFrame && request.hasGesture()) confirmExternal(url)
             return true
         }
 
@@ -263,7 +264,7 @@ class MainActivity : Activity() {
                     if (popups.remove(popup)) popup.destroy()
                     if (view === web && !isFinishing && !isDestroyed) {
                         if (OriginPolicy.isInternal(url, origin)) view.loadUrl(url)
-                        else if (OriginPolicy.isHttps(url)) confirmExternal(url)
+                        else confirmExternal(url)
                     }
                 }
             }
@@ -415,13 +416,19 @@ class MainActivity : Activity() {
     }
 
     private fun confirmExternal(url: String) {
-        if (!OriginPolicy.isHttps(url)) return
+        if (!OriginPolicy.isBrowserLink(url)) {
+            Toast.makeText(this, "不支持此链接，仅允许在系统浏览器中打开 HTTP/HTTPS 网页。", Toast.LENGTH_LONG).show()
+            return
+        }
+        val target = Uri.parse(url).normalizeScheme()
+        val warning = if (OriginPolicy.isHttps(url)) "" else
+            "\n\n注意：HTTP 链接未加密，仅在信任的网络中打开。内网地址需要手机能访问对应网络或 VPN。"
         AlertDialog.Builder(this)
             .setTitle("在系统浏览器中打开？")
-            .setMessage("目标站点：${Uri.parse(url).host}\n不会把应用登录凭据传给浏览器。")
+            .setMessage("目标地址：${target.scheme}://${target.authority}\n不会把应用登录凭据传给浏览器。$warning")
             .setNegativeButton("取消", null)
             .setPositiveButton("打开") { _, _ ->
-                try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)) }
+                try { startActivity(Intent(Intent.ACTION_VIEW, target).addCategory(Intent.CATEGORY_BROWSABLE)) }
                 catch (_: ActivityNotFoundException) { Toast.makeText(this, "未找到浏览器。", Toast.LENGTH_SHORT).show() }
             }.create().let(::showDialog)
     }

@@ -5,7 +5,7 @@ Implemented on `feature–1024`, based on main at `450587a`. This change extract
 ```mermaid
 flowchart TD
     Browser[Browser] --> Web[rpi-web: frontend and entrypoint]
-    Web --> Http[rpi-http: HTTP and SSE]
+    Web --> Http[rpi-httpcore: HTTP and SSE]
     Other[Other HTTP clients] --> Http
     Editors[ACP clients / Zed] --> ACP[rpi-acp: protocol mapping]
     Http --> Core[rpi-extcore]
@@ -16,7 +16,7 @@ flowchart TD
 ## Ownership
 
 - **rpi-extcore** owns native RPC children, request correlation, runs, cancellation, event projection/replay, transcript snapshots, native history traversal, question answer validation, workspace/project services, registry metadata and timings. It exposes ordinary Rust APIs and neutral outcomes, without Axum responses, ACP updates or plugin entrypoints.
-- **rpi-http** owns extraction/serialization, HTTP status mapping, cookie authentication, Host/Origin checks, SSE encoding and listener lifecycle. It can embed an existing core instance or run without a frontend.
+- **rpi-httpcore** owns extraction/serialization, HTTP status mapping, cookie authentication, Host/Origin checks, SSE encoding and listener lifecycle. It can embed an existing core instance or run without a frontend. The separate **rpi-http** crate is only the native plugin entry point that maps the `rpi --http` flag and plugin lifecycle onto this library.
 - **rpi-acp** owns ACP JSON-RPC, capabilities, content conversion, stopReason mapping, tool/diff/plan formatting, client request tasks and Zed/terminal-auth integration. Client request tasks belong here because they manage ACP transport resources; native run, text and answer semantics belong to the core.
 - **rpi-web** owns Vite/React resources, `build.rs` embedding, frontend routes, Web configuration and native-extension/standalone entrypoints. The extracted core and HTTP code link into its existing extension library; users do not install additional extension libraries.
 
@@ -219,7 +219,17 @@ qualify this Stage 8 configuration slice.
 
 ## Deployment boundary
 
-The dependency graph describes shared code. Separate `rpi --acp`, `rpi --webserver` and `rpi-http` processes still own separate runtime instances. To share live sessions, clients must connect to one service instance. HTTP can embed a caller-owned `Arc<Service>`; sharing JSON files between independent processes is not a live-session transport. Use a single writer per registry.
+The dependency graph describes shared code. Separate `rpi --acp`, `rpi --webserver` and `rpi-httpcore` processes still own separate runtime instances. To share live sessions, clients must connect to one service instance. HTTP can embed a caller-owned `Arc<Service>`; sharing JSON files between independent processes is not a live-session transport. Use a single writer per registry.
+
+`rpi-http` exposes the API-only service through the existing plugin ABI
+(`rpi --http`) and the `rpi-http-service` executable. It maps `SessionStart`,
+`SessionShutdown` and `StdioLifecycle` onto `rpi_httpcore::serve_until`; it does not
+add a node owner, control protocol, authentication layer or Work UI contract.
+The plugin requires normal model configuration, like `--webserver`, and does not
+claim `requiresAgent:false`. The service it starts owns its own live session
+registry and native children; loading the plugin into an Agent session does not
+make that Agent session live in the HTTP service, nor does it share runs, dialogs
+or events with it.
 
 Remote ACP-to-HTTP attachment and a combined multi-protocol daemon are subsequent deployment features. TCP and other extensions can adopt the core later without changing this dependency direction.
 

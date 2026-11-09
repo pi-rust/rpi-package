@@ -5,6 +5,11 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 const timelineToggle = (page: Page) =>
   page.getByRole("button", { name: /^(Conversation timeline|对话时间线)$/ });
 async function openTimeline(page: Page) {
+  // Completion notices are intentionally rendered above the workspace. Clear
+  // them before exercising the toolbar so the fixture does not click through
+  // a notice that may overlap the timeline toggle.
+  const notices = page.locator(".session-notification-close");
+  while (await notices.count()) await notices.first().click();
   const button = timelineToggle(page);
   await expect(button).toBeVisible();
   await expect(button).toHaveAttribute("aria-controls", "conversation-timeline-navigation");
@@ -74,7 +79,25 @@ function response(data: unknown, command = "mock") {
   return { type: "response", command, success: true, data };
 }
 
-async function mockHost(page: Page) {
+async function mockHost(
+  page: Page,
+  options: {
+    additionalSessions?: number;
+    snapshotMessages?: unknown[];
+    messageSummaries?: unknown[];
+    nativeMessageQueries?: boolean;
+  } = {},
+) {
+  // Completion notices are covered by session-loading.spec.ts. Keep this
+  // broader interaction fixture from letting an overlay steal unrelated
+  // clicks while testing timeline and tool-card behavior.
+  await page.addLocatorHandler(
+    page.locator(".session-notification-stack"),
+    async (stack) => {
+      const close = stack.locator(".session-notification-close").first();
+      if (await close.count()) await close.click();
+    },
+  );
   const projects = [
     { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust", archived: false },
     { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package", archived: false },
@@ -82,6 +105,17 @@ async function mockHost(page: Page) {
   const sessions: Array<
     typeof session & { pinned?: boolean; archived?: boolean }
   > = [{ ...session, pinned: false, archived: false }];
+  for (let index = 0; index < (options.additionalSessions ?? 0); index += 1) {
+    sessions.push({
+      ...session,
+      sessionId: `session-${index + 2}`,
+      title: `Recent session ${index + 1}`,
+      projectId: index % 2 === 0 ? "project-a" : "project-b",
+      updatedAt: session.updatedAt + index + 1,
+      pinned: false,
+      archived: false,
+    });
+  }
   await page.route("**/api/v1/**", async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -232,11 +266,42 @@ async function mockHost(page: Page) {
       if (entry) entry.title = request.postDataJSON().title;
       return route.fulfill({ json: entry });
     }
+    if (/\/sessions\/[^/]+\/message-window$/.test(path)) {
+      return route.fulfill({
+        json: {
+          messages: options.snapshotMessages ?? [],
+          firstId: "message-1",
+          lastId: "message-1",
+          nextBeforeId: null,
+          nextAfterId: null,
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+          leafId: "leaf-1",
+        },
+      });
+    }
+    if (/\/sessions\/[^/]+\/message-summaries$/.test(path)) {
+      return route.fulfill({
+        json: {
+          filtered: true,
+          role: "user",
+          messages: options.messageSummaries ?? [],
+          firstId: null,
+          lastId: null,
+          nextBeforeId: null,
+          hasMore: false,
+          leafId: "leaf-1",
+        },
+      });
+    }
     if (/\/sessions\/[^/]+\/snapshot$/.test(path)) {
       return route.fulfill({
         json: {
           sessionId,
-          messages: [],
+          supportedCommands: options.nativeMessageQueries
+            ? ["get_message_summaries", "get_message_window"]
+            : undefined,
+          messages: options.snapshotMessages ?? [],
           history: {
             records: [
               {
@@ -380,6 +445,54 @@ async function mockHost(page: Page) {
   });
 }
 
+test("message search finds loaded conversation text", async ({ page }) => {
+  await mockHost(page, {
+    snapshotMessages: [
+      {
+        entryId: "message-1",
+        role: "user",
+        content: [{ type: "text", text: "Please search this loaded message" }],
+        timestamp: 1_700_000_000_000,
+      },
+      {
+        entryId: "message-2",
+        role: "assistant",
+        content: [{ type: "text", text: "The loaded search result is ready" }],
+        timestamp: 1_700_000_000_001,
+      },
+    ],
+  });
+  await page.goto("/?session=session-1");
+  await page.getByRole("button", { name: "Search messages", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search this conversation…", exact: true }).fill("loaded message");
+  await expect(page.locator(".message-search-result")).toHaveCount(1);
+  await expect(page.locator(".message-search-result")).toContainText("Please search this loaded message");
+  await page.locator(".message-search-result").click();
+  await expect(page.locator('[data-transcript-row="message-1"]')).toBeVisible();
+});
+
+test("message search pages older user messages", async ({ page }) => {
+  await mockHost(page, {
+    nativeMessageQueries: true,
+    messageSummaries: [
+      {
+        entryId: "old-message",
+        role: "user",
+        preview: "An older message to find",
+        timestamp: 1_699_000_000_000,
+        hasImages: false,
+      },
+    ],
+  });
+  await page.goto("/?session=session-1");
+  await page.getByRole("button", { name: "Search messages", exact: true }).click();
+  await page.getByRole("textbox", { name: "Search this conversation…", exact: true }).fill("older message");
+  await expect(page.locator(".message-search-result")).toHaveCount(1);
+  await expect(page.locator(".message-search-result")).toContainText("An older message to find");
+  await page.locator(".message-search-result").click();
+  await expect(page.locator(".history-window-status")).toBeVisible();
+});
+
 test("capabilities gate the history and queue inspector", async ({ page }) => {
   await mockHost(page);
   await page.goto("/");
@@ -454,6 +567,62 @@ test("a stopped session can send a selected queued message now", async ({
     .click();
   await expect.poll(() => commands).toEqual(["cancel_queued", "prompt"]);
 });
+test("sending one queued message keeps later waiting messages visible", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let queueReads = 0;
+  const commands: string[] = [];
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_queue") {
+        queueReads++;
+        const items =
+          queueReads === 1
+            ? [
+                {
+                  entryId: "queue-1",
+                  queue: "followUp",
+                  status: "queued",
+                  text: "first pending",
+                },
+                {
+                  entryId: "queue-2",
+                  queue: "followUp",
+                  status: "queued",
+                  text: "second pending",
+                },
+              ]
+            : [];
+        return route.fulfill({
+          json: response({ items, count: items.length }, body.type),
+        });
+      }
+      if (body.type === "cancel_queued" || body.type === "prompt") {
+        commands.push(body.type);
+        return route.fulfill({
+          json: response({ accepted: true, entryId: "queue-1" }, body.type),
+        });
+      }
+      return route.fallback();
+    },
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(2);
+  await page
+    .locator(".inspector .queue-item")
+    .filter({ hasText: "first pending" })
+    .getByRole("button", { name: "Send now: first pending", exact: true })
+    .click();
+  await expect.poll(() => commands).toEqual(["cancel_queued", "prompt"]);
+  await expect(page.locator(".composer-queue-panel")).toContainText(
+    "second pending",
+  );
+});
+
 test("failed queue cancellation restores the removed message", async ({
   page,
 }) => {
@@ -819,6 +988,46 @@ test("rename, pin, archive and restore survive reloads", async ({ page }) => {
       exact: true,
     }),
   ).toBeVisible();
+});
+
+test("fork is available from a session context menu", async ({ page }) => {
+  await mockHost(page);
+  let forkBody: { title?: string } | undefined;
+  await page.route("**/api/v1/sessions/session-1/fork", async (route) => {
+    forkBody = route.request().postDataJSON();
+    return route.fulfill({
+      status: 201,
+      json: { sessionId: "fork-session", sourceSessionId: sessionId, status: "ready" },
+    });
+  });
+  await page.goto("/");
+  await page.locator(".project-session").first().click({ button: "right" });
+  await expect(
+    page.getByRole("menuitem", { name: "Fork", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("menuitem", { name: "Fork", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Name the new fork", exact: true });
+  await expect(dialog.getByRole("textbox")).toHaveValue("Fork of Mock session");
+  await dialog.getByRole("textbox").fill("Design fork");
+  await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect.poll(() => forkBody).toEqual({ title: "Design fork" });
+});
+
+test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
+  await mockHost(page, { additionalSessions: 10 });
+  await page.goto("/");
+  const recent = page.getByRole("region", { name: "Recent chats" });
+  await expect(recent.locator(".recent-session")).toHaveCount(5);
+  await expect(recent.locator(".recent-project-tag")).toHaveCount(5);
+  await expect(recent.locator(".recent-project-tag").first()).toHaveText("rpi-package");
+  const more = recent.getByRole("button", { name: "Show more recent chats", exact: true });
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await more.click();
+  await expect(recent.locator(".recent-session")).toHaveCount(10);
+  await expect(recent.locator(".recent-project-tag")).toHaveCount(10);
+  await expect(
+    recent.getByRole("button", { name: "Show fewer recent chats", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
 });
 
 test("session tags can be edited without sidebar filters", async ({ page }) => {
@@ -3077,6 +3286,300 @@ test("a rejected permission answer keeps the dialog available for retry", async 
   await expect(
     page.getByRole("button", { name: "Allow once", exact: true }),
   ).toBeEnabled();
+});
+
+test.describe("mobile fork regression", () => {
+  const forkEntryId = "chosen-history-leaf";
+  const forkError = "Mock fork failed without changing the selection";
+  const toolbarFork = (page: Page) => page.locator(".toolbar-fork");
+  const historyFork = (page: Page) => page.getByTitle("Fork from this point", { exact: true });
+  const titleDialog = (page: Page) => page.getByRole("dialog", { name: "Name the new fork", exact: true });
+
+  async function host(page: Page, options: { hold?: boolean; error?: boolean } = {}) {
+    await mockHost(page);
+    const entries = [
+      { ...session },
+      { ...session, sessionId: "session-2", title: "Other chat" },
+    ];
+    const requests: Array<{ method: string; source: string; body: unknown }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const history = {
+      records: [{ id: "fork-record", seq: 4, type: "operation_finished", sourceLeafId: forkEntryId, outcome: "completed" }],
+      total: 1, hasMore: false, openOperations: [],
+    };
+    await page.route("**/api/v1/sessions", route => route.request().method() === "GET"
+      ? route.fulfill({ json: { sessions: entries } }) : route.fallback());
+    await page.route("**/api/v1/sessions/*/snapshot*", route => {
+      const id = new URL(route.request().url()).pathname.split("/")[4];
+      return route.fulfill({ json: {
+        sessionId: id, lastSeq: 4, events: [], leafId: "leaf-1", history,
+        messages: [{ role: "user", entryId: `message-${id}`, content: `Transcript: ${id}` }],
+      } });
+    });
+    await page.route("**/api/v1/sessions/*/commands", route => {
+      const body = route.request().postDataJSON();
+      return body.type === "get_history"
+        ? route.fulfill({ json: response(history, body.type) }) : route.fallback();
+    });
+    await page.route("**/api/v1/sessions/*/fork", async route => {
+      const request = route.request();
+      const body = request.postDataJSON();
+      requests.push({ method: request.method(), source: new URL(request.url()).pathname.split("/")[4], body });
+      if (options.hold) await gate;
+      if (options.error) return route.fulfill({ status: 500, json: { error: forkError } });
+      entries.push({ ...session, sessionId: "fork-new", title: body.title });
+      return route.fulfill({ status: 201, json: { sessionId: "fork-new", sourceSessionId: sessionId, status: "ready" } });
+    });
+    return { requests, release };
+  }
+
+  async function openHistory(page: Page) {
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+    await page.locator(".history-timeline-item summary").click();
+    await expect(historyFork(page)).toBeEnabled();
+  }
+
+  async function assertLocked(page: Page, locked: boolean) {
+    for (const button of [toolbarFork(page), historyFork(page)]) {
+      if (locked) await expect(button).toBeDisabled();
+      else await expect(button).toBeEnabled();
+    }
+  }
+
+  async function navigate(page: Page, destination: "project" | "session", behindDialog = false) {
+    const target = destination === "project"
+      ? page.getByRole("button", { name: "Expand project: rpi-package", exact: true })
+      : page.locator(".project-session-link").filter({ hasText: "Other chat" });
+    // Exercise navigation while a prompt is outstanding, without pretending a
+    // pointer can pass through the modal backdrop.
+    if (behindDialog) await target.evaluate((element: HTMLElement) => element.click());
+    else await target.click();
+    if (destination === "project") {
+      await expect(page.locator(".toolbar .breadcrumb")).toContainText("rpi-package");
+      await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+    } else {
+      await expect(page).toHaveURL(/session=session-2/);
+      await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+    }
+  }
+
+  for (const width of [320, 375, 768, 1280]) {
+    test(`fork is reachable without horizontal overflow at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const mock = await host(page);
+      await page.goto("/?session=session-1");
+      const button = toolbarFork(page);
+      await expect(button).toHaveAccessibleName("Fork current session");
+      await expect(button).toBeVisible();
+      await expect(button).toBeEnabled();
+      const clone = page.getByRole("button", { name: "Clone current session", exact: true });
+      if (width < 768) await expect(clone).toBeHidden();
+      else await expect(clone).toBeVisible();
+      const bounds = await button.boundingBox();
+      expect(bounds).not.toBeNull();
+      // Phones retain the existing 32px touch target; desktop uses compact icons.
+      expect(bounds!.width).toBeGreaterThanOrEqual(width < 768 ? 32 : 28);
+      expect(bounds!.height).toBeGreaterThanOrEqual(width < 768 ? 32 : 28);
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.y).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(844);
+      await expect.poll(() => page.evaluate(() => ({
+        document: document.documentElement.scrollWidth <= innerWidth,
+        body: document.body.scrollWidth <= innerWidth,
+        toolbar: document.querySelector(".toolbar")!.scrollWidth <= document.querySelector(".toolbar")!.clientWidth,
+      }))).toEqual({ document: true, body: true, toolbar: true });
+      await button.click(); // Hit-tested, including the narrowest phone.
+      await expect(titleDialog(page)).toBeVisible();
+      await expect(titleDialog(page).getByRole("textbox")).toHaveValue("Fork of Mock session");
+      await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(button).toBeEnabled();
+      expect(mock.requests).toEqual([]);
+    });
+  }
+
+  for (const origin of ["toolbar", "history"] as const) {
+    test(`${origin} fork is single-flight through title and API, preserving source and chosen entry`, async ({ page }) => {
+      await page.setViewportSize({ width: origin === "toolbar" ? 375 : 1280, height: 844 });
+      const mock = await host(page, { hold: true });
+      try {
+        await page.goto("/?session=session-1");
+        await openHistory(page);
+        // Same-task activation covers the ref guard before React publishes the
+        // disabled state; another entry point must not replace the first prompt.
+        await page.evaluate(origin => {
+          const toolbar = document.querySelector<HTMLButtonElement>(".toolbar-fork")!;
+          const history = document.querySelector<HTMLButtonElement>(".history-actions button")!;
+          const first = origin === "toolbar" ? toolbar : history;
+          const second = origin === "toolbar" ? history : toolbar;
+          first.click(); second.click(); first.click();
+        }, origin);
+        await expect(titleDialog(page)).toBeVisible();
+        await assertLocked(page, true);
+        expect(mock.requests).toEqual([]);
+        await titleDialog(page).getByRole("textbox").fill("Chosen fork title");
+        await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+        await expect.poll(() => mock.requests.length).toBe(1);
+        await expect(titleDialog(page)).toHaveCount(0);
+        await assertLocked(page, true);
+        await toolbarFork(page).evaluate((button: HTMLButtonElement) => button.click());
+        await historyFork(page).evaluate((button: HTMLButtonElement) => button.click());
+        expect(mock.requests).toEqual([{ method: "POST", source: sessionId, body: {
+          title: "Chosen fork title", ...(origin === "history" ? { entryId: forkEntryId } : {}),
+        } }]);
+        mock.release();
+        await expect(page).toHaveURL(/session=fork-new/);
+        await expect(page.locator(".toolbar .breadcrumb")).toContainText("Chosen fork title");
+        await expect(page.locator(".message.user")).toContainText("Transcript: fork-new");
+        await expect(toolbarFork(page)).toBeEnabled();
+        expect(mock.requests).toHaveLength(1);
+      } finally { mock.release(); }
+    });
+  }
+
+  for (const outcome of ["cancel", "error"] as const) {
+    test(`${outcome} unlocks both fork entry points for an explicit retry`, async ({ page }) => {
+      const mock = await host(page, { hold: true, error: true });
+      try {
+        await page.goto("/?session=session-1");
+        await openHistory(page);
+        await historyFork(page).click();
+        await assertLocked(page, true);
+        if (outcome === "cancel") {
+          await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+        } else {
+          await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+          await expect.poll(() => mock.requests.length).toBe(1);
+          await assertLocked(page, true);
+          mock.release();
+          await expect(page.locator(".error-banner")).toContainText(forkError);
+        }
+        await assertLocked(page, false);
+        await expect(page).toHaveURL(/session=session-1/);
+        await expect(page.locator(".message.user")).toContainText("Transcript: session-1");
+        await toolbarFork(page).click();
+        await expect(titleDialog(page)).toBeVisible();
+        await assertLocked(page, true);
+        await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+        await assertLocked(page, false);
+        expect(mock.requests).toHaveLength(outcome === "cancel" ? 0 : 1);
+      } finally { mock.release(); }
+    });
+  }
+
+  for (const origin of ["toolbar", "history"] as const) {
+    for (const outcome of ["cancel", "submit"] as const) {
+      test(`${origin} fork unlocks when a keyboard-opened clone replaces its prompt (${outcome})`, async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height: 844 });
+        const mock = await host(page);
+        const cloneRequests: Array<{ method: string; source: string; body: unknown }> = [];
+        await page.route("**/api/v1/sessions/*/clone", route => {
+          const request = route.request();
+          cloneRequests.push({
+            method: request.method(), source: new URL(request.url()).pathname.split("/")[4],
+            body: request.postDataJSON(),
+          });
+          // Reuse the host's other mocked session; never contact a real clone API.
+          return route.fulfill({ status: 201, json: { sessionId: "session-2" } });
+        });
+        await page.goto("/?session=session-1");
+        await openHistory(page);
+        await (origin === "toolbar" ? toolbarFork(page) : historyFork(page)).click();
+        await expect(titleDialog(page)).toBeVisible();
+        await titleDialog(page).getByRole("textbox").fill("Abandoned fork title");
+        await assertLocked(page, true);
+
+        const clone = page.getByRole("button", { name: "Clone current session", exact: true });
+        // The modal currently has no focus trap/inert background. Exercise real
+        // desktop Tab + Enter activation, not a pointer through its backdrop.
+        for (let tabs = 0; tabs < 80 && !(await clone.evaluate(button => button === document.activeElement)); tabs++) {
+          await page.keyboard.press("Tab");
+        }
+        await expect(clone).toBeFocused();
+        await page.keyboard.press("Enter");
+        const cloneDialog = page.getByRole("dialog", { name: "Name the cloned session", exact: true });
+        await expect(cloneDialog).toBeVisible();
+        await expect(titleDialog(page)).toHaveCount(0);
+        // Replacement must settle the abandoned fork, even before clone finishes.
+        await assertLocked(page, false);
+        expect(mock.requests).toEqual([]);
+        if (outcome === "submit") {
+          await cloneDialog.getByRole("textbox").fill("Replacement clone title");
+          await cloneDialog.getByRole("button", { name: "Submit", exact: true }).click();
+          await expect(page).toHaveURL(/session=session-2/);
+          await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+          // A new session starts with its history details collapsed.
+          await page.locator(".history-timeline-item summary").click();
+          await expect(historyFork(page)).toBeVisible();
+        } else {
+          await cloneDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+          await expect(page).toHaveURL(/session=session-1/);
+        }
+        await expect(cloneDialog).toHaveCount(0);
+        await assertLocked(page, false);
+        // Retry through the opposite entry point proves the shared ref lock cleared.
+        await (origin === "toolbar" ? historyFork(page) : toolbarFork(page)).click();
+        await expect(titleDialog(page)).toBeVisible();
+        await assertLocked(page, true);
+        await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+        await assertLocked(page, false);
+        expect(mock.requests).toEqual([]);
+        expect(cloneRequests).toEqual(outcome === "submit" ? [{
+          method: "POST", source: sessionId, body: { title: "Replacement clone title" },
+        }] : []);
+        await expect(page.locator(".error-banner")).toHaveCount(0);
+      });
+    }
+  }
+
+  for (const destination of ["project", "session"] as const) {
+    test(`${destination} navigation during the title prompt sends no stale fork`, async ({ page }) => {
+      const mock = await host(page);
+      await page.goto("/?session=session-1");
+      await toolbarFork(page).click();
+      await expect(titleDialog(page)).toBeVisible();
+      await navigate(page, destination, true);
+      await titleDialog(page).getByRole("textbox").fill("Stale fork title");
+      await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+      await expect(titleDialog(page)).toHaveCount(0);
+      await chooseMenuOption(page, "Language", "zh");
+      if (destination === "session") await expect(toolbarFork(page)).toBeEnabled();
+      else await expect(toolbarFork(page)).toBeDisabled();
+      expect(mock.requests).toEqual([]);
+      await expect(page.locator(".toolbar .breadcrumb")).toContainText(destination === "project" ? "rpi-package" : "Other chat");
+      await expect(page.locator(".error-banner")).toHaveCount(0);
+    });
+
+    for (const outcome of ["success", "error"] as const) {
+      test(`late fork ${outcome} preserves newer ${destination} navigation`, async ({ page }) => {
+        const mock = await host(page, { hold: true, error: outcome === "error" });
+        try {
+          await page.goto("/?session=session-1");
+          await toolbarFork(page).click();
+          await titleDialog(page).getByRole("textbox").fill("Late fork title");
+          await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+          await expect.poll(() => mock.requests.length).toBe(1);
+          await navigate(page, destination);
+          const completed = page.waitForResponse(res => res.url().endsWith("/fork"));
+          mock.release();
+          await (await completed).finished();
+          // A UI round trip after delivery lets the fetch continuation and React
+          // settle before negative assertions (no arbitrary timeout or sleep).
+          await chooseMenuOption(page, "Language", "zh");
+          await expect(page.locator(".toolbar .breadcrumb")).toContainText(destination === "project" ? "rpi-package" : "Other chat");
+          expect(new URL(page.url()).searchParams.get("session")).toBe(destination === "project" ? null : "session-2");
+          if (destination === "session") {
+            await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+            await expect(toolbarFork(page)).toBeEnabled();
+          }
+          await expect(page.locator(".error-banner")).toHaveCount(0);
+          await expect(page.getByRole("dialog")).toHaveCount(0);
+          expect(mock.requests).toEqual([{ method: "POST", source: sessionId, body: { title: "Late fork title" } }]);
+        } finally { mock.release(); }
+      });
+    }
+  }
 });
 
 for (const action of ["fork", "clone"] as const) {
@@ -8369,6 +8872,40 @@ test.describe("Mermaid diagrams", () => {
     await expect(first.locator(".mermaid-source")).toHaveCount(0);
   });
 
+  test("renders sequence diagrams with code-style generic type labels", async ({
+    page,
+  }) => {
+    const typedSequence = `sequenceDiagram
+  participant UI as UI
+  participant WC as WorkspaceClient::Remote
+  participant Client as WorkClient
+  participant HTTP as HTTP Server
+  participant Route as routes::dispatch / perform
+  participant Owner as LocalWorkspace
+
+  UI->>WC: projects()
+  WC->>Client: projects()
+  Client->>HTTP: GET /api/v1/projects
+  HTTP->>HTTP: 认证 middleware
+  HTTP->>Route: dispatch()
+  Route->>Route: executor::execute()
+  Route->>Route: perform()
+  Route->>Owner: w.projects().await
+  Owner-->>Route: Vec<Project>
+  Route-->>HTTP: JSON response
+  HTTP-->>Client: HTTP response
+  Client-->>WC: Vec<Project>
+  WC-->>UI: 更新项目列表
+`;
+    await diagramSnapshot(page, fence(typedSequence));
+    await page.goto("/");
+    const block = page.locator(".mermaid-block");
+    const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+    expect(decoded.parseErrors).toBe(0);
+    expect(decoded.text).toContain("Vec<Project>");
+    await expect(block.locator(".mermaid-status")).toHaveCount(0);
+  });
+
   test("follows root theme mutations on desktop and 390px, fits the keyboard image viewer and restores focus", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 844 });
     await page.addInitScript(() => localStorage.setItem("rpi-theme", "light"));
@@ -8964,6 +9501,287 @@ test.describe("session issue badges", () => {
       await expect(row(page, "Mock session")).toHaveClass(/active/);
     }
     expect(state.otherRequests).toEqual([]);
+  });
+});
+
+test.describe("session answer badges", () => {
+  type Summary = import("../src/api").SessionSummary;
+  const background = "Background question with a deliberately long conversation title";
+  const row = (page: Page, title: string) => page.locator(".project-session")
+    .filter({ has: page.locator(".session-title", { hasText: title }) });
+  const pending = (requestId: string, permission = false) => ({
+    type: "ui_dialog_request", requestId, ui: {
+      ...(permission ? { purpose: "permission" } : { kind: "selector" }),
+      question: `Question ${requestId}`, options: [{ title: "Answer now", value: "answer" }],
+    },
+  });
+  async function setup(page: Page) {
+    await mockHost(page);
+    const state = {
+      sessions: [{ ...session }, { ...session, sessionId: "answer-background", title: background, tags: [],
+        status: "awaiting_input", error: "PRIVATE_OLD_FAILURE", latestSettlement: { outcome: "failed", pendingResume: true } },
+      ...["running", "starting", "ready", "offline", "closed"].map(status => ({ ...session,
+        sessionId: `answer-${status}`, title: `Control ${status}`, tags: [], status }))] as Summary[],
+      listReads: 0, reads: [] as string[],
+    };
+    await page.route(url => url.pathname === "/api/v1/sessions", route => {
+      if (route.request().method() !== "GET") return route.fallback();
+      state.listReads++;
+      return route.fulfill({ json: { sessions: state.sessions } });
+    });
+    page.on("request", request => {
+      const path = new URL(request.url()).pathname;
+      if (/^\/api\/v1\/sessions\/[^/]+\/(snapshot|events|open)$/.test(path)) state.reads.push(path);
+    });
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "ready", messages: [], events: [], lastSeq: 4, hasMore: false,
+    } }));
+    return state;
+  }
+  async function waiting(target: ReturnType<Page["locator"]>, language: "en" | "zh" = "en", mobile = false) {
+    const label = language === "zh" ? "等待回答" : "Waiting for answer";
+    const badge = target.locator(".session-answer-badge");
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveText(label);
+    await expect(badge).toHaveAttribute("title", language === "zh" ? /回答|问题|权限/ : /answer|question|permission/i);
+    await expect(badge).toHaveAccessibleName(`${label}. ${await badge.getAttribute("title")}`);
+    await expect(target.locator(".session-issue, .session-running-dot")).toHaveCount(0);
+    const dot = target.locator(mobile ? ".mobile-session-option-status" : ".session-answer-dot");
+    await expect(dot).toBeVisible();
+    await expect(dot).toHaveCSS("animation-name", "none");
+    if (mobile) {
+      await expect(dot).toHaveClass(/awaiting-input/);
+      await expect(dot).not.toHaveClass(/running/);
+      await expect(target.locator("small")).not.toContainText(language === "zh" ? "运行中" : /working/i);
+    } else {
+      await expect(dot).toHaveAttribute("title", label);
+      await expect(target.locator(".session-title + .session-answer-badge")).toHaveCount(1);
+    }
+  }
+  async function bounds(target: ReturnType<Page["locator"]>) {
+    await target.scrollIntoViewIfNeeded();
+    const geometry = await target.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const badge = element.querySelector(".session-answer-badge")!.getBoundingClientRect();
+      return { left: box.left, right: box.right, badgeLeft: badge.left, badgeRight: badge.right,
+        width: badge.width, viewport: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    expect(geometry.left).toBeGreaterThanOrEqual(0);
+    expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
+    expect(geometry.width).toBeGreaterThan(0);
+    expect(geometry.badgeLeft).toBeGreaterThanOrEqual(geometry.left);
+    expect(geometry.badgeRight).toBeLessThanOrEqual(geometry.right + 1);
+    expect(geometry.overflow).toBe(false);
+  }
+
+  test("unopened desktop summaries show waiting, not old failures, without opening background sessions", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    await page.goto("/");
+    await waiting(row(page, background));
+    await expect(page.locator(".project-tree .session-answer-badge")).toHaveCount(1);
+    for (const status of ["running", "starting", "ready", "offline", "closed"]) {
+      const control = row(page, `Control ${status}`);
+      await expect(control.locator(".session-answer-badge, .session-answer-dot")).toHaveCount(0);
+      await expect(control.locator(".session-running-dot")).toHaveCount(["running", "starting"].includes(status) ? 1 : 0);
+    }
+    await expect(page.locator("body")).not.toContainText("PRIVATE_OLD_FAILURE");
+    expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
+  });
+
+  for (const language of ["en", "zh"] as const) {
+    test(`desktop and 320/390px picker waiting labels are localized, accessible and bounded in ${language}`, async ({ page }) => {
+      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      const state = await setup(page);
+      for (const width of [1280, 320, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.goto("/");
+        if (width === 1280) {
+          await waiting(row(page, background), language);
+          await bounds(row(page, background).locator(".project-session-link"));
+        } else {
+          await page.getByRole("button", { name: language === "zh" ? "切换会话" : "Switch session", exact: true }).click();
+          const picker = page.locator(".mobile-session-sheet");
+          const target = picker.locator(".mobile-session-option").filter({ hasText: background });
+          await waiting(target, language, true);
+          await bounds(target);
+          await expect(target).toHaveAccessibleName(new RegExp(language === "zh" ? "等待回答" : "Waiting for answer"));
+          await expect(picker.locator(".session-answer-badge")).toHaveCount(1);
+          for (const status of ["running", "starting"]) {
+            const control = picker.locator(".mobile-session-option").filter({ hasText: `Control ${status}` });
+            await expect(control.locator(".mobile-session-option-status")).toHaveClass(/running/);
+            await expect(control.locator("small")).toContainText(language === "zh" ? "运行中" : "working");
+          }
+          await expect(picker).not.toContainText("PRIVATE_OLD_FAILURE");
+        }
+      }
+      expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
+    });
+  }
+
+  for (const [status, field] of [["ready", "pendingDialog"], ["running", "pendingDialogs"]] as const) {
+    test(`current ${field} overrides stale ${status} snapshot and reconnecting transport`, async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await setup(page);
+      const dialog = pending("snapshot", field === "pendingDialog");
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status, messages: [], events: [], lastSeq: 4,
+        [field]: field === "pendingDialogs" ? [dialog] : dialog,
+      } }));
+      await page.goto("/");
+      await expect(page.getByRole("heading", { name: "Question snapshot", exact: true })).toBeVisible();
+      // A finite mock SSE response disconnects; the actual dialog must still win.
+      await waiting(row(page, "Mock session"));
+    });
+  }
+
+  test("live question and permission requests stay waiting after reply until the last authoritative close", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await setup(page);
+    const dialogs = [pending("live-question"), pending("live-permission", true)];
+    const frames = [dialogs, ...dialogs.map(dialog => [{ type: "ui_dialog_closed", requestId: dialog.requestId }])];
+    const releases: Array<() => void> = [];
+    const gates = frames.map(() => new Promise<void>(resolve => releases.push(resolve)));
+    let connection = 0;
+    let seq = 4;
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+      const index = connection++;
+      if (index >= gates.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+      await gates[index];
+      return route.fulfill({ contentType: "text/event-stream", body: "retry: 10\n" + frames[index]
+        .map(event => `id: ${++seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("") });
+    });
+    const answers: unknown[] = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "ui_dialog_response") return route.fallback();
+      answers.push(body);
+      return route.fulfill({ json: response({ accepted: true }, body.type) });
+    });
+    try {
+      await page.goto("/");
+      await expect(row(page, "Mock session").locator(".session-answer-badge")).toHaveCount(0);
+      releases[0]();
+      await expect(page.getByRole("heading", { name: "Question live-question", exact: true })).toBeVisible();
+      await waiting(row(page, "Mock session"));
+      await page.getByRole("dialog").getByRole("button", { name: "Answer now", exact: true }).click();
+      await expect.poll(() => answers.length).toBe(1);
+      await waiting(row(page, "Mock session"));
+      releases[1]();
+      await expect(page.getByRole("heading", { name: "Question live-permission", exact: true })).toBeVisible();
+      await waiting(row(page, "Mock session"));
+      releases[2]();
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(row(page, "Mock session").locator(".session-answer-badge, .session-answer-dot")).toHaveCount(0);
+    } finally { releases.forEach(release => release()); }
+  });
+
+  test("host_closed clears a pending dialog and its waiting badge and dot", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("host-close", true),
+    } }));
+    let releaseClose!: () => void;
+    const close = new Promise<void>(resolve => { releaseClose = resolve; });
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
+      await close;
+      return route.fulfill({ contentType: "text/event-stream",
+        body: 'retry: 60000\nid: 5\nevent: host_closed\ndata: {"type":"host_closed"}\n\n' });
+    });
+    try {
+      await page.goto("/");
+      await expect(page.getByRole("heading", { name: "Question host-close", exact: true })).toBeVisible();
+      const target = row(page, "Mock session");
+      await waiting(target);
+      state.sessions[0] = { ...state.sessions[0], status: "closed" };
+      releaseClose();
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(target.locator(".session-answer-badge, .session-answer-dot, .session-running-dot")).toHaveCount(0);
+    } finally { releaseClose(); }
+  });
+
+  for (const [language, theme] of [["en", "dark"], ["zh", "light"]] as const) {
+    test(`mobile active header shows a static waiting status with a pending dialog in ${language}/${theme}`, async ({ page }) => {
+      await page.setViewportSize({ width: 320, height: 844 });
+      await page.addInitScript(({ language, theme }) => {
+        localStorage.setItem("rpi-web-language", language);
+        localStorage.setItem("rpi-theme", theme);
+      }, { language, theme });
+      await setup(page);
+      await page.route(snapshotRoute, route => route.fulfill({ json: {
+        sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("mobile-header"),
+      } }));
+      await page.goto("/");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.getByRole("heading", { name: "Question mobile-header", exact: true })).toBeVisible();
+      // The pending native modal intercepts picker clicks, but the header remains visible.
+      const header = page.locator(".mobile-session-switcher");
+      const status = header.locator(".mobile-session-status");
+      await expect(status).toBeVisible();
+      await expect(status).toHaveClass(/awaiting-input/);
+      await expect(status).toHaveText(language === "zh" ? "等待回答" : "Waiting for answer");
+      await expect(status).not.toContainText(language === "zh" ? "运行中" : /working/i);
+      await expect(status.locator(".status-dot")).toBeVisible();
+      await expect(status.locator(".status-dot")).toHaveCSS("animation-name", "none");
+      await expect(header).toHaveAttribute("aria-expanded", "false");
+      await expect(page.locator(".mobile-session-sheet")).toHaveCount(0);
+    });
+  }
+
+  test("a rejected permission answer retains the waiting badge and static dot for retry", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await setup(page);
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("rejected", true),
+    } }));
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "ui_dialog_response") return route.fallback();
+      return route.fulfill({ json: { ...response({}, body.type), success: false, error: "Answer rejected; retry" } });
+    });
+    await page.goto("/");
+    await waiting(row(page, "Mock session"));
+    await page.getByRole("button", { name: "Answer now", exact: true }).click();
+    await expect(page.locator(".error-banner")).toContainText("Answer rejected; retry");
+    await expect(page.getByRole("button", { name: "Answer now", exact: true })).toBeEnabled();
+    await waiting(row(page, "Mock session"));
+  });
+
+  test("switching away and back preserves a still-pending background summary", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const state = await setup(page);
+    state.sessions[0] = { ...state.sessions[0], status: "awaiting_input" };
+    await page.route(snapshotRoute, route => route.fulfill({ json: {
+      sessionId, status: "awaiting_input", messages: [], events: [], lastSeq: 4, pendingDialog: pending("switch", true),
+    } }));
+    await page.goto("/");
+    await waiting(row(page, "Mock session"));
+    // Exercise selection directly while the native modal intercepts pointers.
+    await row(page, "Control ready").locator(".project-session-link").dispatchEvent("click");
+    await expect(row(page, "Control ready")).toHaveClass(/active/);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await waiting(row(page, "Mock session"));
+    await row(page, "Mock session").locator(".project-session-link").click();
+    await expect(page.getByRole("heading", { name: "Question switch", exact: true })).toBeVisible();
+    await waiting(row(page, "Mock session"));
+  });
+
+  test("the existing five-second summary poll clears background waiting without opening it", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.clock.install();
+    const state = await setup(page);
+    await page.goto("/");
+    const target = row(page, background);
+    await waiting(target);
+    const reads = state.listReads;
+    state.sessions[1] = { ...state.sessions[1], status: "running" };
+    await page.clock.runFor(5100);
+    await expect.poll(() => state.listReads).toBeGreaterThan(reads);
+    await expect(target.locator(".session-answer-badge, .session-answer-dot, .session-issue")).toHaveCount(0);
+    await expect(target.locator(".session-running-dot")).toBeVisible();
+    expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
+    expect(state.reads.filter(path => path.endsWith("/snapshot"))).toEqual([`/api/v1/sessions/${sessionId}/snapshot`]);
   });
 });
 
@@ -11484,4 +12302,277 @@ test.describe("todo summary-only results", () => {
       } finally { releases.forEach(release => release()); }
     });
   }
+});
+
+// Retirement is deliberately tested against mocks only: DELETE is irreversible.
+test.describe("retirement", () => {
+  type RetirementSession = typeof session & { archived?: boolean; deleting?: boolean };
+  async function host(page: Page, entries: RetirementSession[] = [{ ...session }]) {
+    await mockHost(page);
+    await page.route("**/api/v1/sessions", (route) => route.request().method() === "GET"
+      ? route.fulfill({ json: { sessions: entries } }) : route.fallback());
+    await page.route("**/api/v1/sessions/*/metadata", (route) => {
+      const entry = entries.find(item => item.sessionId === new URL(route.request().url()).pathname.split("/")[4]);
+      Object.assign(entry ?? {}, route.request().postDataJSON());
+      return route.fulfill({ json: entry });
+    });
+    return entries;
+  }
+  async function sidebar(page: Page) {
+    const toggle = page.getByRole("button", { name: "Toggle sidebar", exact: true });
+    if (!(await page.getByRole("button", { name: "Session actions: Mock session", exact: true }).isVisible())) await toggle.click();
+  }
+  async function action(page: Page, name: string) {
+    await sidebar(page);
+    await page.getByRole("button", { name: "Session actions: Mock session", exact: true }).click();
+    await page.getByRole("menuitem", { name, exact: true }).click();
+  }
+  const confirmation = (page: Page) => page.getByRole("dialog", { name: "Delete session permanently" });
+  const confirm = (page: Page) => confirmation(page).getByRole("button", { name: "Delete permanently", exact: true });
+  const busyText = "Session is running. Stop it and wait for it to settle before trying again.";
+  const unknownText = "Cannot confirm the session is idle. Try again later.";
+
+  for (const width of [375, 1280]) {
+    for (const [code, status, message] of [["session_busy", 409, busyText], ["session_idle_unknown", 503, unknownText]] as const) {
+      test(`archive ${code} preserves row and navigation at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 844 });
+        await host(page);
+        await page.route("**/api/v1/sessions/*/metadata", route => route.fulfill({ status, json: { code, error: "SECRET remote native path" } }));
+        await page.goto("/?session=session-1");
+        await expect(page.getByRole(width < 768 ? "button" : "heading", { name: width < 768 ? "Switch session" : "Mock session", exact: true })).toBeVisible();
+        await action(page, "Archive");
+        await expect(page.getByText(message, { exact: true })).toBeVisible();
+        await expect(page).toHaveURL(/session=session-1/);
+        await sidebar(page);
+        await expect(page.locator(".project-session")).toHaveCount(1);
+        await expect(page.getByText("SECRET remote native path", { exact: true })).toHaveCount(0);
+      });
+    }
+    test(`delete busy preserves row and navigation and permits explicit retry at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const entries = await host(page);
+      let deletes = 0;
+      await page.route("**/api/v1/sessions/session-1", async route => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        deletes++;
+        if (deletes === 1) return route.fulfill({ status: 409, json: { code: "session_busy", error: "SECRET" } });
+        entries.splice(0);
+        return route.fulfill({ status: 204, body: "" });
+      });
+      await page.goto("/?session=session-1");
+      await expect(page.getByRole(width < 768 ? "button" : "heading", { name: width < 768 ? "Switch session" : "Mock session", exact: true })).toBeVisible();
+      await action(page, "Delete permanently");
+      expect(deletes).toBe(0);
+      await expect(confirmation(page)).toContainText("deletes session history and releases the RPC connection, but does not delete project files");
+      await confirm(page).click();
+      await expect(page.getByText(busyText, { exact: true })).toBeVisible();
+      await expect(page).toHaveURL(/session=session-1/);
+      expect(deletes).toBe(1);
+      await action(page, "Delete permanently");
+      await confirm(page).click();
+      await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toHaveCount(0);
+      await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+      expect(deletes).toBe(2);
+    });
+  }
+
+  for (const outcome of ["success", "failure"] as const) {
+    test(`late delete ${outcome} cannot hijack newer navigation or show stale errors`, async ({ page }) => {
+      const entries = await host(page, [{ ...session }, { ...session, sessionId: "session-2", title: "Other chat" }]);
+      let release!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      let deletes = 0;
+      await page.route("**/api/v1/sessions/session-1", async route => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        deletes++;
+        await pending;
+        if (outcome === "failure") return route.fulfill({ status: 500, json: { code: "session_delete_failed", error: "SECRET" } });
+        entries.splice(0, 1);
+        return route.fulfill({ status: 204, body: "" });
+      });
+      await page.goto("/?session=session-1");
+      await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
+      await action(page, "Delete permanently");
+      await confirm(page).click();
+      await expect(confirm(page)).toBeDisabled();
+      expect(deletes).toBe(1);
+      // Closing the dialog never aborts or retries a potentially landed DELETE.
+      await confirmation(page).getByRole("button", { name: "Cancel", exact: true }).click();
+      await page.locator(".project-session-link", { hasText: "Other chat" }).click();
+      await expect(page).toHaveURL(/session=session-2/);
+      release();
+      await expect.poll(() => page.locator(".project-session").count()).toBe(outcome === "success" ? 1 : 2);
+      await expect(page.getByRole("heading", { name: "Other chat", exact: true })).toBeVisible();
+      await expect(page.getByText(/Permanent deletion did not complete/)).toHaveCount(0);
+      await expect(page.getByText("SECRET", { exact: true })).toHaveCount(0);
+      expect(deletes).toBe(1);
+    });
+  }
+
+  test("archived selection sends no open until explicit Restore", async ({ page }) => {
+    await host(page, [{ ...session }, { ...session, sessionId: "archived-chat", title: "Archived chat", archived: true }]);
+    let opens = 0;
+    await page.route("**/api/v1/sessions/archived-chat/open", route => { opens++; return route.fulfill({ json: { ...session, sessionId: "archived-chat" } }); });
+    await page.goto("/?session=session-1");
+    await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
+    await page.locator(".project-session-link", { hasText: "Archived chat" }).click();
+    await expect(page.getByText("Restore the chat before opening it (Session actions → Restore chat).", { exact: true })).toBeVisible();
+    expect(opens).toBe(0);
+    await expect(page).toHaveURL(/session=session-1/);
+    await page.getByRole("button", { name: "Session actions: Archived chat", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Restore chat", exact: true }).click();
+    await page.getByRole("button", { name: "Show projects", exact: true }).click();
+    await page.locator(".project-session-link", { hasText: "Archived chat" }).click();
+    await expect.poll(() => opens).toBe(1);
+    await expect(page).toHaveURL(/session=archived-chat/);
+  });
+
+  for (const code of ["session_delete_failed", undefined]) {
+    test(`partial deletion uses safe generic error and manual retry menu (${code ?? "old backend"})`, async ({ page }) => {
+      await host(page, [{ ...session }, { ...session, sessionId: "deleting-chat", title: "Deleting chat", deleting: true }]);
+      let deletes = 0;
+      await page.route("**/api/v1/sessions/deleting-chat", route => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        deletes++;
+        return route.fulfill({ status: 500, json: { code, error: "SECRET /private/native-history" } });
+      });
+      await page.goto("/?session=session-1");
+      await page.locator(".project-session-link", { hasText: "Deleting chat" }).click();
+      await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
+      await page.getByRole("button", { name: "Session actions: Deleting chat", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Retry permanent deletion", exact: true }).click();
+      await confirm(page).click();
+      await expect(page.getByText("Permanent deletion did not complete. Check the session state, then retry manually.", { exact: true })).toBeVisible();
+      await expect(page.locator(".project-session")).toHaveCount(2);
+      await expect(page).toHaveURL(/session=session-1/);
+      expect(deletes).toBe(1);
+      await expect(page.getByText(/SECRET/)).toHaveCount(0);
+    });
+  }
+
+  // Record every blocked-session read, not only /open: a known retired chat
+  // must never enter snapshot loading (whose compatibility path can reopen it).
+  function forbiddenRequests(page: Page) {
+    const reads: string[] = [];
+    const mutations: string[] = [];
+    page.on("request", request => {
+      const path = new URL(request.url()).pathname;
+      if (/\/sessions\/blocked-chat\/(open|snapshot|commands|events)$/.test(path)) reads.push(path);
+      if (request.method() === "POST" && (path === "/api/v1/sessions" || path.endsWith("/metadata"))) mutations.push(path);
+    });
+    return { reads, mutations };
+  }
+
+  test("phone chooser rejects deleting chat without changing selection or opening it", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 844 });
+    await host(page, [{ ...session }, { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true }]);
+    const requests = forbiddenRequests(page);
+    await page.goto("/?session=session-1");
+    await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+    await page.getByRole("button", { name: "Switch session", exact: true }).click();
+    await page.locator(".mobile-session-option", { hasText: "Deleting chat" }).click();
+    await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
+    await expect(page).toHaveURL(/session=session-1/);
+    await page.getByRole("button", { name: "Switch session", exact: true }).click();
+    await expect(page.locator(".mobile-session-option.selected")).toContainText("Mock session");
+    expect(requests).toEqual({ reads: [], mutations: [] });
+  });
+
+  for (const kind of ["archived", "deleting"] as const) {
+    const message = kind === "archived" ? "Restore the chat before opening it (Session actions → Restore chat)."
+      : "Session deletion is incomplete. Retry permanent deletion from Session actions before opening or using it.";
+    for (const normal of [true, false]) {
+      test(`known ${kind} URL ${normal ? "selects normal fallback" : "stays blank"} without creating or restoring`, async ({ page }) => {
+        await host(page, [
+          { ...session, sessionId: "blocked-chat", title: "Blocked chat", [kind]: true },
+          ...(normal ? [{ ...session }] : []),
+        ]);
+        const requests = forbiddenRequests(page);
+        await page.goto("/?session=blocked-chat");
+        await expect(page.getByText(message, { exact: true })).toBeVisible();
+        await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+        if (normal) {
+          await expect(page).toHaveURL(/session=session-1/);
+          await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+        } else {
+          await expect(page.locator(".project-session-link.selected")).toHaveCount(0);
+          if (kind === "archived") await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
+          await expect(page.locator(".project-session-link", { hasText: "Blocked chat" })).toBeVisible();
+        }
+        // Repeated list refreshes and language changes must not rerun startup,
+        // erase a blocked-link warning or silently create a replacement chat.
+        for (let i = 0; i < 2; i++) await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
+        await chooseMenuOption(page, "Language", "zh");
+        await expect(page.getByRole("button", { name: "刷新会话", exact: true })).toBeVisible();
+        await expect(page.getByText(message, { exact: true })).toBeVisible();
+        expect(requests).toEqual({ reads: [], mutations: [] });
+      });
+    }
+  }
+
+  for (const normal of [true, false]) {
+    test(`default initialization skips deleting newest chat ${normal ? "for normal candidate" : "without creating a chat"}`, async ({ page }) => {
+      await host(page, [
+        { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true, updatedAt: session.updatedAt + 100 },
+        ...(normal ? [{ ...session }] : []),
+      ]);
+      const requests = forbiddenRequests(page);
+      await page.goto("/");
+      if (normal) {
+        await expect(page).toHaveURL(/session=session-1/);
+        await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+      } else {
+        await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
+        await expect(page.locator(".project-session-link", { hasText: "Deleting chat" })).toBeVisible();
+        await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+      }
+      await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+      expect(requests).toEqual({ reads: [], mutations: [] });
+    });
+
+    test(`archive fallback excludes deleting candidate ${normal ? "and selects normal chat" : "and stays blank"}`, async ({ page }) => {
+      await host(page, [
+        { ...session },
+        { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true },
+        ...(normal ? [{ ...session, sessionId: "session-2", title: "Other chat" }] : []),
+      ]);
+      const requests = forbiddenRequests(page);
+      await page.goto("/?session=session-1");
+      await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+      await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+      await action(page, "Archive");
+      await expect.poll(() => new URL(page.url()).searchParams.get("session")).toBe(normal ? "session-2" : null);
+      if (normal) await expect(page.locator(".toolbar h1")).toHaveText("Other chat");
+      await expect(page.locator(".project-session-link", { hasText: "Deleting chat" })).toBeVisible();
+      expect(requests.reads).toEqual([]);
+      expect(requests.mutations).toEqual(["/api/v1/sessions/session-1/metadata"]);
+    });
+  }
+
+  test("session list refresh never navigates to a newer normal candidate", async ({ page }) => {
+    const entries = await host(page);
+    await page.goto("/?session=session-1");
+    await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+    entries.push({ ...session, sessionId: "session-2", title: "Newer chat", updatedAt: session.updatedAt + 100 });
+    await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
+    await expect(page.locator(".project-session-link", { hasText: "Newer chat" })).toBeVisible();
+    await expect(page).toHaveURL(/session=session-1/);
+    await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+  });
+
+  test("unsupported organization action on older backend hides retirement controls", async ({ page }) => {
+    await host(page);
+    await page.route("**/api/v1/capabilities", route => route.fulfill({ json: { ...capabilities, supportedActions: capabilities.supportedActions.filter(action => action !== "session_organization") } }));
+    const mutations: string[] = [];
+    page.on("request", request => { if (request.method() === "DELETE" || request.url().endsWith("/metadata")) mutations.push(request.url()); });
+    await page.goto("/?session=session-1");
+    await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
+    const actions = page.getByRole("button", { name: "Session actions: Mock session", exact: true });
+    await expect(actions).toHaveCount(1);
+    await actions.click();
+    await expect(page.getByRole("menuitem", { name: "Fork", exact: true })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Archive", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "Delete", exact: true })).toHaveCount(0);
+    expect(mutations).toEqual([]);
+  });
 });

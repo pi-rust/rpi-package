@@ -5,10 +5,10 @@
 //!
 //! * client → agent requests we implement: `initialize`, `session/new`,
 //!   `session/prompt`, `session/load`, `session/resume`, `session/close`,
-//!   `session/delete`, `session/list`, and the rpi extension `session/durable`; notifications
+//!   `session/delete`, and `session/list`; notifications
 //!   `session/cancel` and `$/cancel_request`.
 //! * agent → client: `session/update` notifications (streamed text, thinking,
-//!   tool calls), optional `session/durable_update` notifications, and one
+//!   tool calls) and one
 //!   JSON-RPC response per request.
 //!
 //! We deliberately do **not** implement the client-side `fs/*` and `terminal/*`
@@ -18,7 +18,6 @@
 //! terminal agent.
 
 use crate::diagln;
-use rpi_extcore::durable::{DurableMutation, QueueStatus, ENTRY_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -48,6 +47,13 @@ mod protocol_context_usage_tests;
 #[cfg(test)]
 #[path = "protocol_response_progress_tests.rs"]
 mod protocol_response_progress_tests;
+#[cfg(test)]
+#[path = "protocol_tool_program_tests.rs"]
+mod protocol_tool_program_tests;
+#[path = "tool_program_live.rs"]
+mod tool_program_live;
+#[path = "tool_program_queries.rs"]
+mod tool_program_queries;
 
 /// The pollable stdin reader, re-exported so the frontends can build one.
 pub use rpi_plugin_sdk::stdio::StdinLines;
@@ -69,64 +75,6 @@ pub fn acp_stdin() -> Result<(StdinLines, Option<String>), String> {
         Err(error) => return Err(error.to_string()),
     };
     Ok((input, pending))
-}
-
-#[derive(Debug, Deserialize)]
-struct DurableRequest {
-    operation: String,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(rename = "itemId", default)]
-    item_id: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    note: Option<String>,
-}
-
-/// ACP extension for durable state and branch-scoped queue coordination.
-/// Standard ACP clients may ignore this method; rpi-aware clients can use it
-/// without bypassing the native session branch.
-fn durable_mutation(params: &Value) -> Result<DurableMutation, String> {
-    let request: DurableRequest = serde_json::from_value(params.clone())
-        .map_err(|error| format!("invalid durable request: {error}"))?;
-    let item_id = || {
-        request
-            .item_id
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "itemId is required".to_string())
-    };
-    match request.operation.trim() {
-        "start_run" => Ok(DurableMutation::StartRun),
-        "settle_run" => Ok(DurableMutation::SettleRun),
-        "recover_run" => Ok(DurableMutation::RecoverRun),
-        "enqueue" => Ok(DurableMutation::Enqueue {
-            text: request
-                .text
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "text is required".to_string())?,
-        }),
-        "claim" => Ok(DurableMutation::Claim { id: item_id()? }),
-        "finish" => {
-            let status = match request.status.as_deref() {
-                Some("completed") => QueueStatus::Completed,
-                Some("failed") => QueueStatus::Failed,
-                Some(other) => return Err(format!("invalid finish status: {other}")),
-                None => return Err("status is required for finish".to_string()),
-            };
-            Ok(DurableMutation::Finish {
-                id: item_id()?,
-                status,
-                note: request.note.unwrap_or_default(),
-            })
-        }
-        "cancel" => Ok(DurableMutation::Cancel {
-            id: item_id()?,
-            note: request.note.unwrap_or_default(),
-        }),
-        other => Err(format!("unsupported durable operation: {other}")),
-    }
 }
 
 /// ACP protocol major version we speak. Stable v1.
@@ -452,6 +400,7 @@ impl Writer {
 
     /// Route a client response (an object with `id` and no `method`) to the
     /// request that produced it.
+    #[cfg(test)]
     pub(crate) async fn resolve(&self, id: u64, result: Value) {
         self.resolve_checked(id, Ok(result));
     }
@@ -468,7 +417,7 @@ impl Writer {
     }
 }
 
-/// Cancelling any existing writer user (including legacy prompt/durable tasks)
+/// Cancelling any existing writer user (including legacy prompt tasks)
 /// must fail closed, rather than release a partial frame onto a live stream.
 struct FrameWrite<'a> {
     writer: &'a Writer,
@@ -524,11 +473,9 @@ pub fn initialize_result() -> Value {
         "agentCapabilities": {
             "_meta": {
                 "pi-rust/questions": 1,
-                "rpi/durable": {
-                    "version": 1,
-                    "optional": true,
-                    "notifications": ["session/durable_update"]
-                }
+                "rpi/tool-program-children": tool_program_queries::capability_with_live(
+                    tool_program_live::capability(),
+                ),
             },
             "loadSession": true,
             // ACP supports implicit stdio and explicit Streamable HTTP, not SSE.
@@ -586,42 +533,6 @@ fn client_supports_terminal_auth(params: &Value) -> bool {
     announced
         .iter()
         .any(|value| matches!(value, Some(Value::Bool(true)) | Some(Value::Object(_))))
-}
-
-fn spawn_durable_update_watcher(
-    session: Arc<Session>,
-    writer: Arc<Writer>,
-    session_id: String,
-) -> Option<tokio::task::JoinHandle<()>> {
-    let mut events = session.subscribe_durable_events()?;
-    Some(tokio::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(event)
-                    if event["type"] == "session_entry_committed"
-                        && event["customType"].as_str() == Some(ENTRY_TYPE) =>
-                {
-                    if session.refresh_durable().await.unwrap_or(false) {
-                        if let Some(notification) = session.durable_update(&session_id).await {
-                            writer.notify("session/durable_update", notification).await;
-                        }
-                    }
-                }
-                Ok(_) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    // A lost notification is reconciled immediately. There is
-                    // intentionally no timer fallback: current native hosts
-                    // provide the commit event capability.
-                    if session.refresh_durable().await.unwrap_or(false) {
-                        if let Some(notification) = session.durable_update(&session_id).await {
-                            writer.notify("session/durable_update", notification).await;
-                        }
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    }))
 }
 
 #[derive(Debug)]
@@ -828,7 +739,6 @@ async fn wait_prompt_task(task: PromptTask) {
 async fn stop_live_session(
     session_id: &str,
     sessions: &Arc<Mutex<HashMap<String, Arc<Session>>>>,
-    durable_watchers: &mut HashMap<String, tokio::task::JoinHandle<()>>,
     prompt_tasks: &mut HashMap<String, PromptTask>,
 ) -> bool {
     let task_keys: Vec<String> = prompt_tasks
@@ -845,9 +755,6 @@ async fn stop_live_session(
     }
     for task in tasks {
         wait_prompt_task(task).await;
-    }
-    if let Some(watcher) = durable_watchers.remove(session_id) {
-        watcher.abort();
     }
     if let Some(session) = sessions.lock().await.remove(session_id) {
         session.kill().await;
@@ -1085,7 +992,6 @@ where
     F: FnMut(String, PathBuf, Vec<rpi_extcore::external_tools::ToolServer>) -> Fut,
     Fut: std::future::Future<Output = Result<(Arc<Session>, Value), String>>,
 {
-    let mut durable_watchers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let mut configuration_watchers: HashMap<String, configuration::Forwarder> = HashMap::new();
     let terminal_writer = writer.clone();
     let mut terminal_stop = stop.clone();
@@ -1098,6 +1004,8 @@ where
     let mut prompt_tasks: HashMap<String, PromptTask> = HashMap::new();
     let mut logout_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut list_tasks = crate::session_list::ListTasks::new(list_root);
+    let mut query_tasks = tool_program_queries::QueryTasks::default();
+    let live_tasks = tool_program_live::SubscriptionRegistry::default();
 
     // Why the loop ended, reported once at the bottom. Zed forwards agent stderr
     // into its own log, so this is what turns "transport closed" into a cause.
@@ -1155,11 +1063,16 @@ where
         // while avoiding an unbounded task map.
         prompt_tasks.retain(|_, task| !task.handle.is_finished());
         list_tasks.reap().await;
+        query_tasks.reap().await;
         // IDs retain their JSON type: 1 and "1" are separate requests. Check
-        // both task classes before parsing parameters.
+        // all task classes before parsing parameters.
         if let Some(id) = &id {
             let key = request_key(id);
-            if prompt_tasks.contains_key(&key) || list_tasks.contains(&key) {
+            if prompt_tasks.contains_key(&key)
+                || list_tasks.contains(&key)
+                || query_tasks.contains(&key)
+                || live_tasks.contains_request(&key).await
+            {
                 writer
                     .respond_error(id, -32600, "duplicate request id")
                     .await;
@@ -1284,19 +1197,11 @@ where
                                 "[rpi-acp] session {session_id}: config options unavailable: {error}"
                             ),
                         }
-                        let watcher = spawn_durable_update_watcher(
-                            session.clone(),
-                            writer.clone(),
-                            session_id.clone(),
-                        );
                         let compact_available = session.compact_available();
                         sessions
                             .lock()
                             .await
                             .insert(session_id.clone(), session.clone());
-                        if let Some(watcher) = watcher {
-                            durable_watchers.insert(session_id.clone(), watcher);
-                        }
                         if let Some((_, _, config)) = &prepared {
                             result["configOptions"] = config["configOptions"].clone();
                         }
@@ -1322,58 +1227,18 @@ where
                     Err(error) => writer.session_error(&id, "session/new", &error).await,
                 }
             }
-            (Some(id), "session/durable") => {
-                let params = match request_params(&params, "session/durable") {
-                    Ok(params) => Value::Object(params.clone()),
-                    Err(error) => {
-                        writer.respond_error(&id, -32602, &error).await;
-                        continue;
-                    }
-                };
-                let session_id = params
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let session = sessions.lock().await.get(&session_id).cloned();
-                let Some(session) = session else {
-                    writer.respond_error(&id, -32602, "unknown sessionId").await;
-                    continue;
-                };
-                if params.get("operation").and_then(Value::as_str) == Some("status") {
-                    match session.durable_state().await {
-                        Ok(state) => {
-                            writer
-                                .respond(&id, json!({"sessionId": session_id, "state": state}))
-                                .await
-                        }
-                        Err(error) => writer.respond_error(&id, -32001, &error).await,
-                    }
-                    continue;
-                }
-                let mutation = match durable_mutation(&params) {
-                    Ok(mutation) => mutation,
-                    Err(error) => {
-                        writer.respond_error(&id, -32602, &error).await;
-                        continue;
-                    }
-                };
-                match session.mutate_durable(mutation).await {
-                    Ok(mut result) => {
-                        result["sessionId"] = json!(session_id);
-                        let notification = json!({
-                            "sessionId": session_id,
-                            "revision": result["state"]["revision"],
-                            "state": result["state"],
-                        });
-                        writer.respond(&id, result).await;
-                        writer.notify("session/durable_update", notification).await;
-                    }
-                    Err(error) if error.starts_with("durable_unavailable:") => {
-                        writer.respond_error(&id, -32001, &error).await
-                    }
-                    Err(error) => writer.respond_error(&id, -32603, &error).await,
-                }
+            (Some(id), method) if tool_program_queries::METHODS.contains(&method) => {
+                query_tasks
+                    .start(writer.clone(), &sessions, id, method, params)
+                    .await;
+            }
+            (Some(id), tool_program_live::SUBSCRIBE_METHOD) => {
+                live_tasks
+                    .start(writer.clone(), &sessions, id, params)
+                    .await;
+            }
+            (Some(id), tool_program_live::UNSUBSCRIBE_METHOD) => {
+                live_tasks.unsubscribe(&writer, &id, params).await;
             }
             (Some(id), "session/prompt") => {
                 let prompt = match prompt_params(&params) {
@@ -1556,22 +1421,11 @@ where
                                         "[rpi-acp] session {session_id}: config options unavailable: {error}"
                                     ),
                                 }
-                                if let Some(watcher) = durable_watchers.remove(session_id) {
-                                    watcher.abort();
-                                }
-                                let watcher = spawn_durable_update_watcher(
-                                    session.clone(),
-                                    writer.clone(),
-                                    session_id.to_owned(),
-                                );
                                 let compact_available = session.compact_available();
                                 sessions
                                     .lock()
                                     .await
                                     .insert(session_id.to_owned(), session.clone());
-                                if let Some(watcher) = watcher {
-                                    durable_watchers.insert(session_id.to_owned(), watcher);
-                                }
                                 if let Some((_, _, config)) = &prepared {
                                     result["configOptions"] = config["configOptions"].clone();
                                 }
@@ -1732,13 +1586,9 @@ where
                         continue;
                     }
                 };
-                let live = stop_live_session(
-                    &session_id,
-                    &sessions,
-                    &mut durable_watchers,
-                    &mut prompt_tasks,
-                )
-                .await;
+                query_tasks.cancel_session(&session_id).await;
+                live_tasks.cancel_session(&session_id).await;
+                let live = stop_live_session(&session_id, &sessions, &mut prompt_tasks).await;
                 // Native cleanup precedes waiting for output to drain. If the
                 // frame cannot drain, stop() marks the WHOLE connection terminal.
                 if let Some(watcher) = configuration_watchers.remove(&session_id) {
@@ -1800,7 +1650,9 @@ where
                     false
                 };
                 let list_found = list_tasks.cancel(&key);
-                if !prompt_found && !list_found {
+                let query_found = query_tasks.cancel(&key).await;
+                let live_found = live_tasks.cancel_request(&key).await;
+                if !prompt_found && !list_found && !query_found && !live_found {
                     if let Some(numeric_id) = request_id.as_u64() {
                         writer.cancel_request(numeric_id).await;
                     }
@@ -1826,6 +1678,8 @@ where
                         continue;
                     }
                 };
+                query_tasks.cancel_session(&session_id).await;
+                live_tasks.cancel_session(&session_id).await;
                 let sessions_session = sessions.lock().await.get(&session_id).cloned();
                 if let Some(session) = sessions_session {
                     let _ = session.abort().await;
@@ -1848,6 +1702,9 @@ where
         }
     }
 
+    // Drop query futures/correlations before retiring any shared native host.
+    query_tasks.shutdown().await;
+    live_tasks.shutdown().await;
     // Retain existing best-effort list completions on EOF. ListTasks owns
     // terminal cancellation of its writes; FrameWrite closes a partial stream.
     list_tasks.shutdown().await;
@@ -1864,9 +1721,6 @@ where
         let _ = task.await;
     }
     // Client closed stdin or host requested shutdown.
-    for (_, watcher) in durable_watchers {
-        watcher.abort();
-    }
     for (_, session) in sessions.lock().await.drain() {
         session.kill().await;
     }
@@ -2233,43 +2087,6 @@ mod tests {
     }
     include!("protocol_mcp_tests.rs");
     include!("protocol_session_list_tests.rs");
-
-    #[test]
-    fn durable_extension_parses_queue_mutations() {
-        let mutation = durable_mutation(&json!({
-            "operation": "finish",
-            "itemId": "item-1",
-            "status": "completed",
-            "note": "passed"
-        }))
-        .unwrap();
-        assert!(matches!(
-            mutation,
-            DurableMutation::Finish {
-                id,
-                status: QueueStatus::Completed,
-                note
-            } if id == "item-1" && note == "passed"
-        ));
-        assert!(durable_mutation(&json!({
-            "operation": "finish",
-            "itemId": "item-1",
-            "status": "queued"
-        }))
-        .is_err());
-    }
-
-    #[test]
-    fn initialize_advertises_durable_extension() {
-        assert_eq!(
-            initialize_result()["agentCapabilities"]["_meta"]["rpi/durable"]["optional"],
-            true
-        );
-        assert_eq!(
-            initialize_result()["agentCapabilities"]["_meta"]["rpi/durable"]["notifications"][0],
-            "session/durable_update"
-        );
-    }
 
     #[tokio::test]
     async fn disconnect_resolves_pending_requests_and_rejects_new_ones() {

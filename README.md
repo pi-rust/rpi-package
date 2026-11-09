@@ -16,8 +16,8 @@ parameter schemas, and regression checks.
 | --- | --- |
 | [rpi-mcp-adapter](packages/rpi-mcp-adapter/README.md) | Discover/call tools and manage resources with `mcp_list`, `mcp_call`, `mcp_resource`; raw diagnostics with `mcp_request` |
 | [rpi-subagents](packages/rpi-subagents/README.md) | Delegate work with `delegate_task` |
+| [rpi-codemode](packages/rpi-codemode/README.md) | Compose native tools with bounded JavaScript, lossless business JSON and explicit exact native-result selection within inline limits; published/prebuilt extension, requires the companion ToolProgram v1 capabilities |
 | [rpi-orchestrator](packages/rpi-orchestrator/README.md) | Bounded child agents and task graphs with `subagent`, `plan` and `dispatch` |
-| [rpi-durable](packages/rpi-durable/README.md) | Persist and resume workflow checkpoints with `durable` |
 | [rpi-lens](packages/rpi-lens/README.md) | Inspect code with `code_lens` |
 | [rpi-codegraph](packages/rpi-codegraph/README.md) | Query indexed symbols, source, and relationships with `codegraph_*` (automatically initializes/syncs the index) |
 | [rpi-todo](packages/rpi-todo/README.md) | Track tasks with `todo` |
@@ -40,6 +40,8 @@ parameter schemas, and regression checks.
 | [rpi-ui-adapter](packages/rpi-ui-adapter/README.md) | Connect Open WebUI directly through `--webui=openwebui` |
 | [rpi-edit-diagnostics](packages/rpi-edit-diagnostics/README.md) | Replace `edit` with exact matching and compiler-style failure reports |
 
+Durable workflow state is owned by the native host; packages do not provide a second durable runtime.
+
 Extensions inspired by Pi packages are independent Rust implementations, not
 ports of upstream source code, except the candidate search in
 `rpi-edit-diagnostics`, which is ported from pi-semantic-edit (MIT; see its
@@ -57,6 +59,19 @@ or `/stats` to toggle it, or press F8. The row uses compact monochrome symbols
 in three groups and retains measured timing between requests. USD accumulates model usage costs calculated by the host from
 model pricing. It uses the host's generic `UiComponent` text interface.
 See [rpi-run-stats](packages/rpi-run-stats/README.md) for measurement definitions.
+
+Code Mode's **first full-parity increment is implemented, not the full plan**.
+The extension requires exact version-1 `resultEnvelope`, `hostAccounting`,
+`parentProgress` and `losslessValues` capabilities and fails closed on older
+hosts. Local evidence: **72 package tests passed**, strict all-target package
+Clippy passed, **1109 host tests passed / 6 ignored / 0 failed**, host formatting
+passed, and **35 real Windows host + DLL + fixture + gate smoke cases passed**.
+Final results and binary hashes are at
+`pi-rust-codemode/target/codemode-full-parity-smoke-5/`; this is source-build
+qualification, not deployment or a new CI-green claim. Large values
+beyond 1 MiB, complete child history/progress/recovery and Web/ACP child
+cards/reload remain outstanding; self/ancestor tools remain excluded.
+See the [parity status matrix](docs/codemode-full-parity-matrix.md).
 
 ## Provider integrations
 
@@ -94,16 +109,23 @@ Web 0.1.1 supports `.rpi/web.json` startup settings. Run `rpi-web --init` once i
 
 ## Shared backend and HTTP API
 
-`rpi-extcore` now holds the common ACP/Web native RPC, run, session, history, event and workspace capabilities. `rpi-http` adapts those services to the existing HTTP/SSE API and provides an API-only executable. `rpi-web` adds the embedded browser frontend; `rpi-acp` maps the common runtime to ACP.
+`rpi-extcore` now holds the common ACP/Web native RPC, run, session, history, event and workspace capabilities. `rpi-httpcore` adapts those services to the existing HTTP/SSE API and provides an API-only executable. `rpi-web` adds the embedded browser frontend; `rpi-acp` maps the common runtime to ACP.
 
 ```bash
-cargo run --locked -p rpi-http -- --project /path/to/project --rpi-bin /path/to/rpi --port 3030
+cargo run --locked -p rpi-httpcore -- --project /path/to/project --rpi-bin /path/to/rpi --port 3030
 ```
+
+`rpi-http` packages the same API-only service as a standard native plugin
+(`rpi --http`) through the `rpi-httpcore` library. It only maps the existing
+plugin lifecycle onto `rpi-httpcore`; it starts a separate core `Service` and
+does not share the live Agent session that loaded the extension. The
+`rpi-http-service` executable ships the same API-only service without the plugin
+host.
 
 `rpi-extcore` is also published as a reusable crates.io library. Applications
 can depend on the compatible minor line with `rpi-extcore = "0.1"`; it requires
 Rust 1.78+ and a compatible native `rpi --mode rpc` executable at runtime. See
-[rpi-extcore](packages/rpi-extcore/README.md), [rpi-http](packages/rpi-http/README.md) and the [architecture contract](docs/architecture/extension-core.md). The new packages are ordinary Rust libraries; existing extension installation and startup commands remain the same.
+[rpi-extcore](packages/rpi-extcore/README.md), [rpi-httpcore](packages/rpi-httpcore/README.md) and the [architecture contract](docs/architecture/extension-core.md). The new packages are ordinary Rust libraries; existing extension installation and startup commands remain the same.
 
 ## Native ACP integration
 
@@ -267,7 +289,8 @@ determine which packages need a release.
 When package releases are available, CI builds Windows x64, Linux x64/ARM64 and
 macOS Intel/Apple Silicon assets. The matching package Releases receive native
 libraries and a versioned `rpi-extension.json` manifest. A separate bundle Release
-contains all workspace extensions, the installer and the standalone ACP bridge.
+contains all catalog extensions, the installer and the standalone ACP bridge;
+archived host-owned packages are intentionally omitted.
 The full workspace build does not mean every extension gets a new version.
 
 The workflow can also be run manually on `main` to retry a release.

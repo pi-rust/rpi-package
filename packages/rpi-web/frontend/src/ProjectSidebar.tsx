@@ -14,8 +14,11 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  GitBranch,
+  GitFork,
   Loader2,
   MoreHorizontal,
+  Clock3,
   Pin,
   PinOff,
   Plus,
@@ -25,7 +28,7 @@ import {
 } from "lucide-react";
 import { api, type Project, type SessionSummary } from "./api";
 import { translate, type Language } from "./i18n";
-import { SessionIssueBadge } from "./SessionIssueBadge";
+import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
 import { createPortal } from "react-dom";
 type FolderNode = {
   name: string;
@@ -149,6 +152,7 @@ export function ConfirmDialog({
   onClose,
   onConfirm,
   confirmLabel,
+  busy = false,
 }: {
   language: Language;
   title: string;
@@ -156,16 +160,17 @@ export function ConfirmDialog({
   onClose: () => void;
   onConfirm: () => void;
   confirmLabel?: string;
+  busy?: boolean;
 }) {
   return (
     <Modal language={language} title={title} onClose={onClose}>
-      <div className="project-form">
+      <div className="project-form" aria-busy={busy}>
         <p className="dialog-description">{message}</p>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
             {translate(language, "cancel")}
           </button>
-          <button type="button" className="danger" onClick={onConfirm}>
+          <button type="button" className="danger" disabled={busy} onClick={onConfirm}>
             {confirmLabel ?? translate(language, "submit")}
           </button>
         </div>
@@ -743,12 +748,14 @@ interface SidebarProps {
   language: Language;
   creating: boolean;
   canManage: boolean;
+  canFork: boolean;
   canCreate: boolean;
   onSelectProject: (project: Project) => void;
   onSelectSession: (session: SessionSummary) => void;
   onNewSession: (projectId: string) => void;
   onNewProject: () => void;
   onRename: (session: SessionSummary) => void;
+  onFork: (session: SessionSummary) => void;
   onRenameProject: (project: Project) => void;
   onProjectMetadata: (project: Project, archived: boolean) => Promise<void>;
   onEditTags: (session: SessionSummary) => void;
@@ -768,12 +775,14 @@ export function ProjectSidebar({
   language,
   creating,
   canManage,
+  canFork,
   canCreate,
   onSelectProject,
   onSelectSession,
   onNewSession,
   onNewProject,
   onRename,
+  onFork,
   onRenameProject,
   onProjectMetadata,
   onEditTags,
@@ -795,6 +804,7 @@ export function ProjectSidebar({
   });
   const [menu, setMenu] = useState("");
   const [pending, setPending] = useState("");
+  const [recentExpanded, setRecentExpanded] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   useEffect(() => {
     try {
@@ -862,17 +872,29 @@ export function ProjectSidebar({
       setPending("");
     }
   }
-  function sessionRow(session: SessionSummary) {
+  function sessionRow(
+    session: SessionSummary,
+    options: { showProject?: boolean } = {},
+  ) {
     const title = session.title || (zh ? "新会话" : "New session");
-    const running = ["running", "starting", "awaiting_input"].includes(
-      session.status,
-    );
+    const recent = options.showProject === true;
+    const relationKind =
+      session.relation === "clone"
+        ? "clone"
+        : session.relation
+          ? "fork"
+          : null;
+    const projectName = recent
+      ? projects.find((project) => project.id === session.projectId)?.name
+      : undefined;
+    const awaitingAnswer = session.status === "awaiting_input";
+    const running = ["running", "starting"].includes(session.status);
     return (
       <div
-        className={`project-session ${session.sessionId === sessionId ? "active" : ""}`}
+        className={`${recent ? "recent-session" : "project-session"} ${session.sessionId === sessionId ? "active" : ""}`}
         key={session.sessionId}
         onContextMenu={(event) => {
-          if (!canManage) return;
+          if (!canManage && !canFork) return;
           event.preventDefault();
           setMenuPosition({
             top: Math.min(event.clientY, window.innerHeight - 150),
@@ -885,9 +907,18 @@ export function ProjectSidebar({
           className="project-session-link"
           onClick={() => onSelectSession(session)}
           title={title}
+          aria-label={
+            recent
+              ? `${zh ? "最近会话" : "Recent chat"}: ${title}${
+                  projectName ? ` · ${projectName}` : ""
+                }`
+              : undefined
+          }
           aria-current={session.sessionId === sessionId ? "page" : undefined}
         >
-          {running ? (
+          {awaitingAnswer ? (
+            <span className="session-answer-dot" title={translate(language, "sessionAwaitingAnswer")} aria-hidden="true" />
+          ) : running ? (
             <span
               className="session-running-dot"
               title={zh ? "运行中" : "Running"}
@@ -897,20 +928,53 @@ export function ProjectSidebar({
           ) : (
             <span className="session-indent-dot" />
           )}
-          <span className="session-title">
-            {session.relation && <span className="fork-label">↳ </span>}
-            {title}
-          </span>
-          <SessionIssueBadge session={session} language={language} />
-          {draftSessionIds.has(session.sessionId) && (
+          {relationKind && (
             <span
-              className="session-draft"
-              title={translate(language, "draft")}
+              className={`session-relation-prefix session-relation-${relationKind}`}
+              title={
+                relationKind === "clone"
+                  ? zh
+                    ? "克隆会话"
+                    : "Cloned session"
+                  : zh
+                    ? "分叉会话"
+                    : "Forked session"
+              }
+              aria-hidden="true"
             >
-              {translate(language, "draft")}
+              {relationKind === "clone" ? <GitBranch size={12} /> : <GitFork size={12} />}
             </span>
           )}
-          {(session.tags ?? []).length > 0 && (
+          <span
+            className={`session-title ${recent ? "recent-session-title" : ""}`}
+            data-title={recent ? title : undefined}
+          >
+            {!recent && title}
+          </span>
+          {!recent && (
+            <>
+              <SessionAnswerBadge session={session} language={language} />
+              <SessionIssueBadge session={session} language={language} />
+              {draftSessionIds.has(session.sessionId) && (
+                <span
+                  className="session-draft"
+                  title={translate(language, "draft")}
+                >
+                  {translate(language, "draft")}
+                </span>
+              )}
+            </>
+          )}
+          {projectName && (
+            <span
+              className="recent-project-tag"
+              title={`${zh ? "项目" : "Project"}: ${projectName}`}
+              aria-label={`${zh ? "项目" : "Project"}: ${projectName}`}
+            >
+              {projectName}
+            </span>
+          )}
+          {!recent && (session.tags ?? []).length > 0 && (
             <span className="session-tags" aria-label={translate(language, "tags")}>
               {(session.tags ?? []).slice(0, 2).map((tag) => (
                 <span className="session-tag" key={tag}>{tag}</span>
@@ -924,11 +988,11 @@ export function ProjectSidebar({
             {shortTime(session.updatedAt, language)}
           </time>
         </button>
-        {canManage && (
+        {(canManage || canFork) && !recent && (
           <div className="session-menu">
             <button
               className="icon-button session-menu-trigger"
-              aria-label={`${zh ? "会话操作" : "Session actions"}: ${title}`}
+              aria-label={`${recent ? (zh ? "最近会话操作" : "Recent chat actions") : zh ? "会话操作" : "Session actions"}: ${title}`}
               aria-expanded={menu === session.sessionId}
               aria-haspopup="menu"
               onClick={(event) => {
@@ -954,13 +1018,27 @@ export function ProjectSidebar({
                   aria-label={title}
                   style={menuPosition}
                 >
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setMenu("");
-                      onRename(session);
-                    }}
-                  >
+                  {canFork && (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setMenu("");
+                        onFork(session);
+                      }}
+                    >
+                      <GitFork size={14} />
+                      {translate(language, "fork")}
+                    </button>
+                  )}
+                  {canManage && (
+                    <>
+                      <button
+                        role="menuitem"
+                        onClick={() => {
+                          setMenu("");
+                          onRename(session);
+                        }}
+                      >
                     <SquarePen size={14} />
                     {zh ? "重命名" : "Rename"}
                   </button>
@@ -1016,9 +1094,12 @@ export function ProjectSidebar({
                     }}
                   >
                     <X size={14} />
-                    {zh ? "永久删除" : "Delete permanently"}
-                  </button>
-
+                        {session.deleting
+                          ? zh ? "重试永久删除" : "Retry permanent deletion"
+                          : zh ? "永久删除" : "Delete permanently"}
+                      </button>
+                    </>
+                  )}
                 </div>,
                 document.body,
               )}
@@ -1041,6 +1122,13 @@ export function ProjectSidebar({
         )
       : !project.archived,
   );
+  const recentSessions = sessions
+    .filter((session) => !session.archived)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const visibleRecentSessions = recentSessions.slice(
+    0,
+    recentExpanded ? 10 : 5,
+  );
   return (
     <div className="project-navigation">
       <div className="sidebar-primary-actions">
@@ -1054,6 +1142,44 @@ export function ProjectSidebar({
           <kbd>Ctrl N</kbd>
         </button>
       </div>
+      {!archived && recentSessions.length > 0 && (
+        <section
+          className="recent-sessions"
+          aria-label={zh ? "最近会话" : "Recent chats"}
+        >
+          <div className="project-section-heading recent-sessions-heading">
+            <span>
+              <Clock3 size={14} aria-hidden="true" />
+              {zh ? "最近会话" : "Recent chats"}
+            </span>
+            {recentSessions.length > 5 && (
+              <button
+                className="recent-sessions-toggle"
+                type="button"
+                aria-expanded={recentExpanded}
+                aria-label={
+                  recentExpanded
+                    ? zh
+                      ? "收起最近会话"
+                      : "Show fewer recent chats"
+                    : zh
+                      ? "展开最近会话"
+                      : "Show more recent chats"
+                }
+                onClick={() => setRecentExpanded((expanded) => !expanded)}
+              >
+                {recentExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                <span>{recentExpanded ? (zh ? "收起" : "Less") : zh ? "更多" : "More"}</span>
+              </button>
+            )}
+          </div>
+          <div className="recent-session-list">
+            {visibleRecentSessions.map((session) =>
+              sessionRow(session, { showProject: true }),
+            )}
+          </div>
+        </section>
+      )}
       <div className="project-section-heading">
         <span>
           {archived ? (zh ? "已归档" : "Archived") : zh ? "项目" : "Projects"}
@@ -1228,7 +1354,7 @@ export function ProjectSidebar({
               </div>
               {expanded && (
                 <div className="project-chats">
-                  {chats.map(sessionRow)}
+                  {chats.map((session) => sessionRow(session))}
                   {!chats.length && (
                     <button
                       className="project-empty"

@@ -1,6 +1,6 @@
 # Model-facing tool guidance
 
-Tool metadata is part of the extension's public contract. A README does not
+Tool metadata is part of the extension/host public contract. A README does not
 become model context automatically: the registered description and parameter
 schema must be sufficient to choose and call the tool safely.
 
@@ -47,13 +47,13 @@ uses the existing `StableToolSchema` registration contract, not a new ABI slot.
 
 ## Tool coverage
 
-The guidance review covers 33 tools in these 17 extensions:
+The guidance review covers 33 tools in these 16 extensions plus the native host:
 
 | Extension | Tools | Important contract |
 | --- | --- | --- |
 | rpi-ask-user | ask_user | Interactive UI, canonical inline option/question shapes, confirmation versus selection |
 | rpi-codegraph | search, callers, callees, impact, explore, node, status, files (all codegraph_ prefixed) | CLI requirement, automatic index initialization/sync writes, bounded best-effort results |
-| rpi-durable | durable | Branch-scoped checkpoints/recovery/manual queue; no automatic replay or scheduling |
+| rpi host | durable | Host-owned branch checkpoints/recovery/manual queue; no automatic replay or scheduling |
 | rpi-edit-diagnostics | edit | Read first, snapshot-based replacements, exact/normalized matching and failure limits |
 | rpi-goal | goal | Branch-scoped objective, replacement/update and budget semantics |
 | rpi-im-message | im_message_server | External sends, destructive FIFO receive, connection cleanup and uncertain delivery |
@@ -82,7 +82,7 @@ required versus optional fields, key safety constraints and parser behavior
 without contacting external services. Avoid exact full-prose comparisons.
 
 ```sh
-cargo test --locked -p rpi-ask-user -p rpi-codegraph -p rpi-durable \
+cargo test --locked -p rpi-ask-user -p rpi-codegraph \
   -p rpi-edit-diagnostics -p rpi-goal -p rpi-im-message -p rpi-langfuse \
   -p rpi-lens -p rpi-mcp-adapter -p rpi-orchestrator -p rpi-permissions \
   -p rpi-plan-mode -p rpi-server -p rpi-subagents -p rpi-todo \

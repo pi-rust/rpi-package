@@ -1,133 +1,81 @@
 # rpi-http
 
-HTTP/SSE protocol adapter for `rpi-extcore`. It provides a reusable Axum router and an API-only executable. It contains no frontend resources and does not depend on the plugin SDK.
+Native `rpi-plugin-sdk` extension entry point for the API-only HTTP/SSE service.
+The cdylib registers `rpi --http`; the `rpi-http-service` executable uses the same
+configuration and server. All HTTP behavior lives in the
+[`rpi-httpcore`](../rpi-httpcore/README.md) library; this crate only adapts the
+plugin ABI. It contains no frontend, no project/workspace owner, no independent
+node runtime and no Work component/UI protocol.
 
-## Standalone service
-
-From the repository root, with the native host installed:
-
-```bash
-cargo run --locked -p rpi-http -- --project /path/to/project --rpi-bin /path/to/rpi --port 3030
-```
-
-This serves `/api/v1`, including projects, sessions, commands, snapshots, SSE, model/provider operations and file/Git previews. `/` and `/assets/*` return 404. Use `rpi --webserver` from the `rpi-web` extension when you want the bundled browser workspace.
-
-`--help` lists the supported options. `--port 0` selects an available port and startup output shows the actual address. An explicit JSON file is optional:
-
-```json
-{
-  "project": ".",
-  "rpiBin": "/absolute/path/to/rpi",
-  "port": 3030,
-  "registry": "state/sessions.json",
-  "sessionDir": "history"
-}
-```
+## Usage
 
 ```bash
-cargo run --locked -p rpi-http -- --config /path/to/http.json --port 3031
+rpi --http --bind 127.0.0.1 --port 3030
+rpi --http=/path/to/http.json
+rpi --http=help
 ```
 
-JSON paths are relative to the file, except a bare executable name, which is resolved on PATH. CLI options override JSON regardless of their order. This new standalone entrypoint loads only an explicitly selected configuration file; the existing `rpi-web` global/project configuration discovery remains in Web.
+`--http` starts the `rpi-httpcore` standalone contract: `/api/v1`, SSE, cookies,
+Host/Origin checks and listener lifecycle. Optional `--bind`/`--port` override
+the JSON configuration. Authentication comes from `RPI_HTTP_PASSWORD` (or the
+legacy `RPI_WEB_PASSWORD`), and allowed Host authorities from
+`RPI_HTTP_ALLOWED_HOSTS`; this extension does not add a second authentication or
+binding layer. See [rpi-httpcore](../rpi-httpcore/README.md) for the complete server,
+configuration file, endpoint and security contract.
 
-## Authentication and compatibility
+`rpi --http` conflicts with `--webserver`, `--web`, `--server`, `--webui` and
+`--acp`, because each of those owns a service lifecycle of its own.
 
-Use `RPI_HTTP_PASSWORD` for access authentication and `RPI_HTTP_ALLOWED_HOSTS` for allowed Host authorities. Both fall back to their legacy `RPI_WEB_*` names. The Web entrypoint keeps `RPI_WEB_*` precedence.
+The standalone binary is the same API-only service without the plugin host:
 
-The existing `/api/v1` payloads, cookie authentication, `X-Rpi-Web: 1` mutation marker, SSE event names/IDs and `Last-Event-ID` behavior are preserved. Log in with `POST /api/v1/auth`, retain its cookie, and include the mutation marker on POST/DELETE requests. Model API credentials remain separate and are handled by the native host.
-
-For compatibility the default registry remains `~/.rpi-web/sessions.json`. Run one backend writer per registry. Separate standalone instances can select their own `--registry` paths.
-
-The durable control plane is available for an opened session at
-`GET /api/v1/sessions/{id}/durable` and
-`POST /api/v1/sessions/{id}/durable`. Durable changes can be streamed from
-`GET /api/v1/sessions/{id}/durable/events`; it emits `durable_ready` for a new
-subscriber and `durable_change` events with the persisted state revision. Use
-`Last-Event-ID` or `?after=` to reconnect. A `resync_required` event means the
-bounded replay window no longer covers the requested revision.
-
-The POST body selects a coordinator operation without duplicating its state
-machine:
-
-```json
-{"operation":"enqueue","text":"run tests"}
-{"operation":"claim","itemId":"item-1"}
-{"operation":"finish","itemId":"item-1","status":"completed","note":"passed"}
+```bash
+rpi-http-service --project /path/to/project --rpi-bin /path/to/rpi --port 3030
 ```
 
-Supported operations are `start_run`, `settle_run`, `recover_run`, `enqueue`,
-`claim`, `finish` and `cancel`. Durable is an optional native capability: if
-`rpi --mode rpc` does not provide branch operations, ordinary sessions still
-work and these endpoints return `503 durable_unavailable`. Tool side effects
-are never replayed, and the queue API is coordination only; it does not start a
-background scheduler.
+## Lifecycle and ABI
 
-## Project images
+The extension uses the existing rpi plugin ABI only:
 
-`GET /api/v1/projects/{id}/image?path=artifacts/example.png` returns raw image bytes
-with the detected raster MIME type, rather than the JSON text preview returned by
-`/file`. It uses the same authentication and Host/Origin checks as other project
-reads. Responses, including failures, have `Cache-Control: private, no-store` and
-`X-Content-Type-Options: nosniff`.
+- it declares `{"ownsStdio":true}` and does not request `requiresAgent:false`;
+  normal rpi model configuration is still required, exactly as for the existing
+  `--webserver` entry point;
+- `SessionStart` starts the service on a dedicated runtime, `SessionShutdown`
+  signals it to stop and joins the worker, and service exit is reported through the
+  existing `StdioLifecycle` action;
+- the native child host defaults to the running `rpi` executable. No synthetic
+  credential, private control channel or extra stdin protocol is introduced.
 
-Paths are relative to the configured project. Canonical containment and hidden-path
-rules are enforced by core. Only regular files of at most 20 MiB are accepted;
-PNG, JPEG, GIF, WebP and BMP require matching extensions and signatures. SVG,
-HTML, traversal and files outside the project are not served. This does not add
-an arbitrary file server, external-image proxy or replacement `/artifacts` root.
+## Session boundary
 
-The Web client maps local raster image references to the selected project's image
-endpoint. This requires a backend containing this route; restarting an older
-backend without upgrading it will not add image support.
+The plugin starts one `rpi-extcore::service::Service` inside the process that
+loaded the plugin, but that service owns its own live session registry and native
+children. It does **not** attach to, share or take over the Agent session that
+loaded the extension: the Agent session and the HTTP service do not share
+in-memory runs, dialogs or event streams merely because they live in the same
+process. One service instance owns each live registry, and one writer per
+registry file is still required. Sharing live sessions across processes would
+require clients to connect to a single service instance; it is not provided by
+this extension.
 
-## Run timings
+## Distribution
 
-`POST /api/v1/sessions/{id}/run-timings/query` reads persisted native v4 run
-elapsed metadata for a known session without starting a native host. It uses the
-same cookie authentication, Host/Origin checks and `X-Rpi-Web: 1` marker as other
-POST endpoints.
+The crate is published as `rpi-http` 0.2.0 because crates.io already holds
+`rpi-http` 0.1.x from the former library crate, which is now `rpi-httpcore`. The
+plugin ABI, the `rpi --http` flags and the `/api/v1` contract are unchanged; only
+the crate name, the installed cdylib file name and the install command moved from
+`rpi install rpi-http-extension` to `rpi install rpi-http`.
 
-```json
-{"entryIds":["assistant-entry-id"],"cursor":null}
-```
-
-`entryIds` accepts at most 400 unique, nonempty IDs; `cursor` is optional and
-unknown fields are rejected. The response contains `timings` (each with `runId`,
-`lane`, `finalEntryId`, `startedAt`, `finishedAt`, `elapsedMs`, `outcome`),
-`complete`, `cursor`, `scannedBytes` and `totalBytes`. If `complete` is false,
-repeat the query with the returned cursor to continue the bounded scan. A 409
-invalidates accumulated timings and the cursor; retry without the cursor.
-Invalid requests return 400 and unknown session UUIDs return 404.
-
-## Embed the API
-
-`router(core, &config, shutdown_receiver)` builds an API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. Rust callers and HTTP clients then observe the same service state.
-
-`serve_until(config, frontend_router, on_listen, stop)` owns a listener and a core instance with bounded shutdown; Web uses this to combine the API with its own frontend routes. `run(config)` starts the API-only service and stops on Ctrl+C.
+The package keeps the workspace repository identity and the standard prebuilt
+extension metadata (`package.metadata.rpi.prebuilt`) for the supported platforms.
+It is published as an ordinary rpi prebuilt extension; no Work UI or native
+component bundle is required.
 
 ## Verification
 
-```bash
-cargo test --locked -p rpi-extcore -p rpi-http
-python packages/rpi-http/tests/native_smoke.py --http /path/to/rpi-http --rpi /path/to/rpi
-```
-
-The native smoke test exercises authentication, metadata, snapshots, SSE, restart recovery and the absence of frontend routes without model calls.
-
-## Optional paginated message queries
-
-Matching native ready frames advertise `get_message_summaries` and
-`get_message_window`. Core exposes typed, validated user-only summary pages
-(default 10, maximum 100) and read-only nearby message windows (default 48,
-maximum 100). Cursors are exclusive native entry IDs; `leafId` pins the branch
-snapshot. A removed snapshot leaf is a conflict. There is no full-transcript
-fallback or second transcript store for unsupported hosts.
-
-HTTP maps these services to authenticated `GET
-/api/v1/sessions/{id}/message-summaries?role=user&limit=10&beforeId=...&leafId=...`
-and `GET /api/v1/sessions/{id}/message-window?anchorId=...&limit=48&leafId=...`.
-Window continuation uses exactly one of `anchorId`, `beforeId`, `afterId`.
-Old native hosts return unsupported (HTTP 501); malformed queries return 400,
-invalid host pages 502, and removed snapshot leaves 409. Existing `/api/v1`,
-legacy `get_messages`, snapshot/SSE replay boundaries and native ownership are
-unchanged. Installing/restarting matching runtime layers is a separate step.
+`cargo test -p rpi-http -p rpi-httpcore --lib` covers flag adaptation and the
+existing HTTP behavior. For a real installed-host ABI smoke, build the library,
+set `RPI_NATIVE_BIN` and `RPI_HTTP_EXTENSION`, and run
+`node packages/rpi-http/tests/native-smoke.cjs`.
+The smoke uses isolated registry/model configuration, checks authenticated API-only
+access and the absence of Work routes, makes no model calls, and terminates only
+its test process. It does not treat stdin EOF as a service shutdown command.

@@ -1,6 +1,6 @@
 [package]
 name = "rpi-acp"
-version = "0.2.6"
+version = "0.2.15"
 edition.workspace = true
 rust-version = "1.85"
 license.workspace = true
@@ -9,6 +9,16 @@ repository.workspace = true
 description = "ACP agent server for rpi"
 readme = "README.md"
 keywords = ["rpi", "acp", "agent-protocol", "zed", "stdio"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -22,7 +32,7 @@ name = "rpi-acp-bridge"
 path = "src/main.rs"
 
 [dependencies]
-rpi-extcore = { path = "../rpi-extcore", version = "0.2.6" }
+rpi-extcore = { path = "../rpi-extcore", version = "0.2.13" }
 rpi-plugin-sdk = { workspace = true, features = ["stdio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
@@ -39,7 +49,7 @@ tokio = { version = "1", features = [
 ] }
 
 [dev-dependencies]
-rpi-extcore = { path = "../rpi-extcore", version = "0.2.6", features = ["test-support"] }
+rpi-extcore = { path = "../rpi-extcore", version = "0.2.13", features = ["test-support"] }
 
 [[example]]
 name = "configuration_fixture"

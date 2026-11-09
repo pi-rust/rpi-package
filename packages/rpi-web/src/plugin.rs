@@ -56,12 +56,24 @@ fn flag_text(value: Value) -> Option<String> {
 /// Append options the host CLI already parsed, so `rpi --webserver --port N`
 /// behaves like `rpi-web --port N` (CLI overrides every config file).
 fn append_service_flags(args: &mut Vec<String>) {
-    args.extend(service_options(flag_value("bind"), flag_value("port")));
+    args.extend(service_options(
+        flag_value("bind"),
+        flag_value("port"),
+        flag_value("session-timeout"),
+    ));
 }
 
-fn service_options(bind: Option<String>, port: Option<String>) -> Vec<String> {
+fn service_options(
+    bind: Option<String>,
+    port: Option<String>,
+    session_timeout: Option<String>,
+) -> Vec<String> {
     let mut args = Vec::new();
-    for (name, value) in [("bind", bind), ("port", port)] {
+    for (name, value) in [
+        ("bind", bind),
+        ("port", port),
+        ("session-timeout", session_timeout),
+    ] {
         if let Some(value) = value {
             args.push(format!("--{name}"));
             args.push(value);
@@ -234,6 +246,12 @@ fn register(api: &rpi_plugin_sdk::PluginApi) -> i32 {
                 "Web server listen address (overrides web.json), used with --webserver",
             ),
         );
+        let _ = register_flag(
+            StbStringRef::from_str("session-timeout"),
+            StbStringRef::from_str(
+                "Idle Web session timeout in seconds (overrides web.json), used with --webserver",
+            ),
+        );
     }
     if !enabled(flag("webserver").as_ref()) && !enabled(flag("web").as_ref()) {
         return 0;
@@ -315,15 +333,32 @@ mod tests {
         assert_eq!(flag_text(json!(true)), None);
         assert_eq!(flag_text(json!(null)), None);
         assert_eq!(flag_text(json!("")), None);
-        let options = service_options(Some("0.0.0.0".into()), Some("3031".into()));
-        assert_eq!(options, ["--bind", "0.0.0.0", "--port", "3031"]);
+        let options = service_options(
+            Some("0.0.0.0".into()),
+            Some("3031".into()),
+            Some("120".into()),
+        );
+        assert_eq!(
+            options,
+            [
+                "--bind",
+                "0.0.0.0",
+                "--port",
+                "3031",
+                "--session-timeout",
+                "120"
+            ]
+        );
         // The forwarded options parse as ordinary Web CLI overrides.
-        let (bind, port) = match crate::config::from_args(options).unwrap() {
-            crate::config::Launch::Run(config) => (config.bind, config.port),
+        let (bind, port, session_timeout) = match crate::config::from_args(options).unwrap() {
+            crate::config::Launch::Run(config) => {
+                (config.bind, config.port, config.session_timeout_seconds)
+            }
             other => panic!("expected a run launch, got {other:?}"),
         };
         assert_eq!(bind, "0.0.0.0");
         assert_eq!(port, 3031);
-        assert!(service_options(None, None).is_empty());
+        assert_eq!(session_timeout, Some(120));
+        assert!(service_options(None, None, None).is_empty());
     }
 }

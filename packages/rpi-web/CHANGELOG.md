@@ -2,6 +2,164 @@
 
 ## [Unreleased]
 
+## [0.1.51](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.50...rpi-web-v0.1.51) - 2026-11-09
+
+### Other
+
+- *(http)* split HTTP core server modules ([#243](https://github.com/pi-rust/rpi-package/pull/243))
+
+## [0.1.50](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.49...rpi-web-v0.1.50) - 2026-11-08
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.49](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.48...rpi-web-v0.1.49) - 2026-11-08
+
+### Added
+
+- *(web)* add free Edge TTS message reading
+- *(web)* add current conversation message search
+- *(web)* improve session actions and mobile conversation UX ([#235](https://github.com/pi-rust/rpi-package/pull/235))
+- *(web)* add fork session sidebar action
+- *(web)* auto-dismiss session notifications
+- *(web)* show project labels in recent chats
+
+### Fixed
+
+- align local rpi-http dependency versions
+- *(web)* align message reading actions
+- *(web)* remove mobile message search focus ring
+- *(web)* hide composer in mobile immersive view
+- *(web)* keep pending queue visible during delivery
+- *(web)* isolate recent chat rows from project navigation
+- *(web)* allow generic type labels in Mermaid diagrams
+
+### Other
+
+- merge main into dev/web-hmr before PR merge
+- *(web)* allow fork when organization actions are unavailable
+- Merge pull request #234 from pi-rust/feat/recent-session-project-label
+
+## [0.1.48](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.47...rpi-web-v0.1.48) - 2026-11-07
+
+### Added
+
+- *(web)* release idle session hosts
+
+## [0.1.47](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.46...rpi-web-v0.1.47) - 2026-11-06
+
+### Fixed
+
+- *(web)* keep settlement errors visible ([#228](https://github.com/pi-rust/rpi-package/pull/228))
+
+## [0.1.46](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.45...rpi-web-v0.1.46) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
+## [0.1.45](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.44...rpi-web-v0.1.45) - 2026-11-06
+
+### Fixed
+
+- *(web)* preserve failure and retry feedback ([#218](https://github.com/pi-rust/rpi-package/pull/218))
+
+## [0.1.44](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.43...rpi-web-v0.1.44) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
+## [0.1.43](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.42...rpi-web-v0.1.43) - 2026-11-05
+
+### Added
+
+- *(web)* notify when sessions settle
+- *(web)* edit and delete provider configurations
+- *(web)* configure image input support
+- *(web)* configure maximum output tokens
+- *(web)* configure provider context window
+- *(web)* add provider model discovery and connection test
+- *(web)* add provider configuration form
+- *(web)* show pending answers and inspect code children
+- *(web)* inspect bounded Code Mode child calls
+- *(web)* expose provider management in runtime settings
+- *(web)* toggle the existing conversation timeline from the toolbar
+- *(web)* follow system light and dark appearance
+- *(web)* upload pasted clipboard images and files
+- *(web)* add paged history, file previews and execution traces
+
+### Fixed
+
+- *(web)* deduplicate settlement notifications ([#203](https://github.com/pi-rust/rpi-package/pull/203))
+- *(web)* render session notifications as overlays
+- *(web)* size image support checkbox
+- *(web)* allow the public dev host
+- *(web)* refresh full child phase windows
+- *(web)* expose mobile fork and guard pending fork requests
+- *(web)* guard session archival and permanent deletion
+- *(web)* remove intrusive mobile provider suggestions
+- *(ci)* stabilize Web production frontend release checks
+- *(web)* simplify execution trace duration bars
+- *(web)* reset file chooser before asynchronous uploads
+- *(web)* navigate timeline questions inline without a popup
+- *(web)* keep historical reader mounted during summary refresh
+
+### Other
+
+- sync dev web branch with main
+- Merge remote-tracking branch 'origin/main' into dev/web-hmr
+- *(web)* use the exact accessible send control name
+- *(web)* synchronize release fixtures with session readiness
+- *(web)* make branding checks portable across clean checkouts
+
+## [0.1.42](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.41...rpi-web-v0.1.42) - 2026-11-05
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.41](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.40...rpi-web-v0.1.41) - 2026-11-04
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.40](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.39...rpi-web-v0.1.40) - 2026-11-04
+
+### Added
+
+- *(web)* show pending answers and inspect Code Mode children
+
+## [0.1.39](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.38...rpi-web-v0.1.39) - 2026-11-03
+
+### Fixed
+
+- *(web)* expose mobile fork and guard pending fork requests ([#185](https://github.com/pi-rust/rpi-package/pull/185))
+
+## [0.1.38](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.37...rpi-web-v0.1.38) - 2026-11-03
+
+### Fixed
+
+- *(web)* retire archived sessions and permanently delete native history ([#183](https://github.com/pi-rust/rpi-package/pull/183))
+
+## [0.1.37](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.36...rpi-web-v0.1.37) - 2026-11-02
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.36](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.35...rpi-web-v0.1.36) - 2026-11-02
+
+### Fixed
+
+- *(android)* confirm HTTP download links in system browser
+
+### Other
+
+- Merge pull request #172 from pi-rust/fix/android-http-links
+
 ## [0.1.35](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.34...rpi-web-v0.1.35) - 2026-11-02
 
 ### Added

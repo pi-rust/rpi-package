@@ -1,10 +1,15 @@
 use serde_json::{json, Value};
+mod admission;
+mod child;
+mod resources;
+use admission::{ExecutionAdmission, ExecutionTicket};
+pub(crate) use resources::ResourceFence;
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex as StdMutex,
+        Arc, Mutex as StdMutex, OnceLock,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -47,12 +52,16 @@ type Worker = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
 enum CommandControl {
     Tools(rpi_mcp_core::Control),
     FileIO(crate::file_io::FileIOCancellation),
+    Execution(ExecutionTicket),
 }
 impl CommandControl {
     fn cancelled(&self) -> bool {
         match self {
             Self::Tools(c) => c.check().is_err(),
             Self::FileIO(c) => c.is_cancelled(),
+            // Atomic publication vs an unsent caller rollback, immediately
+            // before writing. A cancelled queued intent must never be written.
+            Self::Execution(ticket) => !ticket.published(),
         }
     }
 }
@@ -113,7 +122,7 @@ impl FileIOCommands {
             biased;
             _ = closed.wait_for(|v| *v) => return,
             _ = cancel.cancelled() => return,
-            result = dispatch_inner(&self.commands, &self.pending, value, Duration::from_secs(5), None, Some(cancel.clone())) => result,
+            result = dispatch_inner(&self.commands, &self.pending, value, Duration::from_secs(5), None, Some(cancel.clone()), None) => result,
         };
         if !cancel.is_cancelled()
             && !result.is_ok_and(|r| r["success"] == true && r["data"]["accepted"].is_boolean())
@@ -138,6 +147,7 @@ impl Drop for PendingRequest {
     }
 }
 
+#[cfg(test)]
 async fn dispatch(
     commands: &mpsc::Sender<Outbound>,
     pending: &Pending,
@@ -154,7 +164,7 @@ async fn dispatch_control(
     timeout: Duration,
     control: Option<rpi_mcp_core::Control>,
 ) -> Result<Value, String> {
-    dispatch_inner(commands, pending, value, timeout, control, None).await
+    dispatch_inner(commands, pending, value, timeout, control, None, None).await
 }
 
 async fn dispatch_inner(
@@ -164,6 +174,7 @@ async fn dispatch_inner(
     timeout: Duration,
     control: Option<rpi_mcp_core::Control>,
     file_cancel: Option<crate::file_io::FileIOCancellation>,
+    execution_state: Option<Arc<StdMutex<ExecutionAdmission>>>,
 ) -> Result<Value, String> {
     let original_id = value.get("id").cloned();
     let id = uuid::Uuid::new_v4().to_string();
@@ -176,6 +187,10 @@ async fn dispatch_inner(
         value["error"] =
             json!({"code":"too_large", "message":"client file I/O exceeds payload limit"});
     }
+    let execution = match execution_state {
+        Some(state) => ExecutionTicket::register(&state, &value)?,
+        None => None,
+    };
     let (reply, receive) = oneshot::channel();
     pending
         .lock()
@@ -192,7 +207,8 @@ async fn dispatch_inner(
                 pending_id: Some(id),
                 control: control
                     .map(CommandControl::Tools)
-                    .or_else(|| file_cancel.map(CommandControl::FileIO)),
+                    .or_else(|| file_cancel.map(CommandControl::FileIO))
+                    .or_else(|| execution.clone().map(CommandControl::Execution)),
             })
             .await
             .map_err(|_| "native rpi host command channel closed".to_string())?;
@@ -265,6 +281,11 @@ pub struct BufferedEvent {
     pub value: Value,
 }
 
+pub(crate) enum ReplayError<E> {
+    Gap,
+    Projection(E),
+}
+
 /// Native launch settings independent of any client protocol.
 #[derive(Clone, Debug)]
 pub struct SessionOptions {
@@ -279,14 +300,40 @@ pub struct SessionOptions {
     pub provider: Option<String>,
     pub permission_gate: bool,
     pub bypass: bool,
+    /// None preserves legacy discovery; Some is an exact native startup.
+    pub resources: Option<crate::resources::ResourceStartup>,
 }
 
+/// Why a session could not be safely retired without interrupting native work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdleCloseError {
+    Busy,
+    Unavailable(String),
+}
+
+impl std::fmt::Display for IdleCloseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy => f.write_str("session is busy"),
+            Self::Unavailable(reason) => write!(f, "idle session state unavailable: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for IdleCloseError {}
+
 pub struct HostSession {
+    child_owner: Option<child::NativeChild>,
     worker: Worker,
     shutdown_gate: Mutex<()>,
     ready: Value,
     runtime: Arc<HostRuntime>,
     run_gate: Arc<Mutex<()>>,
+    admission_gate: Arc<RwLock<()>>,
+    retired: std::sync::atomic::AtomicBool,
+    launch_options: Option<SessionOptions>,
+    // Native --fork chooses its own destination; never bind its unused requested ID.
+    fork_destination: OnceLock<String>,
     cancellation: tokio::sync::watch::Sender<u64>,
     writer_abort: StdMutex<Option<tokio::task::AbortHandle>>,
     commands: mpsc::Sender<Outbound>,
@@ -300,6 +347,7 @@ pub struct HostSession {
 
 // Shared with the reader and finalizer, without retaining the owning session.
 struct HostRuntime {
+    execution: Arc<StdMutex<ExecutionAdmission>>,
     raw_events: broadcast::Sender<Value>,
     events: broadcast::Sender<BufferedEvent>,
     pending: Pending,
@@ -438,6 +486,7 @@ struct HostState {
     last_error: Option<String>,
     latest_settlement: Option<Value>,
     pending_dialogs: Vec<Value>,
+    resource_unsettled: bool,
     title: Option<String>,
     created_at: u64,
     updated_at: u64,
@@ -692,11 +741,14 @@ impl HostSession {
             provider: None,
             permission_gate: false,
             bypass: false,
+            resources: None,
         })
         .await
     }
 
     pub async fn spawn_options(options: SessionOptions) -> Result<Arc<Self>, String> {
+        let launch_options = options.clone();
+        let resource_file = resources::StartupFile::prepare(&options).await?;
         let session_id = &options.session_id;
         let mut timings = crate::timing::ToolTimings::load(options.timings_dir.join(format!(
             "{}.json",
@@ -705,6 +757,9 @@ impl HostSession {
         timings.set_session(session_id);
         let mut command = crate::process::background_command(&options.executable);
         command.arg("--mode").arg("rpc");
+        if let Some(file) = &resource_file {
+            command.arg(file.flag).arg(&file.path);
+        }
         if let Some(path) = &options.saved_session {
             command.arg("--session").arg(path);
         } else if let Some(source) = &options.fork_source {
@@ -728,17 +783,38 @@ impl HostSession {
         );
         let project = options.project;
         let rpi_bin = options.executable;
-        let mut child = command
+        command
             .current_dir(project)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
+            .stderr(std::process::Stdio::inherit());
+        let mut child = rpi_mcp_core::ProcessTree::spawn(&mut command.into_std())
             .map_err(|error| format!("failed to start {}: {error}", rpi_bin.display()))?;
-        let stdin = child.stdin.take().ok_or("rpi host stdin unavailable")?;
-        let stdout = child.stdout.take().ok_or("rpi host stdout unavailable")?;
+        let stdin = tokio::process::ChildStdin::from_std(
+            child
+                .child_mut()
+                .stdin
+                .take()
+                .ok_or("rpi host stdin unavailable")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let stdout = tokio::process::ChildStdout::from_std(
+            child
+                .child_mut()
+                .stdout
+                .take()
+                .ok_or("rpi host stdout unavailable")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let child_owner = child::NativeChild::start(child);
         let mut reader = BufReader::new(stdout);
-        let ready = read_ready(&mut reader, Duration::from_secs(15)).await?;
+        let ready = match read_ready(&mut reader, Duration::from_secs(15)).await {
+            Ok(ready) => ready,
+            Err(error) => {
+                let _ = child_owner.stop_checked().await;
+                return Err(error);
+            }
+        };
 
         let (raw_events, _) = broadcast::channel(16_384);
         let (events, _) = broadcast::channel(512);
@@ -751,6 +827,7 @@ impl HostSession {
             last_error: None,
             latest_settlement: None,
             pending_dialogs: Vec::new(),
+            resource_unsettled: false,
             title: None,
             created_at,
             updated_at: created_at,
@@ -759,6 +836,7 @@ impl HostSession {
         let history: Arc<Mutex<VecDeque<BufferedEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
         let seq = Arc::new(AtomicU64::new(0));
         let runtime = Arc::new(HostRuntime {
+            execution: Arc::new(StdMutex::new(ExecutionAdmission::default())),
             raw_events: raw_events.clone(),
             events: events.clone(),
             pending: pending.clone(),
@@ -771,12 +849,19 @@ impl HostSession {
             external_bridge: StdMutex::new(std::sync::Weak::new()),
             file_io_bridge: StdMutex::new(std::sync::Weak::new()),
         });
+        let child_stop = child_owner.stop_signal();
+        let child_exit = child_owner.exit_signal();
         let session = Arc::new(Self {
+            child_owner: Some(child_owner),
             worker: Arc::new(Mutex::new(None)),
             shutdown_gate: Mutex::new(()),
             ready: ready.clone(),
             runtime: runtime.clone(),
             run_gate: Arc::new(Mutex::new(())),
+            admission_gate: Arc::new(RwLock::new(())),
+            retired: std::sync::atomic::AtomicBool::new(false),
+            launch_options: Some(launch_options.clone()),
+            fork_destination: OnceLock::new(),
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(None),
             commands,
@@ -834,6 +919,11 @@ impl HostSession {
                 {
                     break;
                 }
+                runtime
+                    .execution
+                    .lock()
+                    .expect("execution admission")
+                    .observe(&value);
                 if value["type"] == "response" {
                     runtime
                         .timings
@@ -889,14 +979,49 @@ impl HostSession {
             let _ = finish.await;
             writer.abort();
             let _ = writer.await;
-            let _ = child.kill().await;
+            child_stop.send_replace(true);
+            let _ = child::NativeChild::wait_checked(child_exit).await;
         });
 
         *session.worker.lock().await = Some(worker);
+        if let Some(startup) = &launch_options.resources {
+            let verified = async {
+                let observation = session.resource_state().await.map_err(|e| e.to_string())?;
+                let target = match startup {
+                    crate::resources::ResourceStartup::Exact(target) => target,
+                    crate::resources::ResourceStartup::Transition(request) => {
+                        if observation.binding.operation_id.as_deref()
+                            != Some(&request.operation_id)
+                        {
+                            return Err("native resource operation association differs".to_string());
+                        }
+                        &request.target
+                    }
+                };
+                let expected_id = if launch_options.fork_source.is_some() {
+                    observation.session_id.as_str()
+                } else {
+                    session_id
+                };
+                observation
+                    .verify(expected_id, target)
+                    .map_err(|e| e.to_string())
+            }
+            .await;
+            if let Err(error) = verified {
+                session.shutdown().await;
+                return Err(error);
+            }
+        }
         Ok(session)
     }
 
     async fn ensure_running(&self) -> Result<(), String> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err(
+                "native host retired for resource configuration; reopen through Service".into(),
+            );
+        }
         if *self.runtime.closed_signal.borrow()
             || self.runtime.state.read().await.status == "closed"
         {
@@ -907,6 +1032,9 @@ impl HostSession {
     }
 
     pub fn try_run_lease(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err("native host retired".into());
+        }
         self.run_gate
             .clone()
             .try_lock_owned()
@@ -988,21 +1116,37 @@ impl HostSession {
         self.runtime.raw_events.subscribe()
     }
 
-    pub async fn notify(&self, value: Value) -> Result<(), String> {
+    pub async fn notify(&self, mut value: Value) -> Result<(), String> {
+        let _admission = self.admission_gate.read().await;
         self.ensure_running().await?;
+        if matches!(
+            value["type"].as_str(),
+            Some("prompt" | "compact" | "resume_pending")
+        ) && !value["id"].is_string()
+        {
+            value["id"] = json!(uuid::Uuid::new_v4().to_string());
+        }
+        let mut execution = ExecutionTicket::register(&self.runtime.execution, &value)?;
         self.commands
             .send(Outbound {
                 value,
                 pending_id: None,
-                control: None,
+                control: execution.clone().map(CommandControl::Execution),
             })
             .await
-            .map_err(|_| "native rpi host command channel closed".into())
+            .map_err(|_| "native rpi host command channel closed".to_string())?;
+        if let Some(ticket) = &mut execution {
+            ticket.retain_queued();
+        }
+        Ok(())
     }
 
     pub async fn terminate(&self) {
         let _guard = self.shutdown_gate.lock().await;
         self.terminate_worker().await;
+        if let Some(child) = &self.child_owner {
+            let _ = child.stop_checked().await;
+        }
     }
 
     async fn terminate_worker(&self) {
@@ -1048,10 +1192,15 @@ impl HostSession {
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (raw_events, _) = broadcast::channel(capacity);
         let session = Arc::new(Self {
+            child_owner: None,
             worker: Arc::new(Mutex::new(None)),
             shutdown_gate: Mutex::new(()),
             ready,
             run_gate: Arc::new(Mutex::new(())),
+            admission_gate: Arc::new(RwLock::new(())),
+            retired: std::sync::atomic::AtomicBool::new(false),
+            launch_options: None,
+            fork_destination: OnceLock::new(),
             cancellation: tokio::sync::watch::channel(0).0,
             writer_abort: StdMutex::new(None),
             commands,
@@ -1061,6 +1210,7 @@ impl HostSession {
             usage_gate: Mutex::new(()),
             configuration_owner: Mutex::new(std::sync::Weak::new()),
             runtime: Arc::new(HostRuntime {
+                execution: Arc::new(StdMutex::new(ExecutionAdmission::default())),
                 raw_events,
                 events: broadcast::channel(capacity).0,
                 pending,
@@ -1070,6 +1220,7 @@ impl HostSession {
                     last_error: None,
                     latest_settlement: None,
                     pending_dialogs: vec![],
+                    resource_unsettled: false,
                     title: None,
                     created_at: 0,
                     updated_at: 0,
@@ -1099,6 +1250,47 @@ impl HostSession {
 
     pub fn ready(&self) -> Value {
         self.ready.clone()
+    }
+
+    /// Finalize only a fork's native-selected destination after validated get_state
+    /// readback and before publication. Ordinary owners cannot be rebound.
+    pub(crate) fn finalize_fork_destination(&self, actual_id: &str) -> Result<(), &'static str> {
+        if !self
+            .launch_options
+            .as_ref()
+            .is_some_and(|options| options.fork_source.is_some())
+        {
+            return Err("native owner is not a fork");
+        }
+        let bound = self.fork_destination.get_or_init(|| actual_id.to_owned());
+        if bound == actual_id {
+            Ok(())
+        } else {
+            Err("native fork destination identity differs")
+        }
+    }
+
+    /// Identity owned by this native session. Ready does not advertise sessionId;
+    /// ordinary launch metadata stays unchanged, while forks fail closed until
+    /// the service finalizes their native-selected destination exactly once.
+    pub(crate) fn bound_session_id(&self) -> Option<&str> {
+        if let Some(options) = &self.launch_options {
+            return if options.fork_source.is_some() {
+                self.fork_destination.get().map(String::as_str)
+            } else {
+                Some(&options.session_id)
+            };
+        }
+        // In-memory peers have no native launch options. This fixture-only field
+        // supplies the same binding without changing production ready parsing.
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.ready["sessionId"].as_str()
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            None
+        }
     }
 
     /// Whether the native ready frame advertises an optional RPC command.
@@ -1147,6 +1339,33 @@ impl HostSession {
             .collect()
     }
 
+    /// Select bounded metadata without first cloning arbitrary message/tool bodies.
+    /// The end boundary and retained events are sampled under the same lock.
+    /// In-flight/future publication remains beyond this boundary for live replay.
+    pub(crate) async fn map_history<T, E>(
+        &self,
+        after: u64,
+        mut project: impl FnMut(&BufferedEvent) -> Result<Option<T>, E>,
+    ) -> Result<(u64, Vec<T>), ReplayError<E>> {
+        let history = self.runtime.history.lock().await;
+        let last = history.back().map_or(0, |event| event.seq);
+        if crate::service::replay_gap(after.into(), history.front().map(|e| e.seq), last) {
+            return Err(ReplayError::Gap);
+        }
+        let mut cursor = after;
+        let mut selected = Vec::new();
+        for event in history.iter().filter(|event| event.seq > after) {
+            if cursor.checked_add(1) != Some(event.seq) {
+                return Err(ReplayError::Gap);
+            }
+            if let Some(value) = project(event).map_err(ReplayError::Projection)? {
+                selected.push(value);
+            }
+            cursor = event.seq;
+        }
+        Ok((last, selected))
+    }
+
     /// The first prompt becomes the sidebar title. Returns whether it was set.
     pub async fn set_title_if_empty(&self, title: &str) -> bool {
         let mut state = self.runtime.state.write().await;
@@ -1192,6 +1411,118 @@ impl HostSession {
         worker.take();
         drop(worker);
         self.terminate_worker().await;
+        if let Some(child) = &self.child_owner {
+            let _ = child.stop_checked().await;
+        }
+    }
+
+    /// Retire only a provably idle native session. Admission and the run lease
+    /// are acquired without waiting, then held through child exit/reaping.
+    /// Callers that must survive request cancellation should retain their task;
+    /// this method does not create a second request-lifetime wrapper.
+    pub async fn shutdown_if_idle(&self) -> Result<(), IdleCloseError> {
+        if *self.runtime.closed_signal.borrow() {
+            return self.shutdown_idle_child().await;
+        }
+        let _admission = self
+            .admission_gate
+            .clone()
+            .try_write_owned()
+            .map_err(|_| IdleCloseError::Busy)?;
+        // Closure can race acquisition. Closed sessions need no idle proof.
+        if *self.runtime.closed_signal.borrow() {
+            return self.shutdown_idle_child().await;
+        }
+        let _run = self.try_run_lease().map_err(|_| IdleCloseError::Busy)?;
+        self.check_idle_projection().await?;
+
+        // Do not call send(): we already own exclusive admission. The closed
+        // signal still cancels these bounded, directly dispatched probes.
+        let state = self.idle_close_probe("get_state").await?;
+        match state.get("activeOperation") {
+            Some(Value::Null) => {}
+            Some(_) => return Err(IdleCloseError::Busy),
+            None => {
+                return Err(IdleCloseError::Unavailable(
+                    "get_state omitted activeOperation".into(),
+                ));
+            }
+        }
+        for name in ["steering", "followUp"] {
+            let queue = state
+                .get("queue")
+                .and_then(|queue| queue.get(name))
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    IdleCloseError::Unavailable(format!("get_state omitted queue.{name} array"))
+                })?;
+            if !queue.is_empty() {
+                return Err(IdleCloseError::Busy);
+            }
+        }
+        if self.supports_command("get_history") {
+            let history = self.idle_close_probe("get_history").await?;
+            let operations = history["openOperations"].as_array().ok_or_else(|| {
+                IdleCloseError::Unavailable("get_history omitted openOperations array".into())
+            })?;
+            if !operations.is_empty() {
+                return Err(IdleCloseError::Busy);
+            }
+        }
+        // Native events can update projection while the probes are in flight.
+        self.check_idle_projection().await?;
+        // This is permanent for all existing Arcs, including senders waiting
+        // for the admission read lock. stop() intentionally bypasses admission.
+        self.runtime.closed_signal.send_replace(true);
+        self.shutdown_idle_child().await
+    }
+
+    async fn check_idle_projection(&self) -> Result<(), IdleCloseError> {
+        let snapshot = self.snapshot().await;
+        if !snapshot.pending_dialogs.is_empty()
+            || matches!(snapshot.status.as_str(), "running" | "awaiting_input")
+            || self
+                .runtime
+                .execution
+                .lock()
+                .expect("execution admission")
+                .unsettled()
+        {
+            return Err(IdleCloseError::Busy);
+        }
+        if snapshot.status != "ready" {
+            return Err(IdleCloseError::Unavailable(format!(
+                "session status is {}",
+                snapshot.status
+            )));
+        }
+        Ok(())
+    }
+
+    async fn idle_close_probe(&self, command: &str) -> Result<Value, IdleCloseError> {
+        let reply = self
+            .send_unadmitted(json!({"type":command}), Duration::from_secs(15))
+            .await
+            .map_err(IdleCloseError::Unavailable)?;
+        if reply["success"] != true || !reply["data"].is_object() {
+            return Err(IdleCloseError::Unavailable(format!(
+                "{command} returned unsuccessful or invalid state"
+            )));
+        }
+        Ok(reply["data"].clone())
+    }
+
+    async fn shutdown_idle_child(&self) -> Result<(), IdleCloseError> {
+        self.shutdown().await;
+        // shutdown's legacy best-effort contract is unchanged. This stricter
+        // API may only report success once the independent reaper confirms exit.
+        if let Some(child) = &self.child_owner {
+            child
+                .stop_checked()
+                .await
+                .map_err(IdleCloseError::Unavailable)?;
+        }
+        Ok(())
     }
 
     pub async fn snapshot(&self) -> HostSnapshot {
@@ -1280,27 +1611,6 @@ impl HostSession {
         Ok(())
     }
 
-    /// Read the selected native branch's custom entries in one filtered request.
-    /// Unfiltered replies are rejected: pollers must never accept a full transcript.
-    pub async fn branch_entries_of_types(
-        &self,
-        custom_types: &[&str],
-    ) -> Result<Vec<Value>, String> {
-        if custom_types.is_empty() || custom_types.iter().any(|kind| kind.trim().is_empty()) {
-            return Err("get_session_branch: non-empty custom types are required".into());
-        }
-        let data = self
-            .runtime_command("get_session_branch", json!({"customTypes": custom_types}))
-            .await?;
-        if data.get("filtered").and_then(Value::as_bool) != Some(true) {
-            return Err("get_session_branch: host must return filtered custom entries".into());
-        }
-        data.get("entries")
-            .and_then(Value::as_array)
-            .cloned()
-            .ok_or_else(|| "get_session_branch: invalid entries data".into())
-    }
-
     /// Append a protocol-neutral custom entry to the native session branch.
     pub async fn append_custom_entry(
         &self,
@@ -1322,12 +1632,17 @@ impl HostSession {
     }
 
     pub async fn send_timeout(&self, value: Value, timeout: Duration) -> Result<Value, String> {
+        let _admission = self.admission_gate.read().await;
+        self.send_unadmitted(value, timeout).await
+    }
+
+    async fn send_unadmitted(&self, value: Value, timeout: Duration) -> Result<Value, String> {
         let mut closed = self.runtime.closed_signal.subscribe();
         self.ensure_running().await?;
         tokio::select! {
             biased;
             _ = closed.wait_for(|closed| *closed) => Err("native rpi host closed".into()),
-            response = dispatch(&self.commands, &self.runtime.pending, value, timeout) => response,
+            response = dispatch_inner(&self.commands, &self.runtime.pending, value, timeout, None, None, Some(self.runtime.execution.clone())) => response,
         }
     }
 
@@ -1398,6 +1713,20 @@ impl Drop for HostSession {
 pub struct TestEvents(Arc<HostSession>);
 #[cfg(any(test, feature = "test-support"))]
 impl TestEvents {
+    /// Fixture equivalent of a non-response frame passing through native projection.
+    pub async fn send_projected(&self, value: Value) {
+        assert_ne!(value["type"], "response");
+        let _ = self.send(value.clone());
+        publish(
+            &self.0.runtime.events,
+            &self.0.runtime.history,
+            &self.0.runtime.state,
+            &self.0.runtime.seq,
+            value,
+        )
+        .await;
+    }
+
     pub fn send(&self, value: Value) -> Result<usize, broadcast::error::SendError<Value>> {
         if self.0.runtime.route_external(&value).is_err()
             || self.0.runtime.route_file_io(&value).is_err()
@@ -1405,6 +1734,12 @@ impl TestEvents {
             self.0.runtime.fail_closed();
             return Err(broadcast::error::SendError(value));
         }
+        self.0
+            .runtime
+            .execution
+            .lock()
+            .expect("execution admission")
+            .observe(&value);
         let mut delivered = false;
         if value["type"] == "response" {
             if let Some(key) = value["id"].as_str() {
@@ -1437,7 +1772,10 @@ async fn publish(
         state.last_seq = next;
         state.updated_at = now_ms();
         match kind {
-            "agent_start" | "operation_accepted" => state.status = "running".into(),
+            "agent_start" | "operation_accepted" => {
+                state.status = "running".into();
+                state.resource_unsettled = true;
+            }
             "ui_dialog_request" => {
                 state.status = "awaiting_input".into();
                 if let Some(current) = state
@@ -1460,6 +1798,7 @@ async fn publish(
             }
             "agent_settled" => {
                 state.status = "ready".into();
+                state.resource_unsettled = false;
                 state.pending_dialogs.clear();
                 state.latest_settlement = Some(value.clone());
                 state.last_error = value
@@ -1498,6 +1837,149 @@ mod tests {
     include!("host_compact_tests.rs");
     include!("external_tools_host_tests.rs");
     include!("host_file_io_tests.rs");
+    include!("host_retirement_tests.rs");
+
+    #[tokio::test]
+    async fn child_binding_identity_uses_launch_metadata_not_a_ready_wire_field() {
+        let (writer, _peer) = tokio::io::duplex(1024);
+        let (mut session, injector) =
+            HostSession::test_connection_with_ready(writer, 16, json!({"type":"ready"}));
+        drop(injector);
+        let host = Arc::get_mut(&mut session).expect("only the native owner retains its binding");
+        host.launch_options = Some(SessionOptions {
+            executable: PathBuf::from("must-not-launch"),
+            project: PathBuf::from("unused"),
+            session_id: "bound-session".into(),
+            session_dir: None,
+            saved_session: None,
+            fork_source: None,
+            timings_dir: PathBuf::from("unused"),
+            model: None,
+            provider: None,
+            permission_gate: false,
+            bypass: false,
+            resources: None,
+        });
+        assert_eq!(host.bound_session_id(), Some("bound-session"));
+        assert!(host.finalize_fork_destination("bound-session").is_err());
+        assert!(host.finalize_fork_destination("different-session").is_err());
+        host.ready["sessionId"] = json!("unrelated-ready-extension");
+        assert_eq!(host.bound_session_id(), Some("bound-session"));
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn fork_destination_binding_is_finalized_once_and_used_by_child_identity_checks() {
+        use crate::service::{
+            child_summaries, tool_program_queries::ChildPageQuery, BackendConfig, Service,
+        };
+        let mut ready_bytes = &b"{\"type\":\"ready\",\"protocol\":\"rpi\"}\n"[..];
+        let mut ready = read_ready(&mut ready_bytes, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(ready.get("sessionId").is_none());
+        ready["supportedCommands"] = json!([
+            "get_tool_program_children",
+            "get_tool_program_child_phases",
+            "get_tool_program_child_body"
+        ]);
+        ready["toolProgramChildren"] = json!({
+            "version":1,"summaryCommand":"get_tool_program_children",
+            "phaseCommand":"get_tool_program_child_phases","bodyCommand":"get_tool_program_child_body",
+            "maxCount":32,"maxPhaseCandidates":128,"maxResponseBytes":131072,
+            "responseBytesScope":"pageBytes","maxBodyDecodedBytes":65536,
+            "summaryState":"unknown","recovery":"readOnly"
+        });
+        let (writer, peer) = tokio::io::duplex(4096);
+        let (mut session, injector) = HostSession::test_connection_with_ready(writer, 16, ready);
+        drop(injector);
+        let host = Arc::get_mut(&mut session).unwrap();
+        host.launch_options = Some(SessionOptions {
+            executable: PathBuf::from("must-not-launch"),
+            project: PathBuf::from("unused"),
+            session_id: "requested-destination".into(),
+            session_dir: None,
+            saved_session: None,
+            fork_source: Some("source-session".into()),
+            timings_dir: PathBuf::from("unused"),
+            model: None,
+            provider: None,
+            permission_gate: false,
+            bypass: false,
+            resources: None,
+        });
+        assert_eq!(host.bound_session_id(), None);
+        let root = std::env::temp_dir().join(format!("rpi-fork-binding-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let service = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("registry.json"),
+            rpi_bin: root.join("must-not-launch"),
+            ..Default::default()
+        })
+        .unwrap();
+        for id in ["actual-destination", "requested-destination"] {
+            service.test_register_host(id, session.clone()).await;
+        }
+        let query = || {
+            serde_json::from_value::<ChildPageQuery>(json!({
+                "leafId":null,"cursor":null,"direction":"newestFirst","limit":1,"maxBytes":32768
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            child_summaries(&service, "actual-destination".into(), query())
+                .await
+                .unwrap_err()
+                .0,
+            crate::reply::ReplyKind::HostUnavailable
+        );
+        session
+            .finalize_fork_destination("actual-destination")
+            .unwrap();
+        assert_eq!(session.bound_session_id(), Some("actual-destination"));
+        assert!(session
+            .finalize_fork_destination("actual-destination")
+            .is_ok());
+        assert!(session
+            .finalize_fork_destination("requested-destination")
+            .is_err());
+        assert_eq!(session.bound_session_id(), Some("actual-destination"));
+        assert_eq!(
+            child_summaries(&service, "requested-destination".into(), query())
+                .await
+                .unwrap_err()
+                .0,
+            crate::reply::ReplyKind::HostUnavailable
+        );
+        let mut peer = BufReader::new(peer);
+        let mut line = String::new();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), peer.read_line(&mut line))
+                .await
+                .is_err(),
+            "unfinalized/requested identity checks must not issue an RPC"
+        );
+        let replies = TestEvents(session.clone());
+        let responder = tokio::spawn(async move {
+            peer.read_line(&mut line).await.unwrap();
+            let command: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(command["type"], "get_tool_program_children");
+            replies
+                .send(json!({"type":"response","id":command["id"],"success":true,
+                "data":{"leafId":"leaf","children":[],"nextCursor":null,"scanExhausted":true}}))
+                .unwrap();
+        });
+        assert!(
+            child_summaries(&service, "actual-destination".into(), query())
+                .await
+                .is_ok()
+        );
+        responder.await.unwrap();
+        session.shutdown().await;
+        drop(service);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn bounded_history_boundary_fails_on_publication_and_changes() {
@@ -1575,74 +2057,6 @@ mod tests {
         assert_eq!(session.snapshot().await.status, "ready");
         assert_eq!(session.snapshot().await.last_seq, frames.len() as u64);
         session.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn branch_query_uses_one_custom_types_request_and_preserves_native_order() {
-        let (writer, peer) = tokio::io::duplex(4096);
-        let (session, injector) = HostSession::test_connection(writer, 16);
-        assert!(session.branch_entries_of_types(&[]).await.is_err());
-        assert!(session.branch_entries_of_types(&[" "]).await.is_err());
-        let entries = json!([
-            {"id":"b","seq":8,"type":"custom","customType":"second"},
-            {"id":"a","seq":3,"type":"custom","customType":"first"}
-        ]);
-        let expected = entries.as_array().unwrap().clone();
-        let fixture = tokio::spawn(async move {
-            let mut lines = BufReader::new(peer).lines();
-            let request: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(request["type"], "get_session_branch");
-            assert_eq!(request["customTypes"], json!(["first", "second"]));
-            assert!(request.get("customType").is_none());
-            injector
-                .send(json!({"type":"response","id":request["id"],"success":true,
-                "data":{"filtered":true,"entries":entries}}))
-                .unwrap();
-            assert!(
-                tokio::time::timeout(Duration::from_millis(50), lines.next_line())
-                    .await
-                    .is_err(),
-                "multiple types must not cause multiple branch requests"
-            );
-        });
-        assert_eq!(
-            session
-                .branch_entries_of_types(&["first", "second"])
-                .await
-                .unwrap(),
-            expected
-        );
-        fixture.await.unwrap();
-        session.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn branch_query_rejects_unfiltered_and_malformed_replies() {
-        for data in [
-            json!({"entries":[]}),
-            json!({"filtered":false,"entries":[]}),
-            json!({"filtered":"true","entries":[]}),
-            json!({"filtered":true}),
-            json!({"filtered":true,"entries":{}}),
-        ] {
-            let (writer, peer) = tokio::io::duplex(4096);
-            let (session, injector) = HostSession::test_connection(writer, 16);
-            let fixture = tokio::spawn(async move {
-                let mut lines = BufReader::new(peer).lines();
-                let request: Value =
-                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-                injector
-                    .send(json!({"type":"response","id":request["id"],"success":true,"data":data}))
-                    .unwrap();
-            });
-            assert!(session
-                .branch_entries_of_types(&["durable-state"])
-                .await
-                .is_err());
-            fixture.await.unwrap();
-            session.shutdown().await;
-        }
     }
 
     #[tokio::test]
@@ -1836,6 +2250,7 @@ mod tests {
             last_error: None,
             latest_settlement: None,
             pending_dialogs: Vec::new(),
+            resource_unsettled: false,
             title: None,
             created_at: 0,
             updated_at: 0,

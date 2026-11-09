@@ -38,7 +38,11 @@ Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; pu
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(b"background stdin\n").await.unwrap();
         drop(stdin);
-        let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+        // Windows hosted runners can take longer to start PowerShell while the
+        // complete package test suite is running in parallel. Keep this a
+        // bounded probe, but do not turn runner startup contention into a
+        // false lifecycle failure.
+        let output = tokio::time::timeout(Duration::from_secs(90), child.wait_with_output())
             .await
             .expect("console probe timed out")
             .expect("read console probe output");

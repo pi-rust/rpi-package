@@ -4,11 +4,10 @@ members = [
     "packages/rpi-mcp-adapter",
     "packages/rpi-mcp-core",
     "packages/rpi-subagents",
+    "packages/rpi-codemode",
     "packages/rpi-btw",
     "packages/rpi-lens",
     "packages/rpi-orchestrator",
-    "packages/rpi-durable",
-    "packages/rpi-durable-core",
     "packages/rpi-todo",
     "packages/rpi-background-tasks",
     "packages/rpi-goal",
@@ -26,9 +25,11 @@ members = [
     "packages/rpi-permission-gate",
     "packages/rpi-langfuse",
     "packages/rpi-voice",
+    "packages/rpi-tts",
     "packages/rpi-providers",
     "packages/rpi-web",
     "packages/rpi-extcore",
+    "packages/rpi-httpcore",
     "packages/rpi-http",
     "tools/rpi-package-install",
 ]
@@ -36,7 +37,7 @@ exclude = ["tools/rpi-package-smoke"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.12"
+version = "0.1.15"
 edition = "2021"
 rust-version = "1.78"
 license = "MIT"

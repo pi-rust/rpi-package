@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/pi-rust/rpi-package/compare/rpi-todo-v0.3.3...rpi-todo-v0.3.4) - 2026-11-06
+
+### Fixed
+
+- *(release)* publish musl builds for non-voice extensions ([#222](https://github.com/pi-rust/rpi-package/pull/222))
+
+## [0.3.3](https://github.com/pi-rust/rpi-package/compare/rpi-todo-v0.3.2...rpi-todo-v0.3.3) - 2026-11-06
+
+### Other
+
+- honor per-crate musl support matrix ([#215](https://github.com/pi-rust/rpi-package/pull/215))
+
+## [0.3.2](https://github.com/pi-rust/rpi-package/compare/rpi-todo-v0.3.1...rpi-todo-v0.3.2) - 2026-11-05
+
+### Fixed
+
+- *(todo)* bound task IDs to 32 bits
+
 ## [0.3.1](https://github.com/pi-rust/rpi-package/compare/rpi-todo-v0.3.0...rpi-todo-v0.3.1) - 2026-10-31
 
 ### Fixed

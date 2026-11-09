@@ -41,6 +41,13 @@
   font-size: 20px;
 }
 
+.provider-manager-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0;
+}
+
 .provider-manager button,
 .provider-manager-dialog button,
 .workspace-dialog:has(.provider-manager-dialog) .dialog-heading button {
@@ -174,11 +181,27 @@
   margin: 0;
 }
 
-.provider-manager-dialog input {
+.provider-manager-dialog input,
+.provider-manager-dialog select {
   width: 100%;
   min-width: 0;
   min-height: 44px;
   font-size: 16px;
+}
+
+.provider-manager-dialog input[type="checkbox"] {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+  accent-color: var(--blue-text);
+}
+
+.provider-manager-dialog label:has(input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .provider-manager-dialog label {

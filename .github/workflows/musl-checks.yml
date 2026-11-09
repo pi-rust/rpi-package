@@ -1,0 +1,35 @@
+name: Musl extension checks
+
+on:
+  pull_request:
+    paths:
+      - 'packages/**/Cargo.toml'
+      - 'tools/build-musl.sh'
+      - 'tools/musl-plugin-loader.c'
+      - '.github/workflows/*musl*'
+      - '.github/workflows/release-*.yml'
+      - '.github/scripts/*assets*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  musl:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and load every declared musl extension
+        run: |
+          docker run --rm \
+            -e RUSTFLAGS='-D warnings' \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            rust:alpine sh -ec '
+              apk add --no-cache bash python3 pkgconf build-base binutils git perl
+              git config --global --add safe.directory /workspace
+              bash tools/build-musl.sh
+              python3 -m unittest discover -s .github/scripts -p "test_prebuilt_assets.py"
+              python3 -m unittest discover -s .github/scripts -p "test_web_release.py"
+              python3 -m unittest discover -s .github/scripts -p "test_musl_build.py"
+            '

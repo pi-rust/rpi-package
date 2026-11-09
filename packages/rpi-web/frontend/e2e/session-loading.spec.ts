@@ -98,6 +98,8 @@ class MockHost {
   unexpected: string[] = [];
   snapshots: Record<string, Json> = { [A]: snapshot(A), [B]: snapshot(B) };
   snapshotFailure: Reply | undefined;
+  sessionSettlements: Record<string, Json | null> = { [A]: null, [B]: null };
+  sessionLastSeq: Record<string, number> = { [A]: 10, [B]: 10 };
   states: Record<string, Json> = { [A]: state(A), [B]: state(B) };
   commands = [
     "get_state",
@@ -180,9 +182,9 @@ class MockHost {
         status: "ready",
         createdAt: 1_700_000_000_000,
         updatedAt: 1_700_000_000_100,
-        lastSeq: 10,
+        lastSeq: this.sessionLastSeq[id] ?? 10,
         error: null,
-        latestSettlement: null,
+        latestSettlement: this.sessionSettlements[id] ?? null,
         pinned: false,
         archived: false,
       });
@@ -234,7 +236,7 @@ class MockHost {
       const kind = body ? String(body.type) : match[2];
       if (![A, B].includes(id))
         return this.reject(route, `unknown session ${id}`);
-      if (body && !["get_state", ...diagnostics, ...catalogs].includes(kind))
+      if (body && !["get_state", ...diagnostics, ...catalogs, "prompt"].includes(kind))
         return this.reject(route, `unexpected command ${kind}`);
       if (
         (["snapshot", "events"].includes(kind) && request.method() !== "GET") ||
@@ -408,6 +410,29 @@ async function rendered(page: Page) {
       }),
   );
 }
+
+test("conversation supports immersive full-screen viewing and Escape exit", async ({
+  page,
+  host,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await start(page, host);
+  const workspace = page.locator(".workspace");
+  await page
+    .getByRole("button", { name: "Immersive view", exact: true })
+    .click();
+  await expect(workspace).toHaveClass(/workspace--immersive/);
+  await expect(page.locator(".toolbar")).toBeHidden();
+  await expect(page.locator(".composer-area")).toBeHidden();
+  await expect(page.locator(".sidebar")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Exit immersive view", exact: true }),
+  ).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(workspace).not.toHaveClass(/workspace--immersive/);
+  await expect(page.locator(".toolbar")).toBeVisible();
+});
 
 test("open finishes before a bounded snapshot, and snapshot paints/connects before state", async ({
   page,
@@ -603,6 +628,135 @@ test("live settlement is not resurrected by stale hydration or replaced with sta
   await expect(send(page)).toBeEnabled();
   await expect(abort(page)).toHaveCount(0);
   await expect(model(page)).toContainText("settled-model");
+});
+
+test("live and polled settlement updates create one notification without a run ID", async ({
+  page,
+  host,
+}) => {
+  await start(page, host);
+  await received(host, A, "events");
+  host.sessionSettlements[A] = { outcome: "completed" };
+  host.sessionLastSeq[A] = 11;
+  host.emit(A, [
+    { seq: 11, event: { type: "agent_settled", outcome: "completed" } },
+  ]);
+
+  const notification = page.getByRole("button", {
+    name: "Session completed: Loading Alpha",
+    exact: true,
+  });
+  await expect(notification).toHaveCount(1);
+});
+
+test("settled sessions create clickable dismissible notifications", async ({
+  page,
+  host,
+}) => {
+  await start(page, host);
+  await received(host, A, "events");
+  host.emit(A, [
+    {
+      seq: 11,
+      event: {
+        type: "agent_settled",
+        runId: "notification-run-1",
+        outcome: "completed",
+      },
+    },
+    {
+      seq: 12,
+      event: {
+        type: "agent_settled",
+        runId: "notification-run-2",
+        outcome: "failed",
+        error: "Provider unavailable",
+      },
+    },
+  ]);
+  const completedNotification = page.getByRole("button", {
+    name: "Session completed: Loading Alpha",
+    exact: true,
+  });
+  const failedNotification = page.getByRole("button", {
+    name: "Session failed: Loading Alpha",
+    exact: true,
+  });
+  await expect(completedNotification).toHaveCount(1);
+  await expect(failedNotification).toHaveCount(1);
+  await expect(page.locator(".session-notification--error")).toContainText(
+    "Provider unavailable",
+  );
+  await expect(page.locator(".session-notification--success")).toHaveCount(1);
+  await expect(page.locator(".session-notification--error")).toHaveCount(1);
+  await select(page, B);
+  await completedNotification.click();
+  await expect(page).toHaveURL(/session=loading-a/);
+  await expect(completedNotification).toHaveCount(0);
+
+  await expect(failedNotification).toBeVisible();
+  await page
+    .getByRole("button", { name: "Dismiss notification", exact: true })
+    .click();
+  await expect(failedNotification).toHaveCount(0);
+});
+
+test("settlement notifications auto-dismiss after their timeout", async ({
+  page,
+  host,
+}) => {
+  await page.clock.install();
+  await start(page, host);
+  await received(host, A, "events");
+  host.emit(A, [
+    {
+      seq: 11,
+      event: {
+        type: "agent_settled",
+        runId: "notification-auto-dismiss-run",
+        outcome: "completed",
+      },
+    },
+  ]);
+  const notification = page.getByRole("button", {
+    name: "Session completed: Loading Alpha",
+    exact: true,
+  });
+  await expect(notification).toBeVisible();
+  await page.clock.fastForward(6_001);
+  await expect(notification).toHaveCount(0);
+});
+
+test("failed notifications offer direct continue", async ({ page, host }) => {
+  await start(page, host);
+  await hydrated(page, host);
+  await received(host, A, "events");
+  host.sessionSettlements[A] = {
+    outcome: "failed",
+    runId: "notification-failed-run",
+  };
+  host.sessionLastSeq[A] = 11;
+  host.emit(A, [
+    {
+      seq: 11,
+      event: {
+        type: "agent_settled",
+        runId: "notification-failed-run",
+        outcome: "failed",
+        error: "Provider unavailable",
+      },
+    },
+  ]);
+
+  const notification = page.locator(".session-notification--error");
+  await expect(notification).toBeVisible();
+  const continueAction = notification.getByRole("button", {
+    name: "Continue",
+    exact: true,
+  });
+  await expect(continueAction).toBeVisible();
+  await continueAction.click();
+  await expect.poll(() => host.count(A, "prompt")).toBe(1);
 });
 
 test("live host_closed cannot be reopened by stale active-operation hydration", async ({

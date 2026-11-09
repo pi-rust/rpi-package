@@ -77,6 +77,11 @@ tasks:
     cmds:
       - cargo build --release --workspace
 
+  musl:build:
+    desc: Build the workspace for x86_64 musl (voice uses hosted STT mode)
+    cmds:
+      - bash tools/build-musl.sh
+
   install:
     desc: Build and copy the extension cdylibs into the rpi extension directory
     deps: [build]

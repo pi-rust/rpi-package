@@ -22,6 +22,7 @@
   --blue-text: #005fc5;
   --danger: #bd2d26;
   --green: #218147;
+  --amber: #925700;
   --shadow: 0 8px 32px #1d1d2512;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --radius: 10px;
@@ -44,6 +45,7 @@
   --blue-text: #74b6ff;
   --danger: #ff8c84;
   --green: #6fd297;
+  --amber: #f4be62;
   --shadow: 0 8px 32px #0004;
   color-scheme: dark;
   color: var(--text);
@@ -240,6 +242,101 @@ code {
     transform: rotate(360deg);
   }
 }
+.session-notification-stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 100;
+  display: grid;
+  width: min(360px, calc(100vw - 32px));
+  gap: 8px;
+  pointer-events: none;
+}
+.session-notification {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+.session-notification--success {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+}
+.session-notification--error {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+.session-notification-main {
+  min-width: 0;
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 10px 12px 13px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+.session-notification-main:hover:not(:disabled) {
+  background: var(--hover);
+}
+.session-notification-main > svg {
+  margin-top: 2px;
+  color: var(--green);
+}
+.session-notification--error .session-notification-main > svg {
+  color: var(--danger);
+}
+.session-notification-continue {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 4px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--line));
+  border-radius: 7px;
+  background: transparent;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.session-notification-continue:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.session-notification-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  line-height: 1.35;
+}
+.session-notification-copy strong,
+.session-notification-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-notification-copy strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.session-notification-copy span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.session-notification--error .session-notification-copy strong,
+.session-notification--error .session-notification-copy span {
+  color: var(--danger);
+}
+.session-notification-close {
+  align-self: start;
+  margin: 5px;
+}
 .workspace {
   height: 100dvh;
   min-height: 360px;
@@ -357,6 +454,7 @@ code {
   flex: 1;
   min-width: 0;
 }
+.session-answer-badge,
 .session-issue {
   display: inline-flex;
   align-items: center;
@@ -368,9 +466,20 @@ code {
   line-height: 1.4;
   white-space: nowrap;
 }
+.session-answer-badge {
+  color: var(--amber);
+}
+.session-answer-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 5px;
+  border-radius: 50%;
+  background: var(--amber);
+}
 .session-issue-resume {
   color: var(--muted);
 }
+.session-answer-badge > svg,
 .session-issue > svg {
   flex-shrink: 0;
 }
@@ -482,6 +591,32 @@ code {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+.workspace--immersive .toolbar {
+  display: none;
+}
+.workspace--immersive .main-content {
+  height: 100dvh;
+}
+.workspace--immersive .chat-layout > :not(.conversation-column) {
+  display: none;
+}
+.workspace--immersive .transcript {
+  padding-top: 74px;
+}
+.workspace--immersive .message-list {
+  max-width: 960px;
+}
+.workspace--immersive .composer-area {
+  max-width: 1060px;
+}
+.immersive-exit {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  z-index: 110;
+  background: var(--surface);
+  box-shadow: var(--shadow);
 }
 .toolbar {
   height: 69px;
@@ -1027,6 +1162,22 @@ code {
   border-color: var(--line);
   background: var(--soft);
   color: var(--text);
+}
+.message-actions .message-copy + .message-copy {
+  margin-left: 0;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-toggle input {
+  accent-color: var(--blue);
 }
 .user-avatar {
   width: 24px;
@@ -2725,11 +2876,13 @@ details[open] > summary:before {
   .toolbar-left {
     flex: 1;
     min-width: 0;
+    gap: 4px;
   }
   .breadcrumb {
     display: none;
   }
   .mobile-session-switcher {
+    overflow: hidden;
     display: flex;
     flex: 1;
     min-width: 0;
@@ -2771,6 +2924,12 @@ details[open] > summary:before {
   .mobile-session-status .status-dot {
     width: 5px;
     height: 5px;
+  }
+  .mobile-session-status.awaiting-input {
+    color: var(--amber) !important;
+  }
+  .mobile-session-status.awaiting-input .status-dot {
+    background: var(--amber);
   }
   .mobile-session-switcher strong {
     font-size: 12px;
@@ -2867,6 +3026,10 @@ details[open] > summary:before {
   .mobile-session-option.selected .mobile-session-option-status.running {
     background: var(--green);
   }
+  .mobile-session-option-status.awaiting-input,
+  .mobile-session-option.selected .mobile-session-option-status.awaiting-input {
+    background: var(--amber);
+  }
   .mobile-session-option-copy {
     display: flex;
     min-width: 0;
@@ -2907,11 +3070,10 @@ details[open] > summary:before {
   .breadcrumb-separator {
     display: none;
   }
-  .toolbar-actions {
+  .workspace .toolbar .toolbar-actions {
     gap: 0;
   }
   .toolbar-actions .toolbar-picker,
-  .toolbar-actions .toolbar-fork,
   .toolbar-actions .toolbar-clone {
     display: none;
   }
@@ -2919,8 +3081,9 @@ details[open] > summary:before {
     min-width: 32px;
     min-height: 32px;
   }
-  .connection {
+  .workspace header.toolbar .connection {
     font-size: 0;
+    gap: 0;
     margin: 0 4px;
   }
   .connection > .status-dot {
