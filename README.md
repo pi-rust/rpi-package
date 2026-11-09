@@ -21,6 +21,7 @@ parameter schemas, and regression checks.
 | [rpi-lens](packages/rpi-lens/README.md) | Inspect code with `code_lens` |
 | [rpi-codegraph](packages/rpi-codegraph/README.md) | Query indexed symbols, source, and relationships with `codegraph_*` (automatically initializes/syncs the index) |
 | [rpi-todo](packages/rpi-todo/README.md) | Track tasks with `todo` |
+| [rpi-background-tasks](packages/rpi-background-tasks/README.md) | Run long commands with `background` and inspect them with `jobs` |
 | [rpi-goal](packages/rpi-goal/README.md) | Maintain a persistent project objective with `goal` |
 | [rpi-plan-mode](packages/rpi-plan-mode/README.md) | Plan work with `/plan`, `plan_mode_start` and `plan_mode_complete` |
 | [rpi-btw](packages/rpi-btw/README.md) | Read-only side conversations with `/btw`; requires rpi 0.6.0 or newer |

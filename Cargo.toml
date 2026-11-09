@@ -9,6 +9,7 @@ members = [
     "packages/rpi-lens",
     "packages/rpi-orchestrator",
     "packages/rpi-todo",
+    "packages/rpi-background-tasks",
     "packages/rpi-goal",
     "packages/rpi-plan-mode",
     "packages/rpi-codegraph",
