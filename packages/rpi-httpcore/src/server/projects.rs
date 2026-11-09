@@ -41,13 +41,9 @@ pub(super) async fn upload_project_file(
     }
     let Some(field) = (match multipart.next_field().await {
         Ok(field) => field,
-        Err(error) => {
+        Err(_error) => {
             return HttpReply(
-                (
-                    ReplyKind::InvalidInput,
-                    json!({"error": format!("invalid upload: {error}")}),
-                )
-                    .into_reply(),
+                (ReplyKind::InvalidInput, json!({"error":"invalid upload"})).into_reply(),
             )
             .into_response();
         }
@@ -60,11 +56,11 @@ pub(super) async fn upload_project_file(
     let filename = field.file_name().unwrap_or("upload").to_string();
     let bytes = match field.bytes().await {
         Ok(bytes) => bytes.to_vec(),
-        Err(error) => {
+        Err(_error) => {
             return HttpReply(
                 (
                     ReplyKind::InvalidInput,
-                    json!({"error": format!("cannot read upload: {error}")}),
+                    json!({"error":"cannot read upload"}),
                 )
                     .into_reply(),
             )

@@ -27,8 +27,10 @@ async fn bearer_auth(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| !value.is_empty())
+        .and_then(|value| {
+            let (scheme, credential) = value.split_once(' ')?;
+            (scheme.eq_ignore_ascii_case("Bearer") && !credential.is_empty()).then_some(credential)
+        })
     else {
         return unauthorized();
     };

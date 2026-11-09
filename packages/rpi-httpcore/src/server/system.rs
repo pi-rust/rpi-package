@@ -64,14 +64,14 @@ pub(super) async fn tts(
             audio,
         )
             .into_response(),
-        Ok(Err(error)) => (
+        Ok(Err(_error)) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({"error": format!("TTS synthesis failed: {error}")})),
+            Json(json!({"error":"TTS synthesis failed"})),
         )
             .into_response(),
-        Err(error) => (
+        Err(_error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("TTS worker failed: {error}")})),
+            Json(json!({"error":"TTS worker failed"})),
         )
             .into_response(),
     }
