@@ -44,6 +44,8 @@ payloads. The caller must keep the `MdnsAdvertisement` alive, fetch
 `/.well-known/rpi-node` from each observation, and then apply normal HTTP
 authentication and authorization. mDNS is a locator, not a trust decision.
 
-The native `rpi --node` integration still owns when to create the provider and
-which HTTP port/hostname to advertise. If mDNS is unavailable, the node can
-continue to run with HTTP discovery or stdio discovery only.
+The native `rpi --node` integration still owns when to create the provider
+and which HTTP port to advertise; `publish_http` supplies a deterministic
+`.local.` hostname, while `publish` accepts an explicit hostname. If mDNS is
+unavailable, the node can continue to run with HTTP discovery or stdio
+discovery only.
