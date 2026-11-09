@@ -1,23 +1,24 @@
 ---
 name: rpi-architecture-boundaries
 description: |-
-  Use when reviewing or changing the rpi Web/HTTP/ACP/native architecture, deciding where a feature or data belongs, moving session/message loading, designing shared services, or reviewing extcore/http/acp/web responsibilities. Triggers on rpi-extcore, rpi-http, rpi-acp, rpi-web, architecture boundary, session snapshot, transcript, message loading, SSE, ACP, Web adapter, protocol adapter, data ownership, 模块边界, 架构审查, 会话快照, 消息加载, 数据应该放在哪里.
-globs: ["packages/rpi-extcore/**", "packages/rpi-http/**", "packages/rpi-acp/**", "packages/rpi-web/**", "docs/architecture/**"]
+  Use when reviewing or changing the rpi Web/HTTP/ACP/native architecture, deciding where a feature or data belongs, moving session/message loading, designing shared services, or reviewing extcore/http/acp/web responsibilities. Triggers on rpi-extcore, rpi-httpcore, rpi-http (plugin entry), rpi-acp, rpi-web, architecture boundary, session snapshot, transcript, message loading, SSE, ACP, Web adapter, protocol adapter, data ownership, 模块边界, 架构审查, 会话快照, 消息加载, 数据应该放在哪里.
+globs: ["packages/rpi-extcore/**", "packages/rpi-httpcore/**", "packages/rpi-http/**", "packages/rpi-acp/**", "packages/rpi-web/**", "docs/architecture/**"]
 ---
 
 # rpi architecture boundary guide
 
-Use this skill before adding or relocating behavior between `rpi-extcore`, `rpi-http`, `rpi-acp`, and `rpi-web`. The goal is to keep one protocol-neutral runtime core while allowing each adapter to preserve its wire contract and presentation model.
+Use this skill before adding or relocating behavior between `rpi-extcore`, `rpi-httpcore`, `rpi-http`, `rpi-acp`, and `rpi-web`. `rpi-httpcore` is the HTTP/SSE library adapter; the `rpi-http` crate is only its native plugin entry point (`rpi --http`). The goal is to keep one protocol-neutral runtime core while allowing each adapter to preserve its wire contract and presentation model.
 
 ## Non-negotiable dependency direction
 
 ```text
-Browser -> rpi-web -> rpi-http -> rpi-extcore -> native `rpi --mode rpc`
+Browser -> rpi-web -> rpi-httpcore -> rpi-extcore -> native `rpi --mode rpc`
+(rpi --http -> rpi-http plugin -> rpi-httpcore -> rpi-extcore)
 ACP/Zed/terminal -> rpi-acp -> rpi-extcore -> native `rpi --mode rpc`
 ```
 
 - `rpi-extcore` must not depend on Axum, ACP types, frontend code, or the plugin ABI.
-- `rpi-http` and `rpi-acp` may depend on `rpi-extcore`; the core must not know either adapter.
+- `rpi-httpcore` and `rpi-acp` may depend on `rpi-extcore`; the core must not know either adapter. The `rpi-http` plugin crate may depend on `rpi-httpcore` only.
 - `rpi-web` owns the bundled frontend and entrypoint composition. It uses the HTTP adapter and embeds/serves assets.
 - The native host remains the owner of the native RPC contract and transcript files. Do not replace native history with a new Web/ACP database.
 - Separate service processes do not share live sessions merely by sharing JSON files. One service instance owns each live session registry.
@@ -30,14 +31,15 @@ ACP/Zed/terminal -> rpi-acp -> rpi-extcore -> native `rpi --mode rpc`
 | Prompt acceptance, run lease, cancellation, settlement, text/thinking reconciliation | `rpi-extcore::{run,message,host}` | Choose wire-level completion names | React components or ACP transport |
 | Live event buffer, sequence numbers, replay boundary, lag/resync | `rpi-extcore::{events,host}` | Encode SSE or ACP notifications | Frontend-only caches |
 | Native transcript/history and active branch | Native host, accessed/validated by `rpi-extcore::history` and `service` | Request a bounded snapshot/page | A parallel adapter-specific transcript store |
-| Session snapshot assembly, message/history limits, pending dialog/runtime state | `rpi-extcore::service` | Serialize the existing neutral result | `rpi-http` route-specific business logic |
+| Session snapshot assembly, message/history limits, pending dialog/runtime state | `rpi-extcore::service` | Serialize the existing neutral result | `rpi-httpcore` route-specific business logic |
 | Projects, workspace files/Git, registry metadata, tool timings | `rpi-extcore::{projects,workspace,registry,timing}` | Convert reply kinds to status codes or protocol errors | Frontend local storage as source of truth |
 | Neutral errors and operation outcomes | `rpi-extcore::reply` | Map to HTTP status or ACP error/stopReason | Stringly typed duplication in every adapter |
-| HTTP extraction, JSON serialization, status mapping, cookies/password, Host/Origin, SSE | `rpi-http` | Call core service functions | `rpi-extcore` or React |
+| HTTP extraction, JSON serialization, status mapping, cookies/password, Host/Origin, SSE | `rpi-httpcore` | Call core service functions | `rpi-extcore` or React |
+| Plugin flag registration, `SessionStart`/`SessionShutdown`/`StdioLifecycle` mapping, `--http` argument adaptation | `rpi-http` (plugin) | Forward host flags to `rpi-httpcore` config | `rpi-httpcore` or the frontend |
 | ACP JSON-RPC, capabilities, content blocks, `stopReason`, tool/diff/plan formatting | `rpi-acp` | Call core runs/events and format ACP updates | `rpi-extcore` or HTTP handlers |
 | ACP client request tasks and transport-scoped dialogs | `rpi-acp` | Forward validated answers to core | Core, unless the behavior is transport-neutral |
 | Vite/React routes, row projection, Markdown, tool cards, scrolling, virtualization, theme | `rpi-web/frontend` | Fetch snapshots/pages and subscribe to events | `rpi-extcore` or HTTP/ACP |
-| Web configuration discovery, `--webserver`/`--web` aliases, assets embedding and startup | `rpi-web` | Build an `AppConfig` and compose routers | `rpi-http` or frontend runtime |
+| Web configuration discovery, `--webserver`/`--web` aliases, assets embedding and startup | `rpi-web` | Build an `AppConfig` and compose routers | `rpi-httpcore` or frontend runtime |
 | Native extension entrypoint and plugin ABI | `rpi-web` plugin/host boundary | Preserve registration and lifecycle behavior | Shared core APIs |
 
 ## Feature placement rules
@@ -100,8 +102,8 @@ Before editing code, answer these questions in the change description or review 
 For an architecture-only review, inspect the implementation, call sites, diff, and tests; do not infer ownership from commit titles. For an implementation change, run the smallest relevant checks and then the workspace checks when practical:
 
 ```text
-cargo test --locked -p rpi-extcore -p rpi-http -p rpi-acp -p rpi-web
-cargo clippy --locked -p rpi-extcore -p rpi-http -p rpi-acp -p rpi-web --all-targets -- -D warnings
+cargo test --locked -p rpi-extcore -p rpi-httpcore -p rpi-http -p rpi-acp -p rpi-web
+cargo clippy --locked -p rpi-extcore -p rpi-httpcore -p rpi-http -p rpi-acp -p rpi-web --all-targets -- -D warnings
 cd packages/rpi-web/frontend && npm run typecheck
 ```
 
@@ -111,6 +113,7 @@ Also verify native smoke/integration behavior when changing snapshots, SSE, star
 
 - `docs/architecture/extension-core.md` — dependency direction and preserved behavior.
 - `packages/rpi-extcore/README.md` — shared service/core API and lifecycle notes.
-- `packages/rpi-http/README.md` — HTTP adapter and standalone service contract.
+- `packages/rpi-httpcore/README.md` — HTTP adapter library and standalone service contract.
+- `packages/rpi-http/README.md` — native plugin entry point (`rpi --http`) and `rpi-http-service`.
 - `packages/rpi-web/README.md` — Web entrypoints, configuration, and asset boundary.
 - `packages/rpi-acp/README.md` — ACP wire and session behavior.

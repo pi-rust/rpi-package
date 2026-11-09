@@ -1,0 +1,26 @@
+[package]
+name = "rpi-httpcore"
+version = "0.1.20"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "HTTP and SSE protocol adapter library for the shared rpi extension core"
+
+[dependencies]
+rpi-extcore = { path = "../rpi-extcore", version = "0.2.11" }
+rpi-tts = { path = "../rpi-tts", version = "0.1.15" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+axum = { version = "0.8.9", features = ["multipart", "ws"] }
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+subtle = "2"
+
+[dev-dependencies]
+reqwest.workspace = true
+tokio-tungstenite = "0.29"
+tower = "0.5"

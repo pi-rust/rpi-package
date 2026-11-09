@@ -15,7 +15,7 @@ async fn message_query_routes_preserve_security_and_reject_unbounded_or_invalid_
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let config = rpi_http::AppConfig {
+    let config = rpi_httpcore::AppConfig {
         port: address.port(),
         allowed_hosts: Some(vec![address.to_string()]),
         ..Default::default()
@@ -25,7 +25,7 @@ async fn message_query_routes_preserve_security_and_reject_unbounded_or_invalid_
     let previous = std::env::var_os("RPI_HTTP_PASSWORD");
     let password = uuid::Uuid::new_v4().to_string();
     std::env::set_var("RPI_HTTP_PASSWORD", &password);
-    let app = rpi_http::router(core.clone(), &config, receiver.clone());
+    let app = rpi_httpcore::router(core.clone(), &config, receiver.clone());
     match previous {
         Some(value) => std::env::set_var("RPI_HTTP_PASSWORD", value),
         None => std::env::remove_var("RPI_HTTP_PASSWORD"),

@@ -28,7 +28,7 @@ Tool headers show exact **native tool names by default**, including prefixes and
 
 Long shell commands inside tool details default to a four-line visual preview. Use **Show full command / 展开完整命令** to reveal the complete command and collapse it again when finished. Short commands need no extra click; copying always retains the full original command, including quotes and newlines.
 
-Completed conversation runs also show a compact **Worked for … / 已用时 …** divider, including failed and stopped runs. This is the native run's persisted finish timestamp minus its start timestamp, including model calls, tools and waiting—not a sum of tool timings or a browser stopwatch. Live completion and historical/reloaded messages use the same metadata. Requires the matching `rpi-http`/`rpi-extcore` backend update; an older backend quietly omits the divider. Incomplete or imported histories without authoritative run records do not display estimated times. Timing lookups run separately from the bounded transcript snapshot and resume in bounded chunks; they never block opening the conversation or change its SSE sequence boundary. Installing/restarting the backend is a separate operator step.
+Completed conversation runs also show a compact **Worked for … / 已用时 …** divider, including failed and stopped runs. This is the native run's persisted finish timestamp minus its start timestamp, including model calls, tools and waiting—not a sum of tool timings or a browser stopwatch. Live completion and historical/reloaded messages use the same metadata. Requires the matching `rpi-httpcore`/`rpi-extcore` backend update; an older backend quietly omits the divider. Incomplete or imported histories without authoritative run records do not display estimated times. Timing lookups run separately from the bounded transcript snapshot and resume in bounded chunks; they never block opening the conversation or change its SSE sequence boundary. Installing/restarting the backend is a separate operator step.
 
 Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
 
@@ -406,9 +406,9 @@ and `--assets` can point at an existing bundle.
 
 ### Shared backend
 
-The source implementation now composes the `rpi-http` API adapter with the frontend routes in this package. Shared native RPC, runs, session/workspace services, history, events and timing belong to `rpi-extcore`; ACP uses the same native driver and run/message semantics. The existing Web executable and extension still include everything needed to run the browser workspace.
+The source implementation now composes the `rpi-httpcore` API adapter with the frontend routes in this package. Shared native RPC, runs, session/workspace services, history, events and timing belong to `rpi-extcore`; ACP uses the same native driver and run/message semantics. The existing Web executable and extension still include everything needed to run the browser workspace.
 
-For an API-only service, see [rpi-http](../rpi-http/README.md). The dependency boundaries and compatibility contract are documented in [the architecture guide](../../docs/architecture/extension-core.md).
+For an API-only service, see [rpi-httpcore](../rpi-httpcore/README.md). The dependency boundaries and compatibility contract are documented in [the architecture guide](../../docs/architecture/extension-core.md).
 
 ### How the frontend is built and served
 
