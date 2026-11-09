@@ -29,6 +29,8 @@ members = [
     "packages/rpi-providers",
     "packages/rpi-web",
     "packages/rpi-extcore",
+    "packages/rpi-node-core",
+    "packages/rpi-node",
     "packages/rpi-httpcore",
     "packages/rpi-http",
     "tools/rpi-package-install",

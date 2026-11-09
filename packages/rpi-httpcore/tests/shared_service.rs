@@ -1,5 +1,9 @@
 //! Rust consumers and HTTP clients must operate on the same service instance.
 use rpi_extcore::service::{self, BackendConfig, CreateProjectRequest, Service};
+use rpi_node_core::{
+    NodeDiscoveryDocument, NodeIdentity, NodeManifest, NodeRole, NodeTransport, ProtocolBinding,
+    PROTOCOL, VERSION,
+};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -22,7 +26,35 @@ async fn http_and_rust_share_project_state_without_frontend_or_plugin_runtime() 
         ..Default::default()
     };
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
-    let app = rpi_httpcore::router(core.clone(), &config, receiver.clone());
+    let discovery_binding = ProtocolBinding {
+        protocol: PROTOCOL.into(),
+        version: VERSION.to_string(),
+        transport: NodeTransport::http(format!("http://{address}")),
+        descriptor: None,
+    };
+    let discovery_manifest = NodeManifest {
+        extension_id: "fixture.node".into(),
+        extension_version: "0.1.0".into(),
+        protocol: PROTOCOL.into(),
+        protocol_version: VERSION,
+        roles: vec![NodeRole::Agent],
+        bindings: vec![discovery_binding.clone()],
+        capabilities: Vec::new(),
+    };
+    let discovery = NodeDiscoveryDocument::from_manifest(
+        &NodeIdentity {
+            node_id: "node-1".into(),
+            owner_epoch: "epoch-1".into(),
+        },
+        discovery_manifest,
+        vec![discovery_binding],
+    );
+    let app = rpi_httpcore::rpi_routes_with_node_discovery(
+        core.clone(),
+        &config,
+        receiver.clone(),
+        discovery,
+    );
     let server = tokio::spawn(async move {
         let mut receiver = receiver;
         axum::serve(listener, app)
@@ -38,6 +70,18 @@ async fn http_and_rust_share_project_state_without_frontend_or_plugin_runtime() 
         .build()
         .unwrap();
     let base = format!("http://{address}");
+    let discovery: Value = client
+        .get(format!("{base}/.well-known/rpi-node"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(discovery["nodeId"], "node-1");
+    assert_eq!(discovery["protocol"], PROTOCOL);
     let auth_status: Value = client
         .get(format!("{base}/api/v1/auth"))
         .send()

@@ -1,0 +1,48 @@
+name: Node core and host checks
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-node-core/**'
+      - 'packages/rpi-node/**'
+      - 'packages/rpi-httpcore/**'
+      - 'docs/architecture/node-core.md'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/node-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Node (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --check -p rpi-node-core -p rpi-node -p rpi-httpcore
+      - name: Test node contracts and host
+        run: cargo test --locked -p rpi-node-core -p rpi-node
+      - name: Test HTTP discovery integration
+        run: cargo test --locked -p rpi-httpcore --lib node
+      - name: Check all affected packages
+        run: cargo check --locked -p rpi-node-core -p rpi-node -p rpi-httpcore
+      - name: Strict node Clippy
+        run: cargo clippy --locked -p rpi-node-core -p rpi-node -p rpi-httpcore --no-deps -- -D warnings

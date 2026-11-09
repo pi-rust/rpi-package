@@ -10,6 +10,7 @@ description = "HTTP and SSE protocol adapter library for the shared rpi extensio
 
 [dependencies]
 rpi-extcore = { path = "../rpi-extcore", version = "0.2.11" }
+rpi-node-core = { path = "../rpi-node-core", version = "0.1.0" }
 rpi-tts = { path = "../rpi-tts", version = "0.1.15" }
 serde.workspace = true
 serde_json.workspace = true
