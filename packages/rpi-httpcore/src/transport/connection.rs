@@ -70,12 +70,16 @@ impl ConnectionRegistry {
         })
     }
 
-    /// Reject new connections and wait for all admitted connections to drop.
-    pub async fn drain(&self) {
+    /// Reject new connections and notify admitted connections without waiting
+    /// for them to drop.
+    pub async fn begin_drain(&self) {
         let _gate = self.inner.gate.lock().await;
         self.inner.accepting.store(false, Ordering::Release);
         self.inner.shutdown.notify_waiters();
-        drop(_gate);
+    }
+
+    /// Wait until all admitted connections have released their slots.
+    pub async fn wait_drained(&self) {
         if let Ok(all) = self
             .inner
             .slots
@@ -85,6 +89,12 @@ impl ConnectionRegistry {
         {
             drop(all);
         }
+    }
+
+    /// Reject new connections and wait for all admitted connections to drop.
+    pub async fn drain(&self) {
+        self.begin_drain().await;
+        self.wait_drained().await;
     }
 
     pub fn validate_message_size(&self, bytes: usize) -> Result<(), ConnectionError> {

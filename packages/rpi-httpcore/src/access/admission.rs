@@ -62,13 +62,15 @@ impl Admission {
             .map_err(|_| AdmissionError::AtCapacity)
     }
 
-    /// Stop new owner operations and wait until every admitted operation has
-    /// released its permit. This does not cancel or own the underlying owner.
-    pub async fn drain(&self) {
+    /// Stop new owner operations without waiting for already admitted work.
+    pub async fn begin_drain(&self) {
         let _gate = self.inner.gate.lock().await;
         self.inner.accepting.store(false, Ordering::Release);
-        drop(_gate);
+    }
 
+    /// Wait until every admitted operation has released its permit. This does
+    /// not cancel or own the underlying owner.
+    pub async fn wait_drained(&self) {
         let permits = self
             .inner
             .permits
@@ -77,6 +79,13 @@ impl Admission {
         if let Ok(all) = permits.await {
             drop(all);
         }
+    }
+
+    /// Stop new owner operations and wait until every admitted operation has
+    /// released its permit.
+    pub async fn drain(&self) {
+        self.begin_drain().await;
+        self.wait_drained().await;
     }
 }
 

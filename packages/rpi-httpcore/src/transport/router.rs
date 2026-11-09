@@ -51,8 +51,14 @@ impl TransportState {
         F: FnOnce() -> Fut,
         Fut: Future<Output = ()>,
     {
-        self.connections.drain().await;
-        self.admission.drain().await;
+        // Flip both accepting gates before waiting. Otherwise a long-lived
+        // connection could keep the first drain phase open while new owner
+        // operations still enter through the second gate.
+        let ((), ()) = tokio::join!(self.admission.begin_drain(), self.connections.begin_drain());
+        let ((), ()) = tokio::join!(
+            self.admission.wait_drained(),
+            self.connections.wait_drained()
+        );
         owner_drain().await;
     }
 }
@@ -92,21 +98,48 @@ mod tests {
 
     #[tokio::test]
     async fn drain_with_runs_owner_cleanup_after_transport_drain() {
-        let state = TransportState::new(
-            AccessState::new(false, 4),
-            1,
-            ConnectionPolicy::new(1, 64, 1).unwrap(),
-        )
-        .unwrap();
+        let access = AccessState::new(true, 4);
+        let lease = access
+            .issue(
+                crate::access::PrincipalId::new("owner").unwrap(),
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        let state =
+            TransportState::new(access, 1, ConnectionPolicy::new(1, 64, 1).unwrap()).unwrap();
+        let operation = state.admission().try_admit().await.unwrap();
+        let connection = state.connections().accept(&lease).await.unwrap();
         let called = Arc::new(AtomicBool::new(false));
         let callback_called = called.clone();
-        state
-            .drain_with(|| async move {
-                callback_called.store(true, Ordering::Release);
+        let draining = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                state
+                    .drain_with(|| async move {
+                        callback_called.store(true, Ordering::Release);
+                    })
+                    .await;
             })
-            .await;
-        assert!(called.load(Ordering::Acquire));
+        };
+        tokio::task::yield_now().await;
         assert!(!state.admission().is_accepting());
         assert!(!state.connections().is_accepting());
+        assert!(matches!(
+            state.admission().try_admit().await,
+            Err(AdmissionError::ShuttingDown)
+        ));
+        assert!(matches!(
+            state.connections().accept(&lease).await,
+            Err(crate::transport::ConnectionError::ShuttingDown)
+        ));
+        assert!(!draining.is_finished());
+        drop(connection);
+        drop(operation);
+        tokio::time::timeout(std::time::Duration::from_secs(1), draining)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(called.load(Ordering::Acquire));
     }
 }
