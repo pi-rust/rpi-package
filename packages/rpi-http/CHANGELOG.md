@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Renamed this crate from `rpi-http-extension` to `rpi-http`, published as 0.2.0 because crates.io already holds `rpi-http` 0.1.x from the former library crate (now [`rpi-httpcore`](../rpi-httpcore/CHANGELOG.md)). The plugin ABI, `rpi --http`/`--http=CONFIG`/`--http=help`, `--bind`/`--port`, `/api/v1`, SSE and authentication behavior are unchanged.
+- Renamed this crate from `rpi-http-extension` to `rpi-http`, published as 0.2.0 because crates.io already holds `rpi-http` 0.1.x from the former library crate (now [`rpi-httpcore`](../rpi-httpcore/CHANGELOG.md)). The plugin ABI, `rpi --http`/`--http=CONFIG`/`rpi --http=help`, `--bind`/`--port`, `/api/v1`, SSE and authentication behavior are unchanged.
 - Migration: install with `rpi install rpi-http` instead of `rpi install rpi-http-extension`, and replace a Rust dependency on `rpi-http` with `rpi-httpcore`. The built cdylib file name changes from `rpi_http_extension` to `rpi_http`; the `rpi-http-service` executable keeps its name.
 
 ## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-http-extension-v0.1.1...rpi-http-extension-v0.1.2) - 2026-11-08
