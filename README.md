@@ -38,6 +38,8 @@ parameter schemas, and regression checks.
 | [rpi-server](packages/rpi-server/README.md) | Serve TCP JSONL requests and streaming subscriptions with `--server` |
 | [rpi-acp](packages/rpi-acp/README.md) | Connect ACP clients, including Zed and Open WebUI Computer |
 | [rpi-ui-adapter](packages/rpi-ui-adapter/README.md) | Connect Open WebUI directly through `--webui=openwebui` |
+| [rpi-node-core](packages/rpi-node-core/README.md) | Protocol-neutral node identity, discovery and capability contracts |
+| [rpi-node](packages/rpi-node/README.md) | Native `rpi --node` lifecycle and open protocol/discovery registries |
 | [rpi-edit-diagnostics](packages/rpi-edit-diagnostics/README.md) | Replace `edit` with exact matching and compiler-style failure reports |
 
 Durable workflow state is owned by the native host; packages do not provide a second durable runtime.

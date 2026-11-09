@@ -157,9 +157,15 @@ parity. See the [current qualification](../../docs/codemode-full-parity-matrix.m
 
 ## Embed the API
 
-`rpi_routes(core, &config, shutdown_receiver)` builds the standard API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. `router(...)` remains a compatibility alias. Generic owners can compose their own routes with `rpi_httpcore::transport::lifecycle_router(...)` without depending on `rpi_extcore::Service`. Rust callers and HTTP clients then observe the same service state.
+`rpi_routes(core, &config, shutdown_receiver)` builds the standard API router around an existing `Arc<rpi_extcore::service::Service>`. Supply the actual bound port in the configuration so Host checks use the advertised endpoint. `rpi_routes_with_node_discovery(...)` adds a validated `/.well-known/rpi-node` route inside the same Host/Origin and security middleware. `router(...)` remains a compatibility alias. Generic owners can compose their own routes with `rpi_httpcore::transport::lifecycle_router(...)` without depending on `rpi_extcore::Service`. Rust callers and HTTP clients then observe the same service state.
 
 `serve_until(config, frontend_router, on_listen, stop)` owns a listener and a core instance with bounded shutdown; Web uses this to combine the API with its own frontend routes. `run(config)` starts the API-only service and stops on Ctrl+C.
+
+`node_discovery_router(document)` is the HTTP serialization adapter for a
+validated `rpi-node-core::NodeDiscoveryDocument`. It exposes only
+`/.well-known/rpi-node`; the caller must compose it with the deployment's
+Host/Origin and authentication policy. The route does not grant access and
+never serializes a document that fails core validation.
 
 ## Verification
 

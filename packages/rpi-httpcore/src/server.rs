@@ -1,6 +1,7 @@
 use crate::{access::Admission, security::Security};
 use axum::{middleware::from_fn_with_state, Router};
 use rpi_extcore::service::{BackendConfig, Service};
+use rpi_node_core::NodeDiscoveryDocument;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::watch;
 
@@ -153,19 +154,49 @@ pub fn rpi_routes(
     config: &crate::config::AppConfig,
     shutdown: watch::Receiver<bool>,
 ) -> Router {
+    secured_routes(app_state(backend, config, shutdown), None)
+}
+
+/// Build the standard API router and the node discovery document in one
+/// security composition. The well-known route is subject to the same
+/// Host/Origin policy as the API, while discovery itself does not grant API
+/// authentication.
+pub fn rpi_routes_with_node_discovery(
+    backend: Arc<Service>,
+    config: &crate::config::AppConfig,
+    shutdown: watch::Receiver<bool>,
+    document: NodeDiscoveryDocument,
+) -> Router {
+    secured_routes(app_state(backend, config, shutdown), Some(document))
+}
+
+fn app_state(
+    backend: Arc<Service>,
+    config: &crate::config::AppConfig,
+    shutdown: watch::Receiver<bool>,
+) -> AppState {
     let security = Arc::new(Security::new(
         allowed_hosts(config),
         configured_password(config).as_deref(),
     ));
-    let state = AppState {
+    AppState {
         backend,
-        security: security.clone(),
+        security,
         admission: Admission::new(config.admission_limit)
             .expect("the configured HTTP admission limit must be non-zero"),
         shutdown,
         service_name: config.service_name,
+    }
+}
+
+fn secured_routes(state: AppState, document: Option<NodeDiscoveryDocument>) -> Router {
+    let security = state.security.clone();
+    let routes = routes(state);
+    let routes = match document {
+        Some(document) => routes.merge(crate::node::node_discovery_router(document)),
+        None => routes,
     };
-    routes(state)
+    routes
         .layer(from_fn_with_state(security, crate::security::guard))
         // Outside the guard so authentication and extractor failures are not cached either.
         .layer(axum::middleware::from_fn(image_cache_control))
