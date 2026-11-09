@@ -1,9 +1,15 @@
 //! Host-side lifecycle primitives for `rpi --node`.
 //!
-//! The host owns identity, owner generations and extension startup. Network
-//! adapters remain outside this crate; in particular, this crate does not
-//! depend on Axum or the plugin ABI.
+//! The host owns identity, owner generations and extension startup. Discovery
+//! providers such as the mDNS adapter live here as transport-neutral host
+//! integrations; HTTP routing remains in `rpi-httpcore`.
 #![forbid(unsafe_code)]
+
+mod mdns;
+
+pub use mdns::{
+    MdnsAdvertisement, MdnsDiscoveryProvider, DEFAULT_MDNS_DISCOVERY_TIMEOUT, MDNS_SERVICE_TYPE,
+};
 
 use std::{
     future::Future,
@@ -275,6 +281,16 @@ impl NodeHost {
             NodeDiscoveryDocument::from_manifest(&self.identity, self.manifest.clone(), bindings);
         document.validate()?;
         Ok(document)
+    }
+
+    /// Advertises this host's HTTP listener on the LAN. The returned handle
+    /// owns the advertisement and must be retained until shutdown.
+    pub fn publish_http_mdns(
+        &self,
+        provider: &MdnsDiscoveryProvider,
+        port: u16,
+    ) -> Result<MdnsAdvertisement, NodeError> {
+        provider.publish_http(&self.identity, port)
     }
 
     pub async fn query(&self, request: NodeRequest) -> Result<NodeResponse, NodeError> {

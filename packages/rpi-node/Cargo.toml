@@ -13,9 +13,11 @@ categories = ["api-bindings", "network-programming"]
 
 [dependencies]
 futures-core = "0.3"
+mdns-sd = "0.21.7"
 rpi-node-core = { path = "../rpi-node-core", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
+tokio = { version = "1", features = ["sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

@@ -20,7 +20,7 @@ uses a common document and permits multiple providers:
 | --- | --- | --- |
 | Known URL | RFC 8615 `/.well-known/rpi-node` | Retrieve authoritative metadata from an endpoint already known to the caller |
 | Local child | JSONL `node_ready` | Tell a parent process that `rpi --node` is ready |
-| LAN | mDNS/DNS-SD `_rpi-node._tcp` | Locate candidate endpoints on a trusted local network |
+| LAN | mDNS/DNS-SD `_rpi-node._tcp` | Locate candidate endpoints on a trusted local network; implemented by `rpi-node` |
 | Managed network | DNS-SRV or a registry | Locate nodes in an operator-managed environment |
 | Foreign protocol | A2A Agent Card, MCP metadata, ACP handshake | Discover a binding that another open protocol understands |
 
@@ -63,8 +63,10 @@ with this package is intentionally small:
 
 The native host must not create one Work owner per protocol. A2A, MCP, ACP and
 HTTP adapters all share the same extension instance and owner epoch. The
-`rpi-node` crate supplies these lifecycle primitives; it does not add a second
-plugin ABI or a second `rpi --...` command.
+`rpi-node` crate supplies these lifecycle primitives and the optional
+`MdnsDiscoveryProvider`/`MdnsAdvertisement`; it does not add a second plugin
+ABI or a second `rpi --...` command. The native host chooses the HTTP port and
+hostname, keeps the advertisement alive, and shuts it down with the node.
 
 ## Identity and lifecycle
 
@@ -74,7 +76,9 @@ cannot accidentally accept a stale operation or replay cursor.
 
 Discovery is not identity proof: mDNS, a URL and a QR address can all be
 spoofed or copied. Authentication, TLS/host checks and any protocol-specific
-trust or signature rules remain separate adapters.
+trust or signature rules remain separate adapters. The mDNS implementation
+publishes only a locator, node identity/epoch and the well-known path; clients
+must fetch and validate the full document before selecting a protocol binding.
 
 ## Boundaries
 
