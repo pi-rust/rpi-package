@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::{Mutex, Notify},
+    sync::{Mutex, Notify, OwnedMutexGuard},
     time,
 };
 use uuid::Uuid;
@@ -20,7 +20,20 @@ struct Inner {
     sharing: Mutex<SharingState>,
     leases: Mutex<HashMap<String, LeaseRecord>>,
     invalidated: Notify,
+    commit_gate: Arc<Mutex<()>>,
     max_leases: usize,
+}
+
+/// A short-lived fence that serializes an owner commit with authorization
+/// revocation. Hold it for the owner commit itself, not for unrelated work.
+pub struct AuthorizationFence {
+    _guard: Option<OwnedMutexGuard<()>>,
+}
+
+impl AuthorizationFence {
+    pub(crate) fn unrestricted() -> Self {
+        Self { _guard: None }
+    }
 }
 
 /// Shared authorization state for HTTP, SSE and WebSocket transports.
@@ -39,6 +52,7 @@ impl AccessState {
                 }),
                 leases: Mutex::new(HashMap::new()),
                 invalidated: Notify::new(),
+                commit_gate: Arc::new(Mutex::new(())),
                 max_leases,
             }),
         }
@@ -57,6 +71,7 @@ impl AccessState {
 
     /// Disable sharing, advance the generation and revoke every lease.
     pub async fn revoke_all(&self) -> SharingState {
+        let _commit_gate = self.inner.commit_gate.lock().await;
         let mut sharing = self.inner.sharing.lock().await;
         sharing.enabled = false;
         sharing.generation = sharing.generation.wrapping_add(1);
@@ -70,6 +85,7 @@ impl AccessState {
     /// Revoke all leases belonging to one principal without changing the
     /// sharing generation.
     pub async fn revoke_principal(&self, principal: &PrincipalId) -> usize {
+        let _commit_gate = self.inner.commit_gate.lock().await;
         let mut leases = self.inner.leases.lock().await;
         let before = leases.len();
         leases.retain(|_, lease| &lease.principal != principal);
@@ -167,7 +183,29 @@ impl AccessState {
         })
     }
 
+    /// Acquire an authorization fence for an owner commit.
+    ///
+    /// While the returned fence is held, revocation waits. This creates a
+    /// linearization point: either the owner commit acquires the fence first,
+    /// or revocation acquires it first and this method rejects the lease.
+    /// Hold the fence only around the actual owner commit.
+    pub async fn authorize_commit(
+        &self,
+        lease: &AuthLease,
+    ) -> Result<AuthorizationFence, AccessError> {
+        let guard = self.inner.commit_gate.clone().lock_owned().await;
+        if let Err(error) = self.validate(lease).await {
+            drop(guard);
+            return Err(error);
+        }
+        Ok(AuthorizationFence {
+            _guard: Some(guard),
+        })
+    }
+
     /// Re-check authorization immediately before an owner commits an action.
+    /// This point-in-time variant does not serialize a later commit; use
+    /// [`AccessState::authorize_commit`] when revocation must be fenced.
     pub async fn authorize_before_commit(&self, lease: &AuthLease) -> Result<(), AccessError> {
         self.validate(lease).await
     }
@@ -180,6 +218,7 @@ impl AccessState {
     }
 
     pub async fn revoke(&self, lease: &AuthLease) -> bool {
+        let _commit_gate = self.inner.commit_gate.lock().await;
         let removed = self
             .inner
             .leases
@@ -194,6 +233,7 @@ impl AccessState {
     }
 
     pub async fn revoke_credential(&self, credential: &str) -> bool {
+        let _commit_gate = self.inner.commit_gate.lock().await;
         let removed = self.inner.leases.lock().await.remove(credential).is_some();
         if removed {
             self.inner.invalidated.notify_waiters();
@@ -204,12 +244,13 @@ impl AccessState {
     /// Wait until this lease is revoked, expires or its generation is closed.
     pub async fn wait_invalidated(&self, lease: &AuthLease) {
         loop {
-            let notified = self.inner.invalidated.notified();
+            let mut notified = Box::pin(self.inner.invalidated.notified());
+            notified.as_mut().enable();
             if self.validate(lease).await.is_err() {
                 return;
             }
             tokio::select! {
-                _ = notified => continue,
+                _ = &mut notified => continue,
                 _ = time::sleep_until(time::Instant::from_std(lease.expires_at)) => return,
             }
         }
@@ -272,6 +313,26 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn authorization_fence_linearizes_commit_and_revoke() {
+        let access = AccessState::new(true, 8);
+        let lease = access
+            .issue(PrincipalId::new("commit").unwrap(), Duration::from_secs(60))
+            .await
+            .unwrap();
+        let fence = access.authorize_commit(&lease).await.unwrap();
+        let revoking = {
+            let access = access.clone();
+            let lease = lease.clone();
+            tokio::spawn(async move { access.revoke(&lease).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!revoking.is_finished());
+        drop(fence);
+        assert!(revoking.await.unwrap());
+        assert!(access.authorize_commit(&lease).await.is_err());
     }
 
     #[tokio::test]

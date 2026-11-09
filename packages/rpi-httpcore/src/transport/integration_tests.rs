@@ -1,12 +1,12 @@
 use super::{
-    bearer_auth_router, lifecycle_router, same_origin_router, ConnectionPolicy, HostOriginPolicy,
-    TransportState,
+    auth_router, bearer_auth_router, lifecycle_router, same_origin_router, ConnectionPolicy,
+    HostOriginPolicy, TransportState,
 };
 use crate::access::{AccessState, AuthLease};
 use axum::{
     body::Body,
     extract::{ws::WebSocketUpgrade, Extension},
-    http::{header, Method, Request, StatusCode},
+    http::{header, HeaderMap, Method, Request, StatusCode},
     routing::get,
     Router,
 };
@@ -84,6 +84,43 @@ async fn composed_security_layers_validate_host_origin_and_bearer_lease() {
         .await
         .unwrap();
     assert_eq!(ok.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn custom_authenticator_can_be_composed_with_owner_router() {
+    let access = AccessState::new(true, 4);
+    let lease = access
+        .issue(
+            crate::access::PrincipalId::new("custom-auth").unwrap(),
+            std::time::Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+    let expected = lease.credential().to_owned();
+    let routes = Router::new().route("/", get(|| async { StatusCode::OK }));
+    let app = auth_router(
+        routes,
+        access,
+        move |access: AccessState, headers: HeaderMap| {
+            let expected = expected.clone();
+            async move {
+                if headers
+                    .get("x-custom-auth")
+                    .and_then(|value| value.to_str().ok())
+                    != Some(expected.as_str())
+                {
+                    return None;
+                }
+                access.authenticate(&expected).await.ok()
+            }
+        },
+    );
+    let mut request = request(Method::GET, "unused", false);
+    request
+        .headers_mut()
+        .insert("x-custom-auth", lease.credential().parse().unwrap());
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

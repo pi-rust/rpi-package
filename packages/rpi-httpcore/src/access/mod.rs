@@ -11,5 +11,5 @@ mod types;
 
 pub use admission::{Admission, AdmissionError, AdmissionPermit};
 pub use pairing::{PairingError, PairingRedemption, PairingStore, PairingTicket};
-pub use state::AccessState;
+pub use state::{AccessState, AuthorizationFence};
 pub use types::{AccessError, AuthLease, Generation, PrincipalId, SharingState};

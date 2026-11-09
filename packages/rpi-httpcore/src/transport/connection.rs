@@ -127,9 +127,15 @@ impl ConnectionPermit {
 
     pub async fn wait_closed_reason(&self) -> ConnectionCloseReason {
         let invalidated = self.inner.access.wait_invalidated(&self.lease);
-        let shutdown = self.inner.shutdown.notified();
+        let mut shutdown = Box::pin(self.inner.shutdown.notified());
+        // Register before checking the sticky accepting flag. This closes the
+        // notify_waiters race where drain can run between a state check and
+        // polling the notification future.
+        shutdown.as_mut().enable();
+        if !self.inner.accepting.load(Ordering::Acquire) {
+            return ConnectionCloseReason::Shutdown;
+        }
         tokio::pin!(invalidated);
-        tokio::pin!(shutdown);
         tokio::select! {
             _ = &mut invalidated => ConnectionCloseReason::LeaseInvalidated,
             _ = &mut shutdown => ConnectionCloseReason::Shutdown,
@@ -203,6 +209,27 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_closed_observes_shutdown_that_started_before_wait() {
+        let access = AccessState::new(true, 4);
+        let lease = access
+            .issue(
+                crate::access::PrincipalId::new("client").unwrap(),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        let registry = ConnectionRegistry::new(access, policy());
+        let permit = registry.accept(&lease).await.unwrap();
+        registry.begin_drain().await;
+        assert_eq!(
+            timeout(Duration::from_secs(1), permit.wait_closed_reason())
+                .await
+                .unwrap(),
+            ConnectionCloseReason::Shutdown
+        );
     }
 
     #[tokio::test]

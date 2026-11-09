@@ -22,9 +22,9 @@ pub(super) async fn create_session(
     Extension(authorization): Extension<RequestAuthorization>,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     let request: CreateSessionRequest = match optional_json(&body) {
         Ok(request) => request,
         Err(error) => return error.into_response(),
@@ -43,9 +43,9 @@ pub(super) async fn rename_session(
     Path(id): Path<String>,
     Json(request): Json<RenameRequest>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(
         service::rename_session(&state.backend, id, request)
             .await
@@ -60,9 +60,9 @@ pub(super) async fn session_metadata(
     Path(id): Path<String>,
     Json(request): Json<MetadataRequest>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(
         service::session_metadata(&state.backend, id, request)
             .await
@@ -77,9 +77,9 @@ pub(super) async fn fork_session(
     Path(id): Path<String>,
     Json(request): Json<ForkRequest>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(
         service::fork_session(&state.backend, id, request)
             .await
@@ -94,9 +94,9 @@ pub(super) async fn clone_session(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     let request: ForkRequest = match optional_json(&body) {
         Ok(request) => request,
         Err(error) => return error.into_response(),
@@ -114,9 +114,9 @@ pub(super) async fn open_session(
     Extension(authorization): Extension<RequestAuthorization>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(service::open_session(&state.backend, id).await.into_reply()).into_response()
 }
 
@@ -144,9 +144,9 @@ pub(super) async fn delete_session(
     Extension(authorization): Extension<RequestAuthorization>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(
         service::delete_session(&state.backend, id)
             .await
@@ -161,9 +161,9 @@ pub(super) async fn command(
     Path(id): Path<String>,
     Json(command): Json<ApiCommand>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(
         service::command(&state.backend, id, command)
             .await

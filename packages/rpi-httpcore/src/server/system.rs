@@ -28,9 +28,9 @@ pub(super) async fn tts(
     Extension(authorization): Extension<RequestAuthorization>,
     Json(request): Json<TtsRequest>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     let text = request.text.trim().to_string();
     let voice = request
         .voice

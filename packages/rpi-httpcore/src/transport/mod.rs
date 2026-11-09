@@ -16,7 +16,7 @@ mod websocket;
 #[cfg(test)]
 mod integration_tests;
 
-pub use auth::{bearer_auth_router, lease_from_request};
+pub use auth::{auth_router, bearer_auth_router, lease_from_request, Authenticator};
 pub use connection::{ConnectionPermit, ConnectionRegistry};
 pub use origin::{same_origin_router, HostOriginPolicy};
 pub use policy::{ConnectionCloseReason, ConnectionConfigError, ConnectionError, ConnectionPolicy};

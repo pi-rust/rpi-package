@@ -1,6 +1,6 @@
 //! Password and same-origin protection for a public rpi-web deployment.
 use crate::{
-    access::{AccessState, AuthLease, PrincipalId},
+    access::{AccessState, AuthLease, AuthorizationFence, PrincipalId},
     transport::HostOriginPolicy,
 };
 use axum::{
@@ -197,13 +197,14 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-pub(crate) async fn authorize_before_commit(
+pub(crate) async fn commit_fence(
     security: &Security,
     authorization: &RequestAuthorization,
-) -> bool {
+) -> Option<AuthorizationFence> {
     match &authorization.lease {
-        Some(lease) => security.access.authorize_before_commit(lease).await.is_ok(),
-        None => !security.enabled(),
+        Some(lease) => security.access.authorize_commit(lease).await.ok(),
+        None if !security.enabled() => Some(AuthorizationFence::unrestricted()),
+        None => None,
     }
 }
 
@@ -330,9 +331,9 @@ mod tests {
         let authorization = RequestAuthorization {
             lease: security.lease_for(&headers).await,
         };
-        assert!(authorize_before_commit(&security, &authorization).await);
+        assert!(commit_fence(&security, &authorization).await.is_some());
         security.logout(&headers).await;
-        assert!(!authorize_before_commit(&security, &authorization).await);
+        assert!(commit_fence(&security, &authorization).await.is_none());
     }
 
     #[tokio::test]

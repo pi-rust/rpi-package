@@ -19,9 +19,9 @@ pub(super) async fn project_metadata(
     Path(id): Path<String>,
     Json(request): Json<ProjectMetadataRequest>,
 ) -> Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(
         service::project_metadata(&state.backend, id, request)
             .await
@@ -36,9 +36,6 @@ pub(super) async fn upload_project_file(
     Path(id): Path<String>,
     mut multipart: Multipart,
 ) -> Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
-        return security::unauthorized_response();
-    }
     let Some(field) = (match multipart.next_field().await {
         Ok(field) => field,
         Err(_error) => {
@@ -66,6 +63,9 @@ pub(super) async fn upload_project_file(
             )
             .into_response();
         }
+    };
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
+        return security::unauthorized_response();
     };
     HttpReply(
         service::upload_project_file(&state.backend, id, filename, bytes)
@@ -96,9 +96,9 @@ pub(super) async fn create_project(
     Extension(authorization): Extension<RequestAuthorization>,
     Json(request): Json<CreateProjectRequest>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(
         service::create_project(&state.backend, request)
             .await
@@ -113,9 +113,9 @@ pub(super) async fn rename_project(
     Path(id): Path<String>,
     Json(request): Json<RenameProjectRequest>,
 ) -> axum::response::Response {
-    if !security::authorize_before_commit(&state.security, &authorization).await {
+    let Some(_commit_fence) = security::commit_fence(&state.security, &authorization).await else {
         return security::unauthorized_response();
-    }
+    };
     HttpReply(
         service::rename_project(&state.backend, id, request)
             .await
