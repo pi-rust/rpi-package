@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.51](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.50...rpi-web-v0.1.51) - 2026-11-09
+
+### Other
+
+- *(http)* split HTTP core server modules ([#243](https://github.com/pi-rust/rpi-package/pull/243))
+
 ## [0.1.50](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.49...rpi-web-v0.1.50) - 2026-11-08
 
 ### Other
