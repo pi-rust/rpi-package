@@ -115,7 +115,6 @@
 
 #![forbid(unsafe_code)]
 
-mod edge_tts;
 #[cfg(feature = "local-stt")]
 mod local_stt;
 mod pet;
@@ -1858,7 +1857,7 @@ fn synthesize_and_play(text: &str) -> Result<(), String> {
     let text = text.to_string();
     let result = player::play_mp3_stream(
         move |sink: &mut dyn FnMut(&[u8]) -> Result<(), String>| {
-            let (end, bytes) = edge_tts::synthesize_stream(
+            let (end, bytes) = rpi_tts::synthesize_stream(
                 &text,
                 &voice,
                 "+0%",
@@ -3432,7 +3431,7 @@ mod tests {
         use symphonia::core::probe::Hint;
 
         let mut bytes = Vec::new();
-        crate::edge_tts::synthesize_stream(
+        rpi_tts::synthesize_stream(
             "你好，这是语音合成测试。",
             "zh-CN-XiaoxiaoNeural",
             "+0%",
@@ -3533,7 +3532,7 @@ mod tests {
         let mut first_at = None;
         let mut chunks = 0usize;
         let mut total = 0usize;
-        let (end, bytes) = crate::edge_tts::synthesize_stream(
+        let (end, bytes) = rpi_tts::synthesize_stream(
             "你好，这是语音合成测试。",
             "zh-CN-XiaoxiaoNeural",
             "+0%",
@@ -3555,7 +3554,7 @@ mod tests {
             first_at.unwrap_or_default(),
             done
         );
-        assert_eq!(end, crate::edge_tts::StreamEnd::Complete);
+        assert_eq!(end, rpi_tts::StreamEnd::Complete);
         assert_eq!(total, bytes);
         assert!(total > 2_000, "suspiciously small mp3: {total}");
         assert!(

@@ -2820,7 +2820,6 @@ version = "0.1.15"
 dependencies = [
  "futures-util",
  "native-tls",
- "sha2",
  "tokio",
  "tokio-tungstenite 0.24.0",
  "uuid",
@@ -2846,21 +2845,17 @@ name = "rpi-voice"
 version = "0.3.14"
 dependencies = [
  "cpal",
- "futures-util",
  "hound",
- "native-tls",
  "reqwest 0.12.28",
  "rodio",
  "rpi-plugin-sdk 0.3.20",
+ "rpi-tts",
  "serde",
  "serde_json",
- "sha2",
  "sherpa-onnx",
  "symphonia",
  "tokio",
- "tokio-tungstenite 0.24.0",
  "unicode-width",
- "uuid",
 ]
 
 [[package]]
