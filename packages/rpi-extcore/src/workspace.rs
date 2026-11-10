@@ -167,9 +167,13 @@ pub async fn child_directories(
     relative: &str,
 ) -> Result<Vec<(String, String)>, (ReplyKind, Value)> {
     let path = resolve(root, relative)?;
-    let mut directory = tokio::fs::read_dir(path)
-        .await
-        .map_err(|_| failure(ReplyKind::NotFound, "directory not found"))?;
+    let missing = || {
+        failure(
+            ReplyKind::NotFound,
+            &format!("directory not found under {}: {relative}", root.display()),
+        )
+    };
+    let mut directory = tokio::fs::read_dir(path).await.map_err(|_| missing())?;
     let mut folders = Vec::new();
     while let Some(entry) = directory
         .next_entry()
@@ -561,6 +565,58 @@ mod tests {
         path
     }
     const PNG: &[u8] = include_bytes!("../tests/fixtures/project-image.png");
+
+    #[tokio::test]
+    async fn folder_browsing_lists_directories_below_a_canonical_root() {
+        // `Projects::load` canonicalizes the configured root before any client
+        // read, so containment compares canonical paths on every platform.
+        let root = std::fs::canonicalize(fixture()).unwrap();
+        for name in ["alpha", "beta", ".git", "node_modules"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        std::fs::create_dir_all(root.join("beta/nested/deep")).unwrap();
+        std::fs::write(root.join("file.txt"), b"not a folder").unwrap();
+        let top = child_directories(&root, "").await.unwrap();
+        assert_eq!(
+            top,
+            vec![
+                ("alpha".into(), "alpha".into()),
+                ("beta".into(), "beta".into())
+            ]
+        );
+        let nested = child_directories(&root, "beta/nested").await.unwrap();
+        assert_eq!(nested, vec![("deep".into(), "beta/nested/deep".into())]);
+        // Missing folders name the browsable root so a misconfigured
+        // `--projects-root` (for example a literal `~`) is diagnosable.
+        let (kind, value) = child_directories(&root, "missing").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::NotFound);
+        assert!(
+            value["error"]
+                .as_str()
+                .unwrap()
+                .contains(&root.display().to_string()),
+            "{value}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn folder_browsing_accepts_a_symlinked_projects_root() {
+        // macOS mounts /tmp and /var as symlinks; the containment check must
+        // compare canonical paths, not the configured spelling.
+        let root = fixture();
+        let link = root.with_extension("link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        std::fs::create_dir_all(root.join("repo")).unwrap();
+        let canonical = std::fs::canonicalize(&link).unwrap();
+        let folders = child_directories(&canonical, "").await.unwrap();
+        assert_eq!(folders, vec![("repo".into(), "repo".into())]);
+        assert!(
+            child_directories(&link, "").await.is_err(),
+            "an uncationicalized root must fail closed rather than escape"
+        );
+        std::fs::remove_file(&link).unwrap();
+    }
 
     #[tokio::test]
     async fn images_are_scoped_bounded_regular_rasters() {
