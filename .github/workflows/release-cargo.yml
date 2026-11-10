@@ -167,6 +167,8 @@ jobs:
               "packages/rpi-http-extension/Cargo.toml",
           ):
               path = destination / relative
+              if not path.exists():
+                  continue
               path.write_text(
                   path.read_text().replace(
                       'version = "0.1.20"', f'version = "{current_http}"'
