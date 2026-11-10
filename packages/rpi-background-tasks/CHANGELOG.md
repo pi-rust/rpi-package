@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/pi-rust/rpi-package/releases/tag/rpi-background-tasks-v0.1.0) - 2026-11-10
+
+### Added
+
+- *(node)* add protocol-neutral node host core ([#249](https://github.com/pi-rust/rpi-package/pull/249))
+- add rpi-background-tasks (background jobs + jobs inspector)
+
+### Fixed
+
+- *(background-tasks)* cover Windows fixtures and settled tree shutdown
+- *(background-tasks)* reap what shutdown terminates, and clean up a failed attach
+- *(background-tasks)* bind each job to the session that started it
+- *(background-tasks)* own the process tree, and run under the same shell as bash
+- *(background-tasks)* bound the output read, not just the retained output
+
 ### Added
 
 - `background` tool: starts a shell command, returns immediately with a job id,

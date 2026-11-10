@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-httpcore-v0.1.20...rpi-httpcore-v0.1.21) - 2026-11-10
+
+### Added
+
+- *(node)* add protocol-neutral node host core ([#249](https://github.com/pi-rust/rpi-package/pull/249))
+
 ### Changed
 
 - Renamed this crate from `rpi-http` to `rpi-httpcore`. The HTTP/SSE API, `/api/v1` routes, SSE contract, authentication/Host checks and the API-only executable behavior are unchanged; the binary is now `rpi-httpcore`. The `rpi-http` crate name now belongs to the native plugin entry point (0.2.0).

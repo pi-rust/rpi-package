@@ -2554,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-codemode"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "rquickjs",
@@ -2620,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "rpi-httpcore",
@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-httpcore"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "axum",
  "futures-util",
@@ -2674,7 +2674,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2728,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-orchestrator"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2749,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-permission-gate"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2839,7 +2839,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-tts"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "futures-util",
  "native-tls",
@@ -2893,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-voice"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "cpal",
  "hound",
@@ -2911,7 +2911,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.51"
+version = "0.1.52"
 dependencies = [
  "axum",
  "rpi-extcore",
@@ -2936,7 +2936,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-websearch"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",
