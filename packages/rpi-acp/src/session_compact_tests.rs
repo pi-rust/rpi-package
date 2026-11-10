@@ -52,17 +52,19 @@ async fn unsupported_compact_errors_but_compactness_remains_a_prompt() {
     let (session, commands) = test_session();
     let writer = Arc::new(Writer::with_output(tokio::io::sink()));
     assert!(!session.compact_available());
-    assert!(session
-        .prompt(
-            &writer,
-            "s",
-            &[ContentBlock::Text {
-                text: "/compact".into()
-            }]
-        )
-        .await
-        .unwrap_err()
-        .contains("does not support compact"));
+    assert!(
+        session
+            .prompt(
+                &writer,
+                "s",
+                &[ContentBlock::Text {
+                    text: "/compact".into()
+                }]
+            )
+            .await
+            .unwrap_err()
+            .contains("does not support compact")
+    );
     let task = tokio::spawn({
         let session = session.clone();
         async move {
@@ -96,7 +98,6 @@ async fn compact_shares_prompt_stream_and_holds_lease_through_cancel() {
     let session = Arc::new(Session {
         rpc,
         context_presentation: tokio::sync::Mutex::default(),
-        durable: None,
         file_io: tokio::sync::OnceCell::new(),
         configuration: tokio::sync::OnceCell::new(),
         events: Some(events),
@@ -133,11 +134,13 @@ async fn compact_shares_prompt_stream_and_holds_lease_through_cancel() {
     assert_eq!(read_json(&mut commands).await["type"], "abort");
     tokio::task::yield_now().await;
     assert!(!task.is_finished());
-    assert!(session
-        .prompt(&writer, "s", &[])
-        .await
-        .unwrap_err()
-        .contains("already running"));
+    assert!(
+        session
+            .prompt(&writer, "s", &[])
+            .await
+            .unwrap_err()
+            .contains("already running")
+    );
     events
         .send(json!({"type":"agent_settled","outcome":"aborted","summary":"Compaction aborted."}))
         .unwrap();

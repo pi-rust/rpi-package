@@ -94,7 +94,7 @@ fn bounded_observation_cannot_authorize_widened_tools_or_changed_identity() {
     }
 }
 #[test]
-fn durable_resource_record_rejects_corrupt_identity_status_revision_and_overflow() {
+fn resource_record_rejects_corrupt_identity_status_revision_and_overflow() {
     let good = applied();
     good.validate_session("session").unwrap();
     assert!(good.validate_session("other").is_err());

@@ -204,6 +204,22 @@ fn summarize(tool_name: &str, args: &Value) -> String {
                 .unwrap_or(0);
             format!("write {path} ({bytes} bytes)")
         }
+        // `background` spawns a shell exactly like `bash` does, so it needs the
+        // same summary: the command is what the user is approving. Without this
+        // arm the gate would show only the tool name, which is useless when the
+        // whole point is "which command runs unattended".
+        "background" => {
+            let Some(command) = args.get("command").and_then(Value::as_str) else {
+                return "run a shell command in the background".into();
+            };
+            let command = truncate(command, 400);
+            match args.get("label").and_then(Value::as_str) {
+                Some(label) if !label.is_empty() => {
+                    format!("{command} (background: {label})")
+                }
+                _ => format!("{command} (background)"),
+            }
+        }
         "edit" => {
             let path = args.get("path").and_then(Value::as_str).unwrap_or("file");
             let edits = args
@@ -225,6 +241,17 @@ fn truncate(text: &str, max: usize) -> String {
     format!("{head}…")
 }
 
+/// Whether a tool call must be confirmed before it runs.
+///
+/// These are the tools that spawn a process or mutate a file. `background`
+/// belongs here because it spawns a shell exactly like `bash` does — leaving it
+/// out made it a silent way to run the same command `bash` would have prompted
+/// for. `jobs` is deliberately absent: it only inspects or kills jobs the user
+/// already approved.
+fn is_gated_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "bash" | "write" | "edit" | "background")
+}
+
 rpi_plugin_sdk::event_handler! {
 /// pi `on("tool_call")`: confirm dangerous tools before they run, and veto
 /// (`EVENT_HANDLER_ABORT`) when the user declines or no UI can answer.
@@ -235,7 +262,7 @@ fn on_tool_call(event, _data) {
     let Some(call) = event.tool_call() else {
         return EVENT_HANDLER_CONTINUE;
     };
-    if !matches!(call.tool_name.as_str(), "bash" | "write" | "edit") {
+    if !is_gated_tool(&call.tool_name) {
         return EVENT_HANDLER_CONTINUE;
     }
     let Some(runtime) = RUNTIME.get().copied() else {
@@ -338,6 +365,38 @@ mod tests {
             ),
             "edit a.rs (1 replacement(s))"
         );
+        // `background` runs the same shell as `bash`, so the prompt has to show
+        // the command — the tool name alone tells the user nothing about what
+        // is about to run unattended.
+        assert_eq!(
+            summarize("background", &json!({"command": "npm run dev"})),
+            "npm run dev (background)"
+        );
+        assert_eq!(
+            summarize(
+                "background",
+                &json!({"command": "npm run dev", "label": "dev server"})
+            ),
+            "npm run dev (background: dev server)"
+        );
+        assert_eq!(
+            summarize("background", &json!({})),
+            "run a shell command in the background"
+        );
+    }
+
+    /// The gate must cover exactly the tools that run a shell or touch files.
+    ///
+    /// A tool that spawns a process but is missing from this list is a way to
+    /// bypass the prompt entirely — which is what `background` was before.
+    #[test]
+    fn gated_tool_set_includes_background() {
+        for gated in ["bash", "write", "edit", "background"] {
+            assert!(is_gated_tool(gated), "{gated} must require confirmation");
+        }
+        for ungated in ["read", "glob", "grep", "jobs"] {
+            assert!(!is_gated_tool(ungated), "{ungated} must not be gated");
+        }
     }
 
     #[test]

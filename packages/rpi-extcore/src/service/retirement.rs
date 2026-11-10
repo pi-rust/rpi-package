@@ -45,7 +45,6 @@ async fn idle_close(state: &Service, id: &str) -> ServiceResult<()> {
         // The host has confirmed child exit, not merely accepted stop.
         state.sessions.write().await.remove(id);
         state.session_activity.write().await.remove(id);
-        detach_durable(state, id).await;
     }
     Ok(())
 }

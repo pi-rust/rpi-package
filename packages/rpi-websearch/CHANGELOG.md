@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-websearch-v0.1.9...rpi-websearch-v0.1.10) - 2026-11-10
+
+### Added
+
+- *(websearch)* add GitHub search sources
+
 ## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-websearch-v0.1.8...rpi-websearch-v0.1.9) - 2026-11-06
 
 ### Fixed

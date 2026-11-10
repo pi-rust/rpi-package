@@ -8,9 +8,9 @@ This repository contains the shared native runtime and protocol adapters for rpi
 
 ## Architecture rules
 
-- Keep the dependency direction `rpi-web -> rpi-http -> rpi-extcore -> native rpi --mode rpc` and `rpi-acp -> rpi-extcore`.
+- Keep the dependency direction `rpi-web -> rpi-httpcore -> rpi-extcore -> native rpi --mode rpc` and `rpi-acp -> rpi-extcore`. The `rpi-http` extension crate only maps the plugin ABI (`rpi --http`) onto `rpi-httpcore`.
 - Put protocol-neutral runtime semantics, native child lifecycle, request correlation, runs, cancellation, event replay, bounded transcript snapshots, history validation, project/workspace services, registry metadata, and timings in `rpi-extcore`.
-- Keep HTTP extraction/serialization, status mapping, cookies/authentication, Host/Origin checks, SSE, and listener lifecycle in `rpi-http`.
+- Keep HTTP extraction/serialization, status mapping, cookies/authentication, Host/Origin checks, SSE, and listener lifecycle in `rpi-httpcore`. Keep the plugin flag/lifecycle adaptation in `rpi-http`.
 - Keep ACP JSON-RPC, capabilities, content conversion, stop reasons, tool/diff/plan formatting, ACP transport tasks, and Zed integration in `rpi-acp`.
 - Keep React/Vite resources, UI row projection, Markdown/tool-card rendering, scrolling/virtualization, Web configuration, assets, and Web entrypoints in `rpi-web`.
 - Native transcripts remain owned by the native host; core reads and validates them. Registry/timing files are supplemental metadata, not replacement transcripts.

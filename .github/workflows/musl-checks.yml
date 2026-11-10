@@ -26,7 +26,7 @@ jobs:
             -e RUSTFLAGS='-D warnings' \
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             rust:alpine sh -ec '
-              apk add --no-cache bash python3 pkgconf build-base binutils git
+              apk add --no-cache bash python3 pkgconf build-base binutils git perl
               git config --global --add safe.directory /workspace
               bash tools/build-musl.sh
               python3 -m unittest discover -s .github/scripts -p "test_prebuilt_assets.py"

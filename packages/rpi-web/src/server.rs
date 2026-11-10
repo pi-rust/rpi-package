@@ -74,7 +74,7 @@ pub(crate) async fn run_until(
         .with_state(FrontendState {
             config: Arc::new(config.clone()),
         });
-    let http = rpi_http::AppConfig {
+    let http = rpi_httpcore::AppConfig {
         service_name: "rpi-web",
         project: config.project.clone(),
         projects: config.projects.clone(),
@@ -86,8 +86,9 @@ pub(crate) async fn run_until(
         session_dir: config.session_dir.clone(),
         registry: config.registry.clone(),
         session_timeout_seconds: config.session_timeout_seconds,
+        admission_limit: 64,
     };
-    rpi_http::serve_until(
+    rpi_httpcore::serve_until(
         http,
         frontend,
         move |info| {

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.12...rpi-extcore-v0.2.13) - 2026-11-08
+
+### Other
+
+- Fix native saved-read request and resource tests
+- Remove legacy durable runtime from package adapters
+
 ## [0.2.12](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.11...rpi-extcore-v0.2.12) - 2026-11-07
 
 ### Added
@@ -221,7 +228,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocol-neutral custom entries.
 - Add protocol-neutral durable control-plane mutations for run recovery and
   branch-scoped queue operations.
-- Add `DurableRuntime` so Service and ACP share branch recovery, event
   observation, mutation persistence and append-failure rollback.
 - Publish bounded revision-based durable changes for reconnectable adapters.
 - Detect optional durable branch support from the native ready capability list

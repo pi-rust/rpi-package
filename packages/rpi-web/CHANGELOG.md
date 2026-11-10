@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+## [0.1.52](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.51...rpi-web-v0.1.52) - 2026-11-10
+
+### Fixed
+
+- *(tts)* support Edge TTS v2 token ([#247](https://github.com/pi-rust/rpi-package/pull/247))
+
+## [0.1.51](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.50...rpi-web-v0.1.51) - 2026-11-09
+
+### Other
+
+- *(http)* split HTTP core server modules ([#243](https://github.com/pi-rust/rpi-package/pull/243))
+
+## [0.1.50](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.49...rpi-web-v0.1.50) - 2026-11-08
+
+### Other
+
+- updated the following local packages: rpi-extcore, rpi-http
+
+## [0.1.49](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.48...rpi-web-v0.1.49) - 2026-11-08
+
+### Added
+
+- *(web)* add free Edge TTS message reading
+- *(web)* add current conversation message search
+- *(web)* improve session actions and mobile conversation UX ([#235](https://github.com/pi-rust/rpi-package/pull/235))
+- *(web)* add fork session sidebar action
+- *(web)* auto-dismiss session notifications
+- *(web)* show project labels in recent chats
+
+### Fixed
+
+- align local rpi-http dependency versions
+- *(web)* align message reading actions
+- *(web)* remove mobile message search focus ring
+- *(web)* hide composer in mobile immersive view
+- *(web)* keep pending queue visible during delivery
+- *(web)* isolate recent chat rows from project navigation
+- *(web)* allow generic type labels in Mermaid diagrams
+
+### Other
+
+- merge main into dev/web-hmr before PR merge
+- *(web)* allow fork when organization actions are unavailable
+- Merge pull request #234 from pi-rust/feat/recent-session-project-label
+
 ## [0.1.48](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.47...rpi-web-v0.1.48) - 2026-11-07
 
 ### Added

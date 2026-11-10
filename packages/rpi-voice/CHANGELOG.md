@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.15](https://github.com/pi-rust/rpi-package/compare/rpi-voice-v0.3.14...rpi-voice-v0.3.15) - 2026-11-10
+
+### Fixed
+
+- *(tts)* support Edge TTS v2 token ([#247](https://github.com/pi-rust/rpi-package/pull/247))
+
 ## [0.3.14](https://github.com/pi-rust/rpi-package/compare/rpi-voice-v0.3.13...rpi-voice-v0.3.14) - 2026-11-06
 
 ### Other

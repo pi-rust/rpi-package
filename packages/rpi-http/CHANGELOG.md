@@ -7,154 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.20](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.19...rpi-http-v0.1.20) - 2026-11-07
+## [0.2.1](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.2.0...rpi-http-v0.2.1) - 2026-11-10
+
+### Other
+
+- updated the following local packages: rpi-httpcore
+
+## [0.2.0](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.21...rpi-http-v0.2.0) - 2026-11-09
+
+### Other
+
+- *(http)* split HTTP core server modules ([#243](https://github.com/pi-rust/rpi-package/pull/243))
+
+### Changed
+
+- Renamed this crate from `rpi-http-extension` to `rpi-http`, published as 0.2.0 because crates.io already holds `rpi-http` 0.1.x from the former library crate (now [`rpi-httpcore`](../rpi-httpcore/CHANGELOG.md)). The plugin ABI, `rpi --http`/`--http=CONFIG`/`rpi --http=help`, `--bind`/`--port`, `/api/v1`, SSE and authentication behavior are unchanged.
+- Migration: install with `rpi install rpi-http` instead of `rpi install rpi-http-extension`, and replace a Rust dependency on `rpi-http` with `rpi-httpcore`. The built cdylib file name changes from `rpi_http_extension` to `rpi_http`; the `rpi-http-service` executable keeps its name.
+
+## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-http-extension-v0.1.1...rpi-http-extension-v0.1.2) - 2026-11-08
+
+### Other
+
+- updated the following local packages: rpi-http
+
+## [0.1.1](https://github.com/pi-rust/rpi-package/compare/rpi-http-extension-v0.1.0...rpi-http-extension-v0.1.1) - 2026-11-07
+
+### Other
+
+- updated the following local packages: rpi-http
+
+## [0.1.0](https://github.com/pi-rust/rpi-package/releases/tag/rpi-http-extension-v0.1.0) - 2026-11-06
 
 ### Added
 
-- *(web)* release idle session hosts
-
-## [0.1.19](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.18...rpi-http-v0.1.19) - 2026-11-05
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.18](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.17...rpi-http-v0.1.18) - 2026-11-05
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.17](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.16...rpi-http-v0.1.17) - 2026-11-04
-
-### Added
-
-- *(adapters)* expose bounded Code Mode child queries and live feed
-
-## [0.1.16](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.15...rpi-http-v0.1.16) - 2026-11-03
-
-### Fixed
-
-- *(web)* retire archived sessions and permanently delete native history ([#183](https://github.com/pi-rust/rpi-package/pull/183))
-
-## [0.1.15](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.14...rpi-http-v0.1.15) - 2026-11-02
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.14](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.13...rpi-http-v0.1.14) - 2026-11-01
-
-### Added
-
-- *(web)* add paged history, file previews and execution traces
-
-### Other
-
-- *(web)* make branding checks portable across clean checkouts
-
-## [0.1.13](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.12...rpi-http-v0.1.13) - 2026-10-31
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.12](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.11...rpi-http-v0.1.12) - 2026-10-31
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.11](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.10...rpi-http-v0.1.11) - 2026-10-30
-
-### Added
-
-- *(web)* show authoritative elapsed time for completed runs
-
-### Other
-
-- Merge pull request #119 from pi-rust/fix/web-image-rendering
-
-## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.9...rpi-http-v0.1.10) - 2026-10-30
-
-### Fixed
-
-- *(web)* serve project raster image artifacts securely
-
-## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.8...rpi-http-v0.1.9) - 2026-10-29
-
-### Added
-
-- *(web)* add project archiving
-
-### Other
-
-- Merge main into feature-1028 and preserve canonical durable recovery
-
-## [0.1.8](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.7...rpi-http-v0.1.8) - 2026-10-29
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.7](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.6...rpi-http-v0.1.7) - 2026-10-28
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.6](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.5...rpi-http-v0.1.6) - 2026-10-28
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.5](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.4...rpi-http-v0.1.5) - 2026-10-28
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.4](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.3...rpi-http-v0.1.4) - 2026-10-28
-
-### Added
-
-- consolidate durable state and publish commit updates ([#91](https://github.com/pi-rust/rpi-package/pull/91))
-
-## [0.1.3](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.2...rpi-http-v0.1.3) - 2026-10-26
-
-### Added
-
-- *(web)* refine workspace composer and tool output
-
-## [0.1.2](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.1...rpi-http-v0.1.2) - 2026-10-25
-
-### Added
-
-- *(durable)* add branch-backed durable runtime
-
-### Added
-
-- Add `GET` and `POST /api/v1/sessions/{id}/durable` for optional durable
-  state, recovery and branch-scoped queue coordination. Hosts without native
-  branch support keep ordinary HTTP sessions working and return
-  `durable_unavailable` for these operations.
-- Add `GET /api/v1/sessions/{id}/durable/events` with revision-based replay,
-  reconnect cursors and explicit resync events.
-
-## [0.1.1](https://github.com/pi-rust/rpi-package/compare/rpi-http-v0.1.0...rpi-http-v0.1.1) - 2026-10-25
-
-### Other
-
-- updated the following local packages: rpi-extcore
-
-## [0.1.0](https://github.com/pi-rust/rpi-package/releases/tag/rpi-http-v0.1.0) - 2026-10-24
-
-### Fixed
-
-- *(web)* improve session loading and workspace UI
-- resolve HTTP paths and finalize host sessions reliably
-
-### Other
-
-- extract shared extension core and HTTP adapter
+- *(http)* add an API-only native extension entry point ([#230](https://github.com/pi-rust/rpi-package/pull/230))

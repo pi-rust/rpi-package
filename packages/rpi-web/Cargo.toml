@@ -1,6 +1,6 @@
 [package]
 name = "rpi-web"
-version = "0.1.48"
+version = "0.1.52"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -30,8 +30,8 @@ name = "rpi_web_extension"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rpi-extcore = { path = "../rpi-extcore", version = "0.2.12" }
-rpi-http = { path = "../rpi-http", version = "0.1.20" }
+rpi-extcore = { path = "../rpi-extcore", version = "0.2.13" }
+rpi-httpcore = { path = "../rpi-httpcore", version = "0.1.21" }
 rpi-plugin-sdk.workspace = true
 axum = "0.8.9"
 serde = { workspace = true, features = ["derive"] }

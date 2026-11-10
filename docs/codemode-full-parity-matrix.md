@@ -77,7 +77,7 @@ is claimed. This focused review is not independent final approval.
   reconnect/reload, auth/errors and navigation cancellation. **134 related local
   trace/session/timeline regressions** pass. Public CSS HMR and its exact restoration
   were observed (`target/codemode-web-child-public-hmr.json` in dev). A separate
-  targeted actual-native Web recovery also passed through a local `rpi-http` server,
+  targeted actual-native Web recovery also passed through a local `rpi-httpcore` server,
   Vite proxy and real Chromium frontend: one frozen-native saved session rendered,
   the child inspector opened, and the browser issued the bounded snapshot request
   without execution or replay (`D:/Projects/rpi-package-dev/target/codemode-web-native-local/results.json`).

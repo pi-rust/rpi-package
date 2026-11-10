@@ -875,6 +875,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "spin",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1342,6 +1353,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1643,6 +1664,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
+name = "mdns-sd"
+version = "0.21.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6743ed743ff2bada2b8651ef298d3f98addb0b74844f19cdd57137d8bd0219e"
+dependencies = [
+ "fastrand",
+ "flume",
+ "if-addrs",
+ "log",
+ "mio",
+ "socket-pktinfo",
+ "socket2",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1687,6 +1723,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b18443e9c262bfe8fa82f51666e2642c53393f7e5c27b3e1aeab922cff5b9d8"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]
@@ -2428,7 +2465,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-acp"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "rpi-extcore",
  "rpi-plugin-sdk 0.3.20",
@@ -2492,6 +2529,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpi-background-tasks"
+version = "0.1.0"
+dependencies = [
+ "rpi-plugin-sdk 0.3.20",
+ "serde_json",
+]
+
+[[package]]
 name = "rpi-btw"
 version = "0.1.2"
 dependencies = [
@@ -2509,29 +2554,10 @@ dependencies = [
 
 [[package]]
 name = "rpi-codemode"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "rquickjs",
- "serde_json",
-]
-
-[[package]]
-name = "rpi-durable"
-version = "0.3.4"
-dependencies = [
- "rpi-durable-core",
- "rpi-plugin-sdk 0.3.20",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "rpi-durable-core"
-version = "0.2.0"
-dependencies = [
- "serde",
  "serde_json",
 ]
 
@@ -2548,12 +2574,11 @@ dependencies = [
 
 [[package]]
 name = "rpi-extcore"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "base64 0.22.1",
  "fs2",
  "futures-util",
- "rpi-durable-core",
  "rpi-mcp-core",
  "serde",
  "serde_json",
@@ -2595,30 +2620,33 @@ dependencies = [
 
 [[package]]
 name = "rpi-http"
-version = "0.1.20"
+version = "0.2.1"
+dependencies = [
+ "axum",
+ "rpi-httpcore",
+ "rpi-plugin-sdk 0.3.20",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "rpi-httpcore"
+version = "0.1.21"
 dependencies = [
  "axum",
  "futures-util",
  "reqwest 0.12.28",
  "rpi-extcore",
+ "rpi-node-core",
  "rpi-tts",
  "serde",
  "serde_json",
  "sha2",
  "subtle",
  "tokio",
+ "tokio-tungstenite 0.29.0",
+ "tower",
  "uuid",
-]
-
-[[package]]
-name = "rpi-http-extension"
-version = "0.1.1"
-dependencies = [
- "axum",
- "rpi-http",
- "rpi-plugin-sdk 0.3.20",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -2646,7 +2674,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-lens"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2676,8 +2704,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpi-node"
+version = "0.1.0"
+dependencies = [
+ "futures-core",
+ "futures-util",
+ "mdns-sd",
+ "rpi-node-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "rpi-node-core"
+version = "0.1.0"
+dependencies = [
+ "futures-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rpi-orchestrator"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2698,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-permission-gate"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2788,7 +2839,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-subagents"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde_json",
@@ -2816,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-tts"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "futures-util",
  "native-tls",
@@ -2842,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-voice"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "cpal",
  "hound",
@@ -2860,11 +2911,11 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.48"
+version = "0.1.52"
 dependencies = [
  "axum",
  "rpi-extcore",
- "rpi-http",
+ "rpi-httpcore",
  "rpi-plugin-sdk 0.3.20",
  "serde",
  "serde_json",
@@ -2885,7 +2936,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-websearch"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "reqwest 0.12.28",
  "rpi-plugin-sdk 0.3.20",
@@ -3301,6 +3352,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 
 [[package]]
+name = "socket-pktinfo"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "612942246d0cc239cfd83af1dfd39be47f649208a3524e5e9da651910128e0ac"
+dependencies = [
+ "libc",
+ "socket2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3315,6 +3377,9 @@ name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "stable_deref_trait"

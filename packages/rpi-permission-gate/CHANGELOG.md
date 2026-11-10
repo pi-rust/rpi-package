@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/pi-rust/rpi-package/compare/rpi-permission-gate-v0.1.4...rpi-permission-gate-v0.1.5) - 2026-11-10
+
+### Fixed
+
+- *(permission-gate)* gate the background tool too
+
+### Other
+
+- Merge remote-tracking branch 'origin/main' into fix/pr160-background-tasks
+
 ## [0.1.4](https://github.com/pi-rust/rpi-package/compare/rpi-permission-gate-v0.1.3...rpi-permission-gate-v0.1.4) - 2026-11-06
 
 ### Fixed

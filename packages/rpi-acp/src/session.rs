@@ -17,9 +17,6 @@
 //! We spawn one child per ACP session with `current_dir = session/new.cwd`, so
 //! the agent's tools run in the client's workspace.
 
-#[cfg(test)]
-use rpi_extcore::durable::ENTRY_TYPE;
-use rpi_extcore::durable::{DurableMutation, DurableRuntime};
 use rpi_extcore::host::{HostSession, SessionOptions};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -84,7 +81,6 @@ pub struct Session {
     rpc: Arc<HostSession>,
     file_io: tokio::sync::OnceCell<Arc<crate::file_io::ClientFileIO>>,
     context_presentation: tokio::sync::Mutex<crate::protocol::context_usage::Presentation>,
-    durable: Option<Arc<DurableRuntime>>,
     configuration:
         tokio::sync::OnceCell<Option<Arc<rpi_extcore::configuration::ConfigurationRuntime>>>,
     #[cfg(test)]
@@ -118,20 +114,10 @@ impl Session {
     }
 
     async fn attach(rpc: Arc<HostSession>) -> Result<Arc<Self>, String> {
-        let durable = match DurableRuntime::try_attach(rpc.clone()).await {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                // Only absent capabilities permit a non-durable session. Once
-                // advertised, branch RPC and replay failures must fail closed.
-                rpc.terminate().await;
-                return Err(error);
-            }
-        };
         Ok(Arc::new(Self {
             rpc,
             file_io: tokio::sync::OnceCell::new(),
             context_presentation: tokio::sync::Mutex::default(),
-            durable,
             configuration: tokio::sync::OnceCell::new(),
             #[cfg(test)]
             events: None,
@@ -267,56 +253,8 @@ impl Session {
         self.rpc.set_thinking_level(level).await
     }
 
-    pub async fn durable_state(&self) -> Result<Value, String> {
-        let runtime = self.durable.as_ref().ok_or_else(|| {
-            "durable_unavailable: native host does not support durable branch operations"
-                .to_string()
-        })?;
-        runtime.refresh_branch().await?;
-        Ok(serde_json::to_value(runtime.state().await).unwrap_or(Value::Null))
-    }
-
-    pub async fn mutate_durable(&self, mutation: DurableMutation) -> Result<Value, String> {
-        let runtime = self.durable.as_ref().ok_or_else(|| {
-            "durable_unavailable: native host does not support durable branch operations"
-                .to_string()
-        })?;
-        let result = runtime.mutate(mutation).await?;
-        Ok(json!({"result": result, "state": runtime.state().await}))
-    }
-
-    pub async fn refresh_durable(&self) -> Result<bool, String> {
-        let runtime = self.durable.as_ref().ok_or_else(|| {
-            "durable_unavailable: native host does not support durable branch operations"
-                .to_string()
-        })?;
-        runtime.refresh_branch().await
-    }
-
     pub fn compact_available(&self) -> bool {
         self.rpc.supports_command("compact")
-    }
-
-    pub fn durable_available(&self) -> bool {
-        self.durable.is_some()
-    }
-    pub fn subscribe_durable_events(&self) -> Option<broadcast::Receiver<Value>> {
-        self.durable
-            .as_ref()
-            .filter(|_| self.rpc.supports_event("session_entry_committed"))?;
-        Some(self.rpc.subscribe_raw())
-    }
-
-    /// Build the optional ACP notification payload from the runtime's
-    /// authoritative persisted state. ACP does not maintain a second ledger.
-    pub async fn durable_update(&self, session_id: &str) -> Option<Value> {
-        let runtime = self.durable.as_ref()?;
-        let state = runtime.state().await;
-        Some(json!({
-            "sessionId": session_id,
-            "revision": state.revision,
-            "state": state,
-        }))
     }
 
     /// Ask the child to abort the current run (`session/cancel`).
@@ -440,10 +378,12 @@ impl Session {
                     // Stop this backend rather than report a truncated success
                     // or allow another prompt while its outcome is unknown.
                     self.kill().await;
-                    break 'prompt Err(format!("rpi event stream lost {skipped} events; backend stopped. Restart the ACP connection to restore saved history."));
+                    break 'prompt Err(format!(
+                        "rpi event stream lost {skipped} events; backend stopped. Restart the ACP connection to restore saved history."
+                    ));
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    break 'prompt Err("rpi event stream closed before the prompt completed".into())
+                    break 'prompt Err("rpi event stream closed before the prompt completed".into());
                 }
             }
         };
@@ -1221,7 +1161,6 @@ mod tests {
             rpc: rpc.clone(),
             file_io: tokio::sync::OnceCell::new(),
             context_presentation: tokio::sync::Mutex::default(),
-            durable: Some(DurableRuntime::empty(rpc)),
             configuration: tokio::sync::OnceCell::new(),
             events: Some(events),
         });
@@ -1242,174 +1181,6 @@ mod tests {
         result["type"] = json!("agent_settled");
         result["runId"] = json!("test-run");
         session.events.as_ref().unwrap().send(result).unwrap();
-    }
-
-    #[tokio::test]
-    async fn attach_without_capabilities_keeps_the_backend_alive() {
-        for commands in [
-            json!([]),
-            json!(["get_session_branch"]),
-            json!(["execute_command"]),
-        ] {
-            let (stdin, _commands) = tokio::io::duplex(8192);
-            let (rpc, _events) = HostSession::test_connection_with_ready(
-                stdin,
-                64,
-                json!({"type":"ready","protocol":"rpi","supportedCommands":commands}),
-            );
-            let session = Session::attach(rpc.clone()).await.unwrap();
-            assert!(!session.durable_available());
-            assert_eq!(rpc.snapshot().await.status, "ready");
-            session.kill().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn attach_errors_preserve_the_cause_and_close_the_backend() {
-        for (response, expected) in [
-            (
-                json!({"success":true,"data":{"entries":[]}}),
-                "get_session_branch: host must return filtered custom entries",
-            ),
-            (
-                json!({"success":true,"data":{"filtered":false,"entries":[]}}),
-                "get_session_branch: host must return filtered custom entries",
-            ),
-            (
-                json!({"success":false,"error":"fixture branch RPC failed"}),
-                "get_session_branch: fixture branch RPC failed",
-            ),
-            (
-                json!({"success":true,"data":{"filtered":true,"entries":[{
-                    "id":"broken","type":"custom","customType":ENTRY_TYPE,
-                    "data":{"format":"rpi-durable-journal","version":999}
-                }]}}),
-                "durable branch replay:",
-            ),
-        ] {
-            let (stdin, commands) = tokio::io::duplex(8192);
-            let (rpc, events) = HostSession::test_connection(stdin, 64);
-            let mut raw = rpc.subscribe_raw();
-            let attach = tokio::spawn(Session::attach(rpc.clone()));
-            let mut commands = BufReader::new(commands).lines();
-            let branch = read_json(&mut commands).await;
-            assert_eq!(branch["type"], "get_session_branch");
-            assert_eq!(branch["customTypes"], json!([ENTRY_TYPE]));
-            let mut response = response;
-            response["type"] = json!("response");
-            response["id"] = branch["id"].clone();
-            events.send(response).unwrap();
-            let result = tokio::time::timeout(std::time::Duration::from_secs(2), attach)
-                .await
-                .unwrap()
-                .unwrap();
-            let error = match result {
-                Err(error) => error,
-                Ok(_) => panic!("invalid durable backend was accepted"),
-            };
-            assert!(error.starts_with(expected), "{error}");
-            // Cleanup completes before the error is returned, even though we
-            // still retain references to the failed host here.
-            loop {
-                let event = tokio::time::timeout(std::time::Duration::from_secs(2), raw.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
-                if event["type"] == "host_closed" {
-                    break;
-                }
-            }
-            assert!(rpc.state().await.is_err());
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_secs(2), commands.next_line())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .is_none()
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn durable_lifecycle_event_does_not_mutate_the_projection() {
-        let (session, _commands) = test_session();
-        let update = session.durable_update("acp-session").await.unwrap();
-        assert_eq!(update["revision"], 0);
-        assert!(update["state"]["run"].is_null());
-    }
-
-    #[tokio::test]
-    async fn durable_unavailable_does_not_block_the_session() {
-        let (session, _commands) = test_session();
-        let unavailable = Session {
-            rpc: session.rpc.clone(),
-            file_io: tokio::sync::OnceCell::new(),
-            context_presentation: tokio::sync::Mutex::default(),
-            durable: None,
-            configuration: tokio::sync::OnceCell::new(),
-            events: None,
-        };
-        let error = unavailable.durable_state().await.unwrap_err();
-        assert!(error.starts_with("durable_unavailable:"));
-        let error = unavailable
-            .mutate_durable(DurableMutation::StartRun)
-            .await
-            .unwrap_err();
-        assert!(error.starts_with("durable_unavailable:"));
-    }
-
-    #[tokio::test]
-    async fn durable_mutation_uses_the_extension_command_bridge() {
-        let (session, commands) = test_session();
-        let mut commands = BufReader::new(commands).lines();
-        let mutation = tokio::spawn({
-            let session = session.clone();
-            async move { session.mutate_durable(DurableMutation::StartRun).await }
-        });
-        let command = read_json(&mut commands).await;
-        assert_eq!(command["type"], "execute_command");
-        assert_eq!(command["command"], "durable");
-        session
-            .events
-            .as_ref()
-            .unwrap()
-            .send(json!({
-                "type": "response",
-                "id": command["id"],
-                "success": true,
-                "data": {"changed": true, "run": {"id":"run-1", "status":"running", "tools":[]}}
-            }))
-            .unwrap();
-        let branch = read_json(&mut commands).await;
-        assert_eq!(branch["type"], "get_session_branch");
-        assert_eq!(branch["customTypes"], json!([ENTRY_TYPE]));
-        assert!(branch.get("customType").is_none());
-        session
-            .events
-            .as_ref()
-            .unwrap()
-            .send(json!({
-                "type": "response",
-                "id": branch["id"],
-                "success": true,
-                "data": {"filtered":true,"entries": [{"id":"entry-1","type":"custom","customType":ENTRY_TYPE,"data":{
-                    "format":"rpi-durable-journal","version":1,
-                    "kind":"snapshot","baseRevision":0,"revision":1,
-                    "state": {
-                        "revision": 1, "nextRunId": 1,
-                        "run": {"id":"run-1", "status":"running", "tools":[]},
-                        "queue": []
-                    }
-                }}]}
-            }))
-            .unwrap();
-        let result = mutation.await.unwrap().unwrap();
-        assert_eq!(result["result"]["changed"], true);
-        assert_eq!(result["state"]["run"]["status"], "running");
-        let update = session.durable_update("acp-session").await.unwrap();
-        assert_eq!(update["sessionId"], "acp-session");
-        assert_eq!(update["revision"], 1);
-        assert_eq!(update["state"]["run"]["status"], "running");
     }
 
     #[tokio::test]
