@@ -77,13 +77,13 @@ struct FileConfig {
 }
 
 impl FileConfig {
-    fn apply(self, config: &mut AppConfig, base: &Path) -> Result<(), String> {
+    fn apply(self, config: &mut AppConfig, base: &Path, home: Option<&Path>) -> Result<(), String> {
         for (value, target) in [
             (self.project, &mut config.project),
             (self.registry, &mut config.registry),
         ] {
             if let Some(path) = value {
-                *target = resolve_path(base, &path)?;
+                *target = resolve_home_path(base, &path, home)?;
             }
         }
         for (value, target) in [
@@ -92,13 +92,13 @@ impl FileConfig {
             (self.session_dir, &mut config.session_dir),
         ] {
             if let Some(path) = value {
-                *target = Some(resolve_path(base, &path)?);
+                *target = Some(resolve_home_path(base, &path, home)?);
             }
         }
         if let Some(paths) = self.projects {
             config.projects = paths
                 .iter()
-                .map(|p| resolve_path(base, p))
+                .map(|p| resolve_home_path(base, p, home))
                 .collect::<Result<_, _>>()?;
         }
         if let Some(path) = self.rpi_bin {
@@ -108,7 +108,7 @@ impl FileConfig {
             config.rpi_bin = if path.components().count() == 1 && !path.is_absolute() {
                 path
             } else {
-                resolve_path(base, &path)?
+                resolve_home_path(base, &path, home)?
             };
         }
         if let Some(bind) = self.bind {
@@ -146,6 +146,31 @@ fn resolve_path(base: &Path, path: &Path) -> Result<PathBuf, String> {
     } else {
         base.join(path)
     })
+}
+
+/// Expand a leading `~` or `~/` using the service user's home directory.
+/// JSON values are not shell-expanded, so a literal `~/Projects` would
+/// otherwise become a directory named `~` beside the configuration file.
+fn expand_home(path: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let text = path.to_str()?;
+    let rest = text.strip_prefix('~')?;
+    if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\')) {
+        return None;
+    }
+    let home = home?;
+    let rest = rest.trim_start_matches(['/', '\\']);
+    Some(if rest.is_empty() {
+        home.to_path_buf()
+    } else {
+        home.join(rest)
+    })
+}
+
+/// Resolve a configured path, expanding a leading `~` before joining it to the
+/// configuration base. Relative paths keep their documented base semantics.
+fn resolve_home_path(base: &Path, path: &Path, home: Option<&Path>) -> Result<PathBuf, String> {
+    let path = expand_home(path, home).unwrap_or_else(|| path.to_path_buf());
+    resolve_path(base, &path)
 }
 
 pub fn from_args(args: impl IntoIterator<Item = String>) -> Result<Launch, String> {
@@ -208,10 +233,10 @@ fn configure_with_agent(
                     .filter(|s| !s.is_empty() && !s.starts_with("--"))
                     .ok_or_else(|| format!("{arg} requires a value"))?;
                 match arg.as_str() {
-                    "--config" => explicit = Some(resolve_path(cwd, Path::new(&value))?),
+                    "--config" => explicit = Some(resolve_home_path(cwd, Path::new(&value), home)?),
                     "--project" => cli.project = Some(value.into()),
                     "--add-project" => {
-                        additional_projects.push(resolve_path(cwd, Path::new(&value))?)
+                        additional_projects.push(resolve_home_path(cwd, Path::new(&value), home)?)
                     }
                     "--projects-root" => cli.projects_root = Some(value.into()),
                     "--assets" => cli.assets = Some(value.into()),
@@ -236,7 +261,7 @@ fn configure_with_agent(
             }
         }
     }
-    let startup = resolve_path(cwd, cli.project.as_deref().unwrap_or(cwd))?;
+    let startup = resolve_home_path(cwd, cli.project.as_deref().unwrap_or(cwd), home)?;
     let local = startup.join(".rpi/web.json");
     if init {
         let file = explicit.clone().unwrap_or(local);
@@ -244,7 +269,7 @@ fn configure_with_agent(
             project: startup,
             ..AppConfig::default()
         };
-        cli.apply(&mut config, cwd)?;
+        cli.apply(&mut config, cwd, home)?;
         config.projects.extend(additional_projects);
         let seed = FileConfig {
             project: Some(if explicit.is_none() {
@@ -292,21 +317,26 @@ fn configure_with_agent(
         ..AppConfig::default()
     };
     if let Some(path) = explicit {
-        load(&path, &mut config, true)?;
+        load(&path, &mut config, true, home)?;
     } else {
         for global in global_config_paths(agent_dir, home) {
             if global != local {
-                load(&global, &mut config, false)?;
+                load(&global, &mut config, false, home)?;
             }
         }
-        load(&local, &mut config, false)?;
+        load(&local, &mut config, false, home)?;
     }
-    cli.apply(&mut config, cwd)?;
+    cli.apply(&mut config, cwd, home)?;
     config.projects.extend(additional_projects);
     Ok(Launch::Run(Box::new(config)))
 }
 
-fn load(path: &Path, config: &mut AppConfig, required: bool) -> Result<(), String> {
+fn load(
+    path: &Path,
+    config: &mut AppConfig,
+    required: bool,
+    home: Option<&Path>,
+) -> Result<(), String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => return Ok(()),
@@ -317,6 +347,7 @@ fn load(path: &Path, config: &mut AppConfig, required: bool) -> Result<(), Strin
     file.apply(
         config,
         path.parent().ok_or("config requires a parent directory")?,
+        home,
     )
     .map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -425,6 +456,34 @@ mod tests {
                 f.0.join("work/extra"),
                 f.0.join("work/other")
             ]
+        );
+    }
+
+    #[test]
+    fn home_relative_paths_expand_instead_of_creating_a_literal_tilde_directory() {
+        let f = Fixture::new();
+        // JSON values are not shell-expanded; macOS/Linux users commonly write
+        // `~/Projects` for the browsable root.
+        f.write(
+            "work/.rpi/web.json",
+            r#"{"projectsRoot":"~/Projects","sessionDir":"~/history","projects":["~/repo"]}"#,
+        );
+        let config = f.run(&[]);
+        assert_eq!(config.projects_root, Some(f.0.join("home/Projects")));
+        assert_eq!(config.session_dir, Some(f.0.join("home/history")));
+        assert_eq!(config.projects, vec![f.0.join("home/repo")]);
+        // CLI values that survived shell quoting expand the same way.
+        let config = f.run(&["--projects-root", "~/cli-projects"]);
+        assert_eq!(config.projects_root, Some(f.0.join("home/cli-projects")));
+        // A bare `~` is the home directory, and `~user` stays untouched because
+        // only the current service user's home is known.
+        assert_eq!(
+            f.run(&["--projects-root", "~"]).projects_root,
+            Some(f.0.join("home"))
+        );
+        assert_eq!(
+            f.run(&["--projects-root", "~someone"]).projects_root,
+            Some(f.0.join("work/~someone"))
         );
     }
 

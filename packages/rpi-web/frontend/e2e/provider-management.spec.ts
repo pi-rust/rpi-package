@@ -696,6 +696,10 @@ test("adding a provider collects protocol and model and submits the full configu
   await modal
     .getByLabel("Base URL", { exact: true })
     .fill("https://api.example.test/v1");
+  const labelsInForm = await modal.locator("label").allTextContents();
+  expect(labelsInForm.indexOf("API Key")).toBe(
+    labelsInForm.indexOf("Base URL") + 1,
+  );
   await modal.getByLabel("Model ID", { exact: true }).fill("model-a");
   await modal.getByLabel("Model name (optional)", { exact: true }).fill("Model A");
   await modal.getByLabel("API Key", { exact: true }).fill("fixture-provider-key");
