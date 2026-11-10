@@ -854,6 +854,21 @@ export function ProviderManager({
     ]),
   ].sort();
   const pending = loading || modelPending || savePending;
+  const apiKeyField = (
+    <>
+      <label htmlFor={`${id}-key`}>{t.key}</label>
+      <input
+        id={`${id}-key`}
+        type="password"
+        autoComplete="new-password"
+        value={secret}
+        onChange={(event) => {
+          invalidateDraft();
+          setSecret(event.target.value);
+        }}
+      />
+    </>
+  );
   return (
     <section className="provider-manager" aria-label={t.title}>
       <header className="provider-manager-header">
@@ -1074,6 +1089,7 @@ export function ProviderManager({
                     setBaseUrl(event.target.value);
                   }}
                 />
+                {apiKeyField}
                 <label htmlFor={`${id}-model-id`}>{t.modelId}</label>
                 <input
                   id={`${id}-model-id`}
@@ -1241,17 +1257,7 @@ export function ProviderManager({
                 </button>
               </>
             )}
-            <label htmlFor={`${id}-key`}>{t.key}</label>
-            <input
-              id={`${id}-key`}
-              type="password"
-              autoComplete="new-password"
-              value={secret}
-              onChange={(event) => {
-                invalidateDraft();
-                setSecret(event.target.value);
-              }}
-            />
+            {!configIsNew && !configIsEditable && apiKeyField}
             <button
               type="button"
               aria-label={
