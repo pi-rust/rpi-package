@@ -129,9 +129,31 @@ fn resolve_executable(base: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// Expand a leading `~` or `~/` with the service user's home directory. JSON
+/// and quoted CLI values are not shell-expanded, so a literal `~/Projects`
+/// would otherwise resolve to a directory named `~` beside the config file.
+fn expand_home(path: &Path) -> Option<PathBuf> {
+    let text = path.to_str()?;
+    let rest = text.strip_prefix('~')?;
+    if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\')) {
+        return None;
+    }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)?;
+    let rest = rest.trim_start_matches(['/', '\\']);
+    Some(if rest.is_empty() {
+        home
+    } else {
+        home.join(rest)
+    })
+}
+
 fn resolve(base: &Path, path: &Path) -> PathBuf {
+    let path = expand_home(path).unwrap_or_else(|| path.to_path_buf());
     if path.is_absolute() {
-        path.to_path_buf()
+        path
     } else {
         base.join(path)
     }
@@ -224,6 +246,36 @@ mod tests {
                 PathBuf::from(executable)
             );
         }
+        std::fs::remove_dir_all(cwd).unwrap();
+    }
+
+    #[test]
+    fn home_relative_paths_do_not_become_a_literal_tilde_directory() {
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let Some(home) = home else {
+            return;
+        };
+        let cwd = std::env::temp_dir().join(format!("rpi-http-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&cwd).unwrap();
+        let Launch::Run(config) = from_args_at(
+            [
+                "--projects-root".into(),
+                "~/Managed Projects".into(),
+                "--add-project".into(),
+                "~".into(),
+            ],
+            &cwd,
+        )
+        .unwrap() else {
+            panic!("expected server config")
+        };
+        assert_eq!(config.projects_root, Some(home.join("Managed Projects")));
+        assert_eq!(config.projects, vec![home.clone()]);
+        // Only the current user's home is known; other `~user` forms stay literal.
+        assert_eq!(resolve(&cwd, Path::new("~someone")), cwd.join("~someone"));
         std::fs::remove_dir_all(cwd).unwrap();
     }
 }
