@@ -23,36 +23,36 @@
   },
   {
     "name": "rpi-subagents",
-    "version": "0.1.15",
+    "version": "0.1.16",
     "type": "extension",
     "tool": "delegate_task",
     "inspiredBy": "pi-subagents",
     "sourceDownloadsPerMonth": 362483,
     "install": "rpi install rpi-subagents",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-subagents-v0.1.15/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-subagents-v0.1.16/rpi-extension.json"
   },
   {
     "name": "rpi-codemode",
-    "version": "0.1.15",
+    "version": "0.1.16",
     "type": "extension",
     "tool": "codemode",
     "inspiredBy": "Bounded native JavaScript tool programs",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-codemode",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-codemode-v0.1.15/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-codemode-v0.1.16/rpi-extension.json"
   },
   {
     "name": "rpi-orchestrator",
-    "version": "0.1.15",
+    "version": "0.1.16",
     "type": "extension",
     "tool": "subagent + plan + dispatch",
     "inspiredBy": "DAG subagent orchestration",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-orchestrator",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-orchestrator-v0.1.15/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-orchestrator-v0.1.16/rpi-extension.json"
   },
   {
     "name": "rpi-btw",
@@ -67,14 +67,14 @@
   },
   {
     "name": "rpi-lens",
-    "version": "0.1.15",
+    "version": "0.1.16",
     "type": "extension",
     "tool": "code_lens",
     "inspiredBy": "pi-lens",
     "sourceDownloadsPerMonth": 65476,
     "install": "rpi install rpi-lens",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-lens-v0.1.15/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-lens-v0.1.16/rpi-extension.json"
   },
   {
     "name": "rpi-todo",
@@ -144,14 +144,14 @@
   },
   {
     "name": "rpi-websearch",
-    "version": "0.1.9",
+    "version": "0.1.10",
     "type": "extension",
     "tool": "websearch",
     "inspiredBy": "web search extensions",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-websearch",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-websearch-v0.1.9/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-websearch-v0.1.10/rpi-extension.json"
   },
   {
     "name": "rpi-webfetch",
@@ -188,14 +188,14 @@
   },
   {
     "name": "rpi-voice",
-    "version": "0.3.14",
+    "version": "0.3.15",
     "type": "extension",
     "tool": "/voice command + push-to-talk shortcut",
     "inspiredBy": "hands-free voice assistants, made local",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-voice",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-voice-v0.3.14/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-voice-v0.3.15/rpi-extension.json"
   },
   {
     "name": "rpi-acp",
@@ -210,14 +210,14 @@
   },
   {
     "name": "rpi-permission-gate",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "type": "extension",
     "tool": "--permission-gate (confirm bash/write/edit via the host UI dialog)",
     "inspiredBy": "upstream Pi permission-gate extension",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-permission-gate",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-permission-gate-v0.1.4/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-permission-gate-v0.1.5/rpi-extension.json"
   },
   {
     "name": "rpi-ui-adapter",
@@ -243,14 +243,14 @@
   },
   {
     "name": "rpi-web",
-    "version": "0.1.51",
+    "version": "0.1.52",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Browser project and session workspace",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-web",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.51/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.52/rpi-extension.json"
   },
   {
     "name": "rpi-edit-diagnostics",
@@ -265,13 +265,13 @@
   },
   {
     "name": "rpi-http",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "type": "extension",
     "tool": null,
     "inspiredBy": "API-only HTTP/SSE service over the shared rpi core",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-http",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-http-v0.2.0/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-http-v0.2.1/rpi-extension.json"
   }
 ]

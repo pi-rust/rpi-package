@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.52](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.51...rpi-web-v0.1.52) - 2026-11-10
+
+### Fixed
+
+- *(tts)* support Edge TTS v2 token ([#247](https://github.com/pi-rust/rpi-package/pull/247))
+
 ## [0.1.51](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.50...rpi-web-v0.1.51) - 2026-11-09
 
 ### Other
