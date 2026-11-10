@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.22](https://github.com/pi-rust/rpi-package/compare/rpi-httpcore-v0.1.21...rpi-httpcore-v0.1.22) - 2026-11-10
+
+### Other
+
+- merge main into dev/web-hmr before PR merge
+
 ## [0.1.21](https://github.com/pi-rust/rpi-package/compare/rpi-httpcore-v0.1.20...rpi-httpcore-v0.1.21) - 2026-11-10
 
 ### Added
