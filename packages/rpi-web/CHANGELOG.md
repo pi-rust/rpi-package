@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.1.53](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.52...rpi-web-v0.1.53) - 2026-11-10
+
+### Fixed
+
+- *(config)* expand home paths for projects root
+- *(web)* place provider key below base URL
+- *(web)* allow safe Mermaid styling
+
+### Other
+
+- merge main into dev/web-hmr before PR merge
+
 ## [0.1.52](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.51...rpi-web-v0.1.52) - 2026-11-10
 
 ### Fixed

@@ -1,6 +1,6 @@
 [package]
 name = "rpi-httpcore"
-version = "0.1.21"
+version = "0.1.22"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 description = "HTTP and SSE protocol adapter library for the shared rpi extension core"
 
 [dependencies]
-rpi-extcore = { path = "../rpi-extcore", version = "0.2.11" }
+rpi-extcore = { path = "../rpi-extcore", version = "0.2.14" }
 rpi-node-core = { path = "../rpi-node-core", version = "0.1.0" }
 rpi-tts = { path = "../rpi-tts", version = "0.1.16" }
 serde.workspace = true
