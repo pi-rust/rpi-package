@@ -174,12 +174,15 @@ class PrebuiltAssetsTests(unittest.TestCase):
         with zipfile.ZipFile(zip_archive) as packaged:
             self.assertEqual(packaged.namelist(), ["rpi_demo.dll"])
 
-    def test_workflow_builds_every_target_required_by_the_manifest(self):
+    def test_workflow_builds_every_gnu_target_required_by_the_manifest(self):
         workflow = pathlib.Path(__file__).parents[1] / "workflows/release-assets.yml"
         text = workflow.read_text()
+        # Release artifacts use the original low-cost GNU matrix. Musl
+        # compatibility remains covered by the dedicated musl workflow rather
+        # than by the publication pipeline.
         self.assertEqual(set(re.findall(r"target: ([a-z0-9_-]+)", text)), assets.GNU_TARGETS)
-        self.assertIn("x86_64-unknown-linux-musl", text)
-        self.assertIn("rust:alpine", text)
+        self.assertNotIn("x86_64-unknown-linux-musl", text)
+        self.assertNotIn("rust:alpine", text)
 
     def test_sdk_abi_comes_from_the_resolved_sdk_source(self):
         sdk_root = self.root / "sdk"
