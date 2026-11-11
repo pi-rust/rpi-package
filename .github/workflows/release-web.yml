@@ -117,8 +117,46 @@ jobs:
           path: dist/web-release/
           if-no-files-found: error
 
+  # Keep the portable musl Web binary, but use the simple binary-only build.
+  musl-build:
+    needs: frontend
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-ui
+          path: packages/rpi-web/assets
+      - name: Build and package the Web binary with musl
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          docker run --rm \
+            -e SOURCE_REF -e RELEASE_TAG -e GITHUB_REPOSITORY \
+            -e RUSTFLAGS='-D warnings -C target-feature=-crt-static' \
+            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            rust:alpine sh -ec '
+              apk add --no-cache build-base binutils python3 git perl
+              git config --global --add safe.directory /workspace
+              cargo build --release --locked -p rpi-web --bin rpi-web
+              python3 .github/scripts/web-release.py build \
+                --target x86_64-unknown-linux-musl --source-ref "$SOURCE_REF" \
+                --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
+                --assets packages/rpi-web/assets --output dist/web-release
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpi-web-bin-x86_64-unknown-linux-musl
+          path: dist/web-release/
+          if-no-files-found: error
+
   publish:
-    needs: build
+    needs: [build, musl-build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

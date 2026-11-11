@@ -12,10 +12,10 @@ The active `release-assets.yml` and `release-web.yml` now use the initial simple
 
 Intentional cost/release trade-offs:
 
-- no separate x86_64 musl extension build;
+- the x86_64 musl extension build remains enabled; the portable Web musl binary build also remains enabled;
 - no native speech cache reset/restore in the asset matrix; the original package-install test remains;
-- no Web musl build;
-- Web builds package the original Web release archive only, without the later prebuilt Web extension artifacts; RustFS mirroring for the Web archive remains enabled;
+- the non-musl matrix uses the simple Web binary build and does not build the later Web prebuilt extension artifacts;
+- Web builds package the original Web release archive only for GNU targets, without the later GNU Web prebuilt extension artifacts; the musl Web binary and RustFS mirroring remain enabled;
 - the original full workspace build and simple bundle packaging remain enabled.
 
 Restore the backed-up files to return to the previous pipeline.
