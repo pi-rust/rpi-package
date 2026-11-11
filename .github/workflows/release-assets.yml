@@ -132,22 +132,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-assets-${{ matrix.target }}
-      - name: Reset cached native speech links
-        run: |
-          cargo clean -p sherpa-onnx-sys
-          python3 - <<'PY'
-          import pathlib, shutil
-          target = pathlib.Path('target').resolve()
-          native = target / 'sherpa-onnx-prebuilt'
-          if native.resolve().parent != target:
-              raise RuntimeError('Native cache must stay inside target')
-          shutil.rmtree(native, ignore_errors=True)
-          PY
-      - name: Restore native speech libraries
-        uses: actions/cache@v4
-        with:
-          path: target/sherpa-onnx-prebuilt
-          key: native-speech-1.13.8-${{ runner.os }}-${{ runner.arch }}
       - name: Test platform packaging
         run: cargo test --locked -p rpi-package-install
       - name: Build extension libraries and installer
@@ -161,9 +145,7 @@ jobs:
           cargo build --release --workspace --locked
       - name: Assemble full extension bundle and ACP bridge
         run: |
-          # Use the curated catalog so archived host-owned packages are not
-          # copied into future extension bundles.
-          cargo run --release --locked -p rpi-package-install -- pack
+          cargo run --release --locked -p rpi-package-install -- pack --all
           cargo run --release --locked -p rpi-package-install -- pack-acp
       - name: Package individual extensions and record checksums and SDK ABI
         env:
@@ -184,46 +166,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Native musl builds run inside a musl toolchain container. Keeping this as
-  # a separate job avoids pretending that an Ubuntu/glibc runner can produce a
-  # runtime-compatible cdylib.
-  musl-build:
-    needs: source
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
-    env:
-      RUSTFLAGS: '-D warnings'
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.source.outputs.revision }}
-      - name: Build and package x86_64 musl artifacts
-        env:
-          SOURCE_REF: ${{ needs.source.outputs.revision }}
-          BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
-          PACKAGE_RELEASES: ${{ inputs.package_releases }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
-          RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
-        run: |
-          docker run --rm \
-            -e GITHUB_REPOSITORY -e SOURCE_REF -e BUNDLE_TAG -e PACKAGE_RELEASES \
-            -e RUSTFLAGS -e RPI_ANTIGRAVITY_OAUTH_CLIENT_ID \
-            -e RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET \
-            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
-            rust:alpine \
-            sh -ec 'apk add --no-cache bash python3 pkgconf build-base binutils git perl && git config --global --add safe.directory /workspace && bash tools/build-musl.sh'
-      - uses: actions/upload-artifact@v4
-        with:
-          name: prebuilt-x86_64-unknown-linux-musl
-          path: dist/release-assets/
-          if-no-files-found: error
-          retention-days: 14
-
   publish:
-    needs: [source, build, musl-build]
+    needs: [source, build]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,23 @@
+name: Build release assets manually
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published tag to build and receive the full platform bundles
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/release-assets.yml
+    with:
+      source_ref: ${{ inputs.tag }}
+      package_releases: '[]'
+      bundle_tag: ${{ inputs.tag }}
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}

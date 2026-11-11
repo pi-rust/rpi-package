@@ -1,0 +1,274 @@
+name: Build cross-platform release assets
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: true
+      package_releases:
+        type: string
+        required: true
+      bundle_tag:
+        type: string
+        required: true
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID:
+        required: false
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET:
+        required: false
+      RPI_RUSTFS_ENDPOINT:
+        required: false
+      RPI_RUSTFS_BUCKET:
+        required: false
+      RPI_RUSTFS_ACCESS_KEY:
+        required: false
+      RPI_RUSTFS_SECRET_KEY:
+        required: false
+      RPI_CDN_BASE_URL:
+        required: false
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Published release tag or commit to build
+        required: true
+        type: string
+      package_releases:
+        description: JSON array of package tags to receive prebuilt assets
+        required: true
+        default: '[]'
+        type: string
+      bundle_tag:
+        description: Bundle Release tag (empty generates a tag from the commit)
+        required: false
+        type: string
+      packages_only:
+        description: Backfill only selected package releases without building the full bundle
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    if: inputs.packages_only == true
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-packages.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      package_releases: ${{ inputs.package_releases }}
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+      RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+      RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+      RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+      RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+      RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+
+  source:
+    if: inputs.packages_only != true
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+      bundle_tag: ${{ steps.source.outputs.bundle_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - id: source
+        env:
+          BUNDLE_TAG: ${{ inputs.bundle_tag }}
+        run: |
+          revision="$(git rev-parse HEAD)"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "bundle_tag=${BUNDLE_TAG:-rpi-packages-${revision:0:12}}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: source
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      # Treat compiler warnings as CI failures for every build and test.
+      RUSTFLAGS: '-D warnings'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the exact release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libssl-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-assets-${{ matrix.target }}
+      - name: Reset cached native speech links
+        run: |
+          cargo clean -p sherpa-onnx-sys
+          python3 - <<'PY'
+          import pathlib, shutil
+          target = pathlib.Path('target').resolve()
+          native = target / 'sherpa-onnx-prebuilt'
+          if native.resolve().parent != target:
+              raise RuntimeError('Native cache must stay inside target')
+          shutil.rmtree(native, ignore_errors=True)
+          PY
+      - name: Restore native speech libraries
+        uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: native-speech-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      - name: Test platform packaging
+        run: cargo test --locked -p rpi-package-install
+      - name: Build extension libraries and installer
+        env:
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+        run: |
+          if [ -z "$RPI_ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET" ]; then
+            echo "::warning::RPI_ANTIGRAVITY_OAUTH_CLIENT_ID or RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET is empty; rpi-providers will build without Antigravity OAuth login."
+          fi
+          cargo build --release --workspace --locked
+      - name: Assemble full extension bundle and ACP bridge
+        run: |
+          # Use the curated catalog so archived host-owned packages are not
+          # copied into future extension bundles.
+          cargo run --release --locked -p rpi-package-install -- pack
+          cargo run --release --locked -p rpi-package-install -- pack-acp
+      - name: Package individual extensions and record checksums and SDK ABI
+        env:
+          TARGET: ${{ matrix.target }}
+          SOURCE_REF: ${{ needs.source.outputs.revision }}
+          BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+        run: |
+          python .github/scripts/prebuilt-assets.py build \
+            --target "$TARGET" --repository "$GITHUB_REPOSITORY" \
+            --source-ref "$SOURCE_REF" --bundle-tag "$BUNDLE_TAG" \
+            --tags "$PACKAGE_RELEASES"
+      - name: Preserve downloadable build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-${{ matrix.target }}
+          path: dist/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Native musl builds run inside a musl toolchain container. Keeping this as
+  # a separate job avoids pretending that an Ubuntu/glibc runner can produce a
+  # runtime-compatible cdylib.
+  musl-build:
+    needs: source
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      RUSTFLAGS: '-D warnings'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+      - name: Build and package x86_64 musl artifacts
+        env:
+          SOURCE_REF: ${{ needs.source.outputs.revision }}
+          BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+        run: |
+          docker run --rm \
+            -e GITHUB_REPOSITORY -e SOURCE_REF -e BUNDLE_TAG -e PACKAGE_RELEASES \
+            -e RUSTFLAGS -e RPI_ANTIGRAVITY_OAUTH_CLIENT_ID \
+            -e RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            rust:alpine \
+            sh -ec 'apk add --no-cache bash python3 pkgconf build-base binutils git perl && git config --global --add safe.directory /workspace && bash tools/build-musl.sh'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-x86_64-unknown-linux-musl
+          path: dist/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [source, build, musl-build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: prebuilt-*
+          path: dist/release-assets/
+          merge-multiple: true
+      - name: Validate all platforms and upload archives before discovery manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ needs.source.outputs.revision }}
+          BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+        run: |
+          python .github/scripts/prebuilt-assets.py publish \
+            --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
+            --bundle-tag "$BUNDLE_TAG" --tags "$PACKAGE_RELEASES"
+      - name: Optionally mirror immutable release files to RustFS
+        id: rustfs_mirror
+        continue-on-error: true
+        env:
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          BUNDLE_TAG: ${{ needs.source.outputs.bundle_tag }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+        run: |
+          python .github/scripts/prebuilt-assets.py mirror \
+            --bundle-tag "$BUNDLE_TAG" --tags "$PACKAGE_RELEASES"
+      - name: Report RustFS mirror failure
+        if: steps.rustfs_mirror.outcome == 'failure'
+        run: |
+          echo "::warning::RustFS/CDN mirror failed; GitHub Releases remain canonical."
+          echo "- WARNING: RustFS/CDN mirror failed; GitHub Releases remain canonical." >> "$GITHUB_STEP_SUMMARY"

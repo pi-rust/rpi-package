@@ -1,0 +1,288 @@
+name: Version and publish crates
+
+on:
+  schedule:
+    # Run daily at 00:00 Asia/Shanghai (16:00 UTC on the previous day);
+    # the guard below skips days where main has not advanced since the last
+    # release commit.
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Finish publishing before another run can prepare newer versions.
+concurrency:
+  group: release-cargo-main
+  cancel-in-progress: false
+
+jobs:
+  should-release:
+    name: Check for unreleased main changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - name: Check out main with release history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Detect changes since the last release
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          head="$(git rev-parse HEAD)"
+          last_release="$(git log -1 --format=%H --grep='^chore(release): update versions and changelogs')"
+          if [[ -z "$last_release" || "$head" != "$last_release" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    # The schedule batches main changes into one daily release. Manual runs
+    # remain available for an explicit retry or emergency release.
+    if: >-
+      needs.should-release.outputs.changed == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    needs: should-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Treat compiler warnings as CI failures for every build and test.
+      RUSTFLAGS: '-D warnings'
+    outputs:
+      source_ref: ${{ steps.version.outputs.source_ref }}
+      package_releases: ${{ steps.tags.outputs.package_releases }}
+      bundle_tag: ${{ steps.tags.outputs.bundle_tag }}
+      web_tag: ${{ steps.tags.outputs.web_tag }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out main with release history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check publishing credentials
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
+            echo "::error::Set the CARGO_REGISTRY_TOKEN repository secret with permission to publish all package crates."
+            exit 1
+          fi
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libssl-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install release-plz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz@0.3.171
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+
+      # rust-cache prunes downloaded native archives while retaining build.rs
+      # link directives. Restore native libraries separately after clearing
+      # stale output, and save them before rust-cache's post-job pruning.
+      - name: Reset cached native speech links
+        run: |
+          cargo clean -p sherpa-onnx-sys
+          python3 - <<'PY'
+          import pathlib, shutil
+          target = pathlib.Path('target').resolve()
+          native = target / 'sherpa-onnx-prebuilt'
+          if native.resolve().parent != target:
+              raise RuntimeError('Native cache must stay inside target')
+          shutil.rmtree(native, ignore_errors=True)
+          PY
+      - name: Restore native speech libraries
+        uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: native-speech-1.13.8-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Resolve registry dependencies
+        run: cargo update --workspace
+
+      - name: Exclude historical checkouts requiring an external SDK
+        run: python3 .github/scripts/prepare-release-history.py
+
+      - name: Prepare a valid release comparison checkout
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+          import tomllib
+
+          root = pathlib.Path.cwd()
+          with (root / "packages/rpi-web/Cargo.toml").open("rb") as handle:
+              web_version = tomllib.load(handle)["package"]["version"]
+          tag = f"rpi-web-v{web_version}"
+          subprocess.run(["git", "rev-parse", tag], check=True, stdout=subprocess.DEVNULL)
+
+          destination = pathlib.Path(tempfile.mkdtemp(prefix="release-registry-"))
+          archive = subprocess.run(
+              ["git", "archive", tag], check=True, capture_output=True
+          ).stdout
+          subprocess.run(["tar", "-x", "-C", str(destination)], input=archive, check=True)
+
+          # rpi-web-v0.1.48 points at a historical release commit whose local
+          # rpi-web/rpi-http requirements were inconsistent. Keep the release
+          # baseline equivalent to the current workspace versions so release-plz
+          # can package the baseline before comparing it. Baseline paths keep
+          # their pre-rename names; the current HTTP adapter library version is
+          # read from packages/rpi-httpcore.
+          http_manifest = destination / "packages/rpi-http/Cargo.toml"
+          http_text = http_manifest.read_text()
+          current_http = tomllib.loads(
+              (root / "packages/rpi-httpcore/Cargo.toml").read_text()
+          )["package"]["version"]
+          http_text = http_text.replace(
+              'version = "0.1.20"', f'version = "{current_http}"'
+          )
+          http_manifest.write_text(http_text)
+          for relative in (
+              "packages/rpi-web/Cargo.toml",
+              "packages/rpi-http-extension/Cargo.toml",
+          ):
+              path = destination / relative
+              if not path.exists():
+                  continue
+              path.write_text(
+                  path.read_text().replace(
+                      'version = "0.1.20"', f'version = "{current_http}"'
+                  )
+              )
+          lockfile = destination / "Cargo.lock"
+          lockfile.unlink(missing_ok=True)
+          pathlib.Path(os.environ["GITHUB_ENV"]).write_text(
+              f"RELEASE_REGISTRY_MANIFEST={destination / 'Cargo.toml'}\n"
+          )
+          print(f"Using release comparison checkout: {destination}")
+          PY
+
+      - name: Generate versions and changelogs for unpublished changes
+        run: release-plz update --registry-manifest-path "$RELEASE_REGISTRY_MANIFEST"
+
+      - name: Synchronize package catalog versions
+        run: python3 .github/scripts/sync-release-catalog.py
+
+      - name: Install Node.js for the embedded frontend
+        # `packages/rpi-web/assets` is generated and untracked; building it here
+        # keeps the published crate and `cargo install rpi-web` shipping the UI.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: packages/rpi-web/frontend/package-lock.json
+
+      - name: Build the embedded web frontend
+        working-directory: packages/rpi-web/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Test workspace
+        run: |
+          cargo build -p rpi-providers --locked
+          cargo test --workspace --locked
+
+      - name: Test the prebuilt distribution contract
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      - name: Test native ACP streaming and plugin lifecycle
+        run: |
+          cargo build -p rpi-acp --bin rpi-acp-bridge --example fake_rpc --lib --locked
+          export RPI_TEST_ACP_BRIDGE="$GITHUB_WORKSPACE/target/debug/rpi-acp-bridge"
+          export RPI_TEST_RPC_PEER="$GITHUB_WORKSPACE/target/debug/examples/fake_rpc"
+          python3 packages/rpi-acp/tests/streaming.py --bridge "$RPI_TEST_ACP_BRIDGE"
+          python3 -m unittest discover -s packages/rpi-acp/tests -v
+
+      - name: Test Open WebUI UI adapter
+        # UI adapter checks use a local ACP peer and never call a model.
+        # Keep this environment separate from the runner's system Python.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ui-adapter-venv"
+          "$RUNNER_TEMP/ui-adapter-venv/bin/pip" install 'aiohttp>=3.10,<4' 'pydantic>=2,<3'
+          "$RUNNER_TEMP/ui-adapter-venv/bin/python" -m unittest discover -s packages/rpi-ui-adapter/tests -v
+
+      # The ACP Registry only lists agents that advertise an agent/terminal auth
+      # method, and its verifier's handshake is the exact shape this reproduces.
+      # Failing here beats discovering it in the registry's CI.
+      - name: Verify the ACP Registry auth handshake
+        run: |
+          python3 packages/rpi-acp/tests/registry_auth.py \
+            --bridge "$GITHUB_WORKSPACE/target/debug/rpi-acp-bridge"
+
+      - name: Verify crate packages before publishing
+        run: cargo publish --workspace --dry-run --allow-dirty --locked
+
+      - name: Merge tested release metadata through a version PR
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+        run: bash .github/scripts/release-version-pr.sh
+
+      # GITHUB_TOKEN commits do not trigger push workflows. Publish in this
+      # same run so the version commit cannot leave crates unpublished.
+      - name: Publish crates and create package tags and GitHub Releases
+        env:
+          GIT_TOKEN: ${{ github.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: release-plz release
+
+      - name: Select package releases from this exact commit
+        id: tags
+        run: python3 .github/scripts/select-release-tags.py
+
+  assets:
+    needs: release
+    if: needs.release.outputs.package_releases != '[]' && needs.release.outputs.package_releases != ''
+    uses: ./.github/workflows/release-assets.yml
+    with:
+      source_ref: ${{ needs.release.outputs.source_ref }}
+      package_releases: ${{ needs.release.outputs.package_releases }}
+      bundle_tag: ${{ needs.release.outputs.bundle_tag }}
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+      RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+      RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+      RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+      RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+      RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+
+  web-assets:
+    needs: release
+    if: needs.release.outputs.web_tag != ''
+    uses: ./.github/workflows/release-web.yml
+    with:
+      source_ref: ${{ needs.release.outputs.source_ref }}
+      tag: ${{ needs.release.outputs.web_tag }}
+    secrets:
+      RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+      RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+      RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+      RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+      RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}

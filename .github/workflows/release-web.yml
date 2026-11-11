@@ -99,30 +99,8 @@ jobs:
         with:
           name: web-ui
           path: web-assets
-      - name: Embed the verified frontend in both entrypoints
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import shutil
-          root = Path.cwd().resolve()
-          destination = (root / 'packages/rpi-web/assets').resolve()
-          if destination.parent != root / 'packages/rpi-web':
-              raise RuntimeError('Frontend destination must stay inside the Web package')
-          if destination.exists():
-              shutil.rmtree(destination)
-          shutil.copytree('web-assets', destination)
-          PY
-      - name: Build the Web executable and extension
-        run: cargo build --release --locked -p rpi-web --bin rpi-web --lib
-      - name: Verify the startup page and HTTP listener on this platform
-        run: |
-          python - <<'PY'
-          import json, os, subprocess, sys
-          from pathlib import Path
-          metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked']))
-          binary = Path(metadata['target_directory']) / 'release' / ('rpi-web.exe' if os.name == 'nt' else 'rpi-web')
-          subprocess.run([sys.executable, 'packages/rpi-web/scripts/verify-startup.py', '--web', str(binary)], check=True)
-          PY
+      - name: Build the Web binary
+        run: cargo build --release --locked -p rpi-web --bin rpi-web
       - name: Package the binary and verified frontend together
         env:
           TARGET: ${{ matrix.target }}
@@ -133,78 +111,14 @@ jobs:
             --target "$TARGET" --source-ref "$SOURCE_REF" \
             --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
             --assets web-assets --output dist/web-release
-          python .github/scripts/prebuilt-assets.py build \
-            --target "$TARGET" --source-ref "$SOURCE_REF" \
-            --repository "$GITHUB_REPOSITORY" --bundle-tag unused \
-            --tags "[\"$RELEASE_TAG\"]" --packages-only --output dist/web-extension
       - uses: actions/upload-artifact@v4
         with:
           name: rpi-web-bin-${{ matrix.target }}
           path: dist/web-release/
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rpi-web-extension-${{ matrix.target }}
-          path: dist/web-extension/
-          if-no-files-found: error
-
-  musl-build:
-    needs: frontend
-    runs-on: ubuntu-22.04
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: web-ui
-          path: packages/rpi-web/assets
-      - name: Build and verify Web with a native musl compiler
-        env:
-          SOURCE_REF: ${{ inputs.source_ref }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          docker run --rm \
-            -e SOURCE_REF -e RELEASE_TAG -e GITHUB_REPOSITORY \
-            -e RUSTFLAGS='-D warnings -C target-feature=-crt-static' \
-            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
-            rust:alpine sh -ec '
-              apk add --no-cache build-base binutils python3 git perl
-              git config --global --add safe.directory /workspace
-              cargo build --release --locked -p rpi-web --bin rpi-web --lib
-              cargo test --release --locked -p rpi-web -p rpi-httpcore -p rpi-extcore
-              cc tools/musl-plugin-loader.c -o target/release/musl-plugin-loader -ldl
-              if readelf -d target/release/librpi_web_extension.so | grep -Eq "libc\\.so\\.6|ld-linux"; then
-                echo "Web musl extension links glibc" >&2
-                exit 1
-              fi
-              target/release/musl-plugin-loader "$PWD/target/release/librpi_web_extension.so"
-              python3 packages/rpi-web/scripts/verify-startup.py --web target/release/rpi-web
-              python3 .github/scripts/web-release.py build \
-                --target x86_64-unknown-linux-musl --source-ref "$SOURCE_REF" \
-                --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
-                --assets packages/rpi-web/assets --output dist/web-release
-              python3 .github/scripts/prebuilt-assets.py build \
-                --target x86_64-unknown-linux-musl --source-ref "$SOURCE_REF" \
-                --repository "$GITHUB_REPOSITORY" --bundle-tag unused \
-                --tags "[\"$RELEASE_TAG\"]" --packages-only --output dist/web-extension
-            '
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rpi-web-bin-x86_64-unknown-linux-musl
-          path: dist/web-release/
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rpi-web-extension-x86_64-unknown-linux-musl
-          path: dist/web-extension/
-          if-no-files-found: error
-
   publish:
-    needs: [build, musl-build]
+    needs: build
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -230,22 +144,6 @@ jobs:
           python .github/scripts/web-release.py publish \
             --source-ref "$SOURCE_REF" --tag "$RELEASE_TAG" \
             --repository "$GITHUB_REPOSITORY" --output dist/web-release
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: rpi-web-extension-*
-          path: dist/web-extension/
-          merge-multiple: true
-      - name: Publish the installable extension and discovery manifest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          SOURCE_REF: ${{ inputs.source_ref }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          python .github/scripts/prebuilt-assets.py publish \
-            --source-ref "$SOURCE_REF" --repository "$GITHUB_REPOSITORY" \
-            --bundle-tag unused --tags "[\"$RELEASE_TAG\"]" \
-            --packages-only --output dist/web-extension
       - name: Optionally mirror Web release files to RustFS
         id: rustfs_mirror
         continue-on-error: true
@@ -259,8 +157,6 @@ jobs:
         run: |
           python .github/scripts/web-release.py mirror \
             --tag "$RELEASE_TAG" --output dist/web-release
-          python .github/scripts/prebuilt-assets.py mirror \
-            --tags "[\"$RELEASE_TAG\"]" --packages-only --output dist/web-extension
       - name: Report RustFS mirror failure
         if: steps.rustfs_mirror.outcome == 'failure'
         run: |
