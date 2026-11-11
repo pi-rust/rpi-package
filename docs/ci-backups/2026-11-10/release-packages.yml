@@ -1,0 +1,216 @@
+name: Backfill selected extension releases
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        required: true
+        type: string
+      package_releases:
+        required: true
+        type: string
+    secrets:
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_ID:
+        required: false
+      RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET:
+        required: false
+      RPI_RUSTFS_ENDPOINT:
+        required: false
+      RPI_RUSTFS_BUCKET:
+        required: false
+      RPI_RUSTFS_ACCESS_KEY:
+        required: false
+      RPI_RUSTFS_SECRET_KEY:
+        required: false
+      RPI_CDN_BASE_URL:
+        required: false
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact source commit matching the existing package release tags
+        required: true
+        type: string
+      package_releases:
+        description: JSON array of existing package release tags
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      # Keep release tooling separate: old source tags may lack this backfill mode.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: backfill-${{ matrix.target }}
+      - name: Build only the requested extension libraries
+        env:
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          TARGET: ${{ matrix.target }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+        run: |
+          if [ -z "$RPI_ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET" ]; then
+            echo "::warning::RPI_ANTIGRAVITY_OAUTH_CLIENT_ID or RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET is empty; rpi-providers will build without Antigravity OAuth login."
+          fi
+          python - <<'PY'
+          import json, os, re, subprocess
+          tags = json.loads(os.environ['PACKAGE_RELEASES'])
+          if not isinstance(tags, list) or not tags:
+              raise ValueError('At least one package tag is required')
+          metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked']))
+          packages = {f"{p['name']}-v{p['version']}": p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
+          args = ['cargo', 'build', '--release', '--locked', '--lib']
+          for tag in tags:
+              if not isinstance(tag, str) or not re.fullmatch(r'[A-Za-z0-9_-]+-v[0-9]+\.[0-9]+\.[0-9]+', tag):
+                  raise ValueError(f'Invalid package tag: {tag!r}')
+              package = packages[tag]
+              if not any('cdylib' in t['crate_types'] for t in package['targets']):
+                  raise ValueError(f'Not an extension: {tag}')
+              args.extend(['-p', package['name']])
+          subprocess.run(args, check=True)
+          subprocess.run(['python', '.release-tools/.github/scripts/prebuilt-assets.py', 'build',
+                          '--packages-only', '--target', os.environ['TARGET'],
+                          '--repository', os.environ['GITHUB_REPOSITORY'],
+                          '--source-ref', os.environ['SOURCE_REF'], '--bundle-tag', 'unused',
+                          '--tags', os.environ['PACKAGE_RELEASES']], check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selected-${{ matrix.target }}
+          path: dist/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  musl-build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      # Old package source tags may predate the musl helper and target-aware
+      # release script. Keep the current tooling alongside the exact source.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+      - name: Build selected x86_64 musl package artifacts
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          BUNDLE_TAG: unused
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_ID: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_ID }}
+          RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${{ secrets.RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET }}
+        run: |
+          docker run --rm \
+            -e GITHUB_REPOSITORY -e SOURCE_REF -e BUNDLE_TAG -e PACKAGE_RELEASES \
+            -e RUSTFLAGS -e PACKAGES_ONLY \
+            -e PROJECT_ROOT -e SCRIPT_ROOT \
+            -e RPI_ANTIGRAVITY_OAUTH_CLIENT_ID \
+            -e RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            rust:alpine \
+            sh -ec 'apk add --no-cache bash python3 pkgconf build-base binutils git perl && git config --global --add safe.directory /workspace && PACKAGES_ONLY=1 PROJECT_ROOT=/workspace SCRIPT_ROOT=/workspace/.release-tools bash .release-tools/tools/build-musl.sh'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selected-x86_64-unknown-linux-musl
+          path: dist/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [build, musl-build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: .release-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selected-*
+          path: dist/release-assets/
+          merge-multiple: true
+      - name: Validate all supported platforms and publish discovery manifests last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+        run: |
+          python .github/scripts/prebuilt-assets.py publish --packages-only \
+            --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_REF" \
+            --bundle-tag unused --metadata-root .release-source --tags "$PACKAGE_RELEASES"
+      - name: Optionally mirror immutable package files to RustFS
+        id: rustfs_mirror
+        continue-on-error: true
+        env:
+          PACKAGE_RELEASES: ${{ inputs.package_releases }}
+          RPI_RUSTFS_ENDPOINT: ${{ secrets.RPI_RUSTFS_ENDPOINT }}
+          RPI_RUSTFS_BUCKET: ${{ secrets.RPI_RUSTFS_BUCKET }}
+          RPI_RUSTFS_ACCESS_KEY: ${{ secrets.RPI_RUSTFS_ACCESS_KEY }}
+          RPI_RUSTFS_SECRET_KEY: ${{ secrets.RPI_RUSTFS_SECRET_KEY }}
+          RPI_CDN_BASE_URL: ${{ secrets.RPI_CDN_BASE_URL }}
+        run: |
+          python .github/scripts/prebuilt-assets.py mirror \
+            --bundle-tag unused --tags "$PACKAGE_RELEASES"
+      - name: Report RustFS mirror failure
+        if: steps.rustfs_mirror.outcome == 'failure'
+        run: |
+          echo "::warning::RustFS/CDN mirror failed; GitHub Releases remain canonical."
+          echo "- WARNING: RustFS/CDN mirror failed; GitHub Releases remain canonical." >> "$GITHUB_STEP_SUMMARY"
