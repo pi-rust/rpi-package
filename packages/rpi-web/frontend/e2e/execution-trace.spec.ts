@@ -262,6 +262,21 @@ class MockHost {
             projectsRoot: "/mock",
           },
         });
+      // The Inspector's read-only resource catalog is mounted whenever the
+      // Inspector is open; return an empty catalog for both scopes.
+      if (
+        method === "GET" &&
+        path === `/api/v1/projects/${projectId}/resources`
+      )
+        return route.fulfill({
+          json: {
+            version: 1,
+            success: true,
+            operation: "list",
+            scope: new URL(request.url()).searchParams.get("scope"),
+            data: { outcome: "observed", resources: [], diagnostics: [] },
+          },
+        });
       if (method === "GET" && path === "/api/v1/sessions")
         return route.fulfill({
           json: { sessions: [this.summary(A), this.summary(B)] },

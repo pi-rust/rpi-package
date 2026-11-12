@@ -34,7 +34,10 @@ pub(super) async fn project_resources(
         Some("global") => ResourceScope::Global,
         _ => {
             return HttpReply(
-                (ReplyKind::InvalidInput, json!({"error": "scope must be project or global"}))
+                (
+                    ReplyKind::InvalidInput,
+                    json!({"error": "scope must be project or global"}),
+                )
                     .into_reply(),
             )
             .into_response();

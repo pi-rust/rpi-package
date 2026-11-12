@@ -5,9 +5,7 @@ use intent::{planned_record, require_retry_headroom};
 #[path = "resource_tests.rs"]
 mod tests;
 use crate::host::SessionOptions;
-use crate::resources::local::{
-    LocalResourceOperation, LocalResourceRequest, LocalResourceResult,
-};
+use crate::resources::local::{LocalResourceOperation, LocalResourceRequest, LocalResourceResult};
 use crate::resources::*;
 
 /// Caller-owned short project exclusion for authorized local filesystem CAS,
@@ -172,7 +170,9 @@ pub(super) async fn publish_record(
                 host.block_resource_storage();
             }
         }
-        return Err(storage(format!("resource registry write failed or uncertain; admission blocked until owner restart/inspection: {error}")));
+        return Err(storage(format!(
+            "resource registry write failed or uncertain; admission blocked until owner restart/inspection: {error}"
+        )));
     }
     Ok(())
 }
@@ -615,7 +615,9 @@ impl Service {
                 && read.data.binding.operation_id.as_ref() == Some(&request.operation_id)
                 && expected.revision.checked_add(1) == Some(actual.revision);
             if actual != expected && !original_committed {
-                return Err(ResourceError::conflict("native binding committed/changed; original operation recovery is required, not supersede"));
+                return Err(ResourceError::conflict(
+                    "native binding committed/changed; original operation recovery is required, not supersede",
+                ));
             }
             // Retain the native shared observation lock through the single
             // registry transaction; no external writer can race noncommit proof.
