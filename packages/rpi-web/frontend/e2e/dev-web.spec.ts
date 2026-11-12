@@ -2722,6 +2722,55 @@ test("streamed markdown handles incomplete fences and stays formatted in dark mo
   });
 });
 
+test("the working indicator does not resize the transcript", async ({
+  page,
+}) => {
+  await mockMarkdownTranscript(page);
+  // Hold the stream open so the run stays active and the indicator stays
+  // mounted; a settled stream would unmount it before measurement.
+  let hold!: () => void;
+  const held = new Promise<void>((resolve) => (hold = resolve));
+  let streams = 0;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      streams++;
+      if (streams === 1)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+          headers: { "cache-control": "no-store" },
+        });
+      await held;
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: "retry: 60000\n\n",
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Abort", exact: true }),
+  ).toBeEnabled();
+  const transcript = page.locator(".transcript");
+  const indicator = page.locator(".working-indicator");
+  await expect(indicator).toBeAttached();
+  const position = await indicator.evaluate(
+    (node) => getComputedStyle(node).position,
+  );
+  expect(position).toBe("absolute");
+  // The indicator is mounted and unmounted at every run boundary in the real
+  // app. Isolate its own contribution: hiding it must not change the scroll
+  // extent, which is what used to move the followed pane by ~34px.
+  const busyHeight = await transcript.evaluate((node) => node.scrollHeight);
+  await indicator.evaluate((node) => {
+    (node as HTMLElement).style.display = "none";
+  });
+  const withoutIndicator = await transcript.evaluate((node) => node.scrollHeight);
+  expect(withoutIndicator).toBe(busyHeight);
+  hold();
+});
+
 test("narrow authenticated sidebar uses icons and all settings follow the chosen language", async ({
   page,
 }, testInfo) => {
