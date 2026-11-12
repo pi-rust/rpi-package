@@ -77,6 +77,8 @@ import {
   api,
   ApiError,
   commandData,
+  hostIsRetired,
+  reopenHost,
   roleOf,
   type AuthProviderStatus,
   type Capabilities,
@@ -306,6 +308,12 @@ function matchModel(models: ModelDescriptor[], query: string) {
 }
 
 const LOCAL_SLASH_COMMANDS = new Set(["/help", "/tools"]);
+
+/**
+ * How many times a failing event stream may reopen its host before the client
+ * reports the session as unavailable. A healthy stream refills the budget.
+ */
+const MAX_REARMS = 3;
 
 const FAST_SNAPSHOT_OPTIONS = {
   limit: 40,
@@ -900,6 +908,8 @@ export default function App() {
   const attachmentPreviews = useRef(new Set<string>());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("connecting");
+  /** Set when the native host reports `host_closed`; cleared on session switch. */
+  const hostClosedRef = useRef(false);
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionHydrated, setSessionHydrated] = useState(false);
   const [runActive, setRunActive] = useState(false);
@@ -913,6 +923,11 @@ export default function App() {
   const [seen, setSeen] = useState(0);
   const [settleTick, setSettleTick] = useState(0);
   const [connectionRevision, setConnectionRevision] = useState(0);
+  /**
+   * Bounded rearm budget for a stream that keeps failing. Reset whenever a
+   * stream opens successfully, so a healthy reconnect does not consume it.
+   */
+  const rearmBudget = useRef(0);
   const [leafId, setLeafId] = useState("");
   const [interrupted, setInterrupted] = useState(false);
   const [failedRun, setFailedRun] = useState(false);
@@ -1495,6 +1510,7 @@ export default function App() {
           setRunActive(false);
           dialogRequests.current.clear();
           activeDialogId.current = "";
+          hostClosedRef.current = true;
           setStatus("closed");
           setDialog(null);
           break;
@@ -2067,6 +2083,7 @@ export default function App() {
     setError(initialSelectionError.current);
     initialSelectionError.current = "";
     setConnectionFailed(false);
+    hostClosedRef.current = false;
     setStatus("connecting");
     setLoadingSession(Boolean(sessionId));
     setNativeMessageQueries(false);
@@ -2209,6 +2226,7 @@ export default function App() {
       );
       stream = next;
       source.current = next;
+      let rearmPending = false;
       next.addEventListener("resync_required", () => {
         next.close();
         if (isCurrent()) setConnectionRevision((value) => value + 1);
@@ -2216,6 +2234,9 @@ export default function App() {
       let priorStatus = "ready";
       next.onopen = () => {
         if (!isCurrent()) return;
+        // A stream that opens proves the host is healthy again; refill the budget
+        // so a later genuine retirement still gets its own recovery attempt.
+        rearmBudget.current = 0;
         setStatus((previous) =>
           previous === "reconnecting" ? priorStatus : previous,
         );
@@ -2239,11 +2260,37 @@ export default function App() {
         });
       next.onerror = () => {
         if (!isCurrent()) return;
+        // `host_closed` is the native host shutting down on purpose, not an idle
+        // retirement. Reviving it here would silently undo that decision.
+        if (hostClosedRef.current) return;
         setStatus((previous) => {
           if (previous === "closed") return previous;
           if (previous !== "reconnecting") priorStatus = previous;
           return "reconnecting";
         });
+        // EventSource retries 404 forever without ever reopening the host, so a
+        // retired session would stay stuck on "reconnecting". Probing first keeps
+        // an ordinary reconnect (upload EOF, proxy hiccup) from reopening a host
+        // that is still alive.
+        if (rearmPending) return;
+        rearmPending = true;
+        void (async () => {
+          const retired = await hostIsRetired(sessionId, requests.signal);
+          if (!isCurrent()) return;
+          // A live host only lost this stream. EventSource reconnects on its own,
+          // so rebuilding the whole session view here would discard its state.
+          if (retired !== true) return;
+          if (rearmBudget.current >= MAX_REARMS) {
+            failConnection(new Error(t("sessionUnavailable")));
+            return;
+          }
+          rearmBudget.current += 1;
+          if (!(await reopenHost(sessionId, requests.signal))) {
+            if (isCurrent()) failConnection(new Error(t("sessionUnavailable")));
+            return;
+          }
+          if (isCurrent()) setConnectionRevision((value) => value + 1);
+        })();
       };
     };
 

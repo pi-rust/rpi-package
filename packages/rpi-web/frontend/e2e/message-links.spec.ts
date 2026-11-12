@@ -238,6 +238,10 @@ async function host(
       return json({
         sessions: [summary("links-session"), summary("other-session")],
       });
+    // The client probes a single session before treating a closed event stream
+    // as a retired host. These sessions stay live, so no reopen is attempted.
+    const single = path.match(/^\/api\/v1\/sessions\/([^/]+)$/);
+    if (single) return json(summary(single[1]));
     const match = path.match(/^\/api\/v1\/sessions\/([^/]+)\/(.+)$/);
     if (match) {
       const [, id, action] = match;

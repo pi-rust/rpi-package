@@ -290,6 +290,8 @@ const messages = {
     running: "working",
     starting: "starting",
     reconnecting: "reconnecting",
+    sessionUnavailable:
+      "This session could not be reopened. It may have been deleted.",
     closed: "closed",
     error: "error",
     sendPlaceholder: "Send a prompt, or type / for commands…",
@@ -639,6 +641,7 @@ const messages = {
     running: "运行中",
     starting: "启动中",
     reconnecting: "重新连接中",
+    sessionUnavailable: "无法重新打开该会话，它可能已被删除。",
     closed: "已断开",
     error: "错误",
     sendPlaceholder: "发送消息，或输入 / 使用命令…",
