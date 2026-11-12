@@ -1,5 +1,6 @@
 import { createContext } from "react";
 import type { Project } from "./api";
+import { hiddenProjectComponent } from "./projectPaths";
 
 /** Resolve local image paths against the message's configured project, never the Vite root. */
 export const ProjectImageContext = createContext<Project | undefined>(
@@ -43,6 +44,9 @@ export function projectImageSource(source: string, project?: Project): string {
   path = path.replace(/^\//, "").replace(/^(?:\.\/)+/, "");
   if (/[\\:\0]/.test(path) || path.split("/").some((part) => part === ".."))
     return "";
+  // The image endpoint shares the hidden-component boundary with the file
+  // endpoint, so an image under one of those directories would only 403.
+  if (path.split("/").some(hiddenProjectComponent)) return "";
   // The project endpoint intentionally serves raster files only, not active SVG/HTML.
   if (!isProjectImagePath(path)) return source;
   return `/api/v1/projects/${encodeURIComponent(project.id)}/image?${new URLSearchParams({ path })}`;
