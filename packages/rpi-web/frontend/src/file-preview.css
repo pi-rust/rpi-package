@@ -76,6 +76,26 @@
 .file-preview-status {
   overflow: auto;
 }
+.file-preview-image {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  background: var(--soft);
+  padding: 12px;
+}
+.file-preview-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+.file-preview-image img:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
+}
 .file-preview-code {
   margin: 0;
   padding: 12px 0;

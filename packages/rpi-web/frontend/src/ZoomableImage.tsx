@@ -40,6 +40,9 @@ function ImageViewer({
       aria-label={translate(language, "imageViewer")}
       onCancel={(event) => {
         event.preventDefault();
+        // This viewer can be portalled from another dialog (file preview).
+        // Closing the top layer must not cancel that underlying dialog too.
+        event.stopPropagation();
         onClose();
       }}
       onClick={(event) => {
@@ -100,11 +103,13 @@ export function ZoomableImage({
   alt = "",
   title,
   language,
+  onError,
 }: {
   src?: string;
   alt?: string;
   title?: string;
   language: Language;
+  onError?: () => void;
 }) {
   const project = useContext(ProjectImageContext);
   const src = rawSource ? projectImageSource(rawSource, project) : undefined;
@@ -120,6 +125,7 @@ export function ZoomableImage({
         alt={alt}
         title={title ?? (src ? translate(language, "enlargeImage") : undefined)}
         loading="lazy"
+        onError={onError}
         className={src ? "zoomable-image" : undefined}
         role={src ? "button" : undefined}
         tabIndex={src ? 0 : undefined}
