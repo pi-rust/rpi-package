@@ -5,6 +5,12 @@ export interface Capabilities {
   supportedActions?: string[];
   semantics?: Record<string, unknown>;
   limits?: Record<string, unknown>;
+  /**
+   * Server-side idle timeout for a live native host. `null`/absent means the
+   * host is retained until an explicit close. Activity is measured from HTTP
+   * requests that target the session, so browser-local typing does not count.
+   */
+  sessionIdleTimeoutSeconds?: number | null;
   parityComplete: boolean;
 }
 

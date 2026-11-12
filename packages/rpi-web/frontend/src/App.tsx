@@ -1879,6 +1879,43 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [authChecked, authRequired, authenticated, refreshSessions]);
 
+  /**
+   * Keep the selected session's native host alive while the user is composing.
+   *
+   * The bridge retires an idle host after `sessionIdleTimeoutSeconds` measured
+   * from requests that *target the session*; the session-list poll above does
+   * not refresh that timer, so typing a long message without sending could
+   * outlive the host and fail on Enter. Probe at a third of the timeout so a
+   * suspended tab or a dropped request still cannot cross the deadline. Only
+   * `GET /sessions/{id}` is used: it never opens a host, so a deleted session is
+   * still reported instead of being resurrected here.
+   */
+  const idleTimeoutSeconds = capabilities?.sessionIdleTimeoutSeconds ?? null;
+  useEffect(() => {
+    if (!sessionId || !idleTimeoutSeconds || idleTimeoutSeconds <= 0) return;
+    if (!authChecked || (authRequired && !authenticated)) return;
+    const probe = () => {
+      if (document.hidden) return;
+      void api.getSession(sessionId).catch(() => {});
+    };
+    const interval = Math.max(1000, Math.floor((idleTimeoutSeconds * 1000) / 3));
+    const timer = window.setInterval(probe, interval);
+    // A backgrounded tab stops being a reliable keeper: probe as soon as it is
+    // visible again so a retirement that happened while hidden is observed by
+    // the session-recovery path instead of on the next send.
+    document.addEventListener("visibilitychange", probe);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", probe);
+    };
+  }, [
+    sessionId,
+    idleTimeoutSeconds,
+    authChecked,
+    authRequired,
+    authenticated,
+  ]);
+
   useEffect(() => {
     saveLanguage(language);
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
