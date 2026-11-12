@@ -44,6 +44,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   SquarePen,
   Sigma,
@@ -4092,7 +4093,7 @@ export default function App() {
                     if (window.matchMedia("(max-width: 767px)").matches) setSidebar(false);
                   }}
                 >
-                  <Settings2 size={14} /> {t("runtimeSettings")}
+                  <SlidersHorizontal size={14} /> {t("runtimeSettings")}
                 </button>
               </div>
               <div className="account-panel">
@@ -4321,7 +4322,7 @@ export default function App() {
                 setPanel(false);
               }}
             >
-              <Settings2 size={17} />
+              <SlidersHorizontal size={17} />
             </button>
             {project && actions.has("files") && (
               <button
