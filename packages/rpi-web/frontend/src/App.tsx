@@ -59,6 +59,12 @@ import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
 import { ConversationTimeline } from "./ConversationTimeline";
 import { MessageSearch } from "./MessageSearchPanel";
 import { ProviderManager } from "./ProviderManager";
+import {
+  readModelPreference,
+  writeModelPreference,
+  type ModelPreference,
+  type ModelSelected,
+} from "./modelPreference";
 import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
 import { AskCard } from "./AskCard";
@@ -1073,6 +1079,36 @@ export default function App() {
   const [models, setModels] = useState<ModelDescriptor[]>([]);
   const [levels, setLevels] = useState<string[]>([]);
   const [modelPending, setModelPending] = useState(false);
+  const [, setModelPreferenceRevision] = useState(0);
+  const [modelPreferenceFailures, setModelPreferenceFailures] = useState<
+    Record<string, string>
+  >({});
+  // Capture the origin before I/O; successful old-session writes belong to its
+  // project even if navigation happens while the command is in flight.
+  const onModelSelected: ModelSelected = (model) => {
+    const project = projectRef.current;
+    const session = activeSessionRef.current;
+    const navigation = navigationRevision.current;
+    return () => {
+      writeModelPreference(project, {
+        provider: model.provider,
+        modelId: model.id,
+      });
+      const current =
+        session === activeSessionRef.current &&
+        project === projectRef.current &&
+        navigation === navigationRevision.current;
+      if (current) {
+        setModelPreferenceRevision((value) => value + 1);
+        setModelPreferenceFailures((previous) => {
+          const next = { ...previous };
+          delete next[session];
+          return next;
+        });
+      }
+      return current;
+    };
+  };
   const [thinkingPending, setThinkingPending] = useState(false);
   const [language, setLanguage] = useState<Language>(() => detectLanguage());
   const [autoRead, setAutoRead] = useState(() => {
@@ -1760,7 +1796,20 @@ export default function App() {
       setCreatingSession(true);
       try {
         setError("");
+        const preference = readModelPreference(targetProject);
         const created = await api.createSession(targetProject || undefined);
+        // Settle the preference before publishing the session or its composer.
+        // A failure must not discard the newly-created, reachable session.
+        if (preference) {
+          try {
+            await commandData(created.sessionId, "set_model", { ...preference });
+          } catch {
+            setModelPreferenceFailures((previous) => ({
+              ...previous,
+              [created.sessionId]: `${preference.provider}/${preference.modelId}`,
+            }));
+          }
+        }
         if (navigation !== navigationRevision.current) {
           void refreshSessions();
           return;
@@ -1955,6 +2004,7 @@ export default function App() {
     setQueueDraft("");
     setQueueEditId(null);
     setModels([]);
+    setModelPending(false);
     setLeafId("");
     setHistoryHasMore(false);
     earlierRequest.current = null;
@@ -2482,14 +2532,22 @@ export default function App() {
 
   async function selectModel(entry: ModelDescriptor) {
     if (!sessionId || modelPending) return;
+    const targetSession = sessionId;
+    const navigation = navigationRevision.current;
+    const current = () =>
+      navigation === navigationRevision.current &&
+      targetSession === activeSessionRef.current;
+    const remember = onModelSelected(entry);
     setModelPending(true);
     setError("");
     try {
-      await commandData(sessionId, "set_model", {
+      await commandData(targetSession, "set_model", {
         modelId: entry.id,
         provider: entry.provider,
       });
-      const state = await api.runtimeState(sessionId);
+      if (!remember()) return;
+      const state = await api.runtimeState(targetSession);
+      if (!current()) return;
       setRuntime(state);
       note(
         language === "zh"
@@ -2497,9 +2555,9 @@ export default function App() {
           : `Model → ${entry.name} (${entry.provider})`,
       );
     } catch (cause) {
-      setError(errorText(cause));
+      if (current()) setError(errorText(cause));
     } finally {
-      setModelPending(false);
+      if (current()) setModelPending(false);
     }
   }
 
@@ -2614,11 +2672,13 @@ export default function App() {
           );
           return;
         }
-        await commandData(sessionId, "set_model", {
+        const remember = onModelSelected(target);
+        await commandData(targetSession, "set_model", {
           modelId: target.id,
           provider: target.provider,
         });
-        const state = await api.runtimeState(sessionId);
+        if (!remember()) return;
+        const state = await api.runtimeState(targetSession);
         if (navigation !== navigationRevision.current) return;
         setRuntime(state);
         note(`Model → ${target.name} (${target.provider})`);
@@ -4335,6 +4395,22 @@ export default function App() {
           </div>
         )}
 
+        {modelPreferenceFailures[sessionId] && (
+          <div className="error-banner" role="alert">
+            <AlertTriangle size={14} />
+            <span>
+              {language === "zh"
+                ? `未能应用记住的模型 ${modelPreferenceFailures[sessionId]}。请在运行时设置中选择可用模型后再发送；偏好已保留，也可清除以让未来新会话使用原生默认值。`
+                : `Could not apply remembered model ${modelPreferenceFailures[sessionId]}. Select an available model in Runtime settings before sending. The preference is kept; clear it to use native defaults for future sessions.`}
+            </span>
+            <button
+              className="banner-action"
+              onClick={() => { setTraceOpen(false); setPanel(true); }}
+            >
+              {language === "zh" ? "运行时设置" : "Runtime settings"}
+            </button>
+          </div>
+        )}
         {error && (
           <div className="error-banner">
             <X size={14} />
@@ -5073,6 +5149,12 @@ export default function App() {
               supported={supported}
               canAuth={actions.has("provider_auth")}
               runtime={runtime}
+              onModelSelected={onModelSelected}
+              preference={readModelPreference(projectId)}
+              onClearPreference={() => {
+                writeModelPreference(projectRef.current, null);
+                setModelPreferenceRevision((value) => value + 1);
+              }}
               onChange={setRuntime}
               onError={setError}
               autoRead={autoRead}
@@ -6699,6 +6781,9 @@ function RuntimePanel({
   onError,
   autoRead,
   onAutoRead,
+  onModelSelected,
+  preference,
+  onClearPreference,
   onClose,
 }: {
   language: Language;
@@ -6710,6 +6795,9 @@ function RuntimePanel({
   onError: (message: string) => void;
   autoRead: boolean;
   onAutoRead: (value: boolean) => void;
+  onModelSelected: ModelSelected;
+  preference: ModelPreference | null;
+  onClearPreference: () => void;
   onClose: () => void;
 }) {
   const zh = language === "zh";
@@ -6826,6 +6914,7 @@ function RuntimePanel({
         supported={supported}
         canAuth={canAuth}
         runtime={runtime}
+        onModelSelected={onModelSelected}
         onChange={onChange}
         onBack={() => setProvidersOpen(false)}
       />
@@ -6851,6 +6940,15 @@ function RuntimePanel({
       >
         <ShieldCheck size={14} aria-hidden="true" /> {zh ? "管理供应商" : "Manage providers"}
       </button>
+      <p className="muted">
+        {zh
+          ? "成功选择的模型会在此浏览器中按项目记住，仅用于未来新会话；已有会话不变。"
+          : "Successful model choices are remembered in this browser per project for future new sessions only; existing sessions are unchanged."}
+        {preference && <> {preference.provider}/{preference.modelId}</>}
+      </p>
+      <button type="button" disabled={!preference} onClick={onClearPreference}>
+        {zh ? "清除模型偏好（未来使用原生默认值）" : "Clear model preference (future native defaults)"}
+      </button>
       <label htmlFor="model">{zh ? "模型" : "Model"}</label>
       <MenuSelect
         label={zh ? "模型" : "Model"}
@@ -6865,11 +6963,13 @@ function RuntimePanel({
         onChange={(value) => {
           const next = models.find((entry) => modelKey(entry) === value);
           if (!next) return;
+          const remember = onModelSelected(next);
           void run("model", async () => {
             await commandData(sessionId, "set_model", {
               modelId: next.id,
               provider: next.provider,
             });
+            if (!remember()) return;
             return api.runtimeState(sessionId);
           });
         }}

@@ -32,6 +32,25 @@ Completed conversation runs also show a compact **Worked for … / 已用时 …
 
 Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
 
+### New-session model preference
+
+A successful **explicit** model choice in the composer, Runtime settings,
+`/model provider/model-id`, or Provider Manager is remembered in this browser
+(origin + project), and applied with the existing `set_model` command before
+opening a newly created session. Reloading/resuming existing sessions never
+changes their model; without a preference, native configuration remains the
+default. Only provider/model IDs are stored—no credentials or node configuration
+changes. Storage is optional, with a tab-local memory fallback when unavailable.
+
+**Runtime settings → Clear model preference (future native defaults)** /
+**运行时设置 → 清除模型偏好（未来使用原生默认值）** affects future new sessions only,
+not the current model. An unsuccessful explicit choice is not remembered. If
+applying a remembered model fails (for example, a temporarily unavailable
+provider), the new session remains reachable with an actionable notice; the
+preference is retained. Choose an available model in Runtime settings before
+sending, or clear the preference for future sessions. No retry or prompt is
+sent automatically.
+
 ### Idle session timeout
 
 Web automatically releases an **idle native host** after 30 minutes without a

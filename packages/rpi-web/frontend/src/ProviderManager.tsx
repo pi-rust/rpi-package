@@ -6,6 +6,7 @@ import {
   type ModelDescriptor,
   type RuntimeState,
 } from "./api";
+import type { ModelSelected } from "./modelPreference";
 import type { Language } from "./i18n";
 import { Modal } from "./ProjectSidebar";
 import "./provider-manager.css";
@@ -220,6 +221,7 @@ export interface ProviderManagerProps {
   runtime: RuntimeState | null;
   onChange: (state: RuntimeState) => void;
   onBack: () => void;
+  onModelSelected: ModelSelected;
 }
 
 export function ProviderManager({
@@ -230,6 +232,7 @@ export function ProviderManager({
   runtime,
   onChange,
   onBack,
+  onModelSelected,
 }: ProviderManagerProps) {
   const t = copy[language];
   const id = useId();
@@ -815,6 +818,7 @@ export function ProviderManager({
     setModelNotice(null);
     setModelRestart(false);
     let submitted = false;
+    const remember = onModelSelected(model);
     try {
       await Promise.resolve();
       if (!current()) return;
@@ -824,7 +828,8 @@ export function ProviderManager({
         { provider: model.provider, modelId: model.id },
         controller.signal,
       );
-      if (!current()) return;
+      const selectionCurrent = remember();
+      if (!current() || !selectionCurrent) return;
       submitted = true;
       setModelRestart(result.requiresRestart === true);
       const runtimeAtRead = latest.current.runtime;
