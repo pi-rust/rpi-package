@@ -5,6 +5,16 @@ import {
   browserLink,
 } from "../src/messageLinks";
 
+test.use({
+  baseURL: process.env.RPI_MESSAGE_LINKS_BASE_URL || "http://127.0.0.1:4191",
+});
+
+// Real 1x1 PNG, served as bytes so Chromium exercises image decoding.
+const png = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+  "base64",
+);
+
 const project = {
   id: "links-project",
   name: "Links project",
@@ -78,8 +88,20 @@ const markdown = [
   "[![Linked photo](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=)](https://example.com/photo)",
 ].join("\n\n");
 
-async function host(page: Page, text = markdown, root = project.path) {
+async function host(
+  page: Page,
+  text = markdown,
+  root = project.path,
+  language = "en",
+) {
   const reads: Array<{ project: string; path: string }> = [];
+  const imageReads: Array<{
+    project: string;
+    path: string;
+    method: string;
+    header: string | undefined;
+  }> = [];
+  let imageMode: "ok" | "error" | "mime" | "decode" = "ok";
   const unexpected: string[] = [];
   let fail = false;
   let held: (() => void) | null = null;
@@ -99,8 +121,9 @@ async function host(page: Page, text = markdown, root = project.path) {
     forkEntryId: null,
     latestSettlement: null,
   });
-  await page.addInitScript(() =>
-    localStorage.setItem("rpi-web-language", "en"),
+  await page.addInitScript(
+    (value) => localStorage.setItem("rpi-web-language", value),
+    language,
   );
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -135,6 +158,28 @@ async function host(page: Page, text = markdown, root = project.path) {
         defaultProjectId: project.id,
         projectsRoot: "/workspace",
       });
+    if (/\/projects\/[^/]+\/image$/.test(path)) {
+      imageReads.push({
+        project: path.split("/")[4],
+        path: url.searchParams.get("path")!,
+        method: request.method(),
+        header: request.headers()["x-rpi-web"],
+      });
+      if (hold)
+        await new Promise<void>((resolve) => {
+          held = resolve;
+        });
+      if (imageMode === "error")
+        return route.fulfill({
+          status: 413,
+          json: { error: "Mock image exceeds 20 MiB" },
+        });
+      return route.fulfill({
+        contentType: imageMode === "mime" ? "image/svg+xml" : "image/png",
+        body:
+          imageMode === "decode" ? Buffer.from("not a decodable image") : png,
+      });
+    }
     if (/\/projects\/[^/]+\/file$/.test(path)) {
       reads.push({
         project: path.split("/")[4],
@@ -143,6 +188,11 @@ async function host(page: Page, text = markdown, root = project.path) {
       if (hold)
         await new Promise<void>((resolve) => {
           held = resolve;
+        });
+      if (url.searchParams.get("path")?.endsWith(".pdf"))
+        return route.fulfill({
+          status: 400,
+          json: { error: "Binary file cannot be previewed as text" },
         });
       if (fail)
         return route.fulfill({
@@ -229,6 +279,10 @@ async function host(page: Page, text = markdown, root = project.path) {
   });
   return {
     reads,
+    imageReads,
+    imageMode: (mode: typeof imageMode) => {
+      imageMode = mode;
+    },
     unexpected,
     fail: () => {
       fail = true;
@@ -293,7 +347,9 @@ for (const width of [1280, 390])
     await expect(
       preview(page).locator('[data-line="2"] .hljs-keyword'),
     ).toHaveText("const");
-    await page.screenshot({ path: test.info().outputPath(`file-preview-${width}.png`) });
+    await page.screenshot({
+      path: test.info().outputPath(`file-preview-${width}.png`),
+    });
     expect(mock.reads).toEqual([{ project: project.id, path: "src/main.ts" }]);
     await preview(page)
       .getByRole("button", { name: "Copy path", exact: true })
@@ -428,5 +484,264 @@ test("read errors retry; close aborts; navigation cannot show a stale project fi
   await expect(page.locator(".markdown-body")).not.toContainText(
     "const answer",
   );
+  expect(mock.unexpected).toEqual([]);
+});
+
+const imagePath = "assets/中文 photo.PNG";
+const imageMarkdown = `[Photo](assets/%E4%B8%AD%E6%96%87%20photo.PNG) [Binary](assets/manual.pdf)`;
+type ImageAudit = {
+  created: string[];
+  revoked: string[];
+  aborts: number;
+  signals: boolean[];
+  copied: string;
+};
+
+async function auditImages(page: Page) {
+  await page.addInitScript(() => {
+    const audit: ImageAudit = {
+      created: [],
+      revoked: [],
+      aborts: 0,
+      signals: [],
+      copied: "",
+    };
+    (window as unknown as { imageAudit: ImageAudit }).imageAudit = audit;
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => {
+      const url = create(blob);
+      audit.created.push(url);
+      return url;
+    };
+    URL.revokeObjectURL = (url) => {
+      audit.revoked.push(url);
+      revoke(url);
+    };
+    const fetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      if (String(input).includes("/image?")) {
+        audit.signals.push(init?.signal instanceof AbortSignal);
+        init?.signal?.addEventListener("abort", () => {
+          audit.aborts++;
+        });
+      }
+      return fetch(input, init);
+    };
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      value: async (value: string) => {
+        audit.copied = value;
+      },
+    });
+  });
+}
+const imageAudit = (page: Page) =>
+  page.evaluate(
+    () => (window as unknown as { imageAudit: ImageAudit }).imageAudit,
+  );
+
+for (const width of [1280, 390])
+  test(`message image preview decodes, copies and zooms at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const mock = await host(page, imageMarkdown);
+    await auditImages(page);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const link = page.getByRole("button", { name: "Photo", exact: true });
+    await expect(link).toBeVisible();
+    expect(mock.imageReads).toEqual([]);
+    await link.click();
+    const image = preview(page).locator("img.zoomable-image");
+    await expect(image).toBeVisible();
+    await expect
+      .poll(() =>
+        image.evaluate(
+          (img: HTMLImageElement) => img.complete && img.naturalWidth,
+        ),
+      )
+      .toBe(1);
+    const src = await image.getAttribute("src");
+    expect(src).toMatch(/^blob:/);
+    expect(mock.imageReads).toEqual([
+      { project: project.id, path: imagePath, method: "GET", header: "1" },
+    ]);
+    expect(mock.reads).toEqual([]);
+    expect((await imageAudit(page)).signals).toEqual([true]);
+    await expect(
+      preview(page).getByRole("button", { name: "Copy code", exact: true }),
+    ).toHaveCount(0);
+    await preview(page)
+      .getByRole("button", { name: "Copy path", exact: true })
+      .click();
+    await expect
+      .poll(async () => (await imageAudit(page)).copied)
+      .toBe(imagePath);
+    expect((await preview(page).boundingBox())!.width).toBeLessThan(width);
+    await image.click();
+    await expect(page.locator(".image-viewer")).toBeVisible();
+    await expect(page.locator(".image-viewer img")).toHaveAttribute(
+      "src",
+      src!,
+    );
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".image-viewer")).toHaveCount(0);
+    await expect(preview(page)).toBeVisible();
+    await expect(image).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(preview(page)).toHaveCount(0);
+    await expect(link).toBeFocused();
+    await expect
+      .poll(async () => (await imageAudit(page)).revoked)
+      .toContain(src);
+    expect(mock.unexpected).toEqual([]);
+  });
+
+for (const language of ["en", "zh"])
+  test(`image HTTP, MIME and decode failures retry (${language})`, async ({
+    page,
+  }) => {
+    const zh = language === "zh";
+    const mock = await host(page, imageMarkdown, project.path, language);
+    await auditImages(page);
+    mock.imageMode("error");
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Photo", exact: true }).click();
+    const dialog = page.getByRole("dialog", {
+      name: zh ? "文件预览" : "File preview",
+      exact: true,
+    });
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Mock image exceeds 20 MiB",
+    );
+    const retry = dialog.getByRole("button", {
+      name: zh ? "重试" : "Retry",
+      exact: true,
+    });
+    mock.imageMode("mime");
+    await retry.click();
+    await expect.poll(() => mock.imageReads.length).toBe(2);
+    await expect(dialog.getByRole("alert")).toBeVisible();
+    await expect(dialog.locator("img")).toHaveCount(0);
+    expect((await imageAudit(page)).created).toEqual([]);
+    mock.imageMode("decode");
+    await retry.click();
+    await expect.poll(() => mock.imageReads.length).toBe(3);
+    await expect(dialog.getByRole("alert")).toContainText(
+      zh ? /图片|图像/ : /image/i,
+    );
+    await expect
+      .poll(async () => (await imageAudit(page)).created.length)
+      .toBe(1);
+    const invalid = (await imageAudit(page)).created[0];
+    mock.imageMode("ok");
+    await retry.click();
+    await expect
+      .poll(async () => (await imageAudit(page)).revoked)
+      .toContain(invalid);
+    await expect(dialog.locator("img.zoomable-image")).toBeVisible();
+    await expect
+      .poll(() =>
+        dialog
+          .locator("img.zoomable-image")
+          .evaluate((img: HTMLImageElement) => img.naturalWidth),
+      )
+      .toBe(1);
+    expect(mock.imageReads).toHaveLength(4);
+    expect(mock.reads).toEqual([]);
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(async () => {
+        const audit = await imageAudit(page);
+        return audit.created.every((url) => audit.revoked.includes(url));
+      })
+      .toBe(true);
+    expect(mock.unexpected).toEqual([]);
+  });
+
+test("image close aborts, navigation revokes blobs and ignores pending stale responses", async ({
+  page,
+}) => {
+  const mock = await host(page, imageMarkdown);
+  await auditImages(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  const photo = page.getByRole("button", { name: "Photo", exact: true });
+  mock.hold();
+  await photo.click();
+  await expect.poll(() => mock.imageReads.length).toBe(1);
+  await page.keyboard.press("Escape");
+  await expect.poll(async () => (await imageAudit(page)).aborts).toBe(1);
+  mock.release();
+  await photo.click();
+  await expect(preview(page).locator("img.zoomable-image")).toBeVisible();
+  const src = await preview(page).locator("img").getAttribute("src");
+  const navigate = () =>
+    page
+      .locator(".project-session-link")
+      .filter({ hasText: "Other links session" })
+      .evaluate((element: HTMLButtonElement) => element.click());
+  await navigate();
+  await expect(page.locator(".toolbar h1")).toHaveText("Other links session");
+  await expect(preview(page)).toHaveCount(0);
+  await expect
+    .poll(async () => (await imageAudit(page)).revoked)
+    .toContain(src);
+  await page
+    .locator(".project-session-link")
+    .filter({ hasText: "Links session" })
+    .first()
+    .click();
+  await expect(photo).toBeVisible();
+  mock.hold();
+  await photo.click();
+  await expect.poll(() => mock.imageReads.length).toBe(3);
+  const before = await imageAudit(page);
+  await navigate();
+  await expect
+    .poll(async () => (await imageAudit(page)).aborts)
+    .toBe(before.aborts + 1);
+  mock.release();
+  await page.waitForTimeout(150);
+  await expect(preview(page)).toHaveCount(0);
+  await expect(page.locator(".image-viewer")).toHaveCount(0);
+  expect((await imageAudit(page)).created).toEqual(before.created);
+  expect(mock.reads).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("unsupported binary links retain the text error route, never an image", async ({
+  page,
+}) => {
+  const mock = await host(page, imageMarkdown);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Binary", exact: true }).click();
+  await expect(preview(page).getByRole("alert")).toContainText(
+    "Binary file cannot be previewed as text",
+  );
+  await expect(preview(page).locator("img")).toHaveCount(0);
+  expect(mock.imageReads).toEqual([]);
+  expect(mock.reads).toEqual([
+    { project: project.id, path: "assets/manual.pdf" },
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("all raster extensions select image reads case-insensitively", async ({
+  page,
+}) => {
+  const extensions = ["png", "JPG", "jpeg", "GIF", "WebP", "BMP"];
+  const mock = await host(
+    page,
+    extensions.map((ext) => `[${ext}](assets/photo.${ext})`).join(" "),
+  );
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  for (const ext of extensions) {
+    await page.getByRole("button", { name: ext, exact: true }).click();
+    await expect(preview(page).locator("img.zoomable-image")).toBeVisible();
+    expect(mock.imageReads.at(-1)?.path).toBe(`assets/photo.${ext}`);
+    await page.keyboard.press("Escape");
+  }
+  expect(mock.imageReads).toHaveLength(extensions.length);
+  expect(mock.reads).toEqual([]);
   expect(mock.unexpected).toEqual([]);
 });

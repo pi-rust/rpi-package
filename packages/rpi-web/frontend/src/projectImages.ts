@@ -6,6 +6,10 @@ export const ProjectImageContext = createContext<Project | undefined>(
   undefined,
 );
 
+export function isProjectImagePath(path: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp|bmp)$/i.test(path);
+}
+
 export function projectImageSource(source: string, project?: Project): string {
   if (!project || !source || /^(?:data:|\/\/)/i.test(source)) return source;
   let path = source;
@@ -40,6 +44,6 @@ export function projectImageSource(source: string, project?: Project): string {
   if (/[\\:\0]/.test(path) || path.split("/").some((part) => part === ".."))
     return "";
   // The project endpoint intentionally serves raster files only, not active SVG/HTML.
-  if (!/\.(?:png|jpe?g|gif|webp|bmp)$/i.test(path)) return source;
+  if (!isProjectImagePath(path)) return source;
   return `/api/v1/projects/${encodeURIComponent(project.id)}/image?${new URLSearchParams({ path })}`;
 }

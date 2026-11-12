@@ -300,11 +300,7 @@ export interface ToolProgramChildSummary {
   state: "unknown";
 }
 export type ToolProgramPhaseKind =
-  | "requested"
-  | "prepared"
-  | "update"
-  | "final"
-  | "closed";
+  "requested" | "prepared" | "update" | "final" | "closed";
 export interface ToolProgramBodyDescriptor {
   descriptorId: string;
   version: number;
@@ -389,7 +385,13 @@ export interface ToolProgramBodyCursor {
   direction: "oldestFirst";
   childId: string;
   phaseEntryId: string;
-  body: { sessionId: string; lane: string; leafId: string; descriptorId: string; nextIndex: number };
+  body: {
+    sessionId: string;
+    lane: string;
+    leafId: string;
+    descriptorId: string;
+    nextIndex: number;
+  };
 }
 export interface ToolProgramBodyResponse {
   childId: string;
@@ -398,7 +400,10 @@ export interface ToolProgramBodyResponse {
   nextCursor?: ToolProgramBodyCursor | null;
 }
 export interface ToolProgramChildEvent {
-  type: "tool_program_child_begin" | "tool_program_child_phase" | "tool_program_child_resync_required";
+  type:
+    | "tool_program_child_begin"
+    | "tool_program_child_phase"
+    | "tool_program_child_resync_required";
   [key: string]: unknown;
 }
 export interface ToolProgramStreamItem {
@@ -445,7 +450,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const error = value as { error?: unknown; code?: unknown } | null;
     throw new ApiError(
-      typeof error?.error === "string" ? error.error : `HTTP ${response.status}`,
+      typeof error?.error === "string"
+        ? error.error
+        : `HTTP ${response.status}`,
       response.status,
       typeof error?.code === "string" ? error.code : undefined,
     );
@@ -482,9 +489,11 @@ const gitRequests = new Map<string, Promise<GitStatus>>();
 function gitStatus(projectId: string) {
   const existing = gitRequests.get(projectId);
   if (existing) return existing;
-  const job = request<GitStatus>(`/projects/${projectId}/git/status`).finally(() => {
-    if (gitRequests.get(projectId) === job) gitRequests.delete(projectId);
-  });
+  const job = request<GitStatus>(`/projects/${projectId}/git/status`).finally(
+    () => {
+      if (gitRequests.get(projectId) === job) gitRequests.delete(projectId);
+    },
+  );
   gitRequests.set(projectId, job);
   return job;
 }
@@ -526,10 +535,10 @@ export const api = {
       pinned: boolean;
       archived: boolean;
       tags: string[];
-    }>(
-      `/sessions/${id}/metadata`,
-      { method: "POST", body: JSON.stringify(metadata) },
-    ),
+    }>(`/sessions/${id}/metadata`, {
+      method: "POST",
+      body: JSON.stringify(metadata),
+    }),
   files: (projectId: string, path = "") =>
     request<{ path: string; entries: FileEntry[] }>(
       `/projects/${projectId}/files?${new URLSearchParams({ path })}`,
@@ -539,6 +548,46 @@ export const api = {
       `/projects/${projectId}/file?${new URLSearchParams({ path })}`,
       { signal },
     ),
+  image: async (projectId: string, path: string, signal?: AbortSignal) => {
+    const response = await fetch(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/image?${new URLSearchParams({ path })}`,
+      { signal, headers: { "x-rpi-web": "1" }, cache: "no-store" },
+    );
+    if (!response.ok) {
+      const value = await response.json().catch((cause) => {
+        if (signal?.aborted) throw cause;
+        return null;
+      });
+      throw new ApiError(
+        typeof value?.error === "string"
+          ? value.error
+          : `HTTP ${response.status}`,
+        response.status,
+      );
+    }
+    // Do not render active content, even when a proxy or older backend responds
+    // with HTML/JSON instead of a raster image. Native validates image signatures.
+    const mime = response.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      .trim()
+      .toLowerCase();
+    if (
+      !mime ||
+      ![
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/bmp",
+      ].includes(mime)
+    )
+      throw new Error("Unsupported image content type");
+    const image = await response.blob();
+    if (image.size > 20 * 1024 * 1024)
+      throw new Error("images are limited to 20 MiB");
+    return image;
+  },
   upload: (projectId: string, file: File, signal?: AbortSignal) => {
     const body = new FormData();
     body.append("file", file, file.name);
@@ -581,8 +630,13 @@ export const api = {
       signal,
     });
     if (!response.ok) {
-      const value = (await response.json().catch(() => null)) as { error?: string } | null;
-      throw new ApiError(value?.error || `TTS request failed (${response.status})`, response.status);
+      const value = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      throw new ApiError(
+        value?.error || `TTS request failed (${response.status})`,
+        response.status,
+      );
     }
     return response.blob();
   },
@@ -607,7 +661,11 @@ export const api = {
   getSession: (id: string) => request<SessionSummary>(`/sessions/${id}`),
   snapshot: (
     id: string,
-    params: { limit?: number; includeHistory?: boolean; signal?: AbortSignal } = {},
+    params: {
+      limit?: number;
+      includeHistory?: boolean;
+      signal?: AbortSignal;
+    } = {},
   ) => {
     const query = new URLSearchParams();
     if (params.limit !== undefined) query.set("limit", String(params.limit));
@@ -618,23 +676,51 @@ export const api = {
       signal: params.signal,
     });
   },
-  runTimings: (id: string, entryIds: string[], cursor?: string, signal?: AbortSignal) =>
+  runTimings: (
+    id: string,
+    entryIds: string[],
+    cursor?: string,
+    signal?: AbortSignal,
+  ) =>
     request<RunTimingsPage>(`/sessions/${id}/run-timings/query`, {
       method: "POST",
       body: JSON.stringify({ entryIds, ...(cursor ? { cursor } : {}) }),
       signal,
     }),
-  messageSummaries: (id: string, params: { beforeId?: string; leafId?: string; limit?: number } = {}, signal?: AbortSignal) => {
-    const query = new URLSearchParams({ role: "user", limit: String(params.limit ?? 10) });
+  messageSummaries: (
+    id: string,
+    params: { beforeId?: string; leafId?: string; limit?: number } = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({
+      role: "user",
+      limit: String(params.limit ?? 10),
+    });
     if (params.beforeId) query.set("beforeId", params.beforeId);
     if (params.leafId) query.set("leafId", params.leafId);
-    return request<MessageSummaryPage>(`/sessions/${id}/message-summaries?${query}`, { signal });
+    return request<MessageSummaryPage>(
+      `/sessions/${id}/message-summaries?${query}`,
+      { signal },
+    );
   },
-  messageWindow: (id: string, params: { anchorId?: string; beforeId?: string; afterId?: string; leafId?: string; limit?: number }, signal?: AbortSignal) => {
+  messageWindow: (
+    id: string,
+    params: {
+      anchorId?: string;
+      beforeId?: string;
+      afterId?: string;
+      leafId?: string;
+      limit?: number;
+    },
+    signal?: AbortSignal,
+  ) => {
     const query = new URLSearchParams({ limit: String(params.limit ?? 48) });
     for (const key of ["anchorId", "beforeId", "afterId", "leafId"] as const)
       if (params[key]) query.set(key, params[key]);
-    return request<MessageWindowPage>(`/sessions/${id}/message-window?${query}`, { signal });
+    return request<MessageWindowPage>(
+      `/sessions/${id}/message-window?${query}`,
+      { signal },
+    );
   },
   toolProgramChildren: (
     id: string,
@@ -673,21 +759,18 @@ export const api = {
     },
     signal?: AbortSignal,
   ) =>
-    request<ToolProgramPhasePage>(
-      `/sessions/${id}/tool-program/phases/query`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          ...query,
-          leafId: query.leafId ?? null,
-          cursor: query.cursor ?? null,
-          direction: query.direction ?? "newestFirst",
-          limit: query.limit ?? 8,
-          maxBytes: query.maxBytes ?? 32768,
-        }),
-        signal,
-      },
-    ),
+    request<ToolProgramPhasePage>(`/sessions/${id}/tool-program/phases/query`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...query,
+        leafId: query.leafId ?? null,
+        cursor: query.cursor ?? null,
+        direction: query.direction ?? "newestFirst",
+        limit: query.limit ?? 8,
+        maxBytes: query.maxBytes ?? 32768,
+      }),
+      signal,
+    }),
   toolProgramBody: (
     id: string,
     query: {
@@ -715,10 +798,7 @@ export const api = {
         signal,
       },
     ),
-  toolProgramSnapshot: (
-    id: string,
-    signal?: AbortSignal,
-  ) =>
+  toolProgramSnapshot: (id: string, signal?: AbortSignal) =>
     request<ToolProgramSnapshot>(`/sessions/${id}/tool-program/snapshot`, {
       method: "POST",
       body: JSON.stringify({
@@ -748,14 +828,24 @@ export const api = {
     signal?: AbortSignal,
   ) => commandData<HistoryResponse>(id, "get_history", params, signal),
   authStatus: (id: string, signal?: AbortSignal) =>
-    commandData<{ providers: AuthProviderStatus[] }>(id, "get_auth_status", {}, signal),
+    commandData<{ providers: AuthProviderStatus[] }>(
+      id,
+      "get_auth_status",
+      {},
+      signal,
+    ),
   oauth: (id: string, provider: string, action: string, input = {}) =>
     commandData<{
       provider: string;
       status: string;
       display?: Record<string, unknown>;
     }>(id, "oauth", { provider, action, input }),
-  setApiKey: (id: string, provider: string, apiKey: string, signal?: AbortSignal) =>
+  setApiKey: (
+    id: string,
+    provider: string,
+    apiKey: string,
+    signal?: AbortSignal,
+  ) =>
     commandData<{ provider: string; ready: boolean; requiresRestart: boolean }>(
       id,
       "set_api_key",
@@ -837,9 +927,14 @@ export const api = {
     }>(id, "set_provider_config", input, signal),
 
   queue: (id: string, includeCompleted = false, signal?: AbortSignal) =>
-    commandData<{ items: QueueItem[]; count: number }>(id, "get_queue", {
-      includeCompleted,
-    }, signal),
+    commandData<{ items: QueueItem[]; count: number }>(
+      id,
+      "get_queue",
+      {
+        includeCompleted,
+      },
+      signal,
+    ),
   queueMessage: (id: string, message: string, deliverAs: string) =>
     commandData<{ accepted: boolean; entryId: string; queue: string }>(
       id,
@@ -882,11 +977,22 @@ export const api = {
     request<SessionSummary>(`/sessions/${id}/open`, { method: "POST", signal }),
   runtimeState: (id: string, signal?: AbortSignal) =>
     commandData<RuntimeState>(id, "get_state", {}, signal),
-  stats: (id: string, signal?: AbortSignal) => commandData<unknown>(id, "get_stats", {}, signal),
+  stats: (id: string, signal?: AbortSignal) =>
+    commandData<unknown>(id, "get_stats", {}, signal),
   models: (id: string, signal?: AbortSignal) =>
-    commandData<{ models: ModelDescriptor[] }>(id, "get_available_models", {}, signal),
+    commandData<{ models: ModelDescriptor[] }>(
+      id,
+      "get_available_models",
+      {},
+      signal,
+    ),
   thinkingLevels: (id: string, signal?: AbortSignal) =>
-    commandData<{ levels: string[] }>(id, "get_available_thinking_levels", {}, signal),
+    commandData<{ levels: string[] }>(
+      id,
+      "get_available_thinking_levels",
+      {},
+      signal,
+    ),
   tools: (id: string) => commandData<ToolCatalog>(id, "get_available_tools"),
 };
 

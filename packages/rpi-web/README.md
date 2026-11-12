@@ -32,6 +32,25 @@ Completed conversation runs also show a compact **Worked for … / 已用时 …
 
 Runtime: `browser → rpi --webserver (extension) or rpi-web (standalone) → rpi --mode rpc → model and project tools`. Each open session runs a separate native host process. Project files, model credentials, and session records live on the computer or server running the service.
 
+### New-session model preference
+
+A successful **explicit** model choice in the composer, Runtime settings,
+`/model provider/model-id`, or Provider Manager is remembered in this browser
+(origin + project), and applied with the existing `set_model` command before
+opening a newly created session. Reloading/resuming existing sessions never
+changes their model; without a preference, native configuration remains the
+default. Only provider/model IDs are stored—no credentials or node configuration
+changes. Storage is optional, with a tab-local memory fallback when unavailable.
+
+**Runtime settings → Clear model preference (future native defaults)** /
+**运行时设置 → 清除模型偏好（未来使用原生默认值）** affects future new sessions only,
+not the current model. An unsuccessful explicit choice is not remembered. If
+applying a remembered model fails (for example, a temporarily unavailable
+provider), the new session remains reachable with an actionable notice; the
+preference is retained. Choose an available model in Runtime settings before
+sending, or clear the preference for future sessions. No retry or prompt is
+sent automatically.
+
 ### Idle session timeout
 
 Web automatically releases an **idle native host** after 30 minutes without a
@@ -304,6 +323,23 @@ rpi-web --project /work/project-a --add-project /work/project-b --add-project /w
 ```
 
 Sessions are grouped by project. New sessions use the selected project as the tools' working directory; forks and clones retain their source project. Session menus support rename, tags, pin, archive, and restore. Archiving retains history and does not cancel a running task. Sidebar search filters project names, session titles, tags, and ids; tag and status selectors provide narrower views.
+
+### Message-linked image previews
+
+Click a project file link in a message to open a read-only preview. Raster image
+paths (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`, case-insensitive) use the existing
+project-scoped image endpoint instead of the text-file route. The backend still
+enforces project boundaries, image signatures and its 20 MiB limit; SVG and other
+unsupported binaries are not rendered as images. Images offer **Copy path**, not
+**Copy code**. Click the image to zoom; Escape closes zoom first, then the file
+preview, restoring focus. Read/decode errors offer **Retry**; closing or navigating
+away cancels pending reads and releases temporary blob URLs. Text previews and
+line highlighting remain unchanged. This frontend behavior does not deploy or
+upgrade a running backend.
+
+Mock-backed browser coverage lives in `frontend/e2e/message-links.spec.ts` and
+intercepts all API requests (no model calls). Set `RPI_MESSAGE_LINKS_BASE_URL` to
+exercise the same tests against the public dev frontend; omit it for local Vite.
 
 ### Commands and keyboard shortcuts
 

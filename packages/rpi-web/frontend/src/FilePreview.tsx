@@ -4,6 +4,8 @@ import hljs from "highlight.js/lib/common";
 import { api, type Project } from "./api";
 import type { Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
+import { isProjectImagePath } from "./projectImages";
+import { ZoomableImage } from "./ZoomableImage";
 import "./file-preview.css";
 
 /** Mounted only by an explicit click. The deferred effect avoids StrictMode's probe I/O. */
@@ -23,6 +25,8 @@ export function FilePreview({
   const targetRef = useRef<HTMLSpanElement>(null);
   const [attempt, setAttempt] = useState(0);
   const [content, setContent] = useState<string | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const image = isProjectImagePath(file.path);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
   useEffect(() => {
@@ -37,24 +41,43 @@ export function FilePreview({
   }, []);
   useEffect(() => {
     const controller = new AbortController();
+    let objectUrl: string | undefined;
     setContent(null);
+    setImageUrl(null);
     setError("");
+    setCopied("");
     const timer = window.setTimeout(() => {
-      void api
-        .file(project.id, file.path, controller.signal)
-        .then((result) => {
-          if (!controller.signal.aborted) setContent(result.content);
-        })
-        .catch((cause: unknown) => {
+      void (async () => {
+        try {
+          if (image) {
+            const blob = await api.image(
+              project.id,
+              file.path,
+              controller.signal,
+            );
+            if (controller.signal.aborted) return;
+            objectUrl = URL.createObjectURL(blob);
+            setImageUrl(objectUrl);
+          } else {
+            const result = await api.file(
+              project.id,
+              file.path,
+              controller.signal,
+            );
+            if (!controller.signal.aborted) setContent(result.content);
+          }
+        } catch (cause: unknown) {
           if (!controller.signal.aborted)
             setError(cause instanceof Error ? cause.message : String(cause));
-        });
+        }
+      })();
     }, 0);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [project.id, project.path, file.path, attempt]);
+  }, [project.id, project.path, file.path, image, attempt]);
   const lines = useMemo(() => {
     if (content === null) return [];
     const extension = file.path.split(".").pop()?.toLowerCase() ?? "";
@@ -131,13 +154,17 @@ export function FilePreview({
         >
           {zh ? "复制路径" : "Copy path"}
         </button>
-        <button
-          type="button"
-          disabled={content === null}
-          onClick={() => void copy(content!, zh ? "已复制代码" : "Code copied")}
-        >
-          {zh ? "复制代码" : "Copy code"}
-        </button>
+        {!image && (
+          <button
+            type="button"
+            disabled={content === null}
+            onClick={() =>
+              void copy(content!, zh ? "已复制代码" : "Code copied")
+            }
+          >
+            {zh ? "复制代码" : "Copy code"}
+          </button>
+        )}
         <span role="status">{copied}</span>
       </div>
       {error ? (
@@ -151,6 +178,22 @@ export function FilePreview({
           >
             {zh ? "重试" : "Retry"}
           </button>
+        </div>
+      ) : image && imageUrl ? (
+        <div className="file-preview-image">
+          <ZoomableImage
+            key={imageUrl}
+            src={imageUrl}
+            alt={file.path}
+            language={language}
+            onError={() =>
+              setError(
+                zh
+                  ? "无法解码图片，文件可能已损坏"
+                  : "Could not decode image; the file may be corrupt",
+              )
+            }
+          />
         </div>
       ) : content === null ? (
         <p className="file-preview-status" role="status">
