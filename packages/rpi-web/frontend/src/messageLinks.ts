@@ -1,4 +1,5 @@
 import type { Project } from "./api";
+import { hiddenProjectComponent } from "./projectPaths";
 
 export interface ProjectFileLink {
   path: string;
@@ -56,7 +57,11 @@ export function projectFileLink(
   }
   const parts = path.split("/");
   if (parts.some((part) => part === ".." || /[:]/.test(part))) return null;
-  path = parts.filter((part) => part && part !== ".").join("/");
+  const components = parts.filter((part) => part && part !== ".");
+  // The server refuses these outright, so do not advertise a preview button
+  // that can only fail. The text still renders as plain code.
+  if (components.some(hiddenProjectComponent)) return null;
+  path = components.join("/");
   if (!path || source.endsWith("/")) return null;
   return { path, line, endLine };
 }

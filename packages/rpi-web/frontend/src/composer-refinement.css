@@ -369,3 +369,21 @@
     display: none;
   }
 }
+
+/* The queue delivery selector must stay reachable while a run is active: the
+   Inspector is collapsed by default, so a selector only there always sent
+   `followUp`. */
+.workspace .composer-options .composer-queue-kind .select-menu-trigger {
+  min-height: 27px;
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.workspace .composer-options .composer-queue-kind .select-menu-trigger:hover:not(:disabled),
+.workspace .composer-options .composer-queue-kind .select-menu-trigger[aria-expanded="true"] {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}

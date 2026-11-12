@@ -4,6 +4,7 @@ import {
   inlineFileLink,
   browserLink,
 } from "../src/messageLinks";
+import { projectImageSource } from "../src/projectImages";
 
 test.use({
   baseURL: process.env.RPI_MESSAGE_LINKS_BASE_URL || "http://127.0.0.1:4191",
@@ -71,8 +72,36 @@ test("file resolver contains paths, decodes once and validates line ranges", () 
     expect(projectFileLink(source, project), source).toBeNull();
   }
   expect(projectFileLink("src/a.ts")).toBeNull();
+  // The project file endpoint rejects these components with 403, so the
+  // resolver must not advertise a preview that can only fail.
+  for (const source of [
+    ".rpi/uploads/a.md",
+    "./.rpi/uploads/a.md",
+    "/workspace/links/.rpi/uploads/a.md",
+    "src/.git/config",
+    "node_modules/pkg/index.js",
+    "target/debug/build.rs",
+    ".deploy/release.json",
+    ".env.local",
+    "src/.env",
+    ".ENV",
+    ".RPI/uploads/a.md",
+  ])
+    expect(projectFileLink(source, project), source).toBeNull();
+  expect(inlineFileLink(".rpi/uploads/a.md", project)).toBeNull();
+  // The server's `hidden()` also rejects any `.env*` prefix, not just `.env`.
+  expect(projectFileLink("src/.envoy/config.ts", project)).toBeNull();
+  expect(projectFileLink("src/environment.ts", project)?.path).toBe(
+    "src/environment.ts",
+  );
   expect(inlineFileLink("identifier", project)).toBeNull();
   expect(inlineFileLink("README.md", project)?.path).toBe("README.md");
+  // The image endpoint shares the file endpoint's hidden-component rule.
+  expect(projectImageSource(".rpi/uploads/shot.png", project)).toBe("");
+  expect(projectImageSource("node_modules/pkg/logo.png", project)).toBe("");
+  expect(projectImageSource("assets/shot.png", project)).toBe(
+    `/api/v1/projects/${project.id}/image?path=assets%2Fshot.png`,
+  );
   expect(browserLink("https://example.com/a")).toBe("web");
   expect(browserLink("mailto:dev@example.com")).toBe("mail");
   expect(browserLink("javascript:alert(1)")).toBeNull();
@@ -81,6 +110,7 @@ test("file resolver contains paths, decodes once and validates line ranges", () 
 const markdown = [
   "[Source](src/main.ts#L2-L3) [中文](src/%E4%B8%AD%E6%96%87%20%E6%96%87%E4%BB%B6.ts:2)",
   "`src/main.ts:2` and `identifier`",
+  "`.rpi/uploads/notes.md` [Hidden](.rpi/uploads/notes.md)",
   "https://example.com/docs [Mail](mailto:dev@example.com)",
   "[Unsafe](javascript:alert%281%29) [OS](file:///workspace/links/main.ts) [Escape](../secret.ts)",
   "```ts\nsrc/main.ts:2\n```",
@@ -208,6 +238,10 @@ async function host(
       return json({
         sessions: [summary("links-session"), summary("other-session")],
       });
+    // The client probes a single session before treating a closed event stream
+    // as a retired host. These sessions stay live, so no reopen is attempted.
+    const single = path.match(/^\/api\/v1\/sessions\/([^/]+)$/);
+    if (single) return json(summary(single[1]));
     const match = path.match(/^\/api\/v1\/sessions\/([^/]+)\/(.+)$/);
     if (match) {
       const [, id, action] = match;
@@ -333,6 +367,16 @@ for (const width of [1280, 390])
       await expect(page.getByRole("link", { name, exact: true })).toHaveCount(
         0,
       );
+    // `.rpi` is rejected by the file endpoint, so it must stay plain text.
+    await expect(
+      page.locator(".message-file-link").filter({ hasText: ".rpi/" }),
+    ).toHaveCount(0);
+    await expect(
+      page.locator("code").filter({ hasText: ".rpi/uploads/notes.md" }),
+    ).toHaveCount(1);
+    await expect(
+      page.getByText("Hidden", { exact: true }),
+    ).toHaveCount(1);
     await expect(
       page.locator(".markdown-code-block .message-file-link"),
     ).toHaveCount(0);

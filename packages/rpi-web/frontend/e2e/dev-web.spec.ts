@@ -694,6 +694,79 @@ for (const width of [1440, 1100, 1024, 390]) {
   });
 }
 
+test("editing a next-run queued message re-enqueues it as nextTurn", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const commands: Array<{ type: string; deliverAs?: string; entryId?: string }> = [];
+  // Editing a queued message returns its text to the composer and cancels the
+  // entry. A run is still active, so re-submitting it goes back through
+  // `queue_message` with the restored kind instead of a new prompt.
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_queue") {
+        const items = commands.some((entry) => entry.type === "cancel_queued")
+          ? []
+          : [
+              {
+                entryId: "queue-next",
+                queue: "nextRun",
+                status: "queued",
+                text: "next run question",
+              },
+            ];
+        return route.fulfill({
+          json: response({ items, count: items.length }, body.type),
+        });
+      }
+      if (body.type === "cancel_queued" || body.type === "queue_message") {
+        commands.push({
+          type: body.type,
+          deliverAs: body.deliverAs,
+          entryId: body.entryId,
+        });
+        return route.fulfill({
+          json: response(
+            body.type === "cancel_queued"
+              ? { entryId: "queue-next", outcome: "cancelled" }
+              : { accepted: true, entryId: "queue-next-2", queue: "nextTurn" },
+            body.type,
+          ),
+        });
+      }
+      return route.fallback();
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Abort", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await page
+    .locator(".inspector .queue-item")
+    .getByRole("button", { name: "Edit queued message" })
+    .click();
+  const input = page.getByRole("textbox", {
+    name: "Send a prompt, or type / for commands…",
+  });
+  await expect(input).toHaveValue("next run question");
+  await input.press("Enter");
+  await expect
+    .poll(() => commands.map((entry) => [entry.type, entry.deliverAs]))
+    .toEqual([
+      ["cancel_queued", undefined],
+      ["queue_message", "nextTurn"],
+    ]);
+});
+
 test("history records expand and queue history toggles", async ({ page }) => {
   await mockHost(page);
   await page.goto("/");
@@ -1330,7 +1403,7 @@ test("mobile session actions keep the ellipsis control compact", async ({
   ).toBeVisible();
 });
 
-test("messages sent during a run enter the follow-up queue", async ({
+test("messages sent during a run default to steering the current task", async ({
   page,
 }) => {
   await mockHost(page);
@@ -1347,7 +1420,9 @@ test("messages sent during a run enter the follow-up queue", async ({
       const body = route.request().postDataJSON();
       if (body.type !== "queue_message") return route.fallback();
       queued.push(body.message);
-      expect(body.deliverAs).toBe("followUp");
+      // A typed interjection should reach the model before the next request,
+      // not wait for the final answer as `followUp` did.
+      expect(body.deliverAs).toBe("steer");
       return route.fulfill({
         json: response({ accepted: true, entryId: "queued-test" }, body.type),
       });
@@ -1365,6 +1440,46 @@ test("messages sent during a run enter the follow-up queue", async ({
   await expect.poll(() => queued).toEqual(["Next task"]);
   await expect(page.locator(".message.user")).toHaveCount(0);
   await expect(input).toHaveValue("");
+});
+
+test("the composer can steer into a running task without opening the inspector", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const queued: Array<{ message: string; deliverAs: string }> = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "queue_message") return route.fallback();
+      queued.push({ message: body.message, deliverAs: body.deliverAs });
+      return route.fulfill({
+        json: response({ accepted: true, entryId: "steered" }, body.type),
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Abort", exact: true }),
+  ).toBeEnabled();
+  // The Inspector stays collapsed: the delivery selector has to be reachable
+  // from the composer, where the interjection is actually typed.
+  await expect(page.locator(".inspector")).toHaveCount(0);
+  await chooseMenuOption(page, "Queue type", "steer");
+  const input = page.getByRole("textbox", {
+    name: "Send a prompt, or type / for commands…",
+  });
+  await input.fill("Change course now");
+  await input.press("Enter");
+  await expect.poll(() => queued).toEqual([
+    { message: "Change course now", deliverAs: "steer" },
+  ]);
 });
 
 test("an event replay gap reloads the native snapshot", async ({ page }) => {
@@ -2607,6 +2722,55 @@ test("streamed markdown handles incomplete fences and stays formatted in dark mo
   await page.screenshot({
     path: testInfo.outputPath("markdown-dark-stream.png"),
   });
+});
+
+test("the working indicator does not resize the transcript", async ({
+  page,
+}) => {
+  await mockMarkdownTranscript(page);
+  // Hold the stream open so the run stays active and the indicator stays
+  // mounted; a settled stream would unmount it before measurement.
+  let hold!: () => void;
+  const held = new Promise<void>((resolve) => (hold = resolve));
+  let streams = 0;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      streams++;
+      if (streams === 1)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+          headers: { "cache-control": "no-store" },
+        });
+      await held;
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: "retry: 60000\n\n",
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Abort", exact: true }),
+  ).toBeEnabled();
+  const transcript = page.locator(".transcript");
+  const indicator = page.locator(".working-indicator");
+  await expect(indicator).toBeAttached();
+  const position = await indicator.evaluate(
+    (node) => getComputedStyle(node).position,
+  );
+  expect(position).toBe("absolute");
+  // The indicator is mounted and unmounted at every run boundary in the real
+  // app. Isolate its own contribution: hiding it must not change the scroll
+  // extent, which is what used to move the followed pane by ~34px.
+  const busyHeight = await transcript.evaluate((node) => node.scrollHeight);
+  await indicator.evaluate((node) => {
+    (node as HTMLElement).style.display = "none";
+  });
+  const withoutIndicator = await transcript.evaluate((node) => node.scrollHeight);
+  expect(withoutIndicator).toBe(busyHeight);
+  hold();
 });
 
 test("narrow authenticated sidebar uses icons and all settings follow the chosen language", async ({

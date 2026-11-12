@@ -221,6 +221,11 @@ class MockHost {
         return route.fulfill({
           json: { sessions: [this.summary(A), this.summary(B)] },
         });
+      // The client probes this before treating a closed event stream as a
+      // retired host. A live session answers `ready`, so no reopen happens.
+      const single = path.match(/^\/api\/v1\/sessions\/([^/]+)$/);
+      if (method === "GET" && single && [A, B].includes(single[1]))
+        return route.fulfill({ json: this.summary(single[1]) });
       if (
         method === "POST" &&
         path === `/api/v1/projects/${projectId}/upload`

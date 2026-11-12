@@ -180,6 +180,11 @@ async function installHost(page: Page): Promise<Host> {
       return route.fulfill({
         json: { sessions: [summary(sessionId), summary(otherSessionId)] },
       });
+    // The client probes this before treating a closed event stream as a retired
+    // host. These sessions stay live, so no reopen is attempted.
+    const single = path.match(/^\/api\/v1\/sessions\/([^/]+)$/);
+    if (method === "GET" && single && [sessionId, otherSessionId].includes(single[1]))
+      return route.fulfill({ json: summary(single[1]) });
     const match = path.match(/^\/api\/v1\/sessions\/([^/]+)\/(.+)$/);
     if (!match || ![sessionId, otherSessionId].includes(match[1]))
       return reject();

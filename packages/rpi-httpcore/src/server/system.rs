@@ -12,8 +12,17 @@ use serde_json::{json, Value};
 pub(super) async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"ok":true,"service":state.service_name,"protocol":"rpi"}))
 }
-pub(super) async fn capabilities() -> Json<Value> {
-    Json(protocol::capabilities())
+pub(super) async fn capabilities(State(state): State<AppState>) -> Json<Value> {
+    let mut value = protocol::capabilities();
+    // Clients cannot infer this from the command list, and the idle timeout is
+    // measured server-side only: browser-local typing is invisible to it. A
+    // client that knows the value can keep the selected session alive instead
+    // of waiting for the retirement to surface as a 404.
+    value["sessionIdleTimeoutSeconds"] = match state.session_idle_timeout_seconds {
+        Some(seconds) => json!(seconds),
+        None => Value::Null,
+    };
+    Json(value)
 }
 
 #[derive(Debug, Deserialize)]

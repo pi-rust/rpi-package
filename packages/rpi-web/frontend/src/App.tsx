@@ -44,6 +44,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   SquarePen,
   Sigma,
@@ -65,16 +66,20 @@ import {
   type ModelPreference,
   type ModelSelected,
 } from "./modelPreference";
+import { ResourcePanel } from "./ResourcePanel";
 import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
 import { AskCard } from "./AskCard";
 import { askInfo, isAskTool } from "./ask";
 import { DelegationCard } from "./DelegationCard";
 import { delegationInfo, isDelegationTool } from "./delegation";
+import { queueDeliverAs } from "./queueKind";
 import {
   api,
   ApiError,
   commandData,
+  hostIsRetired,
+  reopenHost,
   roleOf,
   type AuthProviderStatus,
   type Capabilities,
@@ -304,6 +309,12 @@ function matchModel(models: ModelDescriptor[], query: string) {
 }
 
 const LOCAL_SLASH_COMMANDS = new Set(["/help", "/tools"]);
+
+/**
+ * How many times a failing event stream may reopen its host before the client
+ * reports the session as unavailable. A healthy stream refills the budget.
+ */
+const MAX_REARMS = 3;
 
 const FAST_SNAPSHOT_OPTIONS = {
   limit: 40,
@@ -866,7 +877,7 @@ export default function App() {
   const [queueDraft, setQueueDraft] = useState("");
   const queueInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
-  const [queueKind, setQueueKind] = useState("followUp");
+  const [queueKind, setQueueKind] = useState("steer");
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   function updateDraft(value: string, targetSession = activeSessionRef.current) {
@@ -898,6 +909,8 @@ export default function App() {
   const attachmentPreviews = useRef(new Set<string>());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("connecting");
+  /** Set when the native host reports `host_closed`; cleared on session switch. */
+  const hostClosedRef = useRef(false);
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionHydrated, setSessionHydrated] = useState(false);
   const [runActive, setRunActive] = useState(false);
@@ -911,6 +924,11 @@ export default function App() {
   const [seen, setSeen] = useState(0);
   const [settleTick, setSettleTick] = useState(0);
   const [connectionRevision, setConnectionRevision] = useState(0);
+  /**
+   * Bounded rearm budget for a stream that keeps failing. Reset whenever a
+   * stream opens successfully, so a healthy reconnect does not consume it.
+   */
+  const rearmBudget = useRef(0);
   const [leafId, setLeafId] = useState("");
   const [interrupted, setInterrupted] = useState(false);
   const [failedRun, setFailedRun] = useState(false);
@@ -1255,6 +1273,11 @@ export default function App() {
   const composerContinue = !busy && status !== "closed" && !queueEditId && !draft.trim() && attachments.length === 0 &&
     ((interrupted && supported.has("resume_pending")) || (failedRun && supported.has("prompt")));
   const localSlash = attachments.length === 0 && LOCAL_SLASH_COMMANDS.has(draft.trim().split(/\s+/, 1)[0]);
+  // Submitting while a run is active queues the message instead of prompting.
+  // The delivery selector lives in the composer because the Inspector is
+  // collapsed by default, which otherwise hides the only way to pick `steer`.
+  const composerQueues =
+    (busy || Boolean(queueEditId)) && supported.has("queue_message");
   const t = useCallback(
     (key: MessageKey, values?: Record<string, string | number>) =>
       translate(language, key, values),
@@ -1488,6 +1511,7 @@ export default function App() {
           setRunActive(false);
           dialogRequests.current.clear();
           activeDialogId.current = "";
+          hostClosedRef.current = true;
           setStatus("closed");
           setDialog(null);
           break;
@@ -1878,6 +1902,43 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [authChecked, authRequired, authenticated, refreshSessions]);
 
+  /**
+   * Keep the selected session's native host alive while the user is composing.
+   *
+   * The bridge retires an idle host after `sessionIdleTimeoutSeconds` measured
+   * from requests that *target the session*; the session-list poll above does
+   * not refresh that timer, so typing a long message without sending could
+   * outlive the host and fail on Enter. Probe at a third of the timeout so a
+   * suspended tab or a dropped request still cannot cross the deadline. Only
+   * `GET /sessions/{id}` is used: it never opens a host, so a deleted session is
+   * still reported instead of being resurrected here.
+   */
+  const idleTimeoutSeconds = capabilities?.sessionIdleTimeoutSeconds ?? null;
+  useEffect(() => {
+    if (!sessionId || !idleTimeoutSeconds || idleTimeoutSeconds <= 0) return;
+    if (!authChecked || (authRequired && !authenticated)) return;
+    const probe = () => {
+      if (document.hidden) return;
+      void api.getSession(sessionId).catch(() => {});
+    };
+    const interval = Math.max(1000, Math.floor((idleTimeoutSeconds * 1000) / 3));
+    const timer = window.setInterval(probe, interval);
+    // A backgrounded tab stops being a reliable keeper: probe as soon as it is
+    // visible again so a retirement that happened while hidden is observed by
+    // the session-recovery path instead of on the next send.
+    document.addEventListener("visibilitychange", probe);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", probe);
+    };
+  }, [
+    sessionId,
+    idleTimeoutSeconds,
+    authChecked,
+    authRequired,
+    authenticated,
+  ]);
+
   useEffect(() => {
     saveLanguage(language);
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
@@ -2023,6 +2084,7 @@ export default function App() {
     setError(initialSelectionError.current);
     initialSelectionError.current = "";
     setConnectionFailed(false);
+    hostClosedRef.current = false;
     setStatus("connecting");
     setLoadingSession(Boolean(sessionId));
     setNativeMessageQueries(false);
@@ -2165,6 +2227,7 @@ export default function App() {
       );
       stream = next;
       source.current = next;
+      let rearmPending = false;
       next.addEventListener("resync_required", () => {
         next.close();
         if (isCurrent()) setConnectionRevision((value) => value + 1);
@@ -2172,6 +2235,9 @@ export default function App() {
       let priorStatus = "ready";
       next.onopen = () => {
         if (!isCurrent()) return;
+        // A stream that opens proves the host is healthy again; refill the budget
+        // so a later genuine retirement still gets its own recovery attempt.
+        rearmBudget.current = 0;
         setStatus((previous) =>
           previous === "reconnecting" ? priorStatus : previous,
         );
@@ -2195,11 +2261,37 @@ export default function App() {
         });
       next.onerror = () => {
         if (!isCurrent()) return;
+        // `host_closed` is the native host shutting down on purpose, not an idle
+        // retirement. Reviving it here would silently undo that decision.
+        if (hostClosedRef.current) return;
         setStatus((previous) => {
           if (previous === "closed") return previous;
           if (previous !== "reconnecting") priorStatus = previous;
           return "reconnecting";
         });
+        // EventSource retries 404 forever without ever reopening the host, so a
+        // retired session would stay stuck on "reconnecting". Probing first keeps
+        // an ordinary reconnect (upload EOF, proxy hiccup) from reopening a host
+        // that is still alive.
+        if (rearmPending) return;
+        rearmPending = true;
+        void (async () => {
+          const retired = await hostIsRetired(sessionId, requests.signal);
+          if (!isCurrent()) return;
+          // A live host only lost this stream. EventSource reconnects on its own,
+          // so rebuilding the whole session view here would discard its state.
+          if (retired !== true) return;
+          if (rearmBudget.current >= MAX_REARMS) {
+            failConnection(new Error(t("sessionUnavailable")));
+            return;
+          }
+          rearmBudget.current += 1;
+          if (!(await reopenHost(sessionId, requests.signal))) {
+            if (isCurrent()) failConnection(new Error(t("sessionUnavailable")));
+            return;
+          }
+          if (isCurrent()) setConnectionRevision((value) => value + 1);
+        })();
       };
     };
 
@@ -3305,6 +3397,15 @@ export default function App() {
 
   async function editQueued(item: QueueItem) {
     if (!isEditableQueueItem(item) || !sessionId) return;
+    // The reported kind is `QueueKind::as_str()`, which spells the next-run
+    // queue `nextRun` while `queue_message` accepts only `nextTurn`. Re-sending
+    // the raw value fails after `cancel_queued` removed the entry, losing the
+    // text, so an unmappable kind is not cancelled at all.
+    const deliverAs = queueDeliverAs(item.queue);
+    if (!deliverAs) {
+      setError(t("queueKindNotResubmittable", { kind: item.queue }));
+      return;
+    }
     const navigation = navigationRevision.current;
     const previous = queueItems;
     const previousDraft = draft;
@@ -3313,7 +3414,7 @@ export default function App() {
     setQueueDraft("");
     setQueueItems((items) => items.filter((queued) => queued.entryId !== item.entryId));
     updateDraft(item.text);
-    setQueueKind(item.queue);
+    setQueueKind(deliverAs);
     setQueueOpen(false);
     setInspector(false);
     requestAnimationFrame(() => composerInputRef.current?.focus());
@@ -4040,7 +4141,7 @@ export default function App() {
                     if (window.matchMedia("(max-width: 767px)").matches) setSidebar(false);
                   }}
                 >
-                  <Settings2 size={14} /> {t("runtimeSettings")}
+                  <SlidersHorizontal size={14} /> {t("runtimeSettings")}
                 </button>
               </div>
               <div className="account-panel">
@@ -4269,7 +4370,7 @@ export default function App() {
                 setPanel(false);
               }}
             >
-              <Settings2 size={17} />
+              <SlidersHorizontal size={17} />
             </button>
             {project && actions.has("files") && (
               <button
@@ -4948,6 +5049,19 @@ export default function App() {
                       <kbd>Enter</kbd>
                       <span>{t("shiftEnterNewline")}</span>
                     </span>
+                    {composerQueues && (
+                      <MenuSelect
+                        className="composer-queue-kind"
+                        label={t("queueKind")}
+                        value={queueKind}
+                        onChange={setQueueKind}
+                        options={[
+                          { value: "followUp", label: t("followUp") },
+                          { value: "steer", label: t("steer") },
+                          { value: "nextTurn", label: t("nextTurn") },
+                        ]}
+                      />
+                    )}
                     {queueEditId && (
                       <button
                         type="button"
@@ -5682,6 +5796,9 @@ export default function App() {
                   </span>
                 ))}
               </div>
+              {project && (
+                <ResourcePanel project={project} language={language} />
+              )}
             </aside>
           )}
         </main>

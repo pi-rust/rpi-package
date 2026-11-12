@@ -5,6 +5,12 @@ export interface Capabilities {
   supportedActions?: string[];
   semantics?: Record<string, unknown>;
   limits?: Record<string, unknown>;
+  /**
+   * Server-side idle timeout for a live native host. `null`/absent means the
+   * host is retained until an explicit close. Activity is measured from HTTP
+   * requests that target the session, so browser-local typing does not count.
+   */
+  sessionIdleTimeoutSeconds?: number | null;
   parityComplete: boolean;
 }
 
@@ -60,6 +66,33 @@ export interface Project {
   name: string;
   path: string;
   archived?: boolean;
+}
+
+/** A read-only row from the native `rpi resource list` observation. */
+export interface ResourceEntry {
+  kind?: string;
+  scope?: string;
+  identity?: string;
+  name?: string;
+  version?: string | null;
+  ownership?: string | null;
+  installed?: boolean;
+  inUse?: boolean;
+  loaded?: boolean | null;
+  applied?: boolean | null;
+  path?: string | null;
+  diagnostics?: string[];
+}
+
+export interface ResourceCatalog {
+  success?: boolean;
+  operation?: string;
+  scope?: string;
+  data?: {
+    outcome?: string;
+    resources?: ResourceEntry[];
+    diagnostics?: string[];
+  };
 }
 export interface FileEntry {
   name: string;
@@ -473,14 +506,105 @@ export function sendCommand<T = Record<string, unknown>>(
   });
 }
 
-/** Unwrap a host response, turning `success: false` into a thrown error. */
+/**
+ * The bridge reaps an idle native host while keeping its registry entry, so a
+ * later request for that session has no live backend. These commands only
+ * observe or steer an existing host and are safe to replay once the host has
+ * been reopened; anything that mutates the transcript (for example `prompt`)
+ * must not be retried, or a duplicate would be appended.
+ */
+const REPLAY_SAFE_COMMANDS = new Set([
+  "get_state",
+  "get_stats",
+  "get_messages",
+  "get_history",
+  "get_message_summaries",
+  "get_message_window",
+  "get_available_models",
+  "get_available_thinking_levels",
+  "get_available_tools",
+  "get_auth_status",
+  "get_commands",
+  "get_queue",
+  "get_session_branch",
+  "get_resource_state",
+  "get_durable_state",
+  "get_durable_runs",
+]);
+
+/** A 404 from `/commands` means the registry entry has no live native host. */
+export function isMissingHost(cause: unknown): cause is ApiError {
+  return cause instanceof ApiError && cause.status === 404;
+}
+
+/**
+ * Reopen a retired host and return whether the caller may retry its request.
+ * `POST /sessions/{id}/open` restores a known session from its transcript and
+ * answers 404 for an unknown one, so this cannot resurrect a deleted session.
+ */
+export async function reopenHost(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    await request<SessionSummary>(`/sessions/${sessionId}/open`, {
+      method: "POST",
+      signal,
+    });
+    return true;
+  } catch (cause) {
+    if (signal?.aborted) throw cause;
+    return false;
+  }
+}
+
+export function canReplayAfterReopen(type: string): boolean {
+  return REPLAY_SAFE_COMMANDS.has(type);
+}
+
+/**
+ * Whether the registry entry currently has no live native host.
+ *
+ * A closed event stream is not proof of that: uploads, proxies and idle
+ * timeouts all close a stream while the host keeps running. Returns `null`
+ * when the probe itself failed, so callers can leave the state untouched.
+ */
+export async function hostIsRetired(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<boolean | null> {
+  try {
+    const session = await request<SessionSummary>(`/sessions/${sessionId}`, {
+      signal,
+    });
+    return session.status === "offline" || session.status === "closed";
+  } catch (cause) {
+    if (signal?.aborted) throw cause;
+    return null;
+  }
+}
+
+/**
+ * Unwrap a host response, turning `success: false` into a thrown error.
+ *
+ * A retired host answers 404 before any command runs, so replay-safe reads are
+ * retried once after reopening it. Requests that append to the transcript are
+ * surfaced to the caller instead of being double-submitted.
+ */
 export async function commandData<T>(
   sessionId: string,
   type: string,
   payload: Record<string, unknown> = {},
   signal?: AbortSignal,
 ): Promise<T> {
-  const response = await sendCommand<T>(sessionId, type, payload, signal);
+  let response: HostResponse<T>;
+  try {
+    response = await sendCommand<T>(sessionId, type, payload, signal);
+  } catch (cause) {
+    if (!isMissingHost(cause) || !canReplayAfterReopen(type)) throw cause;
+    if (!(await reopenHost(sessionId, signal))) throw cause;
+    response = await sendCommand<T>(sessionId, type, payload, signal);
+  }
   if (!response.success) throw new Error(response.error ?? `${type} failed`);
   return (response.data ?? {}) as T;
 }
@@ -588,6 +712,12 @@ export const api = {
       throw new Error("images are limited to 20 MiB");
     return image;
   },
+  /** Read-only native resource catalog for one explicit scope. */
+  resources: (projectId: string, scope: "global" | "project", signal?: AbortSignal) =>
+    request<ResourceCatalog>(
+      `/projects/${projectId}/resources?${new URLSearchParams({ scope })}`,
+      { signal },
+    ),
   upload: (projectId: string, file: File, signal?: AbortSignal) => {
     const body = new FormData();
     body.append("file", file, file.name);

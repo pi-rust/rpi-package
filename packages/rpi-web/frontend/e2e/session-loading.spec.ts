@@ -225,6 +225,11 @@ class MockHost {
         });
       if (path === "/api/v1/sessions" && request.method() === "GET")
         return route.fulfill({ json: { sessions: [session(A), session(B)] } });
+      // The client probes this before treating a closed event stream as a
+      // retired host, so a live session must answer `ready` here.
+      const single = path.match(/^\/api\/v1\/sessions\/([^/]+)$/);
+      if (single && request.method() === "GET")
+        return route.fulfill({ json: session(single[1]) });
 
       const match = path.match(
         /^\/api\/v1\/sessions\/([^/]+)\/(open|snapshot|commands|events|run-timings\/query)$/,
