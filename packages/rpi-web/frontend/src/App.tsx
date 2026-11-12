@@ -71,6 +71,7 @@ import { AskCard } from "./AskCard";
 import { askInfo, isAskTool } from "./ask";
 import { DelegationCard } from "./DelegationCard";
 import { delegationInfo, isDelegationTool } from "./delegation";
+import { queueDeliverAs } from "./queueKind";
 import {
   api,
   ApiError,
@@ -3305,6 +3306,15 @@ export default function App() {
 
   async function editQueued(item: QueueItem) {
     if (!isEditableQueueItem(item) || !sessionId) return;
+    // The reported kind is `QueueKind::as_str()`, which spells the next-run
+    // queue `nextRun` while `queue_message` accepts only `nextTurn`. Re-sending
+    // the raw value fails after `cancel_queued` removed the entry, losing the
+    // text, so an unmappable kind is not cancelled at all.
+    const deliverAs = queueDeliverAs(item.queue);
+    if (!deliverAs) {
+      setError(t("queueKindNotResubmittable", { kind: item.queue }));
+      return;
+    }
     const navigation = navigationRevision.current;
     const previous = queueItems;
     const previousDraft = draft;
@@ -3313,7 +3323,7 @@ export default function App() {
     setQueueDraft("");
     setQueueItems((items) => items.filter((queued) => queued.entryId !== item.entryId));
     updateDraft(item.text);
-    setQueueKind(item.queue);
+    setQueueKind(deliverAs);
     setQueueOpen(false);
     setInspector(false);
     requestAnimationFrame(() => composerInputRef.current?.focus());

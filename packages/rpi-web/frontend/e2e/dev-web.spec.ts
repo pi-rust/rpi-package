@@ -694,6 +694,79 @@ for (const width of [1440, 1100, 1024, 390]) {
   });
 }
 
+test("editing a next-run queued message re-enqueues it as nextTurn", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const commands: Array<{ type: string; deliverAs?: string; entryId?: string }> = [];
+  // Editing a queued message returns its text to the composer and cancels the
+  // entry. A run is still active, so re-submitting it goes back through
+  // `queue_message` with the restored kind instead of a new prompt.
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type === "get_queue") {
+        const items = commands.some((entry) => entry.type === "cancel_queued")
+          ? []
+          : [
+              {
+                entryId: "queue-next",
+                queue: "nextRun",
+                status: "queued",
+                text: "next run question",
+              },
+            ];
+        return route.fulfill({
+          json: response({ items, count: items.length }, body.type),
+        });
+      }
+      if (body.type === "cancel_queued" || body.type === "queue_message") {
+        commands.push({
+          type: body.type,
+          deliverAs: body.deliverAs,
+          entryId: body.entryId,
+        });
+        return route.fulfill({
+          json: response(
+            body.type === "cancel_queued"
+              ? { entryId: "queue-next", outcome: "cancelled" }
+              : { accepted: true, entryId: "queue-next-2", queue: "nextTurn" },
+            body.type,
+          ),
+        });
+      }
+      return route.fallback();
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Abort", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await page
+    .locator(".inspector .queue-item")
+    .getByRole("button", { name: "Edit queued message" })
+    .click();
+  const input = page.getByRole("textbox", {
+    name: "Send a prompt, or type / for commands…",
+  });
+  await expect(input).toHaveValue("next run question");
+  await input.press("Enter");
+  await expect
+    .poll(() => commands.map((entry) => [entry.type, entry.deliverAs]))
+    .toEqual([
+      ["cancel_queued", undefined],
+      ["queue_message", "nextTurn"],
+    ]);
+});
+
 test("history records expand and queue history toggles", async ({ page }) => {
   await mockHost(page);
   await page.goto("/");
