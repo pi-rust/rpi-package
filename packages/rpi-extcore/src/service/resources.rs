@@ -5,7 +5,9 @@ use intent::{planned_record, require_retry_headroom};
 #[path = "resource_tests.rs"]
 mod tests;
 use crate::host::SessionOptions;
-use crate::resources::local::{LocalResourceRequest, LocalResourceResult};
+use crate::resources::local::{
+    LocalResourceOperation, LocalResourceRequest, LocalResourceResult,
+};
 use crate::resources::*;
 
 /// Caller-owned short project exclusion for authorized local filesystem CAS,
@@ -801,6 +803,33 @@ impl Service {
         })
         .await
         .map_err(|_| ResourceError::unavailable("resource management owner failed"))?
+    }
+    /// Read-only native resource catalog for the Web UI.
+    ///
+    /// Only `list` is ever dispatched here, and the scope is an explicit
+    /// argument so a caller cannot turn this into an install/remove path. The
+    /// native CLI's bounded `LocalResourceResult.observation` is returned as-is;
+    /// no session host is opened and no resource fence is needed for a read.
+    pub async fn resource_catalog(
+        &self,
+        project_id: String,
+        scope: ResourceScope,
+    ) -> ServiceResult<Value> {
+        let result = self
+            .manage_resources(LocalResourceRequest {
+                project_id,
+                scope,
+                operation: LocalResourceOperation::List,
+            })
+            .await
+            .map_err(reply_error)?;
+        if !result.success {
+            return Err((
+                ReplyKind::HostUnavailable,
+                json!({"error": result.diagnostics}),
+            ));
+        }
+        Ok(result.observation)
     }
     /// All-or-none idle preflight under lifecycle exclusion. Global native
     /// leases can be held by any owned project host, so global release checks all.

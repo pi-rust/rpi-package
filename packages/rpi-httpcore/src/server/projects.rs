@@ -6,12 +6,42 @@ use axum::{
 };
 use rpi_extcore::{
     reply::{IntoReply, ReplyKind},
+    resources::ResourceScope,
     service::{
         self, CreateProjectRequest, FileQuery, ProjectFoldersQuery, ProjectMetadataRequest,
         RenameProjectRequest,
     },
 };
+use serde::Deserialize;
 use serde_json::json;
+
+/// Read-only resource catalog. `scope` is mandatory so the UI cannot request an
+/// implicit (and possibly surprising) default scope.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ResourceCatalogQuery {
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+pub(super) async fn project_resources(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ResourceCatalogQuery>,
+) -> Response {
+    let scope = match query.scope.as_deref() {
+        Some("project") => ResourceScope::Project,
+        Some("global") => ResourceScope::Global,
+        _ => {
+            return HttpReply(
+                (ReplyKind::InvalidInput, json!({"error": "scope must be project or global"}))
+                    .into_reply(),
+            )
+            .into_response();
+        }
+    };
+    HttpReply(state.backend.resource_catalog(id, scope).await.into_reply()).into_response()
+}
 
 pub(super) async fn project_metadata(
     State(state): State<AppState>,
@@ -224,6 +254,10 @@ pub(super) fn routes() -> axum::Router<AppState> {
         .route(
             "/api/v1/projects/{id}/image",
             axum::routing::get(project_image),
+        )
+        .route(
+            "/api/v1/projects/{id}/resources",
+            axum::routing::get(project_resources),
         )
         .route(
             "/api/v1/projects/{id}/git/status",

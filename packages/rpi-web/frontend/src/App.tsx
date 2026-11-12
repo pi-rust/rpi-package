@@ -66,6 +66,7 @@ import {
   type ModelPreference,
   type ModelSelected,
 } from "./modelPreference";
+import { ResourcePanel } from "./ResourcePanel";
 import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
 import { AskCard } from "./AskCard";
@@ -876,7 +877,7 @@ export default function App() {
   const [queueDraft, setQueueDraft] = useState("");
   const queueInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
-  const [queueKind, setQueueKind] = useState("followUp");
+  const [queueKind, setQueueKind] = useState("steer");
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   function updateDraft(value: string, targetSession = activeSessionRef.current) {
@@ -5795,6 +5796,9 @@ export default function App() {
                   </span>
                 ))}
               </div>
+              {project && (
+                <ResourcePanel project={project} language={language} />
+              )}
             </aside>
           )}
         </main>

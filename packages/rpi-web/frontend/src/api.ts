@@ -67,6 +67,33 @@ export interface Project {
   path: string;
   archived?: boolean;
 }
+
+/** A read-only row from the native `rpi resource list` observation. */
+export interface ResourceEntry {
+  kind?: string;
+  scope?: string;
+  identity?: string;
+  name?: string;
+  version?: string | null;
+  ownership?: string | null;
+  installed?: boolean;
+  inUse?: boolean;
+  loaded?: boolean | null;
+  applied?: boolean | null;
+  path?: string | null;
+  diagnostics?: string[];
+}
+
+export interface ResourceCatalog {
+  success?: boolean;
+  operation?: string;
+  scope?: string;
+  data?: {
+    outcome?: string;
+    resources?: ResourceEntry[];
+    diagnostics?: string[];
+  };
+}
 export interface FileEntry {
   name: string;
   path: string;
@@ -685,6 +712,12 @@ export const api = {
       throw new Error("images are limited to 20 MiB");
     return image;
   },
+  /** Read-only native resource catalog for one explicit scope. */
+  resources: (projectId: string, scope: "global" | "project", signal?: AbortSignal) =>
+    request<ResourceCatalog>(
+      `/projects/${projectId}/resources?${new URLSearchParams({ scope })}`,
+      { signal },
+    ),
   upload: (projectId: string, file: File, signal?: AbortSignal) => {
     const body = new FormData();
     body.append("file", file, file.name);

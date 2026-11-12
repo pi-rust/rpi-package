@@ -1403,7 +1403,7 @@ test("mobile session actions keep the ellipsis control compact", async ({
   ).toBeVisible();
 });
 
-test("messages sent during a run enter the follow-up queue", async ({
+test("messages sent during a run default to steering the current task", async ({
   page,
 }) => {
   await mockHost(page);
@@ -1420,7 +1420,9 @@ test("messages sent during a run enter the follow-up queue", async ({
       const body = route.request().postDataJSON();
       if (body.type !== "queue_message") return route.fallback();
       queued.push(body.message);
-      expect(body.deliverAs).toBe("followUp");
+      // A typed interjection should reach the model before the next request,
+      // not wait for the final answer as `followUp` did.
+      expect(body.deliverAs).toBe("steer");
       return route.fulfill({
         json: response({ accepted: true, entryId: "queued-test" }, body.type),
       });
