@@ -1440,6 +1440,46 @@ test("messages sent during a run enter the follow-up queue", async ({
   await expect(input).toHaveValue("");
 });
 
+test("the composer can steer into a running task without opening the inspector", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const queued: Array<{ message: string; deliverAs: string }> = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "queue_message") return route.fallback();
+      queued.push({ message: body.message, deliverAs: body.deliverAs });
+      return route.fulfill({
+        json: response({ accepted: true, entryId: "steered" }, body.type),
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Abort", exact: true }),
+  ).toBeEnabled();
+  // The Inspector stays collapsed: the delivery selector has to be reachable
+  // from the composer, where the interjection is actually typed.
+  await expect(page.locator(".inspector")).toHaveCount(0);
+  await chooseMenuOption(page, "Queue type", "steer");
+  const input = page.getByRole("textbox", {
+    name: "Send a prompt, or type / for commands…",
+  });
+  await input.fill("Change course now");
+  await input.press("Enter");
+  await expect.poll(() => queued).toEqual([
+    { message: "Change course now", deliverAs: "steer" },
+  ]);
+});
+
 test("an event replay gap reloads the native snapshot", async ({ page }) => {
   await mockHost(page);
   let snapshots = 0;

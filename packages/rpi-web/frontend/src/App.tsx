@@ -1256,6 +1256,11 @@ export default function App() {
   const composerContinue = !busy && status !== "closed" && !queueEditId && !draft.trim() && attachments.length === 0 &&
     ((interrupted && supported.has("resume_pending")) || (failedRun && supported.has("prompt")));
   const localSlash = attachments.length === 0 && LOCAL_SLASH_COMMANDS.has(draft.trim().split(/\s+/, 1)[0]);
+  // Submitting while a run is active queues the message instead of prompting.
+  // The delivery selector lives in the composer because the Inspector is
+  // collapsed by default, which otherwise hides the only way to pick `steer`.
+  const composerQueues =
+    (busy || Boolean(queueEditId)) && supported.has("queue_message");
   const t = useCallback(
     (key: MessageKey, values?: Record<string, string | number>) =>
       translate(language, key, values),
@@ -4995,6 +5000,19 @@ export default function App() {
                       <kbd>Enter</kbd>
                       <span>{t("shiftEnterNewline")}</span>
                     </span>
+                    {composerQueues && (
+                      <MenuSelect
+                        className="composer-queue-kind"
+                        label={t("queueKind")}
+                        value={queueKind}
+                        onChange={setQueueKind}
+                        options={[
+                          { value: "followUp", label: t("followUp") },
+                          { value: "steer", label: t("steer") },
+                          { value: "nextTurn", label: t("nextTurn") },
+                        ]}
+                      />
+                    )}
                     {queueEditId && (
                       <button
                         type="button"
