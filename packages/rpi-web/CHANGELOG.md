@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.1.54](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.53...rpi-web-v0.1.54) - 2026-11-13
+
+### Added
+
+- *(web)* read-only resource catalog for global and project scopes, default steer
+
+### Fixed
+
+- *(web)* recover a session whose native host was retired
+- *(web)* distinguish the runtime panel from the settings dialog by icon
+- *(web)* keep the working indicator out of transcript flow
+- *(web)* make the queue delivery kind reachable from the composer
+- *(web)* keep the selected session alive for the advertised idle timeout
+- *(web)* keep hidden project paths as plain text instead of dead previews
+- *(web)* re-enqueue an edited next-run message with the host's spelling
+- *(web)* preview raster files linked from messages
+- *(web)* remember explicit model choices for new project sessions
+
+### Other
+
+- *(web)* account for the read-only resource catalog in the trace mock
+- *(web)* tolerate a one-shot recovery probe in the keepalive guard
+
 ## [0.1.53](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.52...rpi-web-v0.1.53) - 2026-11-10
 
 ### Fixed
