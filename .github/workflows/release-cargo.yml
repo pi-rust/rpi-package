@@ -1,11 +1,7 @@
 name: Version and publish crates
 
 on:
-  schedule:
-    # Run daily at 00:00 Asia/Shanghai (16:00 UTC on the previous day);
-    # the guard below skips days where main has not advanced since the last
-    # release commit.
-    - cron: '0 16 * * *'
+  # Releases are started explicitly; the former daily schedule is disabled.
   workflow_dispatch:
 
 permissions:
@@ -48,12 +44,11 @@ jobs:
           fi
 
   release:
-    # The schedule batches main changes into one daily release. Manual runs
-    # remain available for an explicit retry or emergency release.
+    # Manual runs remain available for an explicit retry or emergency release.
     if: >-
       needs.should-release.outputs.changed == 'true' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+      github.event_name == 'workflow_dispatch'
     needs: should-release
     runs-on: ubuntu-latest
     timeout-minutes: 60
