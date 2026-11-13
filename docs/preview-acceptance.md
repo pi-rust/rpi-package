@@ -4,8 +4,8 @@
 - 源码：`pi-rust/rpi-package` `main` @ `3736c9d`（PR #273 合并点），预览分支 HEAD `61ae777`
 - 本地安装：`~/.rpi/agent/extensions/librpi_web_extension-v0.1.53-68e43e702a4147be8725f1ba91473cb7.so`
   - 由 `cargo build -p rpi-web --lib --release` 产出（19,509,120 bytes）
-  - sha256 `80ba4db91d93e4a0a16d4c38cc8c66a5af0a1038cbcd4ce6f49caeba5b4a6d57`
-  - registry `~/.rpi/agent/native-packages.json` 标记 `version: 0.1.54-preview`、`source_commit: 61ae7773…`
+  - sha256 `d62f634d899df02747d3838f09ad0bf59496616cb9eba819851b8e043b73bfc1`（含长名称换行修复；初装时为 `80ba4db9…`）
+  - registry `~/.rpi/agent/native-packages.json` 标记 `version: 0.1.54-preview`、`source_commit: f90cde37…`（PR #274 的修复）
 - 原正式版备份：`~/.rpi/agent/preview-backups/`（`.so` + `native-packages.json`，时间戳 `20261112-225458`）
 - 服务：本机 `rpi --webserver`，`http://127.0.0.1:3997`（`web.json` 端口 3997）
 - 前端资源：`packages/rpi-web/assets/` 由 `npm run build` 产出并嵌入 cdylib
@@ -25,8 +25,9 @@
 | 9 | 插话默认 `steer`（#259） | 真实会话 `4e683613…` 发起 run 后插话，抓 `POST /commands` | PASS `{"message":"interjection: ignore the rest","deliverAs":"steer"}` |
 | 10 | 前端隐藏路径不生成按钮（#261） | e2e `message-links.spec.ts`（5 项） | PASS（改前失败、改后通过，已验证） |
 | 11 | 保活/重开/抖动/重入队等 | e2e + `cargo test` | PASS：`cargo test -p rpi-extcore -p rpi-httpcore --lib` 40 passed；tsc 通过；相关 Playwright 用例通过 |
+| 12 | 长资源名不撑破面板 | 真实 Chrome 量测 `.resource-item-head strong` 右边界 vs 面板右边界 | PASS（加 `min-width:0` 后 name right `1196` ≤ panel right `1268`）；修复见 PR #274，preview 已重新构建加载（sha256 `d62f634d899df02747d3838f09ad0bf59496616cb9eba819851b8e043b73bfc1`） |
 
-截图：`/tmp/preview-resources.png`（Inspector 打开）、`/tmp/preview-resources-scrolled.png`（资源面板滚动后可见）。
+截图：`/tmp/preview-resources.png`（Inspector 打开）、`/tmp/preview-resources-scrolled.png`（资源面板滚动后可见）、`/tmp/preview-resources-fixed.png`（长名称换行修复后）。
 > 注：截图为临时路径，未纳入仓库；如需归档请复制到 `docs/`。
 
 ## 需要真人验收（未自动判定，请逐项确认）
@@ -35,7 +36,7 @@
 
 - [ ] **A. 资源面板可读性**：打开右上 Inspector（`SlidersHorizontal` 图标），滚动到底部 "Resources"。
       - Global 列表是否清晰展示 kind / 版本 / in-use / 路径 / diagnostics？
-      - 长文件名是否正确换行、不撑破面板？（对应后续 CSS 修复 `min-width: 0`）
+      - 长文件名是否正确换行、不撑破面板？（已由自动量测 #12 覆盖，请真人确认视觉上仍易读）
       - "Changing skills, prompts or context files requires restarting the native host" 提示是否位置合适、不误导？
       - 中文界面（`Settings → 简体中文`）下 "全局 / 项目 / 资源 / 刷新资源" 文案是否准确？
 - [ ] **B. 项目级资源存在时的展示**：当前已配置项目均无项目级 skill，只显示了 "No resources found."。
