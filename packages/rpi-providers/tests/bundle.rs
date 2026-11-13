@@ -10,20 +10,20 @@ use tokio::{
 };
 
 fn load() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
-    let profile = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
     let filename = format!(
         "{}rpi_providers{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    let library = [profile.join(&filename), profile.join("deps").join(filename)]
-        .into_iter()
+    let executable = std::env::current_exe().unwrap();
+    let library = executable
+        .ancestors()
+        .flat_map(|directory| {
+            [
+                directory.join(&filename),
+                directory.join("deps").join(&filename),
+            ]
+        })
         .find(|path| path.is_file())
         .expect("first cargo build -p rpi-providers");
     let session = rpi_extensions::load_session_mixed(
