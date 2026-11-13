@@ -406,30 +406,32 @@ test("navigation during explicit choice remembers the originating project withou
 test("browser origin isolation and optional storage memory fallback", async ({
   page,
   context,
+  host,
 }) => {
   await start(page);
-  const result = await page.evaluate(async () => {
-    const modulePath = "/src/modelPreference.ts";
-    const pref = await import(/* @vite-ignore */ modulePath);
-    const original = Storage.prototype.setItem;
+  await page.evaluate(() => {
     Storage.prototype.setItem = () => {
       throw new Error("Storage unavailable");
     };
-    pref.writeModelPreference("blocked", {
-      provider: "chosen",
-      modelId: "special",
-    });
-    const remembered = pref.readModelPreference("blocked");
-    pref.writeModelPreference("blocked", null);
-    const cleared = pref.readModelPreference("blocked");
-    Storage.prototype.setItem = original;
-    pref.writeModelPreference("p1", { provider: "chosen", modelId: "special" });
-    return { remembered, cleared };
+    Storage.prototype.removeItem = () => {
+      throw new Error("Storage unavailable");
+    };
   });
-  expect(result).toEqual({
-    remembered: { provider: "chosen", modelId: "special" },
-    cleared: null,
-  });
+  await choose(page);
+  await expect.poll(() => host.states.old.provider).toBe("chosen");
+  await newSession(page);
+  await ready(page, "new2");
+  expect(host.states.new2.provider).toBe("chosen");
+  await runtime(page);
+  await page
+    .getByRole("button", {
+      name: "Clear model preference (future native defaults)",
+      exact: true,
+    })
+    .click();
+  await newSession(page);
+  await ready(page, "new3");
+  expect(host.states.new3.provider).toBe("native");
   const otherOrigin = await context.newPage();
   await otherOrigin.route("**/*", async (route) =>
     route.fulfill({
@@ -448,6 +450,9 @@ test("cached preference reads honor changes and clears from another tab", async 
   host,
 }) => {
   await start(page);
+  await choose(page);
+  await expect.poll(async () => (await stored(page)).length).toBe(1);
+  const storageKey = (await stored(page))[0][0];
   const secondTab = await context.newPage();
   // Load the same origin without mounting the application or contacting a host.
   await secondTab.route("**/*", (route) =>
@@ -457,15 +462,6 @@ test("cached preference reads honor changes and clears from another tab", async 
     }),
   );
   await secondTab.goto(new URL("/preference-peer", page.url()).href);
-  const storageKey = await page.evaluate(async () => {
-    const path = "/src/modelPreference.ts";
-    const pref = await import(/* @vite-ignore */ path);
-    pref.writeModelPreference("p1", { provider: "chosen", modelId: "special" });
-    pref.readModelPreference("p1");
-    return Object.keys(localStorage).find((key) =>
-      key.startsWith("rpi-web-model-preference:"),
-    )!;
-  });
   await secondTab.evaluate(
     (key) =>
       localStorage.setItem(
@@ -484,6 +480,6 @@ test("cached preference reads honor changes and clears from another tab", async 
   await newSession(page);
   await ready(page, "new3");
   expect(await stored(page)).toEqual([]);
-  expect(host.writes()).toHaveLength(1);
+  expect(host.writes()).toHaveLength(2);
   await secondTab.close();
 });
