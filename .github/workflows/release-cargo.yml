@@ -205,8 +205,12 @@ jobs:
 
       - name: Test workspace
         run: |
+          # rpi-providers loads its real cdylib from the target directory; keep
+          # its dynamic-library tests separate from the rest of the workspace
+          # so Cargo cannot replace or hide that artifact during test builds.
+          cargo test --workspace --exclude rpi-providers --locked
           cargo build -p rpi-providers --locked
-          cargo test --workspace --locked
+          cargo test -p rpi-providers --locked
 
       - name: Test the prebuilt distribution contract
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
