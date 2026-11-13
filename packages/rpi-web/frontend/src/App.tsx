@@ -38,6 +38,7 @@ import {
   Moon,
   Paperclip,
   PanelLeft,
+  PanelRight,
   Play,
   RefreshCw,
   RotateCcw,
@@ -4376,16 +4377,17 @@ export default function App() {
               <Activity size={17} aria-hidden="true" />
             </button>
             <button
-              className="icon-button"
+              className={`icon-button ${inspector ? "selected" : ""}`}
               aria-label={t("toggleInspector")}
               title={t("toggleInspector")}
+              aria-pressed={inspector}
               onClick={() => {
                 setTraceOpen(false);
                 setInspector(!inspector);
                 setPanel(false);
               }}
             >
-              <SlidersHorizontal size={17} />
+              <PanelRight size={17} aria-hidden="true" />
             </button>
             {project && actions.has("files") && (
               <button
@@ -5317,6 +5319,9 @@ export default function App() {
                   <X size={15} />
                 </button>
               </div>
+              {project && (
+                <ResourcePanel project={project} language={language} />
+              )}
               <div className="stat-row">
                 <span>{t("protocol")}</span>
                 <strong>{capabilities?.protocol ?? "—"}</strong>
@@ -5811,9 +5816,6 @@ export default function App() {
                   </span>
                 ))}
               </div>
-              {project && (
-                <ResourcePanel project={project} language={language} />
-              )}
             </aside>
           )}
         </main>

@@ -29,11 +29,15 @@
 3. **无法自证版本**：已加侧栏绿点徽标 `rpi-web preview`（旧后端显示 `rpi-web legacy`），
    title 为 `Preview build · session idle 1800`，依据 `/capabilities` 是否含
    `sessionIdleTimeoutSeconds`。截图 `/tmp/verify-badge.png` 可见。
+4. **Inspector 入口不可辨 + 新 UI 藏得太深**（2026-11-13 二次反馈）：#272 把 Inspector 图标
+   从 `Settings2` 换成 `SlidersHorizontal`，17px 下与相邻的 timeline `ListOrdered` 都是「三横线」，
+   肉眼无法区分；且 Resources 面板放在 Inspector 最底部，需滚过整屏诊断信息。
+   已改为 `PanelRight`（明确的右侧面板轮廓）+ `aria-pressed` 状态，并把 Resources 移到
+   Inspector 顶部（距顶部 68px）。截图 `/tmp/final-inspector.png`。
 
-这两处修复（`server.rs` 缓存头 + 前端徽标/样式）已构建进本地 preview，
-并在 10:59 服务自动重启后验证：`curl -I /` 返回 `cache-control: no-store, must-revalidate`，
-全新 Chrome profile 加载 `index-C_dgFeG5.js` 且徽标文本为 `rpi-web preview`。
-**它们尚未提交到仓库**（见文末「未提交改动」）。
+以上修复已构建进本地 preview，服务 11:37 重启后验证：`curl -I /` 返回
+`cache-control: no-store, must-revalidate`，全新 Chrome profile 加载 `index-CKWLsAd9.js`，
+侧栏显示 `rpi-web preview`，Inspector 图标为 `lucide-panel-right`，打开后 Resources 立即可见。
 
 ## 自动化实机结果（已执行并落盘）
 
@@ -53,9 +57,11 @@
 | 12 | 长资源名不撑破面板 | 真实 Chrome 量测 `.resource-item-head strong` 右边界 vs 面板右边界 | PASS（加 `min-width:0` 后 name right `1196` ≤ panel right `1268`）；修复见 PR #274 |
 
 | 13 | HTML 不被缓存 | `curl -I /` | PASS `cache-control: no-store, must-revalidate` |
-| 14 | 版本可自证 | 全新 Chrome profile 直连 3997 | PASS 侧栏显示 `rpi-web preview`（title `Preview build · session idle 1800`），加载 `index-C_dgFeG5.js` |
+| 14 | 版本可自证 | 全新 Chrome profile 直连 3997 | PASS 侧栏 `rpi-web preview`（title `Preview build · session idle 1800`），加载 `index-CKWLsAd9.js` |
+| 15 | Inspector 入口可辨 | 读取按钮 `svg` class + `aria-pressed` | PASS `lucide-panel-right`，点击后 `aria-pressed=true`（旧为 `lucide-sliders-horizontal`，与 timeline 图标混淆） |
+| 16 | 新 UI 无需滚动即可见 | 量测 `.resource-panel` 与 `aside.inspector` 顶部距离 | PASS delta `68px`（原来在整屏诊断信息之后） |
 
-截图：`/tmp/preview-resources.png`、`/tmp/preview-resources-scrolled.png`、`/tmp/preview-resources-fixed.png`、`/tmp/diag2.png`（Inspector 内 Resources 面板）、`/tmp/verify-badge.png`（版本徽标）。
+截图：`/tmp/preview-resources.png`、`/tmp/preview-resources-scrolled.png`、`/tmp/preview-resources-fixed.png`、`/tmp/diag2.png`、`/tmp/verify-badge.png`（版本徽标）、`/tmp/final-inspector.png`（Inspector 顶部直接显示 Resources）。
 > 注：截图为临时路径，未纳入仓库；如需归档请复制到 `docs/`。
 
 ## 需要真人验收（未自动判定，请逐项确认）
@@ -83,7 +89,7 @@
 2. **#258 只修一半**：Markdown 流式内容高度非单调（围栏边界重排）仍是 "needs design"，未处理。
 3. **#263 只修图标**：两个设置界面合并、侧栏密度均需产品/布局决策，未处理。
 4. **#262 为只读视图**：没有启用/禁用/安装入口；`resourceState.enabled=false`（本机 native host 未开启 exact selection），因此面板展示的是 `rpi resource list` 的本地目录观察，不是会话内生效的精确资源绑定。真人验收时请注意这一区别。
-5. **未提交改动**：`packages/rpi-web/src/server.rs`（HTML no-store）、`packages/rpi-web/frontend/src/App.tsx` + `styles.css`（版本徽标）。这三处仅存在于本地工作树与本地 preview `.so`，尚未进 PR / main。
+5. **PR #281 状态**：`server.rs` 缓存头、版本徽标、`PanelRight` 图标、Resources 置顶均已包含在 PR #281 中。
 6. **本地 rustfmt 与 CI 版本差异**：`packages/rpi-voice/src/pet.rs` 在本机 rustfmt 1.10.0 下仍报格式差异（origin/main 同样如此），未改动该文件。
 
 ## 回退方式
