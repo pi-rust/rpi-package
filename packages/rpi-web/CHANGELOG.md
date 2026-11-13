@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.1.55](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.54...rpi-web-v0.1.55) - 2026-11-13
+
+### Fixed
+
+- *(web)* let long resource names wrap inside the inspector
+
+### Other
+
+- *(web)* keep model preference e2e production-safe
+- Merge pull request #274 from pi-rust/fix/web-resource-overflow
+
 ## [0.1.54](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.53...rpi-web-v0.1.54) - 2026-11-13
 
 ### Added
