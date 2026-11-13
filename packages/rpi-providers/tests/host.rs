@@ -10,20 +10,15 @@ use tokio::{
 };
 
 fn library() -> PathBuf {
-    let profile = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
     let name = format!(
         "{}rpi_providers{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    [profile.join(&name), profile.join("deps").join(name)]
-        .into_iter()
+    let executable = std::env::current_exe().unwrap();
+    executable
+        .ancestors()
+        .flat_map(|directory| [directory.join(&name), directory.join("deps").join(&name)])
         .find(|path| path.is_file())
         .expect("first cargo build -p rpi-providers")
 }
