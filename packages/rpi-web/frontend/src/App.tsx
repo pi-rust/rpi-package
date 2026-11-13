@@ -4125,6 +4125,21 @@ export default function App() {
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom">
+              {capabilities && (
+                <div
+                  className="build-badge"
+                  title={
+                    capabilities.sessionIdleTimeoutSeconds === undefined
+                      ? "Legacy build · no session idle capability"
+                      : `Preview build · session idle ${capabilities.sessionIdleTimeoutSeconds ?? "off"}`
+                  }
+                >
+                  <span className="build-badge-dot" aria-hidden="true" />
+                  {capabilities.sessionIdleTimeoutSeconds === undefined
+                    ? "rpi-web legacy"
+                    : "rpi-web preview"}
+                </div>
+              )}
               <div className="utility-nav">
                 <button onClick={() => setSettingsOpen(true)}>
                   <Settings2 size={14} />

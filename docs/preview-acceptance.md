@@ -1,14 +1,39 @@
 # rpi-web preview 实机测试与验收记录
 
 - 日期：2026-11-13
-- 源码：`pi-rust/rpi-package` `main` @ `3736c9d`（PR #273 合并点），预览分支 HEAD `61ae777`
+- 源码：`pi-rust/rpi-package` `main` @ `3d08c25`（PR #274 合并点）；另含未提交的两处诊断修复（见下）
 - 本地安装：`~/.rpi/agent/extensions/librpi_web_extension-v0.1.53-68e43e702a4147be8725f1ba91473cb7.so`
-  - 由 `cargo build -p rpi-web --lib --release` 产出（19,509,120 bytes）
-  - sha256 `d62f634d899df02747d3838f09ad0bf59496616cb9eba819851b8e043b73bfc1`（含长名称换行修复；初装时为 `80ba4db9…`）
+  - 由 `cargo build -p rpi-web --lib --release` 产出（19,510,464 bytes，含缓存修复与版本徽标）
+  - sha256 `f4e674afc90fb2469072d47c94f00abee05d8cc73886433d4257ad79ba7d2b70`（初装 `80ba4db9…`，PR #274 后 `d62f634d…`）
   - registry `~/.rpi/agent/native-packages.json` 标记 `version: 0.1.54-preview`、`source_commit: f90cde37…`（PR #274 的修复）
 - 原正式版备份：`~/.rpi/agent/preview-backups/`（`.so` + `native-packages.json`，时间戳 `20261112-225458`）
 - 服务：本机 `rpi --webserver`，`http://127.0.0.1:3997`（`web.json` 端口 3997）
 - 前端资源：`packages/rpi-web/assets/` 由 `npm run build` 产出并嵌入 cdylib
+
+## 适用范围（重要）
+
+本报告的所有实机检查都针对 **`http://127.0.0.1:3997`**，即本机 `rpi --webserver` 加载的 `.so`。
+`https://work-dev.bigfisharc.cn` 是另一套环境（公共 Vite 源码服务 + 独立后端），
+按 `AGENTS.md` 应服务 `rpi-package-dev` worktree（`D:/Projects/rpi-package-dev`，不在本机）。
+本轮改动**没有同步到那个 worktree**，因此该页面仍为旧版；重启本机 `rpi --webserver` 不会影响它。
+
+## 重启后看不到变化的原因与修复（2026-11-13 追加）
+
+用户反馈"重启后依旧没有任何变化"。复查发现三个叠加原因：
+
+1. **新增 UI 不可见**：本轮唯一新增的可见界面是 Resources 面板，位于 **Inspector 最底部**；
+   默认 `steer`、保活、隐藏路径、抖动修复都是行为变化，界面上零标志。
+2. **HTML 无缓存控制头**：`index()` 直接返回 `Html(html)`，浏览器重启服务后可能继续用缓存的
+   旧 HTML（指向旧 hash 的 JS）。已改为 `Cache-Control: no-store, must-revalidate`
+   （`packages/rpi-web/src/server.rs`）。
+3. **无法自证版本**：已加侧栏绿点徽标 `rpi-web preview`（旧后端显示 `rpi-web legacy`），
+   title 为 `Preview build · session idle 1800`，依据 `/capabilities` 是否含
+   `sessionIdleTimeoutSeconds`。截图 `/tmp/verify-badge.png` 可见。
+
+这两处修复（`server.rs` 缓存头 + 前端徽标/样式）已构建进本地 preview，
+并在 10:59 服务自动重启后验证：`curl -I /` 返回 `cache-control: no-store, must-revalidate`，
+全新 Chrome profile 加载 `index-C_dgFeG5.js` 且徽标文本为 `rpi-web preview`。
+**它们尚未提交到仓库**（见文末「未提交改动」）。
 
 ## 自动化实机结果（已执行并落盘）
 
@@ -25,9 +50,12 @@
 | 9 | 插话默认 `steer`（#259） | 真实会话 `4e683613…` 发起 run 后插话，抓 `POST /commands` | PASS `{"message":"interjection: ignore the rest","deliverAs":"steer"}` |
 | 10 | 前端隐藏路径不生成按钮（#261） | e2e `message-links.spec.ts`（5 项） | PASS（改前失败、改后通过，已验证） |
 | 11 | 保活/重开/抖动/重入队等 | e2e + `cargo test` | PASS：`cargo test -p rpi-extcore -p rpi-httpcore --lib` 40 passed；tsc 通过；相关 Playwright 用例通过 |
-| 12 | 长资源名不撑破面板 | 真实 Chrome 量测 `.resource-item-head strong` 右边界 vs 面板右边界 | PASS（加 `min-width:0` 后 name right `1196` ≤ panel right `1268`）；修复见 PR #274，preview 已重新构建加载（sha256 `d62f634d899df02747d3838f09ad0bf59496616cb9eba819851b8e043b73bfc1`） |
+| 12 | 长资源名不撑破面板 | 真实 Chrome 量测 `.resource-item-head strong` 右边界 vs 面板右边界 | PASS（加 `min-width:0` 后 name right `1196` ≤ panel right `1268`）；修复见 PR #274 |
 
-截图：`/tmp/preview-resources.png`（Inspector 打开）、`/tmp/preview-resources-scrolled.png`（资源面板滚动后可见）、`/tmp/preview-resources-fixed.png`（长名称换行修复后）。
+| 13 | HTML 不被缓存 | `curl -I /` | PASS `cache-control: no-store, must-revalidate` |
+| 14 | 版本可自证 | 全新 Chrome profile 直连 3997 | PASS 侧栏显示 `rpi-web preview`（title `Preview build · session idle 1800`），加载 `index-C_dgFeG5.js` |
+
+截图：`/tmp/preview-resources.png`、`/tmp/preview-resources-scrolled.png`、`/tmp/preview-resources-fixed.png`、`/tmp/diag2.png`（Inspector 内 Resources 面板）、`/tmp/verify-badge.png`（版本徽标）。
 > 注：截图为临时路径，未纳入仓库；如需归档请复制到 `docs/`。
 
 ## 需要真人验收（未自动判定，请逐项确认）
@@ -55,7 +83,8 @@
 2. **#258 只修一半**：Markdown 流式内容高度非单调（围栏边界重排）仍是 "needs design"，未处理。
 3. **#263 只修图标**：两个设置界面合并、侧栏密度均需产品/布局决策，未处理。
 4. **#262 为只读视图**：没有启用/禁用/安装入口；`resourceState.enabled=false`（本机 native host 未开启 exact selection），因此面板展示的是 `rpi resource list` 的本地目录观察，不是会话内生效的精确资源绑定。真人验收时请注意这一区别。
-5. **本地 rustfmt 与 CI 版本差异**：`packages/rpi-voice/src/pet.rs` 在本机 rustfmt 1.10.0 下仍报格式差异（origin/main 同样如此），未改动该文件。
+5. **未提交改动**：`packages/rpi-web/src/server.rs`（HTML no-store）、`packages/rpi-web/frontend/src/App.tsx` + `styles.css`（版本徽标）。这三处仅存在于本地工作树与本地 preview `.so`，尚未进 PR / main。
+6. **本地 rustfmt 与 CI 版本差异**：`packages/rpi-voice/src/pet.rs` 在本机 rustfmt 1.10.0 下仍报格式差异（origin/main 同样如此），未改动该文件。
 
 ## 回退方式
 
