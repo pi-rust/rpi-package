@@ -12,14 +12,14 @@
   },
   {
     "name": "rpi-mcp-adapter",
-    "version": "0.2.9",
+    "version": "0.2.10",
     "type": "extension",
     "tool": "mcp_list + mcp_call + mcp_request",
     "inspiredBy": "pi-mcp-adapter",
     "sourceDownloadsPerMonth": 761442,
     "install": "rpi install rpi-mcp-adapter",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.9/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.10/rpi-extension.json"
   },
   {
     "name": "rpi-subagents",
@@ -199,14 +199,14 @@
   },
   {
     "name": "rpi-acp",
-    "version": "0.2.16",
+    "version": "0.2.17",
     "type": "extension",
     "tool": "--acp (Agent Client Protocol stdio server)",
     "inspiredBy": "Zed external agents / agent-client-protocol",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-acp",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.16/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-acp-v0.2.17/rpi-extension.json"
   },
   {
     "name": "rpi-permission-gate",
@@ -232,25 +232,25 @@
   },
   {
     "name": "rpi-providers",
-    "version": "0.1.9",
+    "version": "0.1.10",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Provider integrations",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-providers --github pi-rust/rpi-package",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-providers-v0.1.9/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-providers-v0.1.10/rpi-extension.json"
   },
   {
     "name": "rpi-web",
-    "version": "0.1.53",
+    "version": "0.1.54",
     "type": "extension",
     "tool": null,
     "inspiredBy": "Browser project and session workspace",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-web",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.53/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-web-v0.1.54/rpi-extension.json"
   },
   {
     "name": "rpi-edit-diagnostics",
@@ -265,13 +265,13 @@
   },
   {
     "name": "rpi-http",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "type": "extension",
     "tool": null,
     "inspiredBy": "API-only HTTP/SSE service over the shared rpi core",
     "sourceDownloadsPerMonth": null,
     "install": "rpi install rpi-http",
     "repository": "https://github.com/pi-rust/rpi-package",
-    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-http-v0.2.2/rpi-extension.json"
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-http-v0.2.3/rpi-extension.json"
   }
 ]

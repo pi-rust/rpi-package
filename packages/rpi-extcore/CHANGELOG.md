@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.14...rpi-extcore-v0.2.15) - 2026-11-13
+
+### Added
+
+- *(web)* read-only resource catalog for global and project scopes, default steer
+
+### Other
+
+- *(web)* account for the read-only resource catalog in the trace mock
+
 ## [0.2.14](https://github.com/pi-rust/rpi-package/compare/rpi-extcore-v0.2.13...rpi-extcore-v0.2.14) - 2026-11-10
 
 ### Fixed

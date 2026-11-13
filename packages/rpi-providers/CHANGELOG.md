@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.9...rpi-providers-v0.1.10) - 2026-11-13
+
+### Fixed
+
+- *(providers)* locate cdylib from nested Cargo test paths ([#277](https://github.com/pi-rust/rpi-package/pull/277))
+
 ## [0.1.9](https://github.com/pi-rust/rpi-package/compare/rpi-providers-v0.1.8...rpi-providers-v0.1.9) - 2026-11-06
 
 ### Fixed
