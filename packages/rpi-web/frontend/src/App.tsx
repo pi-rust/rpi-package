@@ -38,6 +38,7 @@ import {
   Moon,
   Paperclip,
   PanelLeft,
+  PanelRight,
   Play,
   RefreshCw,
   RotateCcw,
@@ -4125,6 +4126,21 @@ export default function App() {
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom">
+              {capabilities && (
+                <div
+                  className="build-badge"
+                  title={
+                    capabilities.sessionIdleTimeoutSeconds === undefined
+                      ? "Legacy build · no session idle capability"
+                      : `Preview build · session idle ${capabilities.sessionIdleTimeoutSeconds ?? "off"}`
+                  }
+                >
+                  <span className="build-badge-dot" aria-hidden="true" />
+                  {capabilities.sessionIdleTimeoutSeconds === undefined
+                    ? "rpi-web legacy"
+                    : "rpi-web preview"}
+                </div>
+              )}
               <div className="utility-nav">
                 <button onClick={() => setSettingsOpen(true)}>
                   <Settings2 size={14} />
@@ -4361,16 +4377,17 @@ export default function App() {
               <Activity size={17} aria-hidden="true" />
             </button>
             <button
-              className="icon-button"
+              className={`icon-button ${inspector ? "selected" : ""}`}
               aria-label={t("toggleInspector")}
               title={t("toggleInspector")}
+              aria-pressed={inspector}
               onClick={() => {
                 setTraceOpen(false);
                 setInspector(!inspector);
                 setPanel(false);
               }}
             >
-              <SlidersHorizontal size={17} />
+              <PanelRight size={17} aria-hidden="true" />
             </button>
             {project && actions.has("files") && (
               <button
@@ -5302,6 +5319,9 @@ export default function App() {
                   <X size={15} />
                 </button>
               </div>
+              {project && (
+                <ResourcePanel project={project} language={language} />
+              )}
               <div className="stat-row">
                 <span>{t("protocol")}</span>
                 <strong>{capabilities?.protocol ?? "—"}</strong>
@@ -5796,9 +5816,6 @@ export default function App() {
                   </span>
                 ))}
               </div>
-              {project && (
-                <ResourcePanel project={project} language={language} />
-              )}
             </aside>
           )}
         </main>
