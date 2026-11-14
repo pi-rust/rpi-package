@@ -2773,6 +2773,131 @@ test("the working indicator does not resize the transcript", async ({
   hold();
 });
 
+// The indicator is out of flow, so the only thing keeping it off the transcript
+// is the band .message-list reserves for it. A scrolled conversation puts the
+// last row exactly under the pill, which is where the overlap was reported.
+// Both locales run: the pill's height used to follow the label's font metrics,
+// so a band that fit "Processing…" did not fit "处理中…".
+for (const language of ["en", "zh"] as const) {
+  test(`the working indicator does not cover the last transcript row (${language})`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      (value) => localStorage.setItem("rpi-web-language", value),
+      language,
+    );
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "running",
+          lastSeq: 4,
+          events: [],
+          messages: [
+            ...Array.from({ length: 14 }, (_, index) => ({
+              role: index % 2 === 0 ? "user" : "assistant",
+              entryId: `overlap-${index}`,
+              content:
+                index % 2 === 0
+                  ? `Question ${index} about the failing suite`
+                  : [
+                      {
+                        type: "text",
+                        text: `Answer ${index}: ${"padding text ".repeat(18)}`,
+                      },
+                    ],
+            })),
+            {
+              role: "assistant",
+              entryId: "overlap-tool",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "overlap-call",
+                  name: "bash",
+                  arguments: { command: "npm test -- --reporter=verbose" },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    // Hold the stream open so the run stays active and the indicator stays
+    // mounted, matching a run that is actually streaming.
+    let hold!: () => void;
+    const held = new Promise<void>((resolve) => (hold = resolve));
+    let streams = 0;
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events**`,
+      async (route) => {
+        streams++;
+        if (streams === 1)
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+            headers: { "cache-control": "no-store" },
+          });
+        await held;
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: "retry: 60000\n\n",
+        });
+      },
+    );
+    await page.goto("/");
+    const indicator = page.locator(".working-indicator");
+    await expect(indicator).toBeAttached();
+    const transcript = page.locator(".transcript");
+    // Follow the tail, so the last row really is the row under the pill.
+    await transcript.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+
+    const geometry = await page.evaluate(() => {
+      const pill = document
+        .querySelector(".working-indicator")!
+        .getBoundingClientRect();
+      const rows = [...document.querySelectorAll(".transcript-row")].map((row) =>
+        row.getBoundingClientRect(),
+      );
+      const contentBottom = Math.max(...rows.map((row) => row.bottom));
+      const covered = rows.filter(
+        (row) => pill.bottom > row.top && pill.top < row.bottom,
+      ).length;
+      return {
+        covered,
+        gap: pill.top - contentBottom,
+        pillHeight: pill.height,
+        reservedBand: parseFloat(
+          getComputedStyle(
+            document.querySelector(".message-list") as HTMLElement,
+          ).getPropertyValue("--working-indicator-height"),
+        ),
+      };
+    });
+    // Zero pixels of intersection, not "mostly clear": the pill used to sit
+    // 32px into the final row and hid its command line.
+    expect(geometry.covered).toBe(0);
+    expect(geometry.gap).toBeGreaterThan(0);
+    // The pill must fit the band it is budgeted for. Its height is pinned to
+    // --working-indicator-height because it otherwise followed the label's font
+    // metrics, and "处理中…" rendered 3px taller than "Processing…".
+    expect(geometry.pillHeight).toBeLessThanOrEqual(geometry.reservedBand);
+    // Reserving the band must not reintroduce the scroll-extent change the
+    // absolute positioning removed. Both halves read one set of tokens.
+    const busyHeight = await transcript.evaluate((node) => node.scrollHeight);
+    await indicator.evaluate((node) => {
+      (node as HTMLElement).style.display = "none";
+    });
+    expect(await transcript.evaluate((node) => node.scrollHeight)).toBe(
+      busyHeight,
+    );
+    hold();
+  });
+}
+
 test("narrow authenticated sidebar uses icons and all settings follow the chosen language", async ({
   page,
 }, testInfo) => {

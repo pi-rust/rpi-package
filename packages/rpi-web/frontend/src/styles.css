@@ -1100,10 +1100,29 @@ code {
   font-size: 11px;
 }
 .message-list {
+  /* The working indicator is out of flow (see .working-indicator), so it draws
+     over the last row unless that row leaves room for it. These tokens describe
+     the band it occupies: --working-indicator-height is the pill's rendered
+     height at its 12px font, and the pill is anchored --working-indicator-inset
+     above the band's bottom edge. Both rules below read them, so the reserved
+     padding and the pill cannot drift apart. */
+  --working-indicator-height: 24px;
+  --working-indicator-inset: 8px;
+  --working-indicator-gap: 8px;
   max-width: 760px;
   margin: auto;
   /* Anchors the out-of-flow working indicator to the transcript body. */
   position: relative;
+}
+/* Reserve the band as static padding rather than by moving the indicator down:
+   padding is part of the scroll extent either way, so the reserved room is what
+   keeps the indicator off the last row without making its mount/unmount change
+   scrollHeight. Only a transcript that actually has rows needs the band. */
+.message-list:has(.transcript-row) {
+  padding-bottom: calc(
+    var(--working-indicator-height) + var(--working-indicator-inset) +
+      var(--working-indicator-gap)
+  );
 }
 .transcript-row {
   display: flow-root;
@@ -2013,21 +2032,27 @@ details[open] > summary:before {
 .working-indicator {
   /* Out of normal flow: while a run streams, this indicator is mounted and
      unmounted at boundaries. In flow it added and removed ~34px, which moved
-     scrollHeight and made the followed pane jump. It now overlays the end of the
-     transcript instead of resizing it, so mounting it cannot move any row. */
+     scrollHeight and made the followed pane jump. It now sits in the band that
+     .message-list reserves for it, so mounting it cannot move any row and it
+     cannot cover the last row either. */
   position: absolute;
   left: 50%;
-  bottom: 8px;
+  bottom: var(--working-indicator-inset, 8px);
   transform: translateX(-50%);
   z-index: 1;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
+  /* Sized from the same token the transcript reserves. Without this the pill's
+     height follows the locale's font metrics ("Processing…" is 24px but
+     "处理中…" is 27px), so a budget that fits one language overruns the other. */
+  height: var(--working-indicator-height, 24px);
+  padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
   font-size: 12px;
+  line-height: 1;
   color: var(--muted);
   white-space: nowrap;
   pointer-events: none;
