@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.1.56](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.55...rpi-web-v0.1.56) - 2026-11-14
+
+### Fixed
+
+- *(web)* remove the preview build badge from the sidebar ([#285](https://github.com/pi-rust/rpi-package/pull/285))
+- *(web)* keep the working indicator off the last transcript row ([#284](https://github.com/pi-rust/rpi-package/pull/284))
+- *(web)* make the inspector entry visible and put resources at the top
+- *(web)* make the installed build self-identifying and uncached
+
 ## [0.1.55](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.54...rpi-web-v0.1.55) - 2026-11-13
 
 ### Fixed
