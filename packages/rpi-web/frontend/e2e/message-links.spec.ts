@@ -441,16 +441,10 @@ for (const width of [1280, 390])
         ),
       )
       .toBe("/workspace/links/src/main.ts");
-    await preview(page)
-      .getByRole("button", { name: "Copy relative path", exact: true })
-      .click();
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () => (window as unknown as { copiedText: string }).copiedText,
-        ),
-      )
-      .toBe("src/main.ts");
+    // Only one path copy affordance: the relative-path variant was removed.
+    await expect(
+      preview(page).getByRole("button", { name: "Copy relative path", exact: true }),
+    ).toHaveCount(0);
     await preview(page)
       .getByRole("button", { name: "Copy code", exact: true })
       .click();
@@ -694,12 +688,9 @@ for (const width of [1280, 390])
     await expect
       .poll(async () => (await imageAudit(page)).copied)
       .toBe(`/workspace/links/${imagePath}`);
-    await preview(page)
-      .getByRole("button", { name: "Copy relative path", exact: true })
-      .click();
-    await expect
-      .poll(async () => (await imageAudit(page)).copied)
-      .toBe(imagePath);
+    await expect(
+      preview(page).getByRole("button", { name: "Copy relative path", exact: true }),
+    ).toHaveCount(0);
     expect((await preview(page).boundingBox())!.width).toBeLessThan(width);
     await image.click();
     await expect(page.locator(".image-viewer")).toBeVisible();

@@ -265,13 +265,17 @@
   background: var(--hover);
   color: var(--text);
 }
-/* Only the expanded (ten-row) list is capped and scrolls on its own. The
-   default five rows stay fully visible exactly as before; without the cap,
-   expanding them consumes the only flexible sibling (.project-tree) and the
-   project/session rows become unreachable (#289). */
-.recent-sessions:has(.recent-sessions-toggle[aria-expanded="true"])
-  .recent-session-list {
-  max-height: min(24dvh, 200px);
+/* Keep the recent-chats list at a fixed five-row height in BOTH states.
+   Expanding to ten rows scrolls inside this same box instead of growing it,
+   so the project section below is neither squeezed (#289) nor shifted
+   vertically. --recent-list-height is the measured height of the five default
+   rows (31px min-height + 2x1px margin per row, with the last row's outer
+   spacing collapsing); change it together with .recent-session's min-height
+   and margin if a density preset is added (#292). */
+.recent-session-list {
+  --recent-list-height: 159px;
+  height: var(--recent-list-height);
+  flex: 0 0 auto;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;

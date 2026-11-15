@@ -158,12 +158,6 @@ export function FilePreview({
         >
           {t("copyAbsolutePath")}
         </button>
-        <button
-          type="button"
-          onClick={() => void copy(file.path, t("relativePathCopied"))}
-        >
-          {t("copyRelativePath")}
-        </button>
         {!image && (
           <button
             type="button"

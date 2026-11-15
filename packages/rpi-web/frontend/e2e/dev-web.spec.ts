@@ -1096,7 +1096,14 @@ test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
   const tree = page.locator(".project-tree");
   const treeHeight = async () =>
     tree.evaluate((element) => element.clientHeight);
-  const before = await treeHeight();
+  // #289: capture both height and position. Expanding the list must neither
+  // squeeze the tree nor shift the project section vertically.
+  const treeBox = async () =>
+    tree.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, height: rect.height };
+    });
+  const before = await treeBox();
   const more = recent.getByRole("button", { name: "Show more recent chats", exact: true });
   await expect(more).toHaveAttribute("aria-expanded", "false");
   await more.click();
@@ -1107,7 +1114,12 @@ test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
   ).toHaveAttribute("aria-expanded", "true");
   // #289: expanding the recent list used to consume the whole sidebar, leaving
   // the only flexible child a few pixels tall. Project rows must stay usable.
-  expect(await treeHeight()).toBeGreaterThan(before / 2);
+  expect(await treeHeight()).toBeGreaterThan(before.height / 2);
+  // The list keeps a fixed five-row box in both states, so nothing below it
+  // moves when the extra five rows scroll into view.
+  const after = await treeBox();
+  expect(Math.abs(after.top - before.top)).toBeLessThan(1);
+  expect(Math.abs(after.height - before.height)).toBeLessThan(1);
   await expect(tree.locator(".project-group-header").first()).toBeVisible();
 });
 
