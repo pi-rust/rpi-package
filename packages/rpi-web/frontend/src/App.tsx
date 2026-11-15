@@ -1206,6 +1206,7 @@ export default function App() {
   }, [autoRead, displayedRows, historical.active, sessionId, settleTick, speakMessage]);
   const [dialog, setDialog] = useState<UiDialog | null>(null);
   const dialogRequests = useRef(new Map<string, UiDialog>());
+  const dialogEventSeq = useRef(0);
   const activeDialogId = useRef("");
   const [dialogAnswer, setDialogAnswer] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
@@ -1401,6 +1402,15 @@ export default function App() {
     (event: SeqEvent, seq: number) => {
       // Presentation only: observe the same deduplicated data, never the protocol cursor.
       traceEvent(event, seq);
+      // Dialog controls may already have been shown while transcript I/O was
+      // pending. Replaying that history must not reopen a closed question or
+      // reset the answer being edited.
+      const freshDialogEvent = !seq || seq > dialogEventSeq.current;
+      if (
+        freshDialogEvent &&
+        ["ui_dialog_request", "ui_dialog_closed", "agent_settled", "host_closed"].includes(event.type)
+      )
+        dialogEventSeq.current = seq;
       switch (event.type) {
         case "agent_start":
         case "operation_accepted":
@@ -1413,12 +1423,14 @@ export default function App() {
         case "agent_settled": {
           setRows(stopToolTimers);
           setRunActive(false);
-          dialogRequests.current.clear();
-          activeDialogId.current = "";
-          setDialog(null);
-          dialogRevision.current++;
-          setDialogBusy(false);
-          setStatus("ready");
+          if (freshDialogEvent) {
+            dialogRequests.current.clear();
+            activeDialogId.current = "";
+            setDialog(null);
+            dialogRevision.current++;
+            setDialogBusy(false);
+          }
+          setStatus(dialogRequests.current.size ? "awaiting_input" : "ready");
           setInterrupted(Boolean(event.pendingResume));
           setRecoveryNoticeDismissed(false);
           const outcome = String(event.outcome ?? "settled");
@@ -1482,6 +1494,7 @@ export default function App() {
           break;
         }
         case "ui_dialog_request": {
+          if (!freshDialogEvent) break;
           const request = event as unknown as UiDialog;
           if (request.requestId && request.ui) {
             dialogRequests.current.set(request.requestId, request);
@@ -1491,6 +1504,7 @@ export default function App() {
           break;
         }
         case "ui_dialog_closed":
+          if (!freshDialogEvent) break;
           if (!dialogRequests.current.delete(String(event.requestId ?? "")))
             break;
           showNextDialog();
@@ -2052,6 +2066,7 @@ export default function App() {
     diagnosticsAbort.current?.abort();
     setSessionHydrated(false);
     dialogRequests.current.clear();
+    dialogEventSeq.current = 0;
     activeDialogId.current = "";
     earlierPage.current = null;
     setRows(sessionId ? (rowsBySession.current.get(sessionId) ?? []) : []);
@@ -2131,20 +2146,20 @@ export default function App() {
     };
     const restoreSnapshotStatus = (
       snapshot: Awaited<ReturnType<typeof snapshotOf>>,
+      preserveDialogs = false,
     ) => {
       setNativeMessageQueries(["get_message_summaries", "get_message_window"].every((command) => snapshot.supportedCommands?.includes(command)));
       setMessageStats({
         sessionId,
         stats: latestMessageStats(snapshot.messages),
       });
-      if (snapshot.status) {
+      if (snapshot.status && !preserveDialogs) {
         setStatus(snapshot.status);
         setRunActive(["running", "awaiting_input"].includes(snapshot.status));
       }
       if (
-        snapshot.status ||
-        snapshot.pendingDialog ||
-        snapshot.pendingDialogs
+        !preserveDialogs &&
+        (snapshot.status || snapshot.pendingDialog || snapshot.pendingDialogs)
       ) {
         const requests =
           snapshot.pendingDialogs ??
@@ -2164,6 +2179,7 @@ export default function App() {
     const refreshTranscript = async () => {
       if (refreshingTranscript || !isCurrent()) return;
       refreshingTranscript = true;
+      const dialogSeqBeforeRead = dialogEventSeq.current;
       try {
         const snapshot = await snapshotOf(sessionId, {
           ...FAST_SNAPSHOT_OPTIONS,
@@ -2171,7 +2187,10 @@ export default function App() {
         });
         if (!isCurrent()) return;
         traceSnapshot(snapshot, "refresh");
-        restoreSnapshotStatus(snapshot);
+        restoreSnapshotStatus(
+          snapshot,
+          dialogEventSeq.current !== dialogSeqBeforeRead,
+        );
         currentAssistant.current = null;
         currentUser.current = null;
         const restored = prependRows(
@@ -2247,6 +2266,20 @@ export default function App() {
           if (!isCurrent()) return;
           const event = raw as MessageEvent;
           if (refreshingTranscript) {
+            // Answering must remain available even when a history read is slow.
+            // Keep the frame for ordered replay without advancing its cursor.
+            if (name === "ui_dialog_request" || name === "ui_dialog_closed") {
+              try {
+                const control = JSON.parse(event.data) as SeqEvent;
+                if (
+                  control.type === name &&
+                  Number(event.lastEventId) > lastSeq.current
+                )
+                  applyEvent(control, Number(event.lastEventId));
+              } catch {
+                // Malformed frames are ignored by the normal event reader too.
+              }
+            }
             bufferedEvents.push(event);
             if (bufferedEvents.length > 512) {
               next.close();
