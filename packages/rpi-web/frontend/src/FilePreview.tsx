@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import hljs from "highlight.js/lib/common";
 import { api, type Project } from "./api";
-import type { Language } from "./i18n";
+import { translate, type Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
 import { isProjectImagePath } from "./projectImages";
+import { absoluteProjectPath } from "./projectPaths";
 import { ZoomableImage } from "./ZoomableImage";
 import "./file-preview.css";
 
@@ -21,6 +22,10 @@ export function FilePreview({
   onClose: () => void;
 }) {
   const zh = language === "zh";
+  const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
+  // The server root determines the platform-specific separator, not the
+  // browser. Show this exact value so "Copy path" is what the user can see.
+  const absolutePath = absoluteProjectPath(project.path, file.path);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const targetRef = useRef<HTMLSpanElement>(null);
   const [attempt, setAttempt] = useState(0);
@@ -140,7 +145,7 @@ export function FilePreview({
         </button>
       </header>
       <div className="file-preview-path">
-        {project.name}: {file.path}
+        {absolutePath || `${project.name}: ${file.path}`}
         {file.line
           ? `:${file.line}${file.endLine !== file.line ? `-${file.endLine}` : ""}`
           : ""}
@@ -148,11 +153,16 @@ export function FilePreview({
       <div className="file-preview-actions">
         <button
           type="button"
-          onClick={() =>
-            void copy(file.path, zh ? "已复制路径" : "Path copied")
-          }
+          disabled={!absolutePath}
+          onClick={() => void copy(absolutePath, t("absolutePathCopied"))}
         >
-          {zh ? "复制路径" : "Copy path"}
+          {t("copyAbsolutePath")}
+        </button>
+        <button
+          type="button"
+          onClick={() => void copy(file.path, t("relativePathCopied"))}
+        >
+          {t("copyRelativePath")}
         </button>
         {!image && (
           <button

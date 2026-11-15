@@ -5,6 +5,7 @@ import {
   browserLink,
 } from "../src/messageLinks";
 import { projectImageSource } from "../src/projectImages";
+import { absoluteProjectPath } from "../src/projectPaths";
 
 test.use({
   baseURL: process.env.RPI_MESSAGE_LINKS_BASE_URL || "http://127.0.0.1:4191",
@@ -22,6 +23,38 @@ const project = {
   path: "/workspace/links",
 };
 const win = { ...project, path: "D:\\Work\\项目" };
+
+test("absolute paths follow the server root's platform, not the browser", () => {
+  // Unix: a backslash is a legal filename character and must be preserved.
+  expect(absoluteProjectPath(project.path, "src/main.ts")).toBe(
+    "/workspace/links/src/main.ts",
+  );
+  expect(absoluteProjectPath(project.path, "README.md")).toBe(
+    "/workspace/links/README.md",
+  );
+  expect(absoluteProjectPath(project.path, "src/a\\b.ts")).toBe(
+    "/workspace/links/src/a\\b.ts",
+  );
+  expect(absoluteProjectPath("/", "src/main.ts")).toBe("/src/main.ts");
+  // Windows: drive roots, forward-slash roots, UNC roots, and a mixed input.
+  expect(absoluteProjectPath(win.path, "src/a.ts")).toBe(
+    "D:\\Work\\项目\\src\\a.ts",
+  );
+  expect(absoluteProjectPath("D:/", "src/a.ts")).toBe("D:/src/a.ts");
+  expect(absoluteProjectPath("D:\\", "src/a.ts")).toBe("D:\\src\\a.ts");
+  expect(absoluteProjectPath("\\\\server\\share\\proj", "src/a.ts")).toBe(
+    "\\\\server\\share\\proj\\src\\a.ts",
+  );
+  // A root written with `/` keeps that separator; do not emit a mixed path.
+  expect(absoluteProjectPath("C:/Work/proj", "src/a.ts")).toBe(
+    "C:/Work/proj/src/a.ts",
+  );
+  expect(absoluteProjectPath("", "src/a.ts")).toBe("");
+  expect(absoluteProjectPath(project.path, "")).toBe("");
+  // A stripped verbatim UNC root is ambiguous; do not guess at an absolute path.
+  expect(absoluteProjectPath("UNC\\server\\share", "src/a.ts")).toBe("");
+  expect(absoluteProjectPath("relative/root", "src/a.ts")).toBe("");
+});
 
 test("file resolver contains paths, decodes once and validates line ranges", () => {
   expect(projectFileLink("./src/中文%20文件.ts#L12-L20", project)).toEqual({
@@ -395,8 +428,21 @@ for (const width of [1280, 390])
       path: test.info().outputPath(`file-preview-${width}.png`),
     });
     expect(mock.reads).toEqual([{ project: project.id, path: "src/main.ts" }]);
+    await expect(preview(page).locator(".file-preview-path")).toContainText(
+      "/workspace/links/src/main.ts",
+    );
     await preview(page)
       .getByRole("button", { name: "Copy path", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { copiedText: string }).copiedText,
+        ),
+      )
+      .toBe("/workspace/links/src/main.ts");
+    await preview(page)
+      .getByRole("button", { name: "Copy relative path", exact: true })
       .click();
     await expect
       .poll(() =>
@@ -456,6 +502,30 @@ test("Windows authored URLs survive Markdown URL safety and preview without OS n
     1,
   );
   expect(mock.reads).toEqual([{ project: project.id, path: "src/a.ts" }]);
+  // The mock host runs on Linux, but the server root is a Windows path: the
+  // copied value must still use native separators.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      value: async (text: string) => {
+        (window as unknown as { copiedText: string }).copiedText = text;
+      },
+    });
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Windows", exact: true }).click();
+  await expect(preview(page).locator(".file-preview-path")).toContainText(
+    "D:\\Work\\项目\\src\\a.ts",
+  );
+  await preview(page)
+    .getByRole("button", { name: "Copy path", exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { copiedText: string }).copiedText,
+      ),
+    )
+    .toBe("D:\\Work\\项目\\src\\a.ts");
   await expect(
     page.getByRole("link", { name: "Outside", exact: true }),
   ).toHaveCount(0);
@@ -615,8 +685,17 @@ for (const width of [1280, 390])
     await expect(
       preview(page).getByRole("button", { name: "Copy code", exact: true }),
     ).toHaveCount(0);
+    await expect(preview(page).locator(".file-preview-path")).toContainText(
+      `/workspace/links/${imagePath}`,
+    );
     await preview(page)
       .getByRole("button", { name: "Copy path", exact: true })
+      .click();
+    await expect
+      .poll(async () => (await imageAudit(page)).copied)
+      .toBe(`/workspace/links/${imagePath}`);
+    await preview(page)
+      .getByRole("button", { name: "Copy relative path", exact: true })
       .click();
     await expect
       .poll(async () => (await imageAudit(page)).copied)
