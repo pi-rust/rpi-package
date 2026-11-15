@@ -265,6 +265,18 @@
   background: var(--hover);
   color: var(--text);
 }
+/* Only the expanded (ten-row) list is capped and scrolls on its own. The
+   default five rows stay fully visible exactly as before; without the cap,
+   expanding them consumes the only flexible sibling (.project-tree) and the
+   project/session rows become unreachable (#289). */
+.recent-sessions:has(.recent-sessions-toggle[aria-expanded="true"])
+  .recent-session-list {
+  max-height: min(24dvh, 200px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
 .recent-session-list .recent-session {
   margin-left: 3px;
   margin-right: 3px;
