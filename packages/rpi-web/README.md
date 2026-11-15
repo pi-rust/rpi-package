@@ -96,7 +96,7 @@ performed. See [qualification](../../docs/codemode-full-parity-matrix.md#current
 
 ## Message links and branding
 
-Project-contained Markdown file links and explicit inline-code paths open an authenticated, read-only code preview on click. Relative paths and project-contained absolute Windows/Unix paths support `:12` and `#L12-L20` line references. The preview highlights source and target lines, offers path/code copy, retry and Escape/Close with focus restoration, and aborts stale reads on close or project/session navigation. It reuses the existing bounded project file API; no file is read before a click, and core remains responsible for sensitive-file and symlink boundaries. Fenced code is not linkified. HTTP(S) links open a separate browser tab with `noopener noreferrer`; unsafe schemes, traversal, UNC paths and files outside the project stay inert.
+Project-contained Markdown file links and explicit inline-code paths open an authenticated, read-only code preview on click. Relative paths and project-contained absolute Windows/Unix paths support `:12` and `#L12-L20` line references. The preview highlights source and target lines, shows the absolute local path and offers absolute-path / relative-path / code copy, retry and Escape/Close with focus restoration, and aborts stale reads on close or project/session navigation. **Copy path** copies the absolute path shown in the dialog, joined from the server's `Project.path` with that root's own separator (Windows vs Unix is determined by the server, not the browser); line suffixes remain display-only. If the root is a shape the client cannot join unambiguously (for example a stripped verbatim UNC prefix), the dialog falls back to the project-relative path and disables **Copy path**. **Copy relative path** keeps the project-relative form used in agent messages. It reuses the existing bounded project file API; no file is read before a click, and core remains responsible for sensitive-file and symlink boundaries. Fenced code is not linkified. HTTP(S) links open a separate browser tab with `noopener noreferrer`; unsafe schemes, traversal, UNC paths and files outside the project stay inert.
 
 Workspace/login branding and browser icons use a locally bundled light variant of the rpi three-column mark. The question timeline uses a 15px step on desktop and phones, retaining ten visible question nodes, keyboard navigation and existing rail widths.
 
@@ -330,9 +330,9 @@ Click a project file link in a message to open a read-only preview. Raster image
 paths (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`, case-insensitive) use the existing
 project-scoped image endpoint instead of the text-file route. The backend still
 enforces project boundaries, image signatures and its 20 MiB limit; SVG and other
-unsupported binaries are not rendered as images. Images offer **Copy path**, not
-**Copy code**. Click the image to zoom; Escape closes zoom first, then the file
-preview, restoring focus. Read/decode errors offer **Retry**; closing or navigating
+unsupported binaries are not rendered as images. Images offer **Copy path** and
+**Copy relative path**, not **Copy code**. Click the image to zoom; Escape closes
+zoom first, then the file preview, restoring focus. Read/decode errors offer **Retry**; closing or navigating
 away cancels pending reads and releases temporary blob URLs. Text previews and
 line highlighting remain unchanged. This frontend behavior does not deploy or
 upgrade a running backend.
