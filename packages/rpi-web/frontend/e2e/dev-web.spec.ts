@@ -1093,6 +1093,10 @@ test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
   await expect(recent.locator(".recent-session")).toHaveCount(5);
   await expect(recent.locator(".recent-project-tag")).toHaveCount(5);
   await expect(recent.locator(".recent-project-tag").first()).toHaveText("rpi-package");
+  const tree = page.locator(".project-tree");
+  const treeHeight = async () =>
+    tree.evaluate((element) => element.clientHeight);
+  const before = await treeHeight();
   const more = recent.getByRole("button", { name: "Show more recent chats", exact: true });
   await expect(more).toHaveAttribute("aria-expanded", "false");
   await more.click();
@@ -1101,6 +1105,10 @@ test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
   await expect(
     recent.getByRole("button", { name: "Show fewer recent chats", exact: true }),
   ).toHaveAttribute("aria-expanded", "true");
+  // #289: expanding the recent list used to consume the whole sidebar, leaving
+  // the only flexible child a few pixels tall. Project rows must stay usable.
+  expect(await treeHeight()).toBeGreaterThan(before / 2);
+  await expect(tree.locator(".project-group-header").first()).toBeVisible();
 });
 
 test("session tags can be edited without sidebar filters", async ({ page }) => {
