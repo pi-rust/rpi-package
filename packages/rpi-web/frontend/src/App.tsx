@@ -4126,6 +4126,36 @@ export default function App() {
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom">
+              {/* Build-time only: set VITE_PREVIEW_BUILD=1 for preview builds.
+                  A normal release build statically removes this block, so a
+                  shipped version can never be mislabeled as a preview. */}
+              {import.meta.env.VITE_PREVIEW_BUILD === "1" && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "0 10px 8px",
+                    color: "var(--muted)",
+                    fontSize: "10.5px",
+                    fontFamily: "var(--mono)",
+                    letterSpacing: "0.01em",
+                  }}
+                  title={`rpi-web preview · ${import.meta.env.VITE_PREVIEW_COMMIT ?? "local build"}`}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: "var(--green)",
+                      flex: "0 0 auto",
+                    }}
+                  />
+                  rpi-web preview
+                </div>
+              )}
               <div className="utility-nav">
                 <button onClick={() => setSettingsOpen(true)}>
                   <Settings2 size={14} />
