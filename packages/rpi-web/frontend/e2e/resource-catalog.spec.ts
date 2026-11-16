@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { openRuntimePanel } from "./controls";
 
 // The resource catalog is a read-only native `rpi resource list` view. Both
 // scopes are requested explicitly; no install/remove command is ever sent.
@@ -153,10 +154,7 @@ test("the inspector lists both global and project resources", async ({
 }) => {
   const requests = await host(page);
   await page.goto("/");
-  await expect(
-    page.getByRole("button", { name: "Toggle inspector" }),
-  ).toBeEnabled();
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   const panel = page.locator(".resource-panel");
   await expect(panel).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Global" })).toBeVisible();
@@ -183,7 +181,7 @@ test("a failing scope is reported without hiding the other scope", async ({
 }) => {
   const requests = await host(page, true);
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   const panel = page.locator(".resource-panel");
   await expect(panel).toBeVisible();
   await expect(
