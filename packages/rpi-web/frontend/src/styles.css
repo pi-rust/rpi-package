@@ -3553,6 +3553,15 @@ details[open] > summary:before {
   margin: 7px 0 0;
   font-size: 11px;
 }
+/* Runtime settings copy is supporting information, not emphasis (#302): keep
+   its panel title and field labels at regular weight like sibling menu items.
+   Scoped to `.inspector` so headings elsewhere keep their weight hierarchy. */
+.inspector .panel-heading h2 {
+  font-weight: 500;
+}
+.inspector > label {
+  font-weight: 500;
+}
 .inspector .panel-heading {
   margin-top: 18px;
 }
