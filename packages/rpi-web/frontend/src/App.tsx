@@ -701,7 +701,7 @@ export default function App() {
   useEffect(() => {
     if (!immersive) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setImmersive(false);
+      if (event.key === "Escape") exitImmersive();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -915,6 +915,50 @@ export default function App() {
   const [sidebar, setSidebar] = useState(() => window.innerWidth >= 768);
   const [panel, setPanel] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
+  // Immersive view is a temporary viewport state (#304): entering hides the
+  // sidebar and aux panels, so the pre-entry toggles must be snapshotted and
+  // restored on exit — otherwise an expanded sidebar stays hidden after one
+  // round trip. The snapshot lives in a ref on purpose: it is never written
+  // back to localStorage, so a refresh or session switch does not inherit it.
+  const immersiveSnapshot = useRef<{
+    sidebar: boolean;
+    timelineOpen: boolean;
+    panel: boolean;
+    inspector: boolean;
+    traceOpen: boolean;
+    workbenchOpen: boolean;
+  } | null>(null);
+
+  function enterImmersive() {
+    immersiveSnapshot.current = {
+      sidebar,
+      timelineOpen,
+      panel,
+      inspector,
+      traceOpen,
+      workbenchOpen,
+    };
+    setImmersive(true);
+    setSidebar(false);
+    setTimelineOpen(false);
+    setPanel(false);
+    setInspector(false);
+    setTraceOpen(false);
+    setWorkbenchOpen(false);
+  }
+
+  function exitImmersive() {
+    const snapshot = immersiveSnapshot.current;
+    immersiveSnapshot.current = null;
+    setImmersive(false);
+    if (!snapshot) return;
+    setSidebar(snapshot.sidebar);
+    setTimelineOpen(snapshot.timelineOpen);
+    setPanel(snapshot.panel);
+    setInspector(snapshot.inspector);
+    setTraceOpen(snapshot.traceOpen);
+    setWorkbenchOpen(snapshot.workbenchOpen);
+  }
   const traceButtonRef = useRef<HTMLButtonElement>(null);
   const [seen, setSeen] = useState(0);
   const [settleTick, setSettleTick] = useState(0);
@@ -4652,7 +4696,7 @@ export default function App() {
             className="icon-button immersive-exit"
             aria-label={t("exitImmersiveView")}
             title={t("exitImmersiveView")}
-            onClick={() => setImmersive(false)}
+            onClick={exitImmersive}
           >
             <Minimize2 size={17} aria-hidden="true" />
           </button>
@@ -4713,14 +4757,7 @@ export default function App() {
               aria-label={t("immersiveView")}
               title={t("immersiveView")}
               aria-pressed={immersive}
-              onClick={() => {
-                setImmersive(true);
-                setSidebar(false);
-                setTimelineOpen(false);
-                setPanel(false);
-                setTraceOpen(false);
-                setWorkbenchOpen(false);
-              }}
+              onClick={enterImmersive}
             >
               <Maximize2 size={17} aria-hidden="true" />
             </button>
