@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.1.57](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.56...rpi-web-v0.1.57) - 2026-11-16
+
+### Added
+
+- *(web)* slim the sidebar and merge the right-hand panels
+
+### Fixed
+
+- *(web)* keep the project tree usable when recent chats expand ([#289](https://github.com/pi-rust/rpi-package/pull/289)) ([#297](https://github.com/pi-rust/rpi-package/pull/297))
+- *(web)* copy the absolute local path in file previews ([#287](https://github.com/pi-rust/rpi-package/pull/287)) ([#288](https://github.com/pi-rust/rpi-package/pull/288))
+
 ## [0.1.56](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.55...rpi-web-v0.1.56) - 2026-11-14
 
 ### Fixed
