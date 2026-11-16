@@ -5,7 +5,7 @@ import {
   type Page,
   type Route,
 } from "@playwright/test";
-import { chooseMenuOption } from "./controls";
+import { chooseMenuOption, openRuntimePanel } from "./controls";
 
 // An independent, fail-closed host: no prompt, mutation, real SSE or native host.
 // POST open and run-timings/query are the existing read-only Web contracts.
@@ -730,29 +730,23 @@ test("trace, inspector and advertised runtime panel are mutually exclusive", asy
   host,
 }) => {
   await open(page, host);
+  const runtime = page.getByRole("heading", {
+    name: "Runtime and context",
+    exact: true,
+  });
+  await openRuntimePanel(page);
+  await expect(runtime).toBeVisible();
   await show(page);
-  await page
-    .getByRole("button", { name: "Toggle inspector", exact: true })
-    .click();
+  await expect(pane(page)).toBeVisible();
+  await expect(runtime).toHaveCount(0);
+  // The wide trace is a fixed overlay above the composer, so the runtime
+  // "details" jump underneath is unclickable while it is open. Its own toolbar
+  // toggle is the way back; reopening runtime then closes the trace again.
+  await toggle(page).click();
   await expect(pane(page)).toHaveCount(0);
-  await expect(
-    page.locator("aside.inspector:not(.execution-trace)"),
-  ).toBeVisible();
-  await show(page);
-  await expect(
-    page.locator("aside.inspector:not(.execution-trace)"),
-  ).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Runtime settings", exact: true })
-    .click();
+  await openRuntimePanel(page);
+  await expect(runtime).toBeVisible();
   await expect(pane(page)).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Runtime settings", exact: true }),
-  ).toBeVisible();
-  await show(page);
-  await expect(
-    page.getByRole("heading", { name: "Runtime settings", exact: true }),
-  ).toHaveCount(0);
   // Files capability is intentionally absent: no Workbench filesystem reads.
 });
 

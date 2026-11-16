@@ -20,7 +20,6 @@ import {
   ArrowUp,
   Bot,
   Check,
-  CircleDollarSign,
   ChevronDown,
   Code2,
   Copy,
@@ -38,19 +37,15 @@ import {
   Moon,
   Paperclip,
   PanelLeft,
-  PanelRight,
   Play,
   RefreshCw,
   RotateCcw,
-  Search,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   SquarePen,
-  Sigma,
   Sun,
-  Wrench,
   Volume2,
   VolumeX,
   X,
@@ -919,7 +914,6 @@ export default function App() {
   const [connectionFailed, setConnectionFailed] = useState(false);
   const [sidebar, setSidebar] = useState(() => window.innerWidth >= 768);
   const [panel, setPanel] = useState(false);
-  const [inspector, setInspector] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
   const traceButtonRef = useRef<HTMLButtonElement>(null);
   const [seen, setSeen] = useState(0);
@@ -1891,6 +1885,10 @@ export default function App() {
       if (key === ",") {
         event.preventDefault();
         setSettingsOpen(true);
+      }
+      if (key === "f") {
+        event.preventDefault();
+        if (activeSessionRef.current) setMessageSearchOpen(true);
       }
     };
     window.addEventListener("keydown", keydown);
@@ -3417,7 +3415,7 @@ export default function App() {
     updateDraft(item.text);
     setQueueKind(deliverAs);
     setQueueOpen(false);
-    setInspector(false);
+    setPanel(false);
     requestAnimationFrame(() => composerInputRef.current?.focus());
     try {
       await api.cancelQueued(sessionId, item.entryId);
@@ -3820,6 +3818,487 @@ export default function App() {
     );
   }
 
+  // Diagnostics used to live in a separate inspector panel. They are part
+  // of the single runtime panel now: one right-hand slot owns runtime
+  // settings, stats, queue, history, provider auth and resources.
+  const inspectorDetails = panel ? (
+    <>
+      {project && <ResourcePanel project={project} language={language} />}
+      <div className="stat-row">
+        <span>{t("protocol")}</span>
+        <strong>{capabilities?.protocol ?? "—"}</strong>
+      </div>
+      <div className="stat-row">
+        <span>{t("settlement")}</span>
+        <strong>agent_settled</strong>
+      </div>
+      <div className="stat-row">
+        <span>{t("session")}</span>
+        <strong>{sessionId.slice(0, 8) || "—"}</strong>
+      </div>
+      <div className="stat-row">
+        <span>{t("leaf")}</span>
+        <strong>{leafId ? leafId.slice(0, 8) : "—"}</strong>
+      </div>
+      <div className="stat-row">
+        <span>{t("eventsObserved")}</span>
+        <strong>{seen}</strong>
+      </div>
+      <div className="stat-row">
+        <span>{t("context")}</span>
+        <strong>
+          {runtime?.context
+            ? `${runtime.context.percent}% / ${formatTokens(runtime.context.window)}`
+            : "—"}
+        </strong>
+      </div>
+      <div className="stat-row">
+        <span>{t("toolCalls")}</span>
+        <strong>{rows.filter((row) => row.kind === "tool").length}</strong>
+      </div>
+      <div className="stat-row">
+        <span>{t("operations")}</span>
+        <strong>{historyData?.total ?? 0}</strong>
+      </div>
+      {displayStats && (
+        <>
+          <div className="stat-row">
+            <span>{t("tokens")}</span>
+            <strong>
+              {totalTokenCount(displayStats) == null
+                ? "—"
+                : formatTokens(totalTokenCount(displayStats)!)}
+            </strong>
+          </div>
+          <div className="stat-row">
+            <span>{t("inputTokens")}</span>
+            <strong>
+              {inputTokenCount(displayStats) == null
+                ? "—"
+                : formatTokens(inputTokenCount(displayStats)!)}
+            </strong>
+          </div>
+          <div className="stat-row">
+            <span>{t("outputTokens")}</span>
+            <strong>
+              {outputTokenCount(displayStats) == null
+                ? "—"
+                : formatTokens(outputTokenCount(displayStats)!)}
+            </strong>
+          </div>
+          <div className="stat-row">
+            <span>{t("cachedTokens")}</span>
+            <strong>
+              {cachedTokenCount(displayStats) == null
+                ? "—"
+                : formatTokens(cachedTokenCount(displayStats)!)}
+            </strong>
+          </div>
+          <div className="stat-row">
+            <span>{t("cost")}</span>
+            <strong>
+              {costTotal(displayStats) == null
+                ? "—"
+                : `$${costTotal(displayStats)!.toFixed(4)}`}
+            </strong>
+          </div>
+          <div className="stat-row">
+            <span>{t("cacheHit")}</span>
+            <strong>
+              {cacheHitRatio(displayStats) == null
+                ? "—"
+                : `${Math.round(cacheHitRatio(displayStats)! * 100)}%`}
+            </strong>
+          </div>
+          <div className="stats-breakdown">
+            <div className="muted">
+              {displayStats.provider ?? t("unknownProvider")} ·{" "}
+              {displayStats.modelId ?? t("unknownModel")}
+            </div>
+            {Object.entries(displayStats.operationCounts ?? {}).map(
+              ([name, value]) => {
+                const maximum = Math.max(
+                  1,
+                  ...Object.values(displayStats.operationCounts ?? {}),
+                );
+                return (
+                  <div className="stats-bar-row" key={name}>
+                    <span>{valueLabel(language, name)}</span>
+                    <span className="stats-bar-track">
+                      <span
+                        className="stats-bar-fill"
+                        style={{ width: `${(value / maximum) * 100}%` }}
+                      />
+                    </span>
+                    <strong>{value}</strong>
+                  </div>
+                );
+              },
+            )}
+          </div>
+        </>
+      )}
+      {actions.has("provider_auth") && supported.has("get_auth_status") && (
+        <section className="diagnostic-section">
+          <h3 className="panel-heading">
+            <span>
+              <ShieldCheck size={14} /> {t("providerAuth")}
+            </span>
+          </h3>
+          <div className="auth-provider-list">
+            {authProviders.map((provider) => (
+              <div className="auth-provider-row" key={provider.provider}>
+                <button
+                  type="button"
+                  className={`auth-provider ${authProvider === provider.provider ? "selected" : ""}`}
+                  onClick={() => {
+                    credentialRevision.current++;
+                    setAuthProvider(provider.provider);
+                    setApiKeyDraft("");
+                    setAuthMessage(null);
+                  }}
+                >
+                  <strong>{provider.provider}</strong>
+                  <span>
+                    {provider.ready
+                      ? valueLabel(language, provider.source)
+                      : t("notConfigured")}
+                    {provider.oauth && provider.source !== "oauth"
+                      ? " · OAuth"
+                      : ""}
+                  </span>
+                </button>
+                {provider.oauth && (
+                  <button
+                    className="icon-button"
+                    title={t("refresh")}
+                    aria-label={`${t("refresh")} ${provider.provider} OAuth`}
+                    onClick={() => void refreshOAuth(provider.provider)}
+                  >
+                    <RefreshCw size={14} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          {supported.has("oauth") &&
+            authProvider &&
+            authProviders.find((item) => item.provider === authProvider)
+              ?.oauthAvailable && (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => void startOAuth(authProvider)}
+              >
+                {t("oauthSignIn")}
+              </button>
+            )}
+          {supported.has("set_api_key") && authProvider && (
+            <div className="auth-compose">
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={apiKeyDraft}
+                onChange={(event) => {
+                  credentialRevision.current++;
+                  setApiKeyDraft(event.target.value);
+                }}
+                placeholder={t("apiKeyFor", {
+                  provider: authProvider,
+                })}
+                aria-label={t("apiKeyFor", {
+                  provider: authProvider,
+                })}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void saveApiKey();
+                }}
+              />
+              <button
+                type="button"
+                disabled={!apiKeyDraft.trim()}
+                onClick={() => void saveApiKey()}
+              >
+                {t("saveKey")}
+              </button>
+            </div>
+          )}
+          {authMessage && (
+            <p className="muted">
+              {t(authMessage.key, {
+                ...authMessage.values,
+                ...(authMessage.values.status
+                  ? {
+                      status: valueLabel(language, authMessage.values.status),
+                    }
+                  : {}),
+              })}
+            </p>
+          )}
+        </section>
+      )}
+      {actions.has("queue") && supported.has("get_queue") && (
+        <section className="diagnostic-section">
+          <h3 className="panel-heading">
+            <span>
+              <ListTodo size={14} /> {t("queue")}
+            </span>
+            <span className="panel-heading-actions">
+              <strong>{queueItems.length}</strong>
+              {actions.has("queue_status") && (
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setShowQueueHistory((value) => !value)}
+                >
+                  {t(showQueueHistory ? "queuePending" : "history")}
+                </button>
+              )}
+              {supported.has("clear_queue") &&
+                queueItems.some((item) => isEditableQueueItem(item)) && (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => void clearQueue()}
+                  >
+                    {t("clear")}
+                  </button>
+                )}
+            </span>
+          </h3>
+          {queueItems.map((item) => (
+            <div className="queue-item" key={item.entryId}>
+              <div>
+                <strong>
+                  {valueLabel(language, item.queue)} ·{" "}
+                  {valueLabel(language, item.status ?? "queued")}
+                </strong>
+                <span>{item.text || t("nonTextMessage")}</span>
+                {item.runId && (
+                  <small>
+                    {t("runLabel")} {item.runId.slice(0, 10)}
+                  </small>
+                )}
+              </div>
+              {isEditableQueueItem(item) && (
+                <span className="queue-item-actions">
+                  {item.text?.trim() &&
+                    !busy &&
+                    supported.has("prompt") &&
+                    supported.has("cancel_queued") && (
+                      <button
+                        type="button"
+                        className="icon-button queue-send-now"
+                        title={t("sendNow")}
+                        aria-label={`${t("sendNow")}: ${item.text}`}
+                        onClick={() => void sendQueuedNow(item.entryId)}
+                        disabled={queueRunning}
+                      >
+                        {queueRunning ? (
+                          <Loader2 size={13} className="spin" />
+                        ) : (
+                          <Play size={13} />
+                        )}
+                      </button>
+                    )}
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title={t("editQueued")}
+                    aria-label={t("editQueued")}
+                    onClick={() => editQueued(item)}
+                  >
+                    <SquarePen size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title={t("cancelQueued")}
+                    aria-label={t("cancelQueued")}
+                    onClick={() => void cancelQueued(item.entryId)}
+                  >
+                    <X size={13} />
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
+          {supported.has("queue_message") && !queueEditId && (
+            <div className="queue-compose">
+              <input
+                ref={queueInputRef}
+                value={queueDraft}
+                onChange={(event) => {
+                  queueDraftRevision.current++;
+                  setQueueDraft(event.target.value);
+                }}
+                placeholder={t("queuePlaceholder")}
+                aria-label={t("queuePlaceholder")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void queuePrompt();
+                }}
+              />
+              <MenuSelect
+                label={t("queueKind")}
+                value={queueKind}
+                onChange={setQueueKind}
+                options={[
+                  { value: "followUp", label: t("followUp") },
+                  { value: "steer", label: t("steer") },
+                  { value: "nextTurn", label: t("nextTurn") },
+                ]}
+              />
+              <button
+                type="button"
+                onClick={() => void queuePrompt()}
+                disabled={!queueDraft.trim()}
+              >
+                {t("queue")}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+      {actions.has("history") && historyData && (
+        <section className="diagnostic-section">
+          <h3 className="panel-heading">
+            <span>
+              <History size={14} /> {t("history")}
+            </span>
+            <span className="panel-heading-actions">
+              <strong>{historyData.total}</strong>
+              {historyHasMore && (
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={historyLoading}
+                  onClick={() => void loadOlderHistory()}
+                >
+                  {t(historyLoading ? "loading" : "older")}
+                </button>
+              )}
+            </span>
+          </h3>
+          {persistedSettlementRows(historyData).length > 0 && (
+            <p className="muted">{t("settlementsRestored")}</p>
+          )}
+          {historyData.openOperations &&
+            historyData.openOperations.length > 0 && (
+              <div className="history-open-operations">
+                <div className="history-subheading">
+                  <Loader2 size={12} /> {t("activeOperations")}
+                </div>
+                {historyData.openOperations.map((operation, index) => (
+                  <details
+                    className="history-item operation-open"
+                    key={String(operation.id ?? operation.runId ?? index)}
+                    open
+                  >
+                    <summary>
+                      <strong>
+                        {historyRecordLabel({
+                          ...operation,
+                          type: operation.type ?? "operation",
+                        })}
+                      </strong>
+                      <span>{t("toolRunning")}</span>
+                    </summary>
+                    <pre>{historyRecordDetails(operation)}</pre>
+                  </details>
+                ))}
+              </div>
+            )}
+          <div className="history-list history-timeline">
+            {historyData.records
+              .slice()
+              .reverse()
+              .map((record) => {
+                const target =
+                  typeof record.sourceLeafId === "string"
+                    ? record.sourceLeafId
+                    : null;
+                const recordId = String(record.id ?? record.seq);
+                const time = historyRecordTime(record);
+                const runId =
+                  typeof record.runId === "string"
+                    ? record.runId.slice(0, 12)
+                    : null;
+                return (
+                  <details
+                    className="history-item history-timeline-item"
+                    key={recordId}
+                  >
+                    <summary>
+                      <div>
+                        <strong>{historyRecordLabel(record)}</strong>
+                        <span>
+                          {t("sequenceLabel")} {String(record.seq ?? "—")}
+                          {time ? ` · ${time}` : ""}
+                        </span>
+                        {runId && (
+                          <span>
+                            {t("runLabel")} {runId}
+                          </span>
+                        )}
+                      </div>
+                      <div className="history-summary-status">
+                        {Boolean(record.outcome) && (
+                          <span>
+                            {valueLabel(language, String(record.outcome))}
+                          </span>
+                        )}
+                        {Boolean(record.error) &&
+                          typeof record.error === "object" && (
+                            <span className="error-text">
+                              {String(
+                                (record.error as { message?: unknown }).message ??
+                                  "error",
+                              )}
+                            </span>
+                          )}
+                      </div>
+                    </summary>
+                    <div className="history-detail">
+                      <pre>{historyRecordDetails(record)}</pre>
+                      {target && actions.has("history_mutation") && (
+                        <div className="history-actions">
+                          <button
+                            title={t("forkHere")}
+                            disabled={mutationPending || forkPending}
+                            onClick={() => void forkCurrent(target)}
+                          >
+                            <GitBranch size={12} /> {t("fork")}
+                          </button>
+                          <button
+                            title={t("rewindHere")}
+                            disabled={mutationPending}
+                            onClick={() => void rewindTo(target)}
+                          >
+                            <RotateCcw size={12} /> {t("rewind")}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                );
+              })}
+          </div>
+        </section>
+      )}
+      <div className="stat-row">
+        <span>{t("activeTools")}</span>
+        <strong>{runtime?.activeTools?.length ?? 0}</strong>
+      </div>
+      <h3 className="panel-heading">{t("capabilities")}</h3>
+      <div className="tool-stack capability-list">
+        {capabilities?.supportedCommands.map((command) => (
+          <span className="badge" key={command}>
+            {command}
+          </span>
+        ))}
+      </div>
+    </>
+  ) : null;
+
   return (
     <div
       className={`workspace${immersive ? " workspace--immersive" : ""}`}
@@ -4075,9 +4554,27 @@ export default function App() {
               <kbd>Ctrl / ⌘ N</kbd>
               <span>{language === "zh" ? "搜索会话" : "Search chats"}</span>
               <kbd>Ctrl / ⌘ K</kbd>
+              <span>{t("messageSearch")}</span>
+              <kbd>Ctrl / ⌘ F</kbd>
               <span>{t("closeSidebar")}</span>
               <kbd>Ctrl / ⌘ B</kbd>
             </div>
+            <button
+              type="button"
+              className="settings-refresh"
+              onClick={() => void refreshSessions()}
+            >
+              <RefreshCw size={14} /> {t("refreshSessions")}
+            </button>
+            {authRequired && (
+              <button
+                type="button"
+                className="settings-sign-out"
+                onClick={() => void logout()}
+              >
+                <LogOut size={14} /> {t("signOut")}
+              </button>
+            )}
           </div>
         </Modal>
       )}
@@ -4125,110 +4622,29 @@ export default function App() {
               }}
               onMetadata={updateSessionMetadata}
             />
-            <div className="sidebar-bottom">
+            <div className="sidebar-bottom slim-bottom">
               {/* Build-time only: set VITE_PREVIEW_BUILD=1 for preview builds.
                   A normal release build statically removes this block, so a
                   shipped version can never be mislabeled as a preview. */}
               {import.meta.env.VITE_PREVIEW_BUILD === "1" && (
                 <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "0 10px 8px",
-                    color: "var(--muted)",
-                    fontSize: "10.5px",
-                    fontFamily: "var(--mono)",
-                    letterSpacing: "0.01em",
-                  }}
+                  className="slim-preview-badge"
                   title={`rpi-web preview · ${import.meta.env.VITE_PREVIEW_COMMIT ?? "local build"}`}
                 >
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: "50%",
-                      background: "var(--green)",
-                      flex: "0 0 auto",
-                    }}
-                  />
-                  rpi-web preview
+                  <span aria-hidden="true" /> rpi-web preview
                 </div>
               )}
-              <div className="utility-nav">
-                <button onClick={() => setSettingsOpen(true)}>
-                  <Settings2 size={14} />
-                  {language === "zh" ? "设置" : "Settings"}
-                  <kbd>Ctrl ,</kbd>
-                </button>
-                <button
-                  disabled={!sessionId}
-                  className={panel ? "active" : ""}
-                  onClick={() => {
-                    setTraceOpen(false);
-                    setPanel(true);
-                    setInspector(false);
-                    if (window.matchMedia("(max-width: 767px)").matches) setSidebar(false);
-                  }}
-                >
-                  <SlidersHorizontal size={14} /> {t("runtimeSettings")}
-                </button>
-              </div>
-              <div className="account-panel">
-                <span className="user-avatar">U</span>
-                <span className="account-name">{t("workspaceUser")}</span>
-                <button
-                  className="icon-button"
-                  aria-label={
-                    language === "zh" ? "切换外观" : "Toggle appearance"
-                  }
-                  onClick={() => setThemePreference(theme === "light" ? "dark" : "light")}
-                  title={t(
-                    theme === "light" ? "switchToDark" : "switchToLight",
-                  )}
-                >
-                  {theme === "light" ? <Moon size={14} /> : <Sun size={14} />}
-                </button>
-                {authRequired && (
-                  <button
-                    type="button"
-                    className="icon-button account-button"
-                    onClick={() => void logout()}
-                    title={t("signOut")}
-                    aria-label={t("signOut")}
-                  >
-                    <LogOut size={15} />
-                  </button>
-                )}
-              </div>
-              <div className="local-label">
-                <span
-                  className="workspace-security"
-                  title={t("loopback")}
-                  aria-label={t("loopback")}
-                >
-                  <ShieldCheck size={14} />
-                </span>
-                <MenuSelect
-                  className="language-select"
-                  label={t("language")}
-                  value={language}
-                  onChange={(value) => setLanguage(value as Language)}
-                  options={[
-                    { value: "en", label: t("english") },
-                    { value: "zh", label: t("chinese") },
-                  ]}
-                />
-                <button
-                  className="icon-button"
-                  aria-label={t("refreshSessions")}
-                  title={t("refreshSessions")}
-                  onClick={() => void refreshSessions()}
-                >
-                  <RefreshCw size={13} />
-                </button>
-              </div>
+              <button
+                type="button"
+                className="slim-settings"
+                onClick={() => setSettingsOpen(true)}
+                title={language === "zh" ? "设置" : "Settings"}
+              >
+                <Settings2 size={14} />
+                <span>{language === "zh" ? "设置" : "Settings"}</span>
+                <kbd>Ctrl ,</kbd>
+              </button>
+
             </div>
           </aside>
           <Splitter
@@ -4314,7 +4730,6 @@ export default function App() {
                 setSidebar(false);
                 setTimelineOpen(false);
                 setPanel(false);
-                setInspector(false);
                 setTraceOpen(false);
                 setWorkbenchOpen(false);
               }}
@@ -4354,17 +4769,6 @@ export default function App() {
             )}
             <button
               type="button"
-              className={`icon-button ${messageSearchOpen ? "selected" : ""}`}
-              disabled={!sessionId}
-              aria-label={t("messageSearch")}
-              title={t("messageSearch")}
-              aria-pressed={messageSearchOpen}
-              onClick={() => setMessageSearchOpen((open) => !open)}
-            >
-              <Search size={17} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
               className={`icon-button ${timelineOpen ? "selected" : ""}`}
               disabled={!sessionId}
               aria-label={t("conversationTimeline")}
@@ -4385,35 +4789,20 @@ export default function App() {
               onClick={() => {
                 setTraceOpen(!traceOpen);
                 setPanel(false);
-                setInspector(false);
                 setWorkbenchOpen(false);
               }}
             >
               <Activity size={17} aria-hidden="true" />
             </button>
-            <button
-              className={`icon-button ${inspector ? "selected" : ""}`}
-              aria-label={t("toggleInspector")}
-              title={t("toggleInspector")}
-              aria-pressed={inspector}
-              onClick={() => {
-                setTraceOpen(false);
-                setInspector(!inspector);
-                setPanel(false);
-              }}
-            >
-              <PanelRight size={17} aria-hidden="true" />
-            </button>
             {project && actions.has("files") && (
               <button
-                className={`icon-button ${workbenchOpen && !panel && !inspector ? "selected" : ""}`}
+                className={`icon-button ${workbenchOpen && !panel ? "selected" : ""}`}
                 aria-label={t("toggleFiles")}
-                aria-pressed={workbenchOpen && !panel && !inspector}
+                aria-pressed={workbenchOpen && !panel}
                 onClick={() => {
                   setTraceOpen(false);
-                  setWorkbenchOpen(!workbenchOpen || panel || inspector);
+                  setWorkbenchOpen(!workbenchOpen || panel);
                   setPanel(false);
-                  setInspector(false);
                 }}
               >
                 <Files size={17} />
@@ -5059,6 +5448,11 @@ export default function App() {
                           supported={supported}
                           pending={modelPending}
                           onSelect={(entry) => void selectModel(entry)}
+                          onRuntime={() => {
+                            setTraceOpen(false);
+                            setWorkbenchOpen(false);
+                            setPanel(true);
+                          }}
                         />
                       )}
                       {supported.has("set_thinking_level") && (
@@ -5072,15 +5466,6 @@ export default function App() {
                         />
                       )}
                     </div>
-                    <span
-                      className="composer-shortcut-hint"
-                      title={t("shiftEnterNewline")}
-                    >
-                      <kbd>Shift</kbd>
-                      <span aria-hidden="true">+</span>
-                      <kbd>Enter</kbd>
-                      <span>{t("shiftEnterNewline")}</span>
-                    </span>
                     {composerQueues && (
                       <MenuSelect
                         className="composer-queue-kind"
@@ -5130,139 +5515,51 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <details
-                  className="composer-metrics"
-                  aria-label={`${t("inputTokens")}, ${t("outputTokens")}, ${t("totalTokens")}, ${t("cacheHit")}, ${t("context")}, ${t("cachedTokens")}, ${t("toolCalls")}, ${t("operations")}, ${t("cost")}, ${t("eventsObserved")}`}
+                <div
+                  className="composer-metrics slim-metrics"
+                  aria-label={`${t("cacheHit")}, ${t("context")}`}
                 >
-                  <summary className="composer-metrics-summary">
-                    <span
-                      className="composer-metric"
-                      title={t("inputTokens")}
-                      aria-label={`${t("inputTokens")}: ${inputTokenCount(displayStats) == null ? "—" : formatTokens(inputTokenCount(displayStats)!)}`}
-                    >
-                      <ArrowDown size={12} aria-hidden="true" />
-                      <strong>
-                        {inputTokenCount(displayStats) == null
-                          ? "—"
-                          : formatTokens(inputTokenCount(displayStats)!)}
-                      </strong>
-                    </span>
-                    <span
-                      className="composer-metric"
-                      title={t("outputTokens")}
-                      aria-label={`${t("outputTokens")}: ${outputTokenCount(displayStats) == null ? "—" : formatTokens(outputTokenCount(displayStats)!)}`}
-                    >
-                      <ArrowUp size={12} aria-hidden="true" />
-                      <strong>
-                        {outputTokenCount(displayStats) == null
-                          ? "—"
-                          : formatTokens(outputTokenCount(displayStats)!)}
-                      </strong>
-                    </span>
-                    <span
-                      className="composer-metric"
-                      title={t("cacheHit")}
-                      aria-label={`${t("cacheHit")}: ${cacheHitRatio(displayStats) == null ? "—" : `${Math.round(cacheHitRatio(displayStats)! * 100)}%`}`}
-                    >
-                      <Database size={12} aria-hidden="true" />
-                      <strong>
-                        {cacheHitRatio(displayStats) == null
-                          ? "—"
-                          : `${Math.round(cacheHitRatio(displayStats)! * 100)}%`}
-                      </strong>
-                    </span>
-                    <span
-                      className="composer-metric"
-                      title={`${t("context")}: ${runtime?.context ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)} (${runtime.context.percent}%)` : "—"}`}
-                      aria-label={`${t("context")}: ${runtime?.context ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)}` : "—"}`}
-                    >
-                      <Gauge size={12} aria-hidden="true" />
-                      <strong>
-                        {runtime?.context
-                          ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)}`
-                          : "—"}
-                      </strong>
-                    </span>
-                    <span className="composer-metrics-more">
-                      {t("details")}
-                    </span>
-                  </summary>
-                  <div className="composer-metrics-detail">
-                    <span
-                      className="composer-metric"
-                      title={t("cachedTokens")}
-                      aria-label={`${t("cachedTokens")}: ${cachedTokenCount(displayStats) == null ? "—" : formatTokens(cachedTokenCount(displayStats)!)}`}
-                    >
-                      <Database size={12} aria-hidden="true" />
-                      <strong>
-                        {cachedTokenCount(displayStats) == null
-                          ? "—"
-                          : formatTokens(cachedTokenCount(displayStats)!)}
-                      </strong>
-                    </span>
-                    <span
-                      className="composer-metric"
-                      title={t("totalTokens")}
-                      aria-label={`${t("totalTokens")}: ${totalTokenCount(displayStats) == null ? "—" : formatTokens(totalTokenCount(displayStats)!)}`}
-                    >
-                      <Sigma size={12} aria-hidden="true" />
-                      <strong>
-                        {totalTokenCount(displayStats) == null
-                          ? "—"
-                          : formatTokens(totalTokenCount(displayStats)!)}
-                      </strong>
-                    </span>
-
-                    <span
-                      className="composer-metric"
-                      title={t("toolCalls")}
-                      aria-label={`${t("toolCalls")}: ${rows.filter((row) => row.kind === "tool").length}`}
-                    >
-                      <Wrench size={12} aria-hidden="true" />
-                      <strong>
-                        {rows.filter((row) => row.kind === "tool").length}
-                      </strong>
-                    </span>
-                    <span
-                      className="composer-metric"
-                      title={t("operations")}
-                      aria-label={`${t("operations")}: ${runtime?.stats?.operationCount ?? historyData?.total ?? 0}`}
-                    >
-                      <History size={12} aria-hidden="true" />
-                      <strong>
-                        {runtime?.stats?.operationCount ??
-                          historyData?.total ??
-                          0}
-                      </strong>
-                    </span>
-                    <span
-                      className="composer-metric"
-                      title={t("cost")}
-                      aria-label={`${t("cost")}: ${costTotal(displayStats) == null ? "—" : `$${costTotal(displayStats)!.toFixed(4)}`}`}
-                    >
-                      <CircleDollarSign size={12} aria-hidden="true" />
-                      <strong>
-                        {costTotal(displayStats) == null
-                          ? "—"
-                          : `$${costTotal(displayStats)!.toFixed(4)}`}
-                      </strong>
-                    </span>
-                    <span
-                      className="composer-metric"
-                      title={t("eventsObserved")}
-                      aria-label={`${t("eventsObserved")}: ${seen}`}
-                    >
-                      <Activity size={12} aria-hidden="true" />
-                      <strong>{seen}</strong>
-                    </span>
-                  </div>
-                </details>
+                  <span
+                    className="composer-metric"
+                    title={t("cacheHit")}
+                    aria-label={`${t("cacheHit")}: ${cacheHitRatio(displayStats) == null ? "—" : `${Math.round(cacheHitRatio(displayStats)! * 100)}%`}`}
+                  >
+                    <Database size={12} aria-hidden="true" />
+                    <strong>
+                      {cacheHitRatio(displayStats) == null
+                        ? "—"
+                        : `${Math.round(cacheHitRatio(displayStats)! * 100)}%`}
+                    </strong>
+                  </span>
+                  <span
+                    className="composer-metric"
+                    title={`${t("context")}: ${runtime?.context ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)} (${runtime.context.percent}%)` : "—"}`}
+                    aria-label={`${t("context")}: ${runtime?.context ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)}` : "—"}`}
+                  >
+                    <Gauge size={12} aria-hidden="true" />
+                    <strong>
+                      {runtime?.context
+                        ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)}`
+                        : "—"}
+                    </strong>
+                  </span>
+                  <button
+                    type="button"
+                    className="slim-metrics-more"
+                    onClick={() => {
+                      setTraceOpen(false);
+                      setWorkbenchOpen(false);
+                      setPanel(true);
+                    }}
+                  >
+                    {t("details")}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
 
           {(panel ||
-            inspector ||
             (traceOpen && sessionId) ||
             (workbenchOpen && project && actions.has("files"))) && (
             <Splitter
@@ -5277,8 +5574,7 @@ export default function App() {
           {workbenchOpen &&
             project &&
             actions.has("files") &&
-            !panel &&
-            !inspector && (
+            !panel && (
               <Workbench
                 key={project.id}
                 project={project}
@@ -5305,6 +5601,7 @@ export default function App() {
               onError={setError}
               autoRead={autoRead}
               onAutoRead={setAutoRead}
+              details={inspectorDetails}
               onClose={() => setPanel(false)}
             />
           )}
@@ -5321,518 +5618,6 @@ export default function App() {
             />
           )}
 
-          {inspector && (
-            <aside className="inspector">
-              <div className="panel-heading">
-                <h2>{t("inspector")}</h2>
-                <button
-                  className="icon-button"
-                  onClick={() => setInspector(false)}
-                  aria-label={t("closePanel")}
-                  title={t("closePanel")}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-              {project && (
-                <ResourcePanel project={project} language={language} />
-              )}
-              <div className="stat-row">
-                <span>{t("protocol")}</span>
-                <strong>{capabilities?.protocol ?? "—"}</strong>
-              </div>
-              <div className="stat-row">
-                <span>{t("settlement")}</span>
-                <strong>agent_settled</strong>
-              </div>
-              <div className="stat-row">
-                <span>{t("session")}</span>
-                <strong>{sessionId.slice(0, 8) || "—"}</strong>
-              </div>
-              <div className="stat-row">
-                <span>{t("leaf")}</span>
-                <strong>{leafId ? leafId.slice(0, 8) : "—"}</strong>
-              </div>
-              <div className="stat-row">
-                <span>{t("eventsObserved")}</span>
-                <strong>{seen}</strong>
-              </div>
-              <div className="stat-row">
-                <span>{t("context")}</span>
-                <strong>
-                  {runtime?.context
-                    ? `${runtime.context.percent}% / ${formatTokens(runtime.context.window)}`
-                    : "—"}
-                </strong>
-              </div>
-              <div className="stat-row">
-                <span>{t("toolCalls")}</span>
-                <strong>
-                  {rows.filter((row) => row.kind === "tool").length}
-                </strong>
-              </div>
-              <div className="stat-row">
-                <span>{t("operations")}</span>
-                <strong>{historyData?.total ?? 0}</strong>
-              </div>
-              {displayStats && (
-                <>
-                  <div className="stat-row">
-                    <span>{t("tokens")}</span>
-                    <strong>
-                      {totalTokenCount(displayStats) == null
-                        ? "—"
-                        : formatTokens(totalTokenCount(displayStats)!)}
-                    </strong>
-                  </div>
-                  <div className="stat-row">
-                    <span>{t("inputTokens")}</span>
-                    <strong>
-                      {inputTokenCount(displayStats) == null
-                        ? "—"
-                        : formatTokens(inputTokenCount(displayStats)!)}
-                    </strong>
-                  </div>
-                  <div className="stat-row">
-                    <span>{t("outputTokens")}</span>
-                    <strong>
-                      {outputTokenCount(displayStats) == null
-                        ? "—"
-                        : formatTokens(outputTokenCount(displayStats)!)}
-                    </strong>
-                  </div>
-                  <div className="stat-row">
-                    <span>{t("cachedTokens")}</span>
-                    <strong>
-                      {cachedTokenCount(displayStats) == null
-                        ? "—"
-                        : formatTokens(cachedTokenCount(displayStats)!)}
-                    </strong>
-                  </div>
-                  <div className="stat-row">
-                    <span>{t("cost")}</span>
-                    <strong>
-                      {costTotal(displayStats) == null
-                        ? "—"
-                        : `$${costTotal(displayStats)!.toFixed(4)}`}
-                    </strong>
-                  </div>
-                  <div className="stat-row">
-                    <span>{t("cacheHit")}</span>
-                    <strong>
-                      {cacheHitRatio(displayStats) == null
-                        ? "—"
-                        : `${Math.round(cacheHitRatio(displayStats)! * 100)}%`}
-                    </strong>
-                  </div>
-                  <div className="stats-breakdown">
-                    <div className="muted">
-                      {displayStats.provider ?? t("unknownProvider")} ·{" "}
-                      {displayStats.modelId ?? t("unknownModel")}
-                    </div>
-                    {Object.entries(displayStats.operationCounts ?? {}).map(
-                      ([name, value]) => {
-                        const maximum = Math.max(
-                          1,
-                          ...Object.values(displayStats.operationCounts ?? {}),
-                        );
-                        return (
-                          <div className="stats-bar-row" key={name}>
-                            <span>{valueLabel(language, name)}</span>
-                            <span className="stats-bar-track">
-                              <span
-                                className="stats-bar-fill"
-                                style={{ width: `${(value / maximum) * 100}%` }}
-                              />
-                            </span>
-                            <strong>{value}</strong>
-                          </div>
-                        );
-                      },
-                    )}
-                  </div>
-                </>
-              )}
-              {actions.has("provider_auth") &&
-                supported.has("get_auth_status") && (
-                  <section className="diagnostic-section">
-                    <h3 className="panel-heading">
-                      <span>
-                        <ShieldCheck size={14} /> {t("providerAuth")}
-                      </span>
-                    </h3>
-                    <div className="auth-provider-list">
-                      {authProviders.map((provider) => (
-                        <div
-                          className="auth-provider-row"
-                          key={provider.provider}
-                        >
-                          <button
-                            type="button"
-                            className={`auth-provider ${authProvider === provider.provider ? "selected" : ""}`}
-                            onClick={() => {
-                              credentialRevision.current++;
-                              setAuthProvider(provider.provider);
-                              setApiKeyDraft("");
-                              setAuthMessage(null);
-                            }}
-                          >
-                            <strong>{provider.provider}</strong>
-                            <span>
-                              {provider.ready
-                                ? valueLabel(language, provider.source)
-                                : t("notConfigured")}
-                              {provider.oauth && provider.source !== "oauth"
-                                ? " · OAuth"
-                                : ""}
-                            </span>
-                          </button>
-                          {provider.oauth && (
-                            <button
-                              className="icon-button"
-                              title={t("refresh")}
-                              aria-label={`${t("refresh")} ${provider.provider} OAuth`}
-                              onClick={() =>
-                                void refreshOAuth(provider.provider)
-                              }
-                            >
-                              <RefreshCw size={14} />
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                    {supported.has("oauth") &&
-                      authProvider &&
-                      authProviders.find(
-                        (item) => item.provider === authProvider,
-                      )?.oauthAvailable && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => void startOAuth(authProvider)}
-                        >
-                          {t("oauthSignIn")}
-                        </button>
-                      )}
-                    {supported.has("set_api_key") && authProvider && (
-                      <div className="auth-compose">
-                        <input
-                          type="password"
-                          autoComplete="new-password"
-                          value={apiKeyDraft}
-                          onChange={(event) => {
-                            credentialRevision.current++;
-                            setApiKeyDraft(event.target.value);
-                          }}
-                          placeholder={t("apiKeyFor", {
-                            provider: authProvider,
-                          })}
-                          aria-label={t("apiKeyFor", {
-                            provider: authProvider,
-                          })}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") void saveApiKey();
-                          }}
-                        />
-                        <button
-                          type="button"
-                          disabled={!apiKeyDraft.trim()}
-                          onClick={() => void saveApiKey()}
-                        >
-                          {t("saveKey")}
-                        </button>
-                      </div>
-                    )}
-                    {authMessage && (
-                      <p className="muted">
-                        {t(authMessage.key, {
-                          ...authMessage.values,
-                          ...(authMessage.values.status
-                            ? {
-                                status: valueLabel(
-                                  language,
-                                  authMessage.values.status,
-                                ),
-                              }
-                            : {}),
-                        })}
-                      </p>
-                    )}
-                  </section>
-                )}
-              {actions.has("queue") && supported.has("get_queue") && (
-                <section className="diagnostic-section">
-                  <h3 className="panel-heading">
-                    <span>
-                      <ListTodo size={14} /> {t("queue")}
-                    </span>
-                    <span className="panel-heading-actions">
-                      <strong>{queueItems.length}</strong>
-                      {actions.has("queue_status") && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => setShowQueueHistory((value) => !value)}
-                        >
-                          {t(showQueueHistory ? "queuePending" : "history")}
-                        </button>
-                      )}
-                      {supported.has("clear_queue") &&
-                        queueItems.some((item) =>
-                          isEditableQueueItem(item),
-                        ) && (
-                          <button
-                            type="button"
-                            className="text-button"
-                            onClick={() => void clearQueue()}
-                          >
-                            {t("clear")}
-                          </button>
-                        )}
-                    </span>
-                  </h3>
-                  {queueItems.map((item) => (
-                    <div className="queue-item" key={item.entryId}>
-                      <div>
-                        <strong>
-                          {valueLabel(language, item.queue)} ·{" "}
-                          {valueLabel(language, item.status ?? "queued")}
-                        </strong>
-                        <span>{item.text || t("nonTextMessage")}</span>
-                        {item.runId && (
-                          <small>
-                            {t("runLabel")} {item.runId.slice(0, 10)}
-                          </small>
-                        )}
-                      </div>
-                      {isEditableQueueItem(item) && (
-                        <span className="queue-item-actions">
-                          {item.text?.trim() &&
-                            !busy &&
-                            supported.has("prompt") &&
-                            supported.has("cancel_queued") && (
-                              <button
-                                type="button"
-                                className="icon-button queue-send-now"
-                                title={t("sendNow")}
-                                aria-label={`${t("sendNow")}: ${item.text}`}
-                                onClick={() =>
-                                  void sendQueuedNow(item.entryId)
-                                }
-                                disabled={queueRunning}
-                              >
-                                {queueRunning ? (
-                                  <Loader2 size={13} className="spin" />
-                                ) : (
-                                  <Play size={13} />
-                                )}
-                              </button>
-                            )}
-                          <button
-                            type="button"
-                            className="icon-button"
-                            title={t("editQueued")}
-                            aria-label={t("editQueued")}
-                            onClick={() => editQueued(item)}
-                          >
-                            <SquarePen size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            className="icon-button"
-                            title={t("cancelQueued")}
-                            aria-label={t("cancelQueued")}
-                            onClick={() => void cancelQueued(item.entryId)}
-                          >
-                            <X size={13} />
-                          </button>
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                  {supported.has("queue_message") && !queueEditId && (
-                    <div className="queue-compose">
-                      <input
-                        ref={queueInputRef}
-                        value={queueDraft}
-                        onChange={(event) => {
-                          queueDraftRevision.current++;
-                          setQueueDraft(event.target.value);
-                        }}
-                        placeholder={t("queuePlaceholder")}
-                        aria-label={t("queuePlaceholder")}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") void queuePrompt();
-                        }}
-                      />
-                      <MenuSelect
-                        label={t("queueKind")}
-                        value={queueKind}
-                        onChange={setQueueKind}
-                        options={[
-                          { value: "followUp", label: t("followUp") },
-                          { value: "steer", label: t("steer") },
-                          { value: "nextTurn", label: t("nextTurn") },
-                        ]}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void queuePrompt()}
-                        disabled={!queueDraft.trim()}
-                      >
-                        {t("queue")}
-                      </button>
-                    </div>
-                  )}
-                </section>
-              )}
-              {actions.has("history") && historyData && (
-                <section className="diagnostic-section">
-                  <h3 className="panel-heading">
-                    <span>
-                      <History size={14} /> {t("history")}
-                    </span>
-                    <span className="panel-heading-actions">
-                      <strong>{historyData.total}</strong>
-                      {historyHasMore && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          disabled={historyLoading}
-                          onClick={() => void loadOlderHistory()}
-                        >
-                          {t(historyLoading ? "loading" : "older")}
-                        </button>
-                      )}
-                    </span>
-                  </h3>
-                  {persistedSettlementRows(historyData).length > 0 && (
-                    <p className="muted">{t("settlementsRestored")}</p>
-                  )}
-                  {historyData.openOperations &&
-                    historyData.openOperations.length > 0 && (
-                      <div className="history-open-operations">
-                        <div className="history-subheading">
-                          <Loader2 size={12} /> {t("activeOperations")}
-                        </div>
-                        {historyData.openOperations.map((operation, index) => (
-                          <details
-                            className="history-item operation-open"
-                            key={String(
-                              operation.id ?? operation.runId ?? index,
-                            )}
-                            open
-                          >
-                            <summary>
-                              <strong>
-                                {historyRecordLabel({
-                                  ...operation,
-                                  type: operation.type ?? "operation",
-                                })}
-                              </strong>
-                              <span>{t("toolRunning")}</span>
-                            </summary>
-                            <pre>{historyRecordDetails(operation)}</pre>
-                          </details>
-                        ))}
-                      </div>
-                    )}
-                  <div className="history-list history-timeline">
-                    {historyData.records
-                      .slice()
-                      .reverse()
-                      .map((record) => {
-                        const target =
-                          typeof record.sourceLeafId === "string"
-                            ? record.sourceLeafId
-                            : null;
-                        const recordId = String(record.id ?? record.seq);
-                        const time = historyRecordTime(record);
-                        const runId =
-                          typeof record.runId === "string"
-                            ? record.runId.slice(0, 12)
-                            : null;
-                        return (
-                          <details
-                            className="history-item history-timeline-item"
-                            key={recordId}
-                          >
-                            <summary>
-                              <div>
-                                <strong>{historyRecordLabel(record)}</strong>
-                                <span>
-                                  {t("sequenceLabel")}{" "}
-                                  {String(record.seq ?? "—")}
-                                  {time ? ` · ${time}` : ""}
-                                </span>
-                                {runId && (
-                                  <span>
-                                    {t("runLabel")} {runId}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="history-summary-status">
-                                {Boolean(record.outcome) && (
-                                  <span>
-                                    {valueLabel(
-                                      language,
-                                      String(record.outcome),
-                                    )}
-                                  </span>
-                                )}
-                                {Boolean(record.error) &&
-                                  typeof record.error === "object" && (
-                                    <span className="error-text">
-                                      {String(
-                                        (record.error as { message?: unknown })
-                                          .message ?? "error",
-                                      )}
-                                    </span>
-                                  )}
-                              </div>
-                            </summary>
-                            <div className="history-detail">
-                              <pre>{historyRecordDetails(record)}</pre>
-                              {target && actions.has("history_mutation") && (
-                                <div className="history-actions">
-                                  <button
-                                    title={t("forkHere")}
-                                    disabled={mutationPending || forkPending}
-                                    onClick={() => void forkCurrent(target)}
-                                  >
-                                    <GitBranch size={12} /> {t("fork")}
-                                  </button>
-                                  <button
-                                    title={t("rewindHere")}
-                                    disabled={mutationPending}
-                                    onClick={() => void rewindTo(target)}
-                                  >
-                                    <RotateCcw size={12} /> {t("rewind")}
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </details>
-                        );
-                      })}
-                  </div>
-                </section>
-              )}
-              <div className="stat-row">
-                <span>{t("activeTools")}</span>
-                <strong>{runtime?.activeTools?.length ?? 0}</strong>
-              </div>
-              <h3 className="panel-heading">{t("capabilities")}</h3>
-              <div className="tool-stack capability-list">
-                {capabilities?.supportedCommands.map((command) => (
-                  <span className="badge" key={command}>
-                    {command}
-                  </span>
-                ))}
-              </div>
-            </aside>
-          )}
         </main>
       </section>
     </div>
@@ -6130,6 +5915,7 @@ function ModelPicker({
   className = "composer-model",
   icon,
   onSelect,
+  onRuntime,
 }: {
   language: Language;
   runtime: RuntimeState | null;
@@ -6139,6 +5925,7 @@ function ModelPicker({
   className?: string;
   icon?: ReactNode;
   onSelect: (model: ModelDescriptor) => void;
+  onRuntime?: () => void;
 }) {
   const t = (key: MessageKey) => translate(language, key);
   const currentKey = runtime?.modelId
@@ -6158,6 +5945,24 @@ function ModelPicker({
         </>
       }
     >
+      {onRuntime && (
+        <button
+          type="button"
+          role="option"
+          aria-selected={false}
+          aria-label={t("runtimeSettings")}
+          className="dropdown-item slim-model-runtime"
+          onClick={onRuntime}
+        >
+          <span className="slim-model-runtime-label">
+            <SlidersHorizontal size={14} aria-hidden="true" />
+            {t("runtimeSettings")}
+          </span>
+          <span className="slim-model-runtime-hint">
+            {language === "zh" ? "上下文与工具" : "Context & tools"}
+          </span>
+        </button>
+      )}
       {models.length === 0 ? (
         <p className="dropdown-empty muted">{t("noModels")}</p>
       ) : (
@@ -6933,6 +6738,7 @@ function RuntimePanel({
   onModelSelected,
   preference,
   onClearPreference,
+  details,
   onClose,
 }: {
   language: Language;
@@ -6947,6 +6753,7 @@ function RuntimePanel({
   onModelSelected: ModelSelected;
   preference: ModelPreference | null;
   onClearPreference: () => void;
+  details?: ReactNode;
   onClose: () => void;
 }) {
   const zh = language === "zh";
@@ -7042,7 +6849,7 @@ function RuntimePanel({
   const active = new Set(catalog?.activeTools ?? runtime?.activeTools ?? []);
   const heading = (
     <div className="panel-heading">
-      <h2>{zh ? "运行时设置" : "Runtime settings"}</h2>
+      <h2>{t("runtimeAndContext")}</h2>
       <button
         className="icon-button"
         onClick={onClose}
@@ -7234,6 +7041,7 @@ function RuntimePanel({
       ) : (
         <p className="muted">{t("noToolCatalog")}</p>
       )}
+      {details}
       {pending && (
         <p className="muted">
           <Loader2 size={12} className="spin" /> {t("applying")}
