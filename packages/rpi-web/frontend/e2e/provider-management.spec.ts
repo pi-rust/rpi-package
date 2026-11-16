@@ -1,4 +1,5 @@
 import { test as base, expect, type Page, type Route } from "@playwright/test";
+import { openRuntimePanel } from "./controls";
 
 // This suite owns every /api/** request. It never falls through to a host,
 // reads credentials/configuration, or submits a prompt. Mutations require a
@@ -11,7 +12,6 @@ const B = "providers-b";
 const titles = { [A]: "Provider Alpha session", [B]: "Provider Beta session" };
 const labels = {
   en: {
-    runtime: "Runtime settings",
     manage: "Manage providers",
     manager: "Model providers",
     back: "Back to runtime settings",
@@ -24,12 +24,9 @@ const labels = {
     save: "Save API Key",
     clear: "Clear local draft",
     close: "Close dialog",
-    panel: "Close panel",
-    sidebar: "Toggle sidebar",
     use: "Use model: ",
   },
   zh: {
-    runtime: "运行时设置",
     manage: "管理供应商",
     manager: "模型供应商",
     back: "返回运行时设置",
@@ -42,8 +39,6 @@ const labels = {
     save: "保存 API Key",
     clear: "清除本地草稿",
     close: "关闭对话框",
-    panel: "关闭面板",
-    sidebar: "切换侧栏",
     use: "使用模型：",
   },
 } as const;
@@ -227,6 +222,23 @@ class ProviderHost {
         if (path === "/api/v1/sessions")
           return route.fulfill({
             json: { sessions: [this.session(A), this.session(B)] },
+          });
+        // The runtime panel embeds the read-only resource catalog.
+        if (path === "/api/v1/projects/provider-project/resources")
+          return route.fulfill({
+            json: {
+              version: 1,
+              success: true,
+              operation: "list",
+              scope: new URL(request.url()).searchParams.get("scope"),
+              kind: null,
+              name: null,
+              data: {
+                outcome: "observed",
+                resources: [],
+                diagnostics: [],
+              },
+            },
           });
       }
       const match = path.match(
@@ -447,20 +459,8 @@ async function start(page: Page, language: Language = "en") {
   // The composer picker deliberately does not render without set_model support.
   await expect(page.locator(".toolbar .breadcrumb h1")).toHaveText(titles[A]);
 }
-async function openRuntime(page: Page, language: Language = "en") {
-  const entry = page.getByRole("button", {
-    name: labels[language].runtime,
-    exact: true,
-  });
-  if (!(await entry.isVisible()))
-    await page
-      .getByRole("button", { name: labels[language].sidebar, exact: true })
-      .click();
-  await entry.click();
-  await expect(page.locator(".inspector")).toBeVisible();
-}
 async function openManager(page: Page, language: Language = "en") {
-  await openRuntime(page, language);
+  await openRuntimePanel(page);
   await page
     .locator(".inspector")
     .getByRole("button", { name: labels[language].manage, exact: true })

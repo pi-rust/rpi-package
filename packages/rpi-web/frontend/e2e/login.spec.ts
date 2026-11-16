@@ -72,6 +72,8 @@ test("mobile login localizes errors and preserves appearance preferences", async
         }),
   );
   await page.goto("/");
+  // Still on the login screen: the workspace (and its Settings dialog) does not
+  // exist yet, so the bundled login language picker is the only entry point.
   await chooseMenuOption(page, "Language", "zh");
   await page.getByRole("button", { name: "切换到深色模式" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");

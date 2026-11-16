@@ -22,6 +22,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Search,
   SquarePen,
   Tag,
   X,
@@ -29,6 +30,8 @@ import {
 import { api, type Project, type SessionSummary } from "./api";
 import { translate, type Language } from "./i18n";
 import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
+import { RecentChats } from "./RecentChats";
+import { SessionSearch } from "./SessionSearch";
 import { createPortal } from "react-dom";
 type FolderNode = {
   name: string;
@@ -804,7 +807,8 @@ export function ProjectSidebar({
   });
   const [menu, setMenu] = useState("");
   const [pending, setPending] = useState("");
-  const [recentExpanded, setRecentExpanded] = useState(false);
+  const [recentOpen, setRecentOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   useEffect(() => {
     try {
@@ -841,6 +845,17 @@ export function ProjectSidebar({
         ?.removeEventListener("scroll", scroll);
     };
   }, [menu]);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      setRecentOpen(false);
+      setSearchOpen(true);
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, []);
   function toggle(id: string) {
     setCollapsed((current) => {
       const next = new Set(current);
@@ -872,26 +887,19 @@ export function ProjectSidebar({
       setPending("");
     }
   }
-  function sessionRow(
-    session: SessionSummary,
-    options: { showProject?: boolean } = {},
-  ) {
+  function sessionRow(session: SessionSummary) {
     const title = session.title || (zh ? "新会话" : "New session");
-    const recent = options.showProject === true;
     const relationKind =
       session.relation === "clone"
         ? "clone"
         : session.relation
           ? "fork"
           : null;
-    const projectName = recent
-      ? projects.find((project) => project.id === session.projectId)?.name
-      : undefined;
     const awaitingAnswer = session.status === "awaiting_input";
     const running = ["running", "starting"].includes(session.status);
     return (
       <div
-        className={`${recent ? "recent-session" : "project-session"} ${session.sessionId === sessionId ? "active" : ""}`}
+        className={`project-session ${session.sessionId === sessionId ? "active" : ""}`}
         key={session.sessionId}
         onContextMenu={(event) => {
           if (!canManage && !canFork) return;
@@ -907,13 +915,6 @@ export function ProjectSidebar({
           className="project-session-link"
           onClick={() => onSelectSession(session)}
           title={title}
-          aria-label={
-            recent
-              ? `${zh ? "最近会话" : "Recent chat"}: ${title}${
-                  projectName ? ` · ${projectName}` : ""
-                }`
-              : undefined
-          }
           aria-current={session.sessionId === sessionId ? "page" : undefined}
         >
           {awaitingAnswer ? (
@@ -945,36 +946,20 @@ export function ProjectSidebar({
               {relationKind === "clone" ? <GitBranch size={12} /> : <GitFork size={12} />}
             </span>
           )}
-          <span
-            className={`session-title ${recent ? "recent-session-title" : ""}`}
-            data-title={recent ? title : undefined}
-          >
-            {!recent && title}
+          <span className="session-title">
+            {title}
           </span>
-          {!recent && (
-            <>
-              <SessionAnswerBadge session={session} language={language} />
-              <SessionIssueBadge session={session} language={language} />
-              {draftSessionIds.has(session.sessionId) && (
-                <span
-                  className="session-draft"
-                  title={translate(language, "draft")}
-                >
-                  {translate(language, "draft")}
-                </span>
-              )}
-            </>
-          )}
-          {projectName && (
+          <SessionAnswerBadge session={session} language={language} />
+          <SessionIssueBadge session={session} language={language} />
+          {draftSessionIds.has(session.sessionId) && (
             <span
-              className="recent-project-tag"
-              title={`${zh ? "项目" : "Project"}: ${projectName}`}
-              aria-label={`${zh ? "项目" : "Project"}: ${projectName}`}
+              className="session-draft"
+              title={translate(language, "draft")}
             >
-              {projectName}
+              {translate(language, "draft")}
             </span>
           )}
-          {!recent && (session.tags ?? []).length > 0 && (
+          {(session.tags ?? []).length > 0 && (
             <span className="session-tags" aria-label={translate(language, "tags")}>
               {(session.tags ?? []).slice(0, 2).map((tag) => (
                 <span className="session-tag" key={tag}>{tag}</span>
@@ -988,11 +973,11 @@ export function ProjectSidebar({
             {shortTime(session.updatedAt, language)}
           </time>
         </button>
-        {(canManage || canFork) && !recent && (
+        {(canManage || canFork) && (
           <div className="session-menu">
             <button
               className="icon-button session-menu-trigger"
-              aria-label={`${recent ? (zh ? "最近会话操作" : "Recent chat actions") : zh ? "会话操作" : "Session actions"}: ${title}`}
+              aria-label={`${zh ? "会话操作" : "Session actions"}: ${title}`}
               aria-expanded={menu === session.sessionId}
               aria-haspopup="menu"
               onClick={(event) => {
@@ -1122,13 +1107,19 @@ export function ProjectSidebar({
         )
       : !project.archived,
   );
-  const recentSessions = sessions
-    .filter((session) => !session.archived)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-  const visibleRecentSessions = recentSessions.slice(
-    0,
-    recentExpanded ? 10 : 5,
-  );
+  function jumpToSession(session: SessionSummary) {
+    onSelectSession(session);
+    // A hit may live in the archived set or a collapsed project; open both so
+    // the row is actually visible after the jump.
+    setArchived(Boolean(session.archived));
+    if (session.projectId) {
+      setCollapsed((current) => {
+        const next = new Set(current);
+        next.delete(session.projectId!);
+        return next;
+      });
+    }
+  }
   return (
     <div className="project-navigation">
       <div className="sidebar-primary-actions">
@@ -1141,45 +1132,41 @@ export function ProjectSidebar({
           <span>{zh ? "新建会话" : "New session"}</span>
           <kbd>Ctrl N</kbd>
         </button>
-      </div>
-      {!archived && recentSessions.length > 0 && (
-        <section
-          className="recent-sessions"
-          aria-label={zh ? "最近会话" : "Recent chats"}
+        {/* Two primary navigation actions beside New session. Search finds
+            sessions across projects; Recent chats shows cross-project recency.
+            Both open as floating windows so the tree keeps its height. */}
+        <button
+          type="button"
+          className={`sidebar-new-chat slim-chat-search-trigger${searchOpen ? " active" : ""}`}
+          aria-label={translate(language, "searchChats")}
+          aria-expanded={searchOpen}
+          aria-controls={searchOpen ? "sidebar-chat-search" : undefined}
+          title={translate(language, "searchChats")}
+          onClick={() => {
+            setRecentOpen(false);
+            setSearchOpen((open) => !open);
+          }}
         >
-          <div className="project-section-heading recent-sessions-heading">
-            <span>
-              <Clock3 size={14} aria-hidden="true" />
-              {zh ? "最近会话" : "Recent chats"}
-            </span>
-            {recentSessions.length > 5 && (
-              <button
-                className="recent-sessions-toggle"
-                type="button"
-                aria-expanded={recentExpanded}
-                aria-label={
-                  recentExpanded
-                    ? zh
-                      ? "收起最近会话"
-                      : "Show fewer recent chats"
-                    : zh
-                      ? "展开最近会话"
-                      : "Show more recent chats"
-                }
-                onClick={() => setRecentExpanded((expanded) => !expanded)}
-              >
-                {recentExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                <span>{recentExpanded ? (zh ? "收起" : "Less") : zh ? "更多" : "More"}</span>
-              </button>
-            )}
-          </div>
-          <div className="recent-session-list">
-            {visibleRecentSessions.map((session) =>
-              sessionRow(session, { showProject: true }),
-            )}
-          </div>
-        </section>
-      )}
+          <Search size={16} />
+          <span>{translate(language, "searchChats")}</span>
+          <kbd>Ctrl K</kbd>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-new-chat slim-recent-trigger${recentOpen ? " active" : ""}`}
+          aria-label={translate(language, "recentChats")}
+          aria-expanded={recentOpen}
+          aria-controls={recentOpen ? "sidebar-recent-chats" : undefined}
+          title={translate(language, "recentChats")}
+          onClick={() => {
+            setSearchOpen(false);
+            setRecentOpen((open) => !open);
+          }}
+        >
+          <Clock3 size={16} />
+          <span>{translate(language, "recentChats")}</span>
+        </button>
+      </div>
       <div className="project-section-heading">
         <span>
           {archived ? (zh ? "已归档" : "Archived") : zh ? "项目" : "Projects"}
@@ -1381,11 +1368,25 @@ export function ProjectSidebar({
           );
         })}
       </nav>
-      {canCreate && (
-        <button className="sidebar-add-project" onClick={onNewProject}>
-          <FolderPlus size={15} />
-          {zh ? "添加项目" : "Add project"}
-        </button>
+      {recentOpen && (
+        <RecentChats
+          language={language}
+          sessions={sessions}
+          projects={projects}
+          activeSessionId={sessionId}
+          onSelect={jumpToSession}
+          onClose={() => setRecentOpen(false)}
+        />
+      )}
+      {searchOpen && (
+        <SessionSearch
+          language={language}
+          sessions={sessions}
+          projects={projects}
+          activeSessionId={sessionId}
+          onSelect={jumpToSession}
+          onClose={() => setSearchOpen(false)}
+        />
       )}
     </div>
   );
