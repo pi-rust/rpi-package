@@ -2605,13 +2605,28 @@ export default function App() {
     void refreshSessions();
     if (!sessionId) return;
     const controller = new AbortController();
-    void api
-      .runtimeState(sessionId, controller.signal)
-      .then((state) => {
-        if (!controller.signal.aborted && activeSessionRef.current === sessionId)
-          setRuntime(state);
-      })
-      .catch(() => {});
+    let retried = false;
+    const readRuntime = () => {
+      api
+        .runtimeState(sessionId, controller.signal)
+        .then((state) => {
+          if (!controller.signal.aborted && activeSessionRef.current === sessionId)
+            setRuntime(state);
+        })
+        .catch(() => {
+          // A settlement-time read can transiently fail while the host is
+          // still committing the run it just settled (for example a manual
+          // /compact). Without a retry the context indicator would keep the
+          // pre-compact tokens until the next unrelated settlement (#307).
+          if (retried || controller.signal.aborted) return;
+          retried = true;
+          window.setTimeout(() => {
+            if (!controller.signal.aborted && activeSessionRef.current === sessionId)
+              readRuntime();
+          }, 1500);
+        });
+    };
+    readRuntime();
     return () => controller.abort();
   }, [refreshSessions, sessionId, settleTick]);
 
