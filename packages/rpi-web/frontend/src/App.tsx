@@ -1268,11 +1268,10 @@ export default function App() {
   const composerContinue = !busy && status !== "closed" && !queueEditId && !draft.trim() && attachments.length === 0 &&
     ((interrupted && supported.has("resume_pending")) || (failedRun && supported.has("prompt")));
   const localSlash = attachments.length === 0 && LOCAL_SLASH_COMMANDS.has(draft.trim().split(/\s+/, 1)[0]);
-  // Submitting while a run is active queues the message instead of prompting.
-  // The delivery selector lives in the composer because the Inspector is
-  // collapsed by default, which otherwise hides the only way to pick `steer`.
-  const composerQueues =
-    (busy || Boolean(queueEditId)) && supported.has("queue_message");
+  // Submitting while a run is active queues the message instead of prompting
+  // (#305): the delivery is fixed to `steer` (引导消息), so the old queue-type
+  // dropdown is gone. `queueKind` stays as state because editing a queued
+  // entry restores its original delivery before resubmission.
   const t = useCallback(
     (key: MessageKey, values?: Record<string, string | number>) =>
       translate(language, key, values),
@@ -2949,6 +2948,23 @@ export default function App() {
           setQueueEditId(null);
           void refreshDiagnostics(targetSession);
         }
+        // Acknowledge the interjection in the transcript (#305): a steer is
+        // consumed mid-run and never becomes a `message_start` user event, so
+        // without a local receipt the input appears to vanish while the
+        // "window stays stuck". The optimistic row is only removed once the
+        // host accepted the entry.
+        setRows((previous) => [
+          ...previous.filter((row) => row.id !== key),
+          {
+            kind: "note",
+            id: key,
+            text: `${t("steerQueued")}: ${submissionMessage}`,
+            translation: {
+              key: "steerQueued",
+              values: { text: submissionMessage },
+            },
+          },
+        ]);
         clearAttachments();
       } else {
         await commandData(targetSession, "prompt", {
@@ -4136,16 +4152,6 @@ export default function App() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void queuePrompt();
                 }}
-              />
-              <MenuSelect
-                label={t("queueKind")}
-                value={queueKind}
-                onChange={setQueueKind}
-                options={[
-                  { value: "followUp", label: t("followUp") },
-                  { value: "steer", label: t("steer") },
-                  { value: "nextTurn", label: t("nextTurn") },
-                ]}
               />
               <button
                 type="button"
@@ -5454,19 +5460,6 @@ export default function App() {
                         />
                       )}
                     </div>
-                    {composerQueues && (
-                      <MenuSelect
-                        className="composer-queue-kind"
-                        label={t("queueKind")}
-                        value={queueKind}
-                        onChange={setQueueKind}
-                        options={[
-                          { value: "followUp", label: t("followUp") },
-                          { value: "steer", label: t("steer") },
-                          { value: "nextTurn", label: t("nextTurn") },
-                        ]}
-                      />
-                    )}
                     {queueEditId && (
                       <button
                         type="button"
