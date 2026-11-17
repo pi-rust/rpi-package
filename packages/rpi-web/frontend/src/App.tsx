@@ -4655,75 +4655,17 @@ export default function App() {
               }}
               onMetadata={updateSessionMetadata}
             />
-            <div className="sidebar-bottom">
-              <div className="utility-nav">
-                <button onClick={() => setSettingsOpen(true)}>
-                  <Settings2 size={14} />
-                  {language === "zh" ? "设置" : "Settings"}
-                  <kbd>Ctrl ,</kbd>
-                </button>
-                <button
-                  disabled={!sessionId}
-                  className={panel ? "active" : ""}
-                  onClick={() => {
-                    setTraceOpen(false);
-                    setPanel(true);
-                    if (window.matchMedia("(max-width: 767px)").matches) setSidebar(false);
-                  }}
-                >
-                  <SlidersHorizontal size={14} /> {t("runtimeSettings")}
-                </button>
-              </div>
-              <div className="account-panel">
-                <span className="user-avatar">U</span>
-                <span className="account-name">{t("workspaceUser")}</span>
-                <button
-                  className="icon-button"
-                  aria-label={language === "zh" ? "切换外观" : "Toggle appearance"}
-                  onClick={() => setThemePreference(theme === "light" ? "dark" : "light")}
-                  title={t(theme === "light" ? "switchToDark" : "switchToLight")}
-                >
-                  {theme === "light" ? <Moon size={14} /> : <Sun size={14} />}
-                </button>
-                {authRequired && (
-                  <button
-                    type="button"
-                    className="icon-button account-button"
-                    onClick={() => void logout()}
-                    title={t("signOut")}
-                    aria-label={t("signOut")}
-                  >
-                    <LogOut size={15} />
-                  </button>
-                )}
-              </div>
-              <div className="local-label">
-                <span
-                  className="workspace-security"
-                  title={t("loopback")}
-                  aria-label={t("loopback")}
-                >
-                  <ShieldCheck size={14} />
-                </span>
-                <MenuSelect
-                  className="language-select"
-                  label={t("language")}
-                  value={language}
-                  onChange={(value) => setLanguage(value as Language)}
-                  options={[
-                    { value: "en", label: t("english") },
-                    { value: "zh", label: t("chinese") },
-                  ]}
-                />
-                <button
-                  className="icon-button"
-                  aria-label={t("refreshSessions")}
-                  title={t("refreshSessions")}
-                  onClick={() => void refreshSessions()}
-                >
-                  <RefreshCw size={13} />
-                </button>
-              </div>
+            <div className="sidebar-bottom slim-bottom">
+              <button
+                type="button"
+                className="slim-settings"
+                onClick={() => setSettingsOpen(true)}
+                title={language === "zh" ? "设置" : "Settings"}
+              >
+                <Settings2 size={14} />
+                <span>{language === "zh" ? "设置" : "Settings"}</span>
+                <kbd>Ctrl ,</kbd>
+              </button>
             </div>
           </aside>
           <Splitter
