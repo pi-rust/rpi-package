@@ -924,7 +924,6 @@ export default function App() {
     sidebar: boolean;
     timelineOpen: boolean;
     panel: boolean;
-    inspector: boolean;
     traceOpen: boolean;
     workbenchOpen: boolean;
   } | null>(null);
@@ -934,7 +933,6 @@ export default function App() {
       sidebar,
       timelineOpen,
       panel,
-      inspector,
       traceOpen,
       workbenchOpen,
     };
@@ -942,7 +940,6 @@ export default function App() {
     setSidebar(false);
     setTimelineOpen(false);
     setPanel(false);
-    setInspector(false);
     setTraceOpen(false);
     setWorkbenchOpen(false);
   }
@@ -955,7 +952,6 @@ export default function App() {
     setSidebar(snapshot.sidebar);
     setTimelineOpen(snapshot.timelineOpen);
     setPanel(snapshot.panel);
-    setInspector(snapshot.inspector);
     setTraceOpen(snapshot.traceOpen);
     setWorkbenchOpen(snapshot.workbenchOpen);
   }
