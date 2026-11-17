@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.63](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.62...rpi-web-v0.1.63) - 2026-11-17
+
+### Fixed
+
+- *(web)* regular-weight runtime labels, right-aligned details jump, inline recent chats
+
 ## [0.1.62](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.57...rpi-web-v0.1.62) - 2026-11-17
 
 ### Fixed
