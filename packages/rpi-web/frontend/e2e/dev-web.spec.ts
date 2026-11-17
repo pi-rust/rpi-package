@@ -1,4 +1,10 @@
-import { chooseMenuOption } from "./controls";
+import {
+  chooseLanguage,
+  chooseMenuOption,
+  clickRowAction,
+  openRuntimePanel,
+  refreshChats,
+} from "./controls";
 import { writeFile } from "node:fs/promises";
 import { test, expect, type Page, type Route } from "@playwright/test";
 
@@ -463,7 +469,8 @@ test("message search finds loaded conversation text", async ({ page }) => {
     ],
   });
   await page.goto("/?session=session-1");
-  await page.getByRole("button", { name: "Search messages", exact: true }).click();
+  await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+  await page.keyboard.press("Control+f");
   await page.getByRole("textbox", { name: "Search this conversation…", exact: true }).fill("loaded message");
   await expect(page.locator(".message-search-result")).toHaveCount(1);
   await expect(page.locator(".message-search-result")).toContainText("Please search this loaded message");
@@ -485,7 +492,8 @@ test("message search pages older user messages", async ({ page }) => {
     ],
   });
   await page.goto("/?session=session-1");
-  await page.getByRole("button", { name: "Search messages", exact: true }).click();
+  await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
+  await page.keyboard.press("Control+f");
   await page.getByRole("textbox", { name: "Search this conversation…", exact: true }).fill("older message");
   await expect(page.locator(".message-search-result")).toHaveCount(1);
   await expect(page.locator(".message-search-result")).toContainText("An older message to find");
@@ -499,7 +507,7 @@ test("capabilities gate the history and queue inspector", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Mock session" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await expect(page.locator(".inspector")).toBeVisible();
   await expect(
     page
@@ -560,7 +568,7 @@ test("a stopped session can send a selected queued message now", async ({
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await page
     .locator(".inspector .queue-item")
     .getByRole("button", { name: "Send now: pending", exact: true })
@@ -610,7 +618,7 @@ test("sending one queued message keeps later waiting messages visible", async ({
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await expect(page.locator(".inspector .queue-item")).toHaveCount(2);
   await page
     .locator(".inspector .queue-item")
@@ -651,7 +659,7 @@ test("failed queue cancellation restores the removed message", async ({
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await page
     .locator(".inspector .queue-item")
     .getByRole("button", { name: "Cancel queued message" })
@@ -749,7 +757,7 @@ test("editing a next-run queued message re-enqueues it as nextTurn", async ({
   await expect(
     page.getByRole("button", { name: "Abort", exact: true }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await page
     .locator(".inspector .queue-item")
     .getByRole("button", { name: "Edit queued message" })
@@ -770,7 +778,7 @@ test("editing a next-run queued message re-enqueues it as nextTurn", async ({
 test("history records expand and queue history toggles", async ({ page }) => {
   await mockHost(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   const historyItem = page.locator(".history-timeline-item");
   await expect(historyItem).toHaveCount(1);
   await historyItem.locator("summary").click();
@@ -1006,9 +1014,7 @@ test("opening an existing folder is searchable and fills its project name", asyn
 test("rename, pin, archive and restore survive reloads", async ({ page }) => {
   await mockHost(page);
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Session actions: Mock session", exact: true })
-    .click();
+  await clickRowAction(page, "Session actions: Mock session");
   await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Rename session" });
   await dialog.getByLabel("Session name").fill("Design review");
@@ -1016,20 +1022,10 @@ test("rename, pin, archive and restore survive reloads", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Design review", exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole("button", {
-      name: "Session actions: Design review",
-      exact: true,
-    })
-    .click();
+  await clickRowAction(page, "Session actions: Design review");
   await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
   await page.reload();
-  await page
-    .getByRole("button", {
-      name: "Session actions: Design review",
-      exact: true,
-    })
-    .click();
+  await clickRowAction(page, "Session actions: Design review");
   await expect(
     page.getByRole("menuitem", { name: "Unpin", exact: true }),
   ).toBeVisible();
@@ -1043,12 +1039,7 @@ test("rename, pin, archive and restore survive reloads", async ({ page }) => {
   await page
     .getByRole("button", { name: "Show archived chats", exact: true })
     .click();
-  await page
-    .getByRole("button", {
-      name: "Session actions: Design review",
-      exact: true,
-    })
-    .click();
+  await clickRowAction(page, "Session actions: Design review");
   await page
     .getByRole("menuitem", { name: "Restore chat", exact: true })
     .click();
@@ -1086,29 +1077,38 @@ test("fork is available from a session context menu", async ({ page }) => {
   await expect.poll(() => forkBody).toEqual({ title: "Design fork" });
 });
 
-test("sidebar shows five recent chats and expands to ten", async ({ page }) => {
+test("recent chats open as a floating window without moving the project tree", async ({
+  page,
+}) => {
   await mockHost(page, { additionalSessions: 10 });
   await page.goto("/");
-  const recent = page.getByRole("region", { name: "Recent chats" });
-  await expect(recent.locator(".recent-session")).toHaveCount(5);
-  await expect(recent.locator(".recent-project-tag")).toHaveCount(5);
-  await expect(recent.locator(".recent-project-tag").first()).toHaveText("rpi-package");
-  const more = recent.getByRole("button", { name: "Show more recent chats", exact: true });
-  await expect(more).toHaveAttribute("aria-expanded", "false");
-  await more.click();
-  await expect(recent.locator(".recent-session")).toHaveCount(10);
-  await expect(recent.locator(".recent-project-tag")).toHaveCount(10);
-  await expect(
-    recent.getByRole("button", { name: "Show fewer recent chats", exact: true }),
-  ).toHaveAttribute("aria-expanded", "true");
+  const tree = page.locator(".project-tree");
+  const treeBox = async () =>
+    tree.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, height: rect.height };
+    });
+  const before = await treeBox();
+  await page.getByRole("button", { name: "Recent chats", exact: true }).click();
+  const recent = page.getByRole("dialog", { name: "Recent chats" });
+  await expect(recent).toBeVisible();
+  // Cross-project recency is the one thing the tree cannot express; the window
+  // lists every non-archived chat and tags each row with its project.
+  await expect(recent.locator(".slim-recent-option")).toHaveCount(11);
+  await expect(recent.locator(".slim-recent-project").first()).toHaveText(
+    "rpi-package",
+  );
+  // The floating window costs no permanent vertical space: the tree keeps its
+  // full height and position while it is open.
+  expect(await treeBox()).toEqual(before);
+  await page.keyboard.press("Escape");
+  await expect(recent).toHaveCount(0);
 });
 
 test("session tags can be edited without sidebar filters", async ({ page }) => {
   await mockHost(page);
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Session actions: Mock session", exact: true })
-    .click();
+  await clickRowAction(page, "Session actions: Mock session");
   await page.getByRole("menuitem", { name: "Edit tags", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Edit tags" });
   await dialog.getByLabel("Tags").fill("frontend, urgent, frontend");
@@ -1122,9 +1122,7 @@ test("sessions can be permanently deleted from the session actions menu", async 
 }) => {
   await mockHost(page);
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Session actions: Mock session", exact: true })
-    .click();
+  await clickRowAction(page, "Session actions: Mock session");
   await page.getByRole("menuitem", { name: "Delete permanently", exact: true }).click();
   await expect(
     page.getByRole("dialog", { name: "Delete session permanently" }),
@@ -1152,10 +1150,14 @@ test("project navigation collapses and remembers appearance", async ({
     .first()
     .click();
   await expect(page.locator(".project-session")).toHaveCount(1);
-  await page
-    .getByRole("button", { name: "Toggle appearance", exact: true })
-    .click();
+  // Appearance lives in Settings; the footer quick-toggle is gone.
+  await page.keyboard.press("Control+,");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Dark", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
@@ -2773,6 +2775,131 @@ test("the working indicator does not resize the transcript", async ({
   hold();
 });
 
+// The indicator is out of flow, so the only thing keeping it off the transcript
+// is the band .message-list reserves for it. A scrolled conversation puts the
+// last row exactly under the pill, which is where the overlap was reported.
+// Both locales run: the pill's height used to follow the label's font metrics,
+// so a band that fit "Processing…" did not fit "处理中…".
+for (const language of ["en", "zh"] as const) {
+  test(`the working indicator does not cover the last transcript row (${language})`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      (value) => localStorage.setItem("rpi-web-language", value),
+      language,
+    );
+    await mockHost(page);
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "running",
+          lastSeq: 4,
+          events: [],
+          messages: [
+            ...Array.from({ length: 14 }, (_, index) => ({
+              role: index % 2 === 0 ? "user" : "assistant",
+              entryId: `overlap-${index}`,
+              content:
+                index % 2 === 0
+                  ? `Question ${index} about the failing suite`
+                  : [
+                      {
+                        type: "text",
+                        text: `Answer ${index}: ${"padding text ".repeat(18)}`,
+                      },
+                    ],
+            })),
+            {
+              role: "assistant",
+              entryId: "overlap-tool",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "overlap-call",
+                  name: "bash",
+                  arguments: { command: "npm test -- --reporter=verbose" },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    // Hold the stream open so the run stays active and the indicator stays
+    // mounted, matching a run that is actually streaming.
+    let hold!: () => void;
+    const held = new Promise<void>((resolve) => (hold = resolve));
+    let streams = 0;
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events**`,
+      async (route) => {
+        streams++;
+        if (streams === 1)
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+            headers: { "cache-control": "no-store" },
+          });
+        await held;
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: "retry: 60000\n\n",
+        });
+      },
+    );
+    await page.goto("/");
+    const indicator = page.locator(".working-indicator");
+    await expect(indicator).toBeAttached();
+    const transcript = page.locator(".transcript");
+    // Follow the tail, so the last row really is the row under the pill.
+    await transcript.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+
+    const geometry = await page.evaluate(() => {
+      const pill = document
+        .querySelector(".working-indicator")!
+        .getBoundingClientRect();
+      const rows = [...document.querySelectorAll(".transcript-row")].map((row) =>
+        row.getBoundingClientRect(),
+      );
+      const contentBottom = Math.max(...rows.map((row) => row.bottom));
+      const covered = rows.filter(
+        (row) => pill.bottom > row.top && pill.top < row.bottom,
+      ).length;
+      return {
+        covered,
+        gap: pill.top - contentBottom,
+        pillHeight: pill.height,
+        reservedBand: parseFloat(
+          getComputedStyle(
+            document.querySelector(".message-list") as HTMLElement,
+          ).getPropertyValue("--working-indicator-height"),
+        ),
+      };
+    });
+    // Zero pixels of intersection, not "mostly clear": the pill used to sit
+    // 32px into the final row and hid its command line.
+    expect(geometry.covered).toBe(0);
+    expect(geometry.gap).toBeGreaterThan(0);
+    // The pill must fit the band it is budgeted for. Its height is pinned to
+    // --working-indicator-height because it otherwise followed the label's font
+    // metrics, and "处理中…" rendered 3px taller than "Processing…".
+    expect(geometry.pillHeight).toBeLessThanOrEqual(geometry.reservedBand);
+    // Reserving the band must not reintroduce the scroll-extent change the
+    // absolute positioning removed. Both halves read one set of tokens.
+    const busyHeight = await transcript.evaluate((node) => node.scrollHeight);
+    await indicator.evaluate((node) => {
+      (node as HTMLElement).style.display = "none";
+    });
+    expect(await transcript.evaluate((node) => node.scrollHeight)).toBe(
+      busyHeight,
+    );
+    hold();
+  });
+}
+
 test("narrow authenticated sidebar uses icons and all settings follow the chosen language", async ({
   page,
 }, testInfo) => {
@@ -2849,20 +2976,26 @@ test("narrow authenticated sidebar uses icons and all settings follow the chosen
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
-  const logout = page.getByRole("button", { name: "退出登录", exact: true });
+  await expect(
+    page.getByRole("button", { name: "新建会话", exact: false }).first(),
+  ).toBeVisible();
+  // Sign out lives in Settings; the sidebar no longer has an account block.
+  await page.keyboard.press("Control+,");
+  const settings = page.getByRole("dialog");
+  await expect(settings).toBeVisible();
+  const logout = settings.getByRole("button", {
+    name: "退出登录",
+    exact: true,
+  });
   await expect(logout).toBeVisible();
-  await expect(logout).toHaveText("");
-  await expect(logout.locator("svg")).toHaveCount(1);
-  const account = page.locator(".account-panel");
   expect(
-    await account.evaluate((element) => element.getBoundingClientRect().height),
-  ).toBeLessThanOrEqual(44);
-  expect(
-    await account.evaluate(
+    await settings.evaluate(
       (element) => element.scrollWidth <= element.clientWidth,
     ),
   ).toBe(true);
-  await page.getByRole("button", { name: "切换诊断面板" }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await openRuntimePanel(page);
   const inspector = page.locator(".inspector");
   await expect(
     inspector.getByRole("heading", { name: "服务商授权" }),
@@ -2896,7 +3029,9 @@ test("narrow authenticated sidebar uses icons and all settings follow the chosen
     element.scrollTop = 0;
   });
   await page.screenshot({ path: testInfo.outputPath("sidebar-chinese.png") });
-  await chooseMenuOption(page, "语言", "en");
+  // Language lives in Settings. The runtime panel and the sign-out entry follow
+  // the new language, and the panel's own close button stays icon-only.
+  await chooseLanguage(page, "en");
   await expect(
     inspector.getByRole("heading", { name: "Provider auth" }),
   ).toBeVisible();
@@ -2904,16 +3039,20 @@ test("narrow authenticated sidebar uses icons and all settings follow the chosen
     "Restart this session to reload provider credentials.",
   );
   await expect(
-    page.getByRole("button", { name: "Sign out", exact: true }),
+    inspector.getByRole("button", { name: "Close panel", exact: true }),
   ).toHaveText("");
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await page.getByRole("button", { name: "关闭面板", exact: true }).click();
-  await page.getByRole("button", { name: "运行时设置", exact: true }).click();
+  await openRuntimePanel(page);
   await expect(inspector.getByText("暂无可用工具列表。")).toBeVisible();
   await chooseMenuOption(page, "思考深度", { label: "低" });
   await expect.poll(() => submittedLevel).toBe("low");
   expect(errors).toEqual([]);
-  await logout.click();
+  await page.keyboard.press("Control+,");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "退出登录", exact: true })
+    .click();
   await expect(page.getByRole("heading", { name: "登录 rpi" })).toBeVisible();
 });
 
@@ -2965,11 +3104,11 @@ test("delayed diagnostics from another chat cannot replace the active chat queue
   await expect(
     page.getByRole("heading", { name: "New session" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await expect(page.locator(".queue-item")).toContainText("Current chat queue");
   release();
-  await chooseMenuOption(page, "Language", "zh");
-  await expect(page.locator(".inspector h2")).toHaveText("会话诊断");
+  await chooseLanguage(page, "zh");
+  await expect(page.locator(".inspector h2")).toHaveText("运行时与上下文");
   await expect(page.locator(".queue-item")).toContainText("Current chat queue");
   await expect(page.locator(".queue-item")).not.toContainText("Old chat queue");
 });
@@ -3004,9 +3143,7 @@ test("archiving a previous chat does not navigate away from a newly selected cha
     .locator(".project-session-link")
     .filter({ hasText: "Mock session" })
     .click();
-  await page
-    .getByRole("button", { name: "Session actions: Mock session" })
-    .click();
+  await clickRowAction(page, "Session actions: Mock session");
   await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
   await expect.poll(() => pending).toBe(true);
   await page
@@ -3204,7 +3341,7 @@ test("pagination from a previous chat does not prepend into the current chat", a
   );
   release();
   await (await completed).finished();
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(page.locator(".message.user")).toHaveCount(0);
 });
 
@@ -3243,9 +3380,7 @@ test("a pending runtime change cannot overwrite the next chat runtime", async ({
     return route.fallback();
   });
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Runtime settings", exact: true })
-    .click();
+  await openRuntimePanel(page);
   await chooseMenuOption(page, "Thinking level", "high");
   await expect.poll(() => pending).toBe(true);
   await page
@@ -3262,7 +3397,7 @@ test("a pending runtime change cannot overwrite the next chat runtime", async ({
   );
   release();
   await (await completed).finished();
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(page.locator(".composer-thinking")).toHaveCount(1);
   await expect(page.locator(".composer-thinking")).toContainText("思考深度");
   await expect(
@@ -3499,7 +3634,7 @@ test.describe("mobile fork regression", () => {
   }
 
   async function openHistory(page: Page) {
-    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+    await openRuntimePanel(page);
     await page.locator(".history-timeline-item summary").click();
     await expect(historyFork(page)).toBeEnabled();
   }
@@ -3673,7 +3808,9 @@ test.describe("mobile fork regression", () => {
           await cloneDialog.getByRole("button", { name: "Submit", exact: true }).click();
           await expect(page).toHaveURL(/session=session-2/);
           await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
-          // A new session starts with its history details collapsed.
+          // The right-hand slot is per session, so navigation closes it. A new
+          // session starts with its history details collapsed.
+          await openRuntimePanel(page);
           await page.locator(".history-timeline-item summary").click();
           await expect(historyFork(page)).toBeVisible();
         } else {
@@ -3707,7 +3844,7 @@ test.describe("mobile fork regression", () => {
       await titleDialog(page).getByRole("textbox").fill("Stale fork title");
       await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
       await expect(titleDialog(page)).toHaveCount(0);
-      await chooseMenuOption(page, "Language", "zh");
+      await chooseLanguage(page, "zh");
       if (destination === "session") await expect(toolbarFork(page)).toBeEnabled();
       else await expect(toolbarFork(page)).toBeDisabled();
       expect(mock.requests).toEqual([]);
@@ -3730,7 +3867,7 @@ test.describe("mobile fork regression", () => {
           await (await completed).finished();
           // A UI round trip after delivery lets the fetch continuation and React
           // settle before negative assertions (no arbitrary timeout or sleep).
-          await chooseMenuOption(page, "Language", "zh");
+          await chooseLanguage(page, "zh");
           await expect(page.locator(".toolbar .breadcrumb")).toContainText(destination === "project" ? "rpi-package" : "Other chat");
           expect(new URL(page.url()).searchParams.get("session")).toBe(destination === "project" ? null : "session-2");
           if (destination === "session") {
@@ -3789,7 +3926,7 @@ for (const action of ["fork", "clone"] as const) {
     );
     release();
     await (await finished).finished();
-    await chooseMenuOption(page, "Language", "zh");
+    await chooseLanguage(page, "zh");
     expect(new URL(page.url()).searchParams.has("session")).toBe(false);
     await expect(page.locator(".toolbar .breadcrumb")).toContainText(
       "rpi-package",
@@ -3836,7 +3973,7 @@ test("late file contents cannot replace the newly selected project preview", asy
   );
   release();
   await (await finished).finished();
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(page.getByLabel("文件内容")).not.toContainText(
     "Stale project A contents",
   );
@@ -3893,7 +4030,7 @@ test("compaction notes survive pagination and update when language changes", asy
       .locator(".transcript-note")
       .filter({ hasText: "Conversation compacted" }),
   ).toHaveCount(2);
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(
     page.locator(".transcript-note").filter({ hasText: "会话已压缩" }),
   ).toHaveCount(2);
@@ -3979,7 +4116,7 @@ test("provider changes clear secret drafts and an old save cannot clear a new dr
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await page.locator(".auth-provider").filter({ hasText: "alpha" }).click();
   await page
     .getByLabel("API key for alpha", { exact: true })
@@ -3996,7 +4133,7 @@ test("provider changes clear secret drafts and an old save cannot clear a new dr
   );
   release();
   await (await finished).finished();
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(page.locator("input[type=password]")).toHaveValue(
     "test-only-new-draft",
   );
@@ -4060,7 +4197,7 @@ test("rewinding the current chat reloads its native transcript", async ({
   await expect(page.locator(".message.user")).toContainText(
     "Original transcript",
   );
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await page.locator(".history-timeline-item summary").click();
   await page.getByRole("button", { name: "Rewind", exact: true }).click();
   await page
@@ -4344,7 +4481,7 @@ test("pending queue submission preserves the next draft and prevents duplicate d
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   const input = page.getByRole("textbox", { name: "Queue a follow-up…" });
   await input.fill("First queued item");
   await input.press("Enter");
@@ -4390,17 +4527,11 @@ test("an archive response respects restoration from another tab", async ({
     },
   );
   await page.goto("/");
-  const actions = page.getByRole("button", {
-    name: "Session actions: Mock session",
-    exact: true,
-  });
-  await actions.click();
+  await clickRowAction(page, "Session actions: Mock session");
   await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
   await expect.poll(() => calls.length).toBe(1);
   await page.clock.fastForward(5001);
-  await page
-    .getByRole("button", { name: "Runtime settings", exact: true })
-    .click();
+  await openRuntimePanel(page);
   expect(calls).toEqual([true]);
   // Another tab restores the catalog before this tab receives its acknowledgement.
   archived = false;
@@ -4410,7 +4541,7 @@ test("an archive response respects restoration from another tab", async ({
   );
   release();
   await (await refreshed).finished();
-  await expect(page.locator(".inspector h2")).toHaveText("Runtime settings");
+  await expect(page.locator(".inspector h2")).toHaveText("Runtime and context");
   await expect(
     page.getByRole("heading", { name: "Mock session", exact: true }),
   ).toBeVisible();
@@ -4659,10 +4790,9 @@ test("project creation retries finish opening the existing project without creat
     return route.fallback();
   });
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Add project", exact: true })
-    .first()
-    .click();
+  // One entry point: the Projects heading "+" (the footer "Add project" row is
+  // gone, and the per-project "+" creates a session instead).
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Add project", exact: true });
   await dialog.getByLabel("Project name").fill("recoverable-project");
   await dialog
@@ -4715,7 +4845,7 @@ test("a late failed chat creation does not mark the subsequently selected projec
   );
   release();
   await (await finished).finished();
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(page.locator(".toolbar .breadcrumb")).toContainText(
     "rpi-package",
   );
@@ -4746,9 +4876,7 @@ for (const failure of [false, true]) {
     });
     await page.goto("/");
     await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
-    await page
-      .getByRole("button", { name: "New session in: rpi-package", exact: true })
-      .click();
+    await clickRowAction(page, "New session in: rpi-package");
     await expect.poll(() => pending).toBe(true);
     await expect(page.locator(".toolbar .breadcrumb")).toContainText("pi-rust");
     await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
@@ -4795,9 +4923,7 @@ test("an older initial session list cannot select a chat missing from the refres
   });
   await page.goto("/");
   await expect.poll(() => calls).toBe(1);
-  await page
-    .getByRole("button", { name: "Refresh chats", exact: true })
-    .click();
+  await refreshChats(page);
   await expect.poll(() => calls).toBe(2);
   release();
   await expect(page.locator(".toolbar h1")).toHaveText("Current chat");
@@ -5075,9 +5201,7 @@ test("a failed chat creation does not hide rejection of the still-active prompt"
   await composer.fill("Keep my rejected prompt");
   await composer.press("Enter");
   await expect.poll(() => pending).toBe(true);
-  await page
-    .getByRole("button", { name: "New session in: rpi-package", exact: true })
-    .click();
+  await clickRowAction(page, "New session in: rpi-package");
   await expect(page.locator(".error-banner")).toContainText(
     "Creation unavailable",
   );
@@ -5521,7 +5645,7 @@ test("late message pagination from before rewind cannot enter the restored branc
   await page.goto("/");
   await openTimeline(page);
   await expect.poll(() => pending).toBe(true);
-  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  await openRuntimePanel(page);
   await page.locator(".history-timeline-item summary").click();
   await page.getByRole("button", { name: "Rewind", exact: true }).click();
   await page
@@ -5536,7 +5660,7 @@ test("late message pagination from before rewind cannot enter the restored branc
   );
   release();
   await (await finished).finished();
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(page.locator(".message.user")).toHaveCount(1);
   await expect(page.locator(".message.user")).not.toContainText(
     "Stale branch message",
@@ -5619,13 +5743,13 @@ test("live settlement labels follow the selected language", async ({
       .locator(".transcript-note")
       .filter({ hasText: "Run failed · aborted" }),
   ).toHaveCount(1);
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(
     page
       .locator(".transcript-note")
       .filter({ hasText: "运行状态：失败 · 已中止" }),
   ).toHaveCount(1);
-  await chooseMenuOption(page, "语言", "en");
+  await chooseLanguage(page, "en");
   await expect(
     page
       .locator(".transcript-note")
@@ -5687,9 +5811,7 @@ test("same model IDs from different providers keep their identity in runtime sel
     return route.fallback();
   });
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Runtime settings", exact: true })
-    .click();
+  await openRuntimePanel(page);
   const model = page.getByRole("button", { name: "Model", exact: true });
   await chooseMenuOption(page, "Model", { label: "Model Beta (beta)" });
   await expect
@@ -5747,9 +5869,7 @@ test("a late tool change cannot replace the next chat tool catalog", async ({
     return route.fallback();
   });
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Runtime settings", exact: true })
-    .click();
+  await openRuntimePanel(page);
   await page.getByRole("checkbox", { name: "old-tool", exact: true }).click();
   await expect.poll(() => pending).toBe(true);
   await page
@@ -5767,7 +5887,7 @@ test("a late tool change cannot replace the next chat tool catalog", async ({
   );
   release();
   await (await finished).finished();
-  await chooseMenuOption(page, "Language", "zh");
+  await chooseLanguage(page, "zh");
   await expect(
     page.getByRole("checkbox", { name: "new-tool", exact: true }),
   ).toBeVisible();
@@ -5832,9 +5952,7 @@ test("model changes reload supported thinking levels and keep authoritative runt
     return route.fallback();
   });
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Runtime settings", exact: true })
-    .click();
+  await openRuntimePanel(page);
   const thinking = page.getByRole("button", {
     name: "Thinking level",
     exact: true,
@@ -5998,7 +6116,7 @@ for (const outcome of ["done", "error", "closed"] as const) {
     await page.reload();
     await expect(timer).toHaveText("1.2s");
     await expect(page.locator(".shell-command")).toHaveText("sleep 1");
-    await chooseMenuOption(page, "Language", "zh");
+    await chooseLanguage(page, "zh");
     await expect(timer).toHaveAccessibleName("耗时 1.2s");
     await page.setViewportSize({ width: 390, height: 844 });
     expect(
@@ -6080,9 +6198,10 @@ test("composer uses Shift+Enter for a newline without sending", async ({
   await input.press("Shift+Enter");
   await input.type("second line");
   await expect(input).toHaveValue("first line\nsecond line");
-  await expect(page.locator(".composer-shortcut-hint")).toContainText(
-    "new line",
-  );
+  // The always-on Shift+Enter tutorial row is gone; the composer keeps the
+  // shortcut itself and advertises it through the textarea's aria-keyshortcuts.
+  await expect(page.locator(".composer-shortcut-hint")).toHaveCount(0);
+  await expect(input).toHaveAttribute("aria-keyshortcuts", "Shift+Enter");
 });
 
 test("initial snapshot preserves slash feedback entered while history is loading", async ({
@@ -6440,25 +6559,16 @@ for (const mode of [
           { exact: true },
         ),
       ).toBeVisible();
-      await expect(
-        metrics.getByLabel(
-          `Input tokens: ${live ? "1.0k" : legacy ? "160k" : "1.0k"}`,
-          { exact: true },
-        ),
-      ).toBeVisible();
-      await expect(
-        metrics.getByLabel(
-          `Output tokens: ${live ? "120" : legacy ? "1.2k" : "50"}`,
-          { exact: true },
-        ),
-      ).toBeVisible();
-      await metrics.locator(":scope > summary").click();
-      await expect(
-        metrics.getByLabel(
-          `Cached tokens: ${live ? "600" : legacy ? "158k" : "800"}`,
-          { exact: true },
-        ),
-      ).toBeVisible();
+      await expect(metrics.getByLabel(/^Context:/)).toBeVisible();
+      // The remaining token readouts moved into the runtime panel; the two
+      // always-visible numbers stay scannable next to the composer.
+      await openRuntimePanel(page);
+      const tokenDiagnostics = page.locator("aside.inspector");
+      await expect(tokenDiagnostics).toContainText("Input tokens");
+      await expect(tokenDiagnostics).toContainText("Cached tokens");
+      await expect(tokenDiagnostics).toContainText(
+        `${live ? "600" : legacy ? "158k" : "800"}`,
+      );
       await expect(metrics).not.toContainText("Usage from the latest response");
       if (reload)
         await metrics.screenshot({
@@ -6593,33 +6703,23 @@ test("mobile composer footer keeps model picker usable beside session metrics", 
     metrics.getByLabel("Context: 129k / 227k", { exact: true }),
   ).toContainText("129k / 227k");
   await expect(metrics.getByLabel(/^Cache hit:/)).toBeVisible();
-  await expect(metrics.getByLabel(/^Input tokens: 100$/)).toBeVisible();
-  await expect(metrics.getByLabel(/^Output tokens: 252$/)).toBeVisible();
   await expect(metrics.getByLabel(/^Cache hit: 20%$/)).toBeVisible();
-  await expect(
-    metrics.getByLabel("Total tokens: 352", { exact: true }),
-  ).toBeHidden();
-  await expect(metrics.getByLabel(/^Cached tokens:/)).toBeHidden();
-  await expect(metrics.getByLabel(/^Cost:/)).toBeHidden();
+  await expect(metrics.getByRole("button", { name: "details" })).toBeVisible();
   expect(
     await metrics.evaluate(
       (element) => element.scrollWidth <= element.clientWidth,
     ),
   ).toBe(true);
-  await metrics.locator(":scope > summary").click();
-  await expect(metrics.getByLabel(/^Cached tokens:/)).toBeVisible();
   const metricsBox = await metrics.boundingBox();
   const footerBox = await footer.boundingBox();
   expect(metricsBox).not.toBeNull();
   expect(footerBox).not.toBeNull();
   expect(metricsBox!.y).toBeGreaterThan(footerBox!.y + footerBox!.height - 1);
 
-  await metrics.locator(":scope > summary").click();
   for (const width of [320, 375, 390]) {
     await page.setViewportSize({ width, height: 844 });
-    const summary = metrics.locator(":scope > summary");
-    await expect(summary.locator(".composer-metric")).toHaveCount(4);
-    const layout = await summary.evaluate((element) => {
+    await expect(metrics.locator(".composer-metric")).toHaveCount(2);
+    const layout = await metrics.evaluate((element) => {
       const tops = Array.from(
         element.querySelectorAll(".composer-metric"),
         (item) => item.getBoundingClientRect().top,
@@ -8096,7 +8196,7 @@ for (const width of [1280, 390]) {
       await page
         .getByRole("button", { name: "Toggle sidebar", exact: true })
         .click();
-    await chooseMenuOption(page, "Language", "zh");
+    await chooseLanguage(page, "zh");
     if (width === 390)
       await page.locator(".sidebar .sidebar-brand button").click();
     await expect(message.locator(".message-heading")).toHaveText("你");
@@ -8390,7 +8490,7 @@ test.describe("run timing regressions", () => {
     ).toHaveText("Worked for 2m 18s");
     old.release();
     await expect.poll(() => delivered).toBe(true);
-    await chooseMenuOption(page, "Language", "zh");
+    await chooseLanguage(page, "zh");
     await expect(
       page.locator('.run-elapsed[data-run-id="new-run"]'),
     ).toHaveText("已用时 2 分 18 秒");
@@ -8562,7 +8662,7 @@ test.describe("run timing regressions", () => {
     );
     expect(pages).toMatchObject([{ beforeId: questions[0].entryId, limit: 48 }]);
     expect(pages).toHaveLength(1);
-    await chooseMenuOption(page, "Language", "zh");
+    await chooseLanguage(page, "zh");
     await expect(page.locator(".run-elapsed")).toHaveCount(0);
     await expect(page.locator(".error-banner")).toHaveCount(0);
     expect(requests).toBe(1);
@@ -8604,7 +8704,7 @@ test.describe("run timing regressions", () => {
     await page.goto("/");
     await expect.poll(() => queried).toBe(true);
     await expect(page.locator(".message.assistant")).toHaveCount(2);
-    await chooseMenuOption(page, "Language", "zh");
+    await chooseLanguage(page, "zh");
     await expect(page.locator(".run-elapsed")).toHaveCount(0);
     await expect(page.locator(".error-banner")).toHaveCount(0);
   });
@@ -8790,7 +8890,7 @@ test.describe("run timing regressions", () => {
     await page
       .getByRole("button", { name: "Toggle sidebar", exact: true })
       .click();
-    await chooseMenuOption(page, "Language", "zh");
+    await chooseLanguage(page, "zh");
     await page.locator(".sidebar .sidebar-brand button").click();
     await expect(
       page.locator('.run-elapsed[data-run-id="elapsed-run"]'),
@@ -9755,7 +9855,7 @@ test.describe("session issue badges", () => {
       state.sessions = [state.sessions[0], { ...state.sessions[1], ...update }];
       const reads = state.listReads;
       const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/sessions" && response.request().method() === "GET");
-      await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
+      await refreshChats(page);
       await refreshed;
       expect(state.listReads).toBeGreaterThan(reads);
       await expect(failedRow.locator(".session-issue")).toHaveCount(0);
@@ -10324,7 +10424,7 @@ test.describe("conversation timeline", () => {
       for (const scenario of cases) {
         current = scenario;
         await page.goto("/");
-        if (language === "zh" && scenario === cases[0]) await chooseMenuOption(page, "Language", "zh");
+        if (language === "zh" && scenario === cases[0]) await chooseLanguage(page, "zh");
         await expect(page.locator(".message.assistant")).toContainText("Real assistant output remains");
         if (scenario.source === "live") await expect(page.locator(".connection")).toContainText(language === "zh" ? "重新连接中" : "reconnecting");
         await expect(page.locator(".conversation-timeline")).toHaveCount(0);
@@ -10612,7 +10712,7 @@ test.describe("conversation timeline", () => {
     }
     await jump(page, 0);
     await expect(page.getByRole("tooltip")).toHaveCount(0);
-    await chooseMenuOption(page, "Language", "zh");
+    await chooseLanguage(page, "zh");
     await expect(nodes(page).nth(1)).toHaveAttribute("aria-label", /图片消息$/);
     await expect(nodes(page).nth(2)).toHaveAttribute("aria-label", /图片消息$/);
     await nodes(page).nth(1).hover();
@@ -12585,7 +12685,7 @@ test.describe("retirement", () => {
   }
   async function action(page: Page, name: string) {
     await sidebar(page);
-    await page.getByRole("button", { name: "Session actions: Mock session", exact: true }).click();
+    await clickRowAction(page, "Session actions: Mock session");
     await page.getByRole("menuitem", { name, exact: true }).click();
   }
   const confirmation = (page: Page) => page.getByRole("dialog", { name: "Delete session permanently" });
@@ -12680,7 +12780,7 @@ test.describe("retirement", () => {
     await expect(page.getByText("Restore the chat before opening it (Session actions → Restore chat).", { exact: true })).toBeVisible();
     expect(opens).toBe(0);
     await expect(page).toHaveURL(/session=session-1/);
-    await page.getByRole("button", { name: "Session actions: Archived chat", exact: true }).click();
+    await clickRowAction(page, "Session actions: Archived chat");
     await page.getByRole("menuitem", { name: "Restore chat", exact: true }).click();
     await page.getByRole("button", { name: "Show projects", exact: true }).click();
     await page.locator(".project-session-link", { hasText: "Archived chat" }).click();
@@ -12700,7 +12800,7 @@ test.describe("retirement", () => {
       await page.goto("/?session=session-1");
       await page.locator(".project-session-link", { hasText: "Deleting chat" }).click();
       await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
-      await page.getByRole("button", { name: "Session actions: Deleting chat", exact: true }).click();
+      await clickRowAction(page, "Session actions: Deleting chat");
       await page.getByRole("menuitem", { name: "Retry permanent deletion", exact: true }).click();
       await confirm(page).click();
       await expect(page.getByText("Permanent deletion did not complete. Check the session state, then retry manually.", { exact: true })).toBeVisible();
@@ -12762,9 +12862,9 @@ test.describe("retirement", () => {
         }
         // Repeated list refreshes and language changes must not rerun startup,
         // erase a blocked-link warning or silently create a replacement chat.
-        for (let i = 0; i < 2; i++) await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
-        await chooseMenuOption(page, "Language", "zh");
-        await expect(page.getByRole("button", { name: "刷新会话", exact: true })).toBeVisible();
+        for (let i = 0; i < 2; i++) await refreshChats(page);
+        await chooseLanguage(page, "zh");
+        await expect(page.getByRole("button", { name: "设置 Ctrl ,", exact: true })).toBeVisible();
         await expect(page.getByText(message, { exact: true })).toBeVisible();
         expect(requests).toEqual({ reads: [], mutations: [] });
       });
@@ -12815,7 +12915,7 @@ test.describe("retirement", () => {
     await page.goto("/?session=session-1");
     await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
     entries.push({ ...session, sessionId: "session-2", title: "Newer chat", updatedAt: session.updatedAt + 100 });
-    await page.getByRole("button", { name: "Refresh chats", exact: true }).click();
+    await refreshChats(page);
     await expect(page.locator(".project-session-link", { hasText: "Newer chat" })).toBeVisible();
     await expect(page).toHaveURL(/session=session-1/);
     await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
@@ -12828,9 +12928,10 @@ test.describe("retirement", () => {
     page.on("request", request => { if (request.method() === "DELETE" || request.url().endsWith("/metadata")) mutations.push(request.url()); });
     await page.goto("/?session=session-1");
     await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
-    const actions = page.getByRole("button", { name: "Session actions: Mock session", exact: true });
-    await expect(actions).toHaveCount(1);
-    await actions.click();
+    await expect(
+      page.getByRole("button", { name: "Session actions: Mock session", exact: true }),
+    ).toHaveCount(1);
+    await clickRowAction(page, "Session actions: Mock session");
     await expect(page.getByRole("menuitem", { name: "Fork", exact: true })).toBeVisible();
     await expect(page.getByRole("menuitem", { name: "Archive", exact: true })).toHaveCount(0);
     await expect(page.getByRole("menuitem", { name: "Delete", exact: true })).toHaveCount(0);

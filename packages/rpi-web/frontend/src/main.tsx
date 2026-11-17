@@ -4,6 +4,7 @@ import App from "./App";
 import "./styles.css";
 import "./workbench.css";
 import "./desktop.css";
+import "./ui-slim.css";
 import "./composer-refinement.css";
 import "./login.css";
 import "./markdown.css";

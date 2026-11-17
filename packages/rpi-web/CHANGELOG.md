@@ -2,6 +2,60 @@
 
 ## [Unreleased]
 
+## [0.1.57](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.56...rpi-web-v0.1.57) - 2026-11-16
+
+### Added
+
+- *(web)* slim the sidebar and merge the right-hand panels
+
+### Fixed
+
+- *(web)* keep the project tree usable when recent chats expand ([#289](https://github.com/pi-rust/rpi-package/pull/289)) ([#297](https://github.com/pi-rust/rpi-package/pull/297))
+- *(web)* copy the absolute local path in file previews ([#287](https://github.com/pi-rust/rpi-package/pull/287)) ([#288](https://github.com/pi-rust/rpi-package/pull/288))
+
+## [0.1.56](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.55...rpi-web-v0.1.56) - 2026-11-14
+
+### Fixed
+
+- *(web)* remove the preview build badge from the sidebar ([#285](https://github.com/pi-rust/rpi-package/pull/285))
+- *(web)* keep the working indicator off the last transcript row ([#284](https://github.com/pi-rust/rpi-package/pull/284))
+- *(web)* make the inspector entry visible and put resources at the top
+- *(web)* make the installed build self-identifying and uncached
+
+## [0.1.55](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.54...rpi-web-v0.1.55) - 2026-11-13
+
+### Fixed
+
+- *(web)* let long resource names wrap inside the inspector
+
+### Other
+
+- *(web)* keep model preference e2e production-safe
+- Merge pull request #274 from pi-rust/fix/web-resource-overflow
+
+## [0.1.54](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.53...rpi-web-v0.1.54) - 2026-11-13
+
+### Added
+
+- *(web)* read-only resource catalog for global and project scopes, default steer
+
+### Fixed
+
+- *(web)* recover a session whose native host was retired
+- *(web)* distinguish the runtime panel from the settings dialog by icon
+- *(web)* keep the working indicator out of transcript flow
+- *(web)* make the queue delivery kind reachable from the composer
+- *(web)* keep the selected session alive for the advertised idle timeout
+- *(web)* keep hidden project paths as plain text instead of dead previews
+- *(web)* re-enqueue an edited next-run message with the host's spelling
+- *(web)* preview raster files linked from messages
+- *(web)* remember explicit model choices for new project sessions
+
+### Other
+
+- *(web)* account for the read-only resource catalog in the trace mock
+- *(web)* tolerate a one-shot recovery probe in the keepalive guard
+
 ## [0.1.53](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.52...rpi-web-v0.1.53) - 2026-11-10
 
 ### Fixed

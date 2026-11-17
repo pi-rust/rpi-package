@@ -19,25 +19,22 @@ const REASONING: &str =
     "Checking the streaming extension path before delivering a synthetic reply. ";
 
 fn load_extension() -> (rpi_extensions::ExtensionSession, Arc<dyn Provider>, Model) {
-    let profile = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
     let filename = format!(
         "{}rpi_providers{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    let library = [
-        profile.join(&filename),
-        profile.join("deps").join(&filename),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-    .expect("build the extension first: cargo build -p rpi-providers");
+    let executable = std::env::current_exe().unwrap();
+    let library = executable
+        .ancestors()
+        .flat_map(|directory| {
+            [
+                directory.join(&filename),
+                directory.join("deps").join(&filename),
+            ]
+        })
+        .find(|path| path.is_file())
+        .expect("build the extension first: cargo build -p rpi-providers");
     let session = rpi_extensions::load_session_mixed(
         &[],
         &[library],

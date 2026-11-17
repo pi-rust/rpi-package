@@ -29,20 +29,20 @@ const STREAM_PATH: &str = "/v1internal:streamGenerateContent?alt=sse";
 const RETIRED_MESSAGE: &str = "This Antigravity model is no longer offered. Choose another model.";
 
 fn library_path() -> PathBuf {
-    let profile = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
     let filename = format!(
         "{}rpi_providers{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    [profile.join(&filename), profile.join("deps").join(filename)]
-        .into_iter()
+    let executable = std::env::current_exe().unwrap();
+    executable
+        .ancestors()
+        .flat_map(|directory| {
+            [
+                directory.join(&filename),
+                directory.join("deps").join(&filename),
+            ]
+        })
         .find(|path| path.is_file())
         .expect("first cargo build -p rpi-providers")
 }

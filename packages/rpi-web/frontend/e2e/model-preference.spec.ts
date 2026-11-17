@@ -1,5 +1,5 @@
 import { test as base, expect, type Page } from "@playwright/test";
-import { chooseMenuOption } from "./controls";
+import { chooseMenuOption, clickRowAction, openRuntimePanel } from "./controls";
 
 // Optional public-dev qualification; every API call remains intercepted.
 if (process.env.RPI_MODEL_PREFERENCE_BASE_URL)
@@ -79,6 +79,18 @@ class Host {
           })),
           defaultProjectId: "p1",
           projectsRoot: "/mock",
+        });
+      // The runtime panel embeds the read-only resource catalog; both scopes
+      // are requested through the same project.
+      if (path.match(/^\/projects\/[^/]+\/resources$/))
+        return json({
+          version: 1,
+          success: true,
+          operation: "list",
+          scope: new URL(req.url()).searchParams.get("scope"),
+          kind: null,
+          name: null,
+          data: { outcome: "observed", resources: [], diagnostics: [] },
         });
       if (path === "/sessions") {
         if (req.method() === "GET")
@@ -217,21 +229,14 @@ async function start(page: Page) {
   await ready(page);
 }
 async function runtime(page: Page) {
-  await page
-    .getByRole("button", { name: "Runtime settings", exact: true })
-    .click();
+  await openRuntimePanel(page);
   await expect(page.locator(".inspector")).toBeVisible();
 }
 async function choose(page: Page) {
   await chooseMenuOption(page, "Choose model", { label: "Chosen model" });
 }
 async function newSession(page: Page, project = 1) {
-  await page
-    .getByRole("button", {
-      name: `New session in: Project ${project}`,
-      exact: true,
-    })
-    .click();
+  await clickRowAction(page, `New session in: Project ${project}`);
 }
 async function stored(page: Page) {
   return page.evaluate(() =>

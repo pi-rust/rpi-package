@@ -1,6 +1,6 @@
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{Html, IntoResponse},
     routing::get,
     Router,
@@ -121,7 +121,7 @@ fn asset_root(config: &AppConfig) -> PathBuf {
         .find(|p| p.join("index.html").is_file())
         .unwrap_or_else(|| config.project.join("packages/rpi-web/assets"))
 }
-async fn index(State(state): State<FrontendState>) -> Html<String> {
+async fn index(State(state): State<FrontendState>) -> axum::response::Response {
     // Read the bundle manifest on each request so a frontend rebuild does not
     // require recompiling the Rust server. The embedded copy is the fallback
     // for a binary shipped without its `assets/` directory.
@@ -129,7 +129,14 @@ async fn index(State(state): State<FrontendState>) -> Html<String> {
     let html = tokio::fs::read_to_string(path)
         .await
         .unwrap_or_else(|_| crate::assets::index_html().to_string());
-    Html(html)
+    // The manifest names content-hashed bundles. A cached HTML from a previous
+    // install points at old hash filenames, so a rebuilt/replaced extension
+    // must never be served from cache.
+    (
+        [(header::CACHE_CONTROL, "no-store, must-revalidate")],
+        Html(html),
+    )
+        .into_response()
 }
 
 async fn favicon(State(state): State<FrontendState>) -> axum::response::Response {

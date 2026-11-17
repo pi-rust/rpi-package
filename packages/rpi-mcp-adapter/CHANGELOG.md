@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.10...rpi-mcp-adapter-v0.2.11) - 2026-11-14
+
+### Fixed
+
+- *(mcp-adapter)* drop out-of-range bounds on mcp_request.id ([#265](https://github.com/pi-rust/rpi-package/pull/265))
+
+## [0.2.10](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.9...rpi-mcp-adapter-v0.2.10) - 2026-11-13
+
+### Fixed
+
+- *(ci)* avoid Linux ps diagnostics in ownership tests ([#275](https://github.com/pi-rust/rpi-package/pull/275))
+
 ## [0.2.9](https://github.com/pi-rust/rpi-package/compare/rpi-mcp-adapter-v0.2.8...rpi-mcp-adapter-v0.2.9) - 2026-11-06
 
 ### Fixed

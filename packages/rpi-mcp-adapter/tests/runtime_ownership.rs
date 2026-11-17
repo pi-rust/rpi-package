@@ -169,15 +169,24 @@ fn wait_until(mut predicate: impl FnMut() -> bool, description: &str) {
 fn is_running(pid: u32) -> bool {
     rpi_plugin_sdk::process::process_is_running(pid).unwrap()
 }
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn is_running(pid: u32) -> bool {
     // An exited, unreaped child still answers kill -0. Linux exposes its state
-    // in /proc; macOS needs ps. Do not conflate zombie lifetime with execution.
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
-        if let Some((_, state)) = stat.rsplit_once(") ") {
-            return !state.starts_with('Z');
-        }
-    }
+    // in /proc, so do not fall back to ps: its terminal diagnostics can vary
+    // between runner images and are irrelevant to this process-local probe.
+    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some((_, state)) = stat.rsplit_once(") ") else {
+        return false;
+    };
+    !state.starts_with('Z')
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn is_running(pid: u32) -> bool {
+    // macOS does not expose Linux's /proc state. Do not conflate a zombie
+    // lifetime with execution when using ps as the fallback probe.
     let output = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()

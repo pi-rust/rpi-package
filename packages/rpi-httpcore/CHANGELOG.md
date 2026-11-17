@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.23](https://github.com/pi-rust/rpi-package/compare/rpi-httpcore-v0.1.22...rpi-httpcore-v0.1.23) - 2026-11-13
+
+### Added
+
+- *(web)* read-only resource catalog for global and project scopes, default steer
+
+### Fixed
+
+- *(web)* keep the selected session alive for the advertised idle timeout
+
+### Other
+
+- *(web)* account for the read-only resource catalog in the trace mock
+
 ## [0.1.22](https://github.com/pi-rust/rpi-package/compare/rpi-httpcore-v0.1.21...rpi-httpcore-v0.1.22) - 2026-11-10
 
 ### Other
