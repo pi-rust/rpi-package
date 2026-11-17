@@ -1473,7 +1473,8 @@ test("the composer can steer into a running task without opening the inspector",
   // The Inspector stays collapsed: the delivery selector has to be reachable
   // from the composer, where the interjection is actually typed.
   await expect(page.locator(".inspector")).toHaveCount(0);
-  await chooseMenuOption(page, "Queue type", "steer");
+  // The queue-type dropdown is gone (#305): delivery is fixed to `steer`.
+  await expect(page.locator(".composer-queue-kind")).toHaveCount(0);
   const input = page.getByRole("textbox", {
     name: "Send a prompt, or type / for commands…",
   });

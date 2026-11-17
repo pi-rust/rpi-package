@@ -113,6 +113,7 @@ const messages = {
     saveQueueEdit: "Update queued message",
     queuePlaceholder: "Queue a follow-up…",
     queueKind: "Queue type",
+    steerQueued: "Guided message queued: {text}",
     queueKindNotResubmittable:
       "This {kind} queued message cannot be re-queued; copy its text before cancelling it.",
     followUp: "follow-up",
@@ -486,6 +487,7 @@ const messages = {
     saveQueueEdit: "更新排队消息",
     queuePlaceholder: "添加后续消息…",
     queueKind: "队列类型",
+    steerQueued: "已提交引导消息：{text}",
     queueKindNotResubmittable:
       "这条{kind}排队消息无法重新入队；请先复制内容再取消。",
     followUp: "后续消息",
