@@ -120,9 +120,10 @@ of the log, so a resumed session rebuilds the identical tree from its entries.
 - **The log is bounded at 20000 messages.** Capture stops there instead of
   growing without limit; existing messages stay readable through `zoom` and
   `search`.
-- **Capture is best effort.** A failed `AppendEntry` never fails the turn; the
-  message is skipped and the next turn retries. Set `RPI_OPTCHAT_DEBUG=1` to see
-  the reason on stderr.
+- **Capture is best effort.** A failed `AppendEntry` never fails the turn and the
+  entry is not committed to the in-memory log, so a later capture can retry
+  without creating a phantom message. `/optchat note` reports the persistence
+  error. Set `RPI_OPTCHAT_DEBUG=1` to see automatic-capture failures on stderr.
 
 ## Verification
 

@@ -117,6 +117,9 @@ struct State {
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
+/// Serialize local append preparation, host persistence, and local commit so
+/// two callbacks cannot persist the same message index or reorder the log.
+static APPEND_GATE: Mutex<()> = Mutex::new(());
 
 fn current_session() -> String {
     std::env::var(rpi_plugin_sdk::SESSION_ID_ENV)
@@ -244,7 +247,30 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Log one message, then store it as a session custom entry.
+/// Persist an entry before committing it to the in-memory log. The host call
+/// intentionally happens outside `STATE`; the append gate serializes local
+/// writers without holding the state lock across the foreign call.
+fn persist_then_commit(
+    entry: memory::Entry,
+    session: &str,
+    last: Option<(Kind, String, i64)>,
+) -> Result<usize, String> {
+    persist(&entry)?;
+    with_state(|state| {
+        if state.session != session {
+            return Err("OptChat session changed while persisting an entry".to_string());
+        }
+        let committed = state.memory.append_prepared(entry)?;
+        if let Some(last) = last {
+            state.last = Some(last);
+        }
+        Ok(committed.i)
+    })?
+}
+
+/// Log one message, then store it as a session custom entry. The entry is only
+/// made visible in memory after `AppendEntry` succeeds, so a transient host
+/// failure cannot leave a phantom entry or consume the duplicate guard.
 fn capture(
     kind: Kind,
     text: String,
@@ -257,7 +283,12 @@ fn capture(
     }
     let millis = stamp.unwrap_or_else(now_ms);
     let date = iso8601(millis);
-    let entry = with_state(|state| {
+    let dedupe_text = text.clone();
+    let _gate = APPEND_GATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let session = current_session();
+    let candidate = with_state(|state| {
         let duplicate = state
             .last
             .as_ref()
@@ -269,32 +300,36 @@ fn capture(
         if duplicate || state.memory.len() >= MAX_ENTRIES {
             return None;
         }
-        state.last = Some((kind, text.clone(), millis));
-        Some(state.memory.record(kind, text, date, receipt, origin))
+        Some(state.memory.prepare(kind, text, date, receipt, origin))
     })?;
-    let Some(entry) = entry else {
+    let Some(entry) = candidate else {
         return Ok(());
     };
-    if let Err(error) = persist(&entry) {
-        debug(&format!("could not persist message {}: {error}", entry.i));
+    if let Err(error) = persist_then_commit(entry, &session, Some((kind, dedupe_text, millis))) {
+        debug(&format!("could not persist message: {error}"));
     }
     Ok(())
 }
 
 /// Log an entry the user asked for (`/optchat note`, import): not deduplicated,
-/// because two identical notes are two notes.
+/// because two identical notes are two notes. It also uses the same append gate
+/// as automatic capture, so its index cannot race a message event.
 fn record_note(kind: Kind, text: String, origin: Option<Origin>) -> Result<usize, String> {
     let date = iso8601(now_ms());
-    let entry = with_memory(|memory| {
-        (memory.len() < MAX_ENTRIES).then(|| memory.record(kind, text, date, None, origin))
+    let _gate = APPEND_GATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let session = current_session();
+    let candidate = with_state(|state| {
+        (state.memory.len() < MAX_ENTRIES)
+            .then(|| state.memory.prepare(kind, text, date, None, origin))
     })?;
-    let Some(entry) = entry else {
+    let Some(entry) = candidate else {
         return Err(format!(
             "This session's memory already holds {MAX_ENTRIES} messages; nothing was recorded."
         ));
     };
-    persist(&entry)?;
-    Ok(entry.i)
+    persist_then_commit(entry, &session, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +403,8 @@ fn capture_tool_result(result: &rpi_plugin_sdk::events::ToolResult) {
 }
 
 rpi_plugin_sdk::event_handler! {
-fn on_message_end(event, _data) {
+fn on_message_end(event, data) {
+    let _scope = runtime::enter(runtime::callback(data));
     let Some(raw) = event.message_text() else {
         return 0;
     };
@@ -378,7 +414,8 @@ fn on_message_end(event, _data) {
 }
 
 rpi_plugin_sdk::event_handler! {
-fn on_tool_start(event, _data) {
+fn on_tool_start(event, data) {
+    let _scope = runtime::enter(runtime::callback(data));
     let Some(call) = event.tool_call() else {
         debug("tool_execution_start without a tool-call payload");
         return 0;
@@ -392,7 +429,8 @@ fn on_tool_start(event, _data) {
 }
 
 rpi_plugin_sdk::event_handler! {
-fn on_tool_end(event, _data) {
+fn on_tool_end(event, data) {
+    let _scope = runtime::enter(runtime::callback(data));
     let Some(result) = event.tool_result() else {
         debug("tool_execution_end without a tool-result payload");
         return 0;

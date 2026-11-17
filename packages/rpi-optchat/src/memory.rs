@@ -331,7 +331,43 @@ impl Memory {
         }
     }
 
+    /// Build the next entry without mutating the log. Callers that need durable
+    /// semantics can persist this value before committing it with
+    /// [`Self::append_prepared`].
+    pub fn prepare(
+        &self,
+        kind: Kind,
+        text: String,
+        date: String,
+        receipt: Option<String>,
+        origin: Option<Origin>,
+    ) -> Entry {
+        Entry {
+            i: self.entries.len(),
+            kind,
+            text: head_bytes(&text, SOURCE).to_string(),
+            date,
+            receipt,
+            origin,
+        }
+    }
+
+    /// Commit an entry previously returned by [`Self::prepare`].
+    pub fn append_prepared(&mut self, entry: Entry) -> Result<Entry, String> {
+        if entry.i != self.entries.len() {
+            return Err(format!(
+                "cannot append message {} to a log with {} messages",
+                entry.i,
+                self.entries.len()
+            ));
+        }
+        self.push_entry(entry.clone());
+        self.fit(self.entries.len() as u64, false);
+        Ok(entry)
+    }
+
     /// Append one message and fold the view if it outgrew its budget.
+    #[cfg(test)]
     pub fn record(
         &mut self,
         kind: Kind,
@@ -340,17 +376,8 @@ impl Memory {
         receipt: Option<String>,
         origin: Option<Origin>,
     ) -> Entry {
-        let entry = Entry {
-            i: self.entries.len(),
-            kind,
-            text: head_bytes(&text, SOURCE).to_string(),
-            date,
-            receipt,
-            origin,
-        };
-        self.push_entry(entry.clone());
-        self.fit(self.entries.len() as u64, false);
-        entry
+        self.append_prepared(self.prepare(kind, text, date, receipt, origin))
+            .expect("a freshly prepared entry must append at the end of the log")
     }
 
     /// Merge as far as the tree allows: the smallest view that still tiles the
@@ -718,6 +745,17 @@ mod tests {
         assert_eq!(flat("a\r\n\nb"), "a b");
         assert_eq!(flat("a b"), "a b");
         assert_eq!(flat("行一\n行二"), "行一 行二");
+    }
+
+    #[test]
+    fn prepared_entries_are_not_visible_until_committed() {
+        let mut m = Memory::new();
+        let entry = m.prepare(Kind::Note, "durable".into(), iso8601(0), None, None);
+        assert_eq!(m.len(), 0);
+        assert_eq!(m.append_prepared(entry.clone()).unwrap().i, 0);
+        assert_eq!(m.entries()[0].text, "durable");
+        assert!(m.append_prepared(entry).is_err());
+        assert_eq!(m.len(), 1);
     }
 
     #[test]
