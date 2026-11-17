@@ -78,6 +78,9 @@ const session = {
   relation: null,
   parentSessionId: null,
   forkEntryId: null,
+  // Completed settlements here would trigger the "Session completed"
+  // notification stack on every mock-backed test; the recent-chats ordering
+  // test builds its own settled sessions instead.
   latestSettlement: null,
 };
 
@@ -1077,32 +1080,125 @@ test("fork is available from a session context menu", async ({ page }) => {
   await expect.poll(() => forkBody).toEqual({ title: "Design fork" });
 });
 
-test("recent chats open as a floating window without moving the project tree", async ({
+test("recent chats are embedded in the sidebar and ordered by last response end", async ({
   page,
 }) => {
-  await mockHost(page, { additionalSessions: 10 });
+  await mockHost(page, { additionalSessions: 14 });
+  // Decouple "last response end" from updatedAt: the two newest-updated
+  // sessions settled long ago, and an older one just settled, so sorting by
+  // settledAt (with updatedAt fallback) must surface it first (#296).
+  await page.route("**/api/v1/sessions", (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const settled = (suffix: number, settledAt: number) => ({
+      ...session,
+      sessionId: `session-settled-${suffix}`,
+      title: `Settled chat ${suffix}`,
+      projectId: "project-a",
+      updatedAt: 1_700_000_050_000 + suffix,
+      pinned: false,
+      archived: false,
+      latestSettlement: { outcome: "completed", settledAt },
+    });
+    const plain = (suffix: number) => ({
+      ...session,
+      sessionId: `session-${suffix}`,
+      title: `Recent session ${suffix}`,
+      projectId: "project-b",
+      updatedAt: 1_700_000_050_000 + suffix,
+      pinned: false,
+      archived: false,
+    });
+    // settledAt order: settled-5 > settled-4 > ... > settled-1 > plain rows
+    // (every plain row only has updatedAt, older than any settlement).
+    const entries = [
+      settled(1, 1_700_000_052_000),
+      settled(2, 1_700_000_053_000),
+      ...Array.from({ length: 7 }, (_, index) => plain(index + 3)),
+      settled(3, 1_700_000_054_000),
+      settled(4, 1_700_000_055_000),
+      settled(5, 1_700_000_056_000),
+    ];
+    return route.fulfill({ json: { sessions: entries } });
+  });
   await page.goto("/");
   const tree = page.locator(".project-tree");
-  const treeBox = async () =>
-    tree.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      return { top: rect.top, height: rect.height };
-    });
-  const before = await treeBox();
+  // The sidebar re-renders when the (re-routed) session list lands; wait for
+  // it before clicking so the trigger button is not detached mid-click.
+  await expect(tree.locator(".project-session").first()).toBeVisible();
   await page.getByRole("button", { name: "Recent chats", exact: true }).click();
-  const recent = page.getByRole("dialog", { name: "Recent chats" });
+  const recent = page.locator(".recent-inline");
   await expect(recent).toBeVisible();
-  // Cross-project recency is the one thing the tree cannot express; the window
-  // lists every non-archived chat and tags each row with its project.
-  await expect(recent.locator(".slim-recent-option")).toHaveCount(11);
-  await expect(recent.locator(".slim-recent-project").first()).toHaveText(
-    "rpi-package",
-  );
-  // The floating window costs no permanent vertical space: the tree keeps its
-  // full height and position while it is open.
-  expect(await treeBox()).toEqual(before);
-  await page.keyboard.press("Escape");
+  // 12 chats total: the first five sit in the normal flow, rows 6-12 live in
+  // the scrollable overflow. No dialog, no toggle button.
+  const top = recent.locator(":scope > .project-session");
+  await expect(top).toHaveCount(5);
+  const overflow = recent.locator(".recent-inline-more .project-session");
+  await expect(overflow).toHaveCount(7);
+  // Ordering is by the last response end (settledAt with updatedAt fallback;
+  // the mock spreads settledAt below), newest first.
+  const titles = await recent
+    .locator(".project-session .session-title")
+    .allTextContents();
+  // Sorted by settledAt, newest response first: settled-5/4/3 beat every
+  // plain row (those only have updatedAt), then settled-2, settled-1. Plain
+  // rows keep their updatedAt order below (suffix 9 newest).
+  expect(titles[0]).toContain("Settled chat 5");
+  expect(titles[1]).toContain("Settled chat 4");
+  expect(titles[2]).toContain("Settled chat 3");
+  expect(titles[3]).toContain("Settled chat 2");
+  expect(titles[4]).toContain("Settled chat 1");
+  expect(titles[5]).toContain("Recent session 9");
+  // The section lives in the sidebar column below the tree: the project tree
+  // is never overlaid — it only shrinks to make room.
+  const treeBox = await tree.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  });
+  const recentBox = await recent.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  });
+  expect(treeBox.bottom).toBeLessThanOrEqual(recentBox.top + 1);
+  // Selecting a chat from the list switches the session and closes the
+  // section.
+  await overflow.last().click();
   await expect(recent).toHaveCount(0);
+});
+
+test("details jump is right-aligned in the slim metrics strip (#306)", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  const strip = page.locator(".composer-metrics.slim-metrics");
+  await expect(strip).toBeVisible();
+  const probe = async () =>
+    strip.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const stripRect = element.getBoundingClientRect();
+      const buttonRect = element
+        .querySelector(".slim-metrics-more")
+        ?.getBoundingClientRect();
+      const metrics = [
+        ...element.querySelectorAll(".composer-metric"),
+      ].map((metric) => metric.getBoundingClientRect().right);
+      return {
+        // Right edge of the strip's *content box* — margin-left:auto pushes
+        // the button flush against it, no matter the strip padding.
+        contentRight:
+          stripRect.right - parseFloat(style.paddingRight || "0"),
+        buttonRight: buttonRect?.right ?? 0,
+        buttonLeft: buttonRect?.left ?? 0,
+        lastMetricRight: metrics.length ? metrics[metrics.length - 1] : 0,
+      };
+    });
+  const { contentRight, buttonRight, buttonLeft, lastMetricRight } =
+    await probe();
+  // The jump sits flush at the row end (margin-left:auto in a flex row) and
+  // does not overlap the context metric. Under the pre-fix block layout the
+  // button follows the metrics in flow, far from the content edge.
+  expect(contentRight - buttonRight).toBeLessThan(2);
+  expect(buttonLeft).toBeGreaterThan(lastMetricRight);
 });
 
 test("session tags can be edited without sidebar filters", async ({ page }) => {

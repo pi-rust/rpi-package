@@ -1820,6 +1820,14 @@
 .workspace .composer-metrics {
   display: block;
 }
+/* The slim composer renders the metrics strip without the summary/detail
+   split, so the block layout above must not win here: the "details" jump is
+   pushed to the row end with margin-left:auto only in a flex container
+   (#306; the desktop.css .composer-metrics-more rule never matches the slim
+   markup). */
+.workspace .slim-metrics {
+  display: flex;
+}
 .workspace .composer-metrics-summary {
   display: flex;
   align-items: center;
@@ -1832,6 +1840,9 @@
   flex: 0 0 auto;
 }
 .workspace .composer-metrics-more {
+  /* Never matches the slim composer (no .composer-metrics-more element); kept
+     for the full-composer summary/detail split. The slim "details" jump is
+     aligned by .workspace .slim-metrics { display:flex } above (#306). */
   margin-left: auto;
   flex: 0 0 auto;
   color: var(--muted);

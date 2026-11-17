@@ -45,6 +45,7 @@ export interface SessionSummary {
     error?: string | null;
     runId?: string;
     seq?: number;
+    settledAt?: number;
   } | null;
 }
 
