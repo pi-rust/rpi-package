@@ -25,8 +25,8 @@ pub const NODE: usize = 512;
 pub const VIEW: usize = 128_000;
 /// Tool-output ceiling for a whole result.
 pub const CAP: usize = 30_000;
-/// The most characters of one message the tree's leaf keeps (a huge paste must
-/// not dominate the log).
+/// The most bytes of one message the tree's leaf keeps (a huge paste must not
+/// dominate the log).
 pub const SOURCE: usize = 100_000;
 /// The most characters one `zoom` page returns.
 pub const PAGE: usize = 25_000;
@@ -231,34 +231,35 @@ fn most_due(view: &[Part], total: u64) -> Option<usize> {
     best
 }
 
-/// One page of `text`, never splitting a character, saying where the next one
-/// starts.
+/// One page of `text`, measured in Unicode scalar values, never splitting a
+/// character, and saying where the next one starts.
 pub fn page(text: &str, offset: usize, limit: usize) -> Result<String, String> {
     let limit = limit.clamp(1, PAGE);
-    if offset > text.len() {
+    let total = text.chars().count();
+    if offset > total {
         return Err(format!(
-            "This message has {} characters; offset must be 0 to {}.",
-            text.len(),
-            text.len()
+            "This message has {total} characters; offset must be 0 to {total}."
         ));
     }
-    let mut from = offset;
-    while from > 0 && !text.is_char_boundary(from) {
-        from -= 1;
-    }
-    let mut to = (from + limit).min(text.len());
-    while to > from && !text.is_char_boundary(to) {
-        to -= 1;
-    }
-    let more = if to < text.len() {
-        format!("; go on with offset {to}")
+    let to_char = offset.saturating_add(limit).min(total);
+    let from = text
+        .char_indices()
+        .nth(offset)
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len());
+    let to = text
+        .char_indices()
+        .nth(to_char)
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len());
+    let more = if to_char < total {
+        format!("; go on with offset {to_char}")
     } else {
         String::new()
     };
     Ok(format!(
-        "{}\n[characters {from}-{to} of {}{more}]",
-        &text[from..to],
-        text.len()
+        "{}\n[characters {offset}-{to_char} of {total}{more}]",
+        &text[from..to]
     ))
 }
 
@@ -745,6 +746,18 @@ mod tests {
         assert_eq!(flat("a\r\n\nb"), "a b");
         assert_eq!(flat("a b"), "a b");
         assert_eq!(flat("行一\n行二"), "行一 行二");
+    }
+
+    #[test]
+    fn page_uses_character_offsets_for_multibyte_text() {
+        let first = page("汉字abc", 1, 2).unwrap();
+        assert!(first.starts_with("字a\n"), "{first}");
+        assert!(
+            first.contains("characters 1-3 of 5; go on with offset 3"),
+            "{first}"
+        );
+        assert_eq!(page("汉字abc", 5, 1).unwrap(), "\n[characters 5-5 of 5]");
+        assert!(page("汉字abc", 6, 1).is_err());
     }
 
     #[test]
