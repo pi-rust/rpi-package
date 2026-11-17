@@ -203,14 +203,18 @@ test("a hidden tab does not claim to keep the host alive", async ({ page, host }
   expect(hidden).toBe(true);
   const before = host.sessionReads.length;
   await page.clock.runFor(10_000);
-  expect(host.sessionReads.length).toBe(before);
+  // A closed event stream can trigger one host-recovery probe. That is not the
+  // keepalive: the 2s interval would add ~5 reads over this window, so tolerate
+  // at most one non-periodic read (same guard as the explicit-close case below).
+  const afterHidden = host.sessionReads.length;
+  expect(afterHidden - before).toBeLessThanOrEqual(1);
   // Becoming visible again probes immediately rather than waiting for the next
   // interval, so a retirement during the hidden period surfaces right away.
   await page.evaluate(() => {
     Object.defineProperty(document, "hidden", { value: false, configurable: true });
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  await expect.poll(() => host.sessionReads.length).toBeGreaterThan(before);
+  await expect.poll(() => host.sessionReads.length).toBeGreaterThan(afterHidden);
 });
 
 test("no keepalive is run when the server retains hosts until explicit close", async ({
