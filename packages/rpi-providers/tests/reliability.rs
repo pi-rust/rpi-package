@@ -42,18 +42,21 @@ fn providers() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
         &session,
         tokio::runtime::Handle::current(),
     );
-    assert_eq!(providers.len(), 5);
+    assert_eq!(providers.len(), 6);
     (session, providers)
 }
 
-/// The OpenAI-chat fixtures below cannot serve Antigravity, which speaks Cloud Code's
-/// Gemini SSE protocol. Its lifecycle, streaming and cancellation coverage lives in
-/// tests/antigravity.rs; every other provider keeps the shared assertions unchanged.
+/// These chat-completions fixtures cannot serve Gemini or Codex Responses SSE.
+/// Their lifecycle, streaming and cancellation coverage lives in antigravity.rs
+/// and codex.rs respectively.
 fn chat_providers() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
     let (session, providers) = providers();
     let chat = providers
         .into_iter()
-        .filter(|provider| provider.id() != rpi_providers::antigravity::PROVIDER_ID)
+        .filter(|provider| {
+            provider.id() != rpi_providers::antigravity::PROVIDER_ID
+                && provider.id() != rpi_providers::codex::PROVIDER_ID
+        })
         .collect();
     (session, chat)
 }

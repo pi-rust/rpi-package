@@ -43,8 +43,8 @@ fn load() -> (rpi_extensions::ExtensionSession, Vec<Arc<dyn Provider>>) {
 async fn one_library_declares_all_provider_catalogs_and_auth_policies() {
     let (session, providers) = load();
     let snapshot = session.snapshot().expect("bundle loaded");
-    assert_eq!(providers.len(), 5);
-    assert_eq!(snapshot.providers().len(), 5);
+    assert_eq!(providers.len(), 6);
+    assert_eq!(snapshot.providers().len(), 6);
     // Antigravity authenticates through its OAuth flow only; it declares no API-key variable.
     for (id, env, auth) in [
         ("deepseek", Some("DEEPSEEK_API_KEY"), true),
@@ -52,6 +52,7 @@ async fn one_library_declares_all_provider_catalogs_and_auth_policies() {
         ("llama-cpp", Some("LLAMA_CPP_API_KEY"), false),
         ("proxy", Some("PROXY_API_KEY"), false),
         ("antigravity", None, true),
+        ("openai-codex", None, true),
     ] {
         let manifest = snapshot
             .provider_manifest(id)
@@ -145,12 +146,15 @@ async fn simultaneous_requests_use_each_providers_own_factory_and_credentials() 
         }
     });
     let mut requests = vec![];
-    // Antigravity speaks Cloud Code's Gemini SSE, not this chat server; it is covered by
-    // tests/antigravity.rs, so the four chat providers keep this shared exchange unchanged.
-    for provider in providers
-        .into_iter()
-        .filter(|provider| provider.id() != rpi_providers::antigravity::PROVIDER_ID)
-    {
+    // Antigravity speaks Cloud Code's Gemini SSE and openai-codex speaks the Responses
+    // SSE; both are covered by their own loopback files, so the four chat providers keep
+    // this shared exchange unchanged.
+    for provider in providers.into_iter().filter(|provider| {
+        !matches!(
+            provider.id(),
+            rpi_providers::antigravity::PROVIDER_ID | rpi_providers::codex::PROVIDER_ID
+        )
+    }) {
         let mut model = provider.models()[0].clone();
         model.base_url = base.clone();
         model.headers = Some(std::collections::BTreeMap::from([
