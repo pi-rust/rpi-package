@@ -50,7 +50,7 @@ Both tools read the current session branch only; both return text plus
 ```text
 /optchat                 status: messages, view lines, bytes, kind counts
 /optchat view [lines]    the summary view, newest lines first (default 40)
-/optchat view all        the whole view, capped at 30000 characters
+/optchat view all        the whole view, capped at 30000 bytes
 /optchat zoom <id> [n]   open message id, or the block of n messages from id
 /optchat search <text>   find logged messages by content
 /optchat note <text>     append a durable note to memory
@@ -72,7 +72,7 @@ hold a string or content blocks; markdown headings lose their `#` markers.
 | `before_agent_start` (`prompt`) | `user` | the prompt that starts the run |
 | `message_end` (`user`) | `user` | text blocks |
 | `message_end` (`assistant`) | `talk` | text blocks |
-| `tool_execution_start` | `tool` | `name(arguments)`, clipped to 2000 characters, with the call id as `receipt` |
+| `tool_execution_start` | `tool` | `name(arguments)`, clipped to 2000 bytes, with the call id as `receipt` |
 | `tool_execution_end` | `echo` | the result's text blocks, with the call id as `receipt` |
 | `/optchat note`, `import` | `note` | as given, with an optional import origin |
 
