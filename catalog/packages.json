@@ -99,6 +99,17 @@
     "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-goal-v0.2.5/rpi-extension.json"
   },
   {
+    "name": "rpi-optchat",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "zoom + search",
+    "inspiredBy": "jonaslsaa/pi-optchat persistent memory",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-optchat",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-optchat-v0.1.0/rpi-extension.json"
+  },
+  {
     "name": "rpi-plan-mode",
     "version": "0.2.3",
     "type": "extension",

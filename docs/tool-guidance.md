@@ -47,7 +47,7 @@ uses the existing `StableToolSchema` registration contract, not a new ABI slot.
 
 ## Tool coverage
 
-The guidance review covers 33 tools in these 16 extensions plus the native host:
+The guidance review covers 35 tools in these 17 extensions plus the native host:
 
 | Extension | Tools | Important contract |
 | --- | --- | --- |
@@ -60,6 +60,7 @@ The guidance review covers 33 tools in these 16 extensions plus the native host:
 | rpi-langfuse | langfuse_score, langfuse_prompt, langfuse_trace | Action requirements, remote writes, named prompt lookup and one-page trace limits |
 | rpi-lens | code_lens | Allowlisted diagnostics, working directory, build side effects and exit-code interpretation |
 | rpi-mcp-adapter | mcp_request, mcp_call, mcp_list, mcp_resource | Raw versus managed sessions, target selection, untrusted remote data and subscription cleanup |
+| rpi-optchat | zoom, search | Session-branch memory log, extractive summary view, power-of-two block navigation and paged character offsets |
 | rpi-orchestrator | subagent, plan, dispatch | Self-contained tasks, shared workspace, typed DAG nodes and explicit acceptance |
 | rpi-permissions | permissions | User-authorized policy mutation, grant-deny versus rule removal, effective-policy checks |
 | rpi-plan-mode | plan_mode_start, plan_mode_complete | Read-only design/review, not execution or automatic approval |
@@ -84,9 +85,9 @@ without contacting external services. Avoid exact full-prose comparisons.
 ```sh
 cargo test --locked -p rpi-ask-user -p rpi-codegraph \
   -p rpi-edit-diagnostics -p rpi-goal -p rpi-im-message -p rpi-langfuse \
-  -p rpi-lens -p rpi-mcp-adapter -p rpi-orchestrator -p rpi-permissions \
-  -p rpi-plan-mode -p rpi-server -p rpi-subagents -p rpi-todo \
-  -p rpi-webfetch -p rpi-websearch
+  -p rpi-lens -p rpi-mcp-adapter -p rpi-optchat -p rpi-orchestrator \
+  -p rpi-permissions -p rpi-plan-mode -p rpi-server -p rpi-subagents \
+  -p rpi-todo -p rpi-webfetch -p rpi-websearch
 ```
 
 For behavior changes, also run the relevant native/plugin smoke tests described

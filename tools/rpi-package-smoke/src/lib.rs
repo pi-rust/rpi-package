@@ -68,16 +68,18 @@ mod tests {
             "plan_mode_start",
             "rpc_client",
             "rpc_server",
+            "search",
             "subagent",
             "todo",
             "webfetch",
             "websearch",
+            "zoom",
         ]);
         assert_eq!(names, expected);
         assert_eq!(
             session.loaded_paths().len(),
-            19,
-            "all nineteen cdylibs should load"
+            20,
+            "all twenty cdylibs should load"
         );
         let tool = snapshot
             .tools()
