@@ -192,6 +192,71 @@ async fn idle_reaper_closes_expired_host_but_keeps_saved_session() {
 }
 
 #[tokio::test]
+async fn idle_reaper_cancels_stale_dialogs_without_interrupting_running_sessions() {
+    let f = Fixture::new().await;
+    let (host, events, peer) = f.connect().await;
+    let mut lines = BufReader::new(peer).lines();
+
+    // A projected `ui_dialog_request` puts the session in `awaiting_input`.
+    // `check_idle_projection` must refuse to retire it (Busy), but the reaper
+    // should still deliver an ordinary cancellation so the plugin can settle
+    // its tool call and the host can later be released.
+    events
+        .send_projected(json!({
+            "type": "ui_dialog_request",
+            "requestId": "ask-stale",
+            "toolCallId": "call-1",
+            "ui": {"kind": "input", "question": "Paste the URL"},
+        }))
+        .await;
+    assert_eq!(host.snapshot().await.status, "awaiting_input");
+    assert_eq!(host.snapshot().await.pending_dialogs.len(), 1);
+
+    f.service
+        .session_activity
+        .write()
+        .await
+        .insert(f.id.clone(), Instant::now() - Duration::from_secs(60));
+
+    let reaper = tokio::spawn({
+        let service = f.service.clone();
+        async move { service.reap_idle_sessions(Duration::from_secs(30)).await }
+    });
+    // The reaper's idle proof is rejected before any native command is sent,
+    // then it cancels the dialog through the normal command path.
+    let frame: Value =
+        serde_json::from_str(&bounded(lines.next_line()).await.unwrap().unwrap()).unwrap();
+    assert_eq!(frame["type"], "ui_dialog_response");
+    assert_eq!(frame["requestId"], "ask-stale");
+    assert_eq!(frame["cancelled"], true);
+    assert!(frame.get("answer").is_none());
+    respond(&events, &frame, json!({}));
+    let _ = bounded(reaper).await;
+
+    // The host is NOT killed: no `stop` was sent, and the run can settle
+    // normally once the plugin observes the cancellation.
+    assert!(!*host.closed_receiver().borrow());
+    assert!(f.service.live_session(&f.id).await.is_some());
+    assert_eq!(host.snapshot().await.status, "awaiting_input");
+
+    // A `running` session must not be touched at all. Drive the projection
+    // through a regular event rather than reaching into private host state.
+    events
+        .send_projected(json!({"type": "agent_start", "runId": "run-1"}))
+        .await;
+    assert_eq!(host.snapshot().await.status, "running");
+    assert_eq!(host.cancel_stale_dialogs().await, Ok(0));
+    let cancelled = tokio::time::timeout(Duration::from_millis(20), lines.next_line()).await;
+    assert!(
+        cancelled.is_err(),
+        "a running session must not receive a cancellation"
+    );
+
+    drop(lines);
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn busy_lease_preserves_host_preferences_and_history_for_archive_and_delete() {
     let f = Fixture::new().await;
     let files = f.native_files();
