@@ -1,140 +1,179 @@
-use rpi_plugin_sdk::{CommandHandlerFn, PluginApi, RuntimeActionId, StbString, StbStringRef};
-use serde_json::{json, Value};
-use std::sync::{mpsc, Condvar, Mutex};
+//! `/goal` commands persist state and return immediately; work starts from the
+//! continuation worker, never from the TUI thread.
+mod support;
+
+use rpi_plugin_sdk::EventTag;
+use serde_json::json;
 use std::time::Duration;
 
-static COMMAND: Mutex<Option<CommandHandlerFn>> = Mutex::new(None);
-static STATE: Mutex<Value> = Mutex::new(Value::Null);
-static RUN: Mutex<(bool, bool, bool)> = Mutex::new((false, false, false));
-static RUN_CHANGED: Condvar = Condvar::new();
+#[test]
+fn start_command_returns_before_work_starts_and_status_reports_it() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    // Let the session-start wake drain before a goal exists, so it cannot
+    // coalesce with the goal-start dispatch.
+    support::settle_pause();
 
-extern "C" fn register_command(_: StbStringRef, _: StbStringRef, handler: CommandHandlerFn) -> i32 {
-    *COMMAND.lock().unwrap() = Some(handler);
-    0
-}
+    let response = support::command("start Ship the release --notes \"be careful\"");
+    assert_eq!(response["kind"], "message");
+    let text = response["text"].as_str().unwrap();
+    assert!(text.contains("Goal started"), "{text}");
+    assert!(text.contains("Ship the release"), "{text}");
 
-rpi_plugin_sdk::string_handler! {
-fn runtime_action(action, args, out, _user_data) {
-    let args: Value = serde_json::from_str(args).unwrap();
-    let result = match RuntimeActionId::try_from(action).unwrap() {
-        RuntimeActionId::GetSessionBranch => {
-            assert_eq!(args, json!({"customTypes": ["goal-state"]}));
-            let state = STATE.lock().unwrap().clone();
-            json!({"filtered": true, "entries": [{"type":"custom", "customType":"goal-state", "data":state}]})
-        }
-        RuntimeActionId::AppendEntry => {
-            if args["customType"] == "goal-state" {
-                *STATE.lock().unwrap() = args["data"].clone();
-            } else {
-                assert_eq!(args["message"]["data"]["customType"], "goal");
-            }
-            json!({"entryId":"test-entry"})
-        }
-        RuntimeActionId::SendUserMessage => {
-            assert_eq!(STATE.lock().unwrap()["active"]["title"], "Keep the editor responsive");
-            assert_eq!(args["text"], "Work on the active goal: Keep the editor responsive\nNotes: regression test");
-            let mut run = RUN.lock().unwrap();
-            run.0 = true;
-            RUN_CHANGED.notify_all();
-            // Model a run that stays active until the test explicitly finishes it.
-            let (mut run, _) = RUN_CHANGED
-                .wait_timeout_while(run, Duration::from_secs(5), |run| !run.1)
-                .unwrap();
-            run.2 = true;
-            RUN_CHANGED.notify_all();
-            json!({"status":"completed"})
-        }
-        other => panic!("unexpected runtime action: {other:?}"),
-    };
-    out.write(result.to_string());
-    0
-}
-}
+    let goal = support::active_goal().expect("the command must persist the goal");
+    assert_eq!(goal["title"], "Ship the release");
+    assert_eq!(goal["notes"], "be careful");
+    assert_eq!(goal["status"], "active");
 
-fn invoke(args: &str) -> Value {
-    let command = COMMAND.lock().unwrap().unwrap();
-    let input = json!({"command":"goal", "args":args}).to_string();
-    let mut output = StbString::empty();
-    let rc = command(
-        StbStringRef::from_str(&input),
-        &mut output,
-        std::ptr::null_mut(),
-    );
-    let text = output.to_string_lossy();
-    rpi_plugin_sdk::callbacks::free_string(output);
-    assert_eq!(rc, 0);
-    serde_json::from_str(&text).unwrap()
+    // The worker sends the first work message without further user input.
+    let sends = support::wait_for("SendMessage", 1, Duration::from_secs(3));
+    assert_eq!(sends.len(), 1, "the first work message was never sent");
+    let prompt = sends[0]["text"].as_str().unwrap();
+    assert!(prompt.contains("Ship the release"), "{prompt}");
+    assert_eq!(sends[0]["triggerTurn"], true);
+
+    let status = support::command("status");
+    let text = status["text"].as_str().unwrap();
+    assert!(text.contains("Ship the release"), "{text}");
+    assert!(text.contains("active"), "{text}");
+
+    let help = support::command("help");
+    assert!(help["text"].as_str().unwrap().contains("/goal start"));
+    assert!(support::command("settings")["text"]
+        .as_str()
+        .unwrap()
+        .contains("automatic turns"));
 }
 
 #[test]
-fn start_command_returns_and_accepts_more_commands_while_work_is_running() {
-    let api = PluginApi {
-        abi_version: rpi_plugin_sdk::RPI_PLUGIN_ABI_VERSION_UNIFIED,
-        struct_size: std::mem::size_of::<PluginApi>() as u32,
-        runtime_action,
-        free_string: rpi_plugin_sdk::callbacks::free_string,
-        user_data: std::ptr::null_mut(),
-        register_command: Some(register_command),
-        register_tool: None,
-        register_shortcut: None,
-        register_flag: None,
-        register_provider: None,
-        register_message_renderer: None,
-        register_markdown_transformer: None,
-        register_entry_renderer: None,
-        register_event_handler: None,
-        register_resources_discover: None,
-        dispatch_event: None,
-        declare: None,
-        register_before_agent_start: None,
-        register_oauth_provider: None,
+fn shorthand_start_and_bare_status_do_not_break() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    // Let the session-start wake drain before a goal exists, so it cannot
+    // coalesce with the goal-start dispatch.
+    support::settle_pause();
+
+    let response = support::command("Ship it");
+    assert!(response["text"].as_str().unwrap().contains("Goal started"));
+    assert_eq!(support::active_goal().unwrap()["title"], json!("Ship it"));
+
+    let empty = support::command("");
+    assert!(empty["text"].as_str().unwrap().contains("Ship it"));
+}
+
+#[test]
+fn pause_resume_stop_and_clear_route_through_the_goal() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    // Let the session-start wake drain before a goal exists, so it cannot
+    // coalesce with the goal-start dispatch.
+    support::settle_pause();
+
+    support::command("Ship it");
+    let paused = support::command("pause");
+    assert!(paused["text"].as_str().unwrap().contains("Paused"));
+    assert_eq!(support::status(), "paused");
+
+    let resumed = support::command("resume");
+    assert!(resumed["text"].as_str().unwrap().contains("Resumed"));
+    assert_eq!(support::status(), "active");
+
+    let stopped = support::command("stop");
+    assert!(stopped["text"].as_str().unwrap().contains("Completed"));
+    assert!(support::active_goal().is_none());
+
+    support::command("Ship it again");
+    let cleared = support::command("clear");
+    assert!(cleared["text"].as_str().unwrap().contains("Cleared"));
+    assert!(support::active_goal().is_none());
+}
+
+#[test]
+fn budgets_are_set_and_cleared_from_the_command() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    // Let the session-start wake drain before a goal exists, so it cannot
+    // coalesce with the goal-start dispatch.
+    support::settle_pause();
+    support::command("Ship it");
+
+    support::command("turns 5");
+    assert_eq!(support::active_goal().unwrap()["maxTurns"], json!(5));
+    support::command("time 30m");
+    assert!(
+        support::active_goal().unwrap()["deadlineMs"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    support::command("tokens 100k");
+    assert_eq!(
+        support::active_goal().unwrap()["tokenBudget"],
+        json!(100_000)
+    );
+
+    support::command("turns 0");
+    assert!(support::active_goal().unwrap()["maxTurns"].is_null());
+    support::command("time 0");
+    assert!(support::active_goal().unwrap()["deadlineMs"].is_null());
+    support::command("tokens 0");
+    assert!(support::active_goal().unwrap()["tokenBudget"].is_null());
+
+    support::command("limit 7 15m");
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["maxTurns"], json!(7));
+    assert!(goal["deadlineMs"].as_i64().unwrap() > 0);
+}
+
+#[test]
+fn invalid_arguments_report_an_error_without_touching_state() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    // Let the session-start wake drain before a goal exists, so it cannot
+    // coalesce with the goal-start dispatch.
+    support::settle_pause();
+    support::command("Ship it");
+
+    let budgets = |goal: &serde_json::Value| {
+        json!([goal["maxTurns"], goal["deadlineMs"], goal["tokenBudget"]])
     };
-    // A missing tool registrar returns 1 after registering the slash command.
-    assert_eq!(rpi_goal::rpi_plugin_register(&api), 1);
+    let before = budgets(&support::active_goal().unwrap());
+    assert!(support::command("turns nope")["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("⚠️"));
+    assert!(support::command("time 1x")["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("⚠️"));
+    assert!(support::command("tokens nope")["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("⚠️"));
+    assert_eq!(budgets(&support::active_goal().unwrap()), before);
+}
 
-    for prefix in ["start ", ""] {
-        *RUN.lock().unwrap() = (false, false, false);
-        let (tx, rx) = mpsc::channel();
-        let args = format!("{prefix}Keep the editor responsive --notes regression test");
-        let command_thread = std::thread::spawn(move || tx.send(invoke(&args)).unwrap());
-        let response = rx.recv_timeout(Duration::from_secs(2));
-        if response.is_err() {
-            RUN.lock().unwrap().1 = true;
-            RUN_CHANGED.notify_all();
-            command_thread.join().unwrap();
-            panic!("/goal blocked the editor until the agent run completed");
-        }
-        let response = response.unwrap();
-        assert_eq!(response["kind"], "message");
-        assert!(response["text"].as_str().unwrap().contains("Goal started"));
-        command_thread.join().unwrap();
+#[test]
+fn list_shows_active_and_archived_goals() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    // Let the session-start wake drain before a goal exists, so it cannot
+    // coalesce with the goal-start dispatch.
+    support::settle_pause();
 
-        let (run, timeout) = RUN_CHANGED
-            .wait_timeout_while(RUN.lock().unwrap(), Duration::from_secs(2), |run| !run.0)
-            .unwrap();
-        assert!(
-            !timeout.timed_out(),
-            "the first work message was never sent"
-        );
-        assert!(
-            !run.2,
-            "the run must still be active when the command returns"
-        );
-        drop(run);
-        assert!(invoke("status")["text"]
-            .as_str()
-            .unwrap()
-            .contains("Keep the editor responsive"));
-        assert!(invoke("help")["text"]
-            .as_str()
-            .unwrap()
-            .contains("/goal start"));
-
-        RUN.lock().unwrap().1 = true;
-        RUN_CHANGED.notify_all();
-        let (_run, timeout) = RUN_CHANGED
-            .wait_timeout_while(RUN.lock().unwrap(), Duration::from_secs(2), |run| !run.2)
-            .unwrap();
-        assert!(!timeout.timed_out(), "the background run did not finish");
-    }
+    support::command("First goal");
+    support::command("Second goal");
+    let text = support::command("list")["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("Second goal"), "{text}");
+    assert!(text.contains("First goal"), "{text}");
+    assert!(text.contains("archived: 1"), "{text}");
 }

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- automatic continuation from the settled boundary: one goal-owned run per
+  `AgentSettled` through the blocking `SendMessage` action, serialized by a single
+  continuation worker
+- `goal_complete`, `goal_blocked`, and `goal_wait` tools with the current `goal_id`
+  as a stale-turn guard; plain assistant text no longer completes a goal
+- goal states `waiting`, `blocked`, `usage_limited`, and `budget_limited` alongside
+  `active`, `paused`, and `complete`
+- cumulative token budgets from provider-reported usage, plus a read-only
+  `~/.rpi/agent/goal.json` with `continuationLimits.automaticTurns` (25) and
+  `.noProgressTurns` (3)
+- `/goal tokens`, `/goal settings`; a footer status line
+- compaction re-injects the goal notice, and reload restores usage, safety counters,
+  elapsed active time, and waiting state
+
+### Changed
+
+- `/goal start` and the `goal start` action arm the goal; the first work message now
+  comes from the continuation worker instead of the command handler
+- provider usage limits stop the goal (`usage_limited`); other provider failures
+  leave it active but quiet (`waiting`)
+- the legacy `.rpi/goals.json` project file is no longer a source of truth
+
 ## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.4...rpi-goal-v0.2.5) - 2026-11-06
 
 ### Fixed

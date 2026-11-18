@@ -1,12 +1,12 @@
 [package]
 name = "rpi-goal"
-version = "0.2.5"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Codex-style goal mode for the rpi Rust agent: a persistent, context-injected goal the model keeps advancing turn over turn"
+description = "Codex-style goal mode for the rpi Rust agent: one session objective that keeps working after the agent settles, until an explicit completion, blocker, wait, or limit"
 readme = "README.md"
 keywords = ["rpi", "goal", "objective", "autonomous", "plugin"]
 categories = ["development-tools"]
