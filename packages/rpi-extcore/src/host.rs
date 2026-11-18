@@ -266,10 +266,6 @@ pub struct HostSnapshot {
     pub status: String,
     pub last_error: Option<String>,
     pub latest_settlement: Option<Value>,
-    /// Wall-clock epoch ms captured when the latest `agent_settled` event was
-    /// published. Absent before the first settlement of this host process
-    /// (#296: frontend sorts recent chats by the last response end).
-    pub settled_at: Option<u64>,
     pub pending_dialog: Option<Value>,
     pub pending_dialogs: Vec<Value>,
     pub title: Option<String>,
@@ -489,7 +485,6 @@ struct HostState {
     status: String,
     last_error: Option<String>,
     latest_settlement: Option<Value>,
-    settled_at: Option<u64>,
     pending_dialogs: Vec<Value>,
     resource_unsettled: bool,
     title: Option<String>,
@@ -831,7 +826,6 @@ impl HostSession {
             status: "ready".into(),
             last_error: None,
             latest_settlement: None,
-            settled_at: None,
             pending_dialogs: Vec::new(),
             resource_unsettled: false,
             title: None,
@@ -1225,7 +1219,6 @@ impl HostSession {
                     status: "ready".into(),
                     last_error: None,
                     latest_settlement: None,
-                    settled_at: None,
                     pending_dialogs: vec![],
                     resource_unsettled: false,
                     title: None,
@@ -1539,7 +1532,6 @@ impl HostSession {
             status: state.status.clone(),
             last_error: state.last_error.clone(),
             latest_settlement: state.latest_settlement.clone(),
-            settled_at: state.settled_at,
             pending_dialog: state.pending_dialogs.first().cloned(),
             pending_dialogs: state.pending_dialogs.clone(),
             title: state.title.clone(),
@@ -1809,7 +1801,6 @@ async fn publish(
                 state.resource_unsettled = false;
                 state.pending_dialogs.clear();
                 state.latest_settlement = Some(value.clone());
-                state.settled_at = Some(now_ms());
                 state.last_error = value
                     .get("error")
                     .and_then(Value::as_str)
@@ -2258,7 +2249,6 @@ mod tests {
             status: "ready".into(),
             last_error: None,
             latest_settlement: None,
-            settled_at: None,
             pending_dialogs: Vec::new(),
             resource_unsettled: false,
             title: None,
@@ -2331,62 +2321,6 @@ mod tests {
         )
         .await;
         assert_eq!(state.read().await.status, "ready");
-    }
-
-    /// #296: the frontend sorts recent chats by the last response end, so the
-    /// settlement event must stamp `settled_at` while unrelated events must
-    /// not touch it (message_end / activity bumps would blur the ordering).
-    #[tokio::test]
-    async fn agent_settled_stamps_settled_at_and_other_events_do_not() {
-        let (events, _) = broadcast::channel(16);
-        let history = Arc::new(Mutex::new(VecDeque::new()));
-        let state = Arc::new(RwLock::new(HostState {
-            live_message: Default::default(),
-            status: "ready".into(),
-            last_error: None,
-            latest_settlement: None,
-            settled_at: None,
-            pending_dialogs: Vec::new(),
-            resource_unsettled: false,
-            title: None,
-            created_at: 0,
-            updated_at: 0,
-            last_seq: 0,
-        }));
-        let seq = AtomicU64::new(0);
-        publish(
-            &events,
-            &history,
-            &state,
-            &seq,
-            json!({"type":"message_end","seq":1}),
-        )
-        .await;
-        assert!(state.read().await.settled_at.is_none());
-        publish(
-            &events,
-            &history,
-            &state,
-            &seq,
-            json!({"type":"agent_settled","outcome":"completed"}),
-        )
-        .await;
-        let stamped = state.read().await.settled_at;
-        assert!(stamped.is_some(), "agent_settled must stamp settled_at");
-        // A later non-settlement event bumps updated_at but keeps the
-        // settlement timestamp intact.
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        publish(
-            &events,
-            &history,
-            &state,
-            &seq,
-            json!({"type":"message_start","seq":2}),
-        )
-        .await;
-        let state = state.read().await;
-        assert_eq!(state.settled_at, stamped);
-        assert!(state.updated_at >= state.settled_at.unwrap_or(0));
     }
 
     #[cfg(unix)]

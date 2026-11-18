@@ -1201,7 +1201,6 @@ pub async fn list_sessions(state: &Service, query: SessionListQuery) -> Value {
             "latestSettlement": snapshot
                 .as_ref()
                 .and_then(|snapshot| snapshot.latest_settlement.clone()),
-            "settledAt": snapshot.as_ref().and_then(|snapshot| snapshot.settled_at),
         }));
     }
     summaries.sort_by_key(|summary| {
@@ -1277,7 +1276,6 @@ pub async fn get_session(state: &Service, id: String) -> (ReplyKind, Value) {
                 .and_then(|entry| entry.relation.clone()),
             "error": snapshot.last_error,
             "latestSettlement": snapshot.latest_settlement,
-            "settledAt": snapshot.settled_at,
         }),
     )
 }

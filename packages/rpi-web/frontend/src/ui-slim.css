@@ -48,70 +48,108 @@
   margin-top: 10px;
 }
 
-/* Sidebar triggers: search opens a floating window; recent chats toggles the
-   embedded sidebar section. */
+/* Sidebar triggers for the two floating windows. */
 .sidebar-new-chat.slim-chat-search-trigger,
 .sidebar-new-chat.slim-recent-trigger {
   color: var(--muted);
 }
-.sidebar-new-chat.slim-chat-search-trigger.active {
+.sidebar-new-chat.slim-chat-search-trigger.active,
+.sidebar-new-chat.slim-recent-trigger.active {
   background: var(--hover);
   color: var(--text);
 }
 
-/* Recent chats: embedded in the sidebar as a temporary section, styled like
-   project rows so chats can be managed there. The first five rows sit in the
-   normal flow; rows 6-15 live in a scrollable overflow (no toggle button).
-   The section never overlays the project tree: it only shrinks it (#296). */
-.recent-inline {
-  flex: 0 1 auto;
-  min-height: 0;
-  display: grid;
-  gap: 1px;
-  margin: 2px 1px 0;
-  padding: 2px 0 4px;
+/* Recent chats: a small floating window beside the sidebar, not a permanent
+   block that duplicates the project tree row for row. */
+.slim-recent {
+  position: fixed;
+  top: 173px;
+  left: calc(var(--sidebar-width, 248px) + 8px);
+  z-index: 100;
+  display: flex;
+  width: 320px;
+  max-height: min(430px, calc(100dvh - 150px));
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
+  box-shadow: var(--shadow);
 }
-.recent-inline-heading {
+.slim-recent-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 30px;
-  padding: 2px 6px 2px 11px;
+  min-height: 36px;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 10.5px;
   font-weight: 500;
 }
-.recent-inline-heading > span {
+.slim-recent-heading > span {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
-.recent-inline-heading .icon-button {
+.slim-recent-heading .icon-button {
   width: 26px;
   height: 26px;
 }
-.recent-inline-more {
+.slim-recent-list {
   display: grid;
   gap: 1px;
-  max-height: 150px;
+  padding: 5px;
   overflow-y: auto;
-  overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
-.recent-inline .project-session .session-title {
+.slim-recent-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.slim-recent-option:hover {
+  background: var(--hover);
+}
+.slim-recent-option.selected {
+  background: var(--hover);
+  color: var(--blue-text);
+}
+.slim-recent-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.recent-inline .project-session time {
+.slim-recent-project {
   flex: 0 0 auto;
+  max-width: 76px;
+  overflow: hidden;
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slim-recent-option > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
 }
 
 /* Chat search: finds *sessions* across projects. Same popover chrome family as
@@ -330,10 +368,11 @@
   pointer-events: auto;
 }
 
-/* Phones: the floating search window uses the viewport instead of the sidebar
-   offset, and the always-visible row actions stay clickable. */
+/* Phones: the floating windows use the viewport instead of the sidebar offset,
+   and the always-visible row actions stay clickable. */
 @media (max-width: 767px) {
-  .slim-chat-search {
+  .slim-chat-search,
+  .slim-recent {
     top: 64px;
     left: 8px;
     width: calc(100vw - 16px);
