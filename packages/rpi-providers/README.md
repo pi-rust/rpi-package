@@ -1,6 +1,6 @@
 # rpi-providers
 
-一个可安装的原生扩展包，统一维护 DeepSeek、OpenRouter、llama.cpp、Proxy 和 Antigravity。
+一个可安装的原生扩展包，统一维护 DeepSeek、OpenRouter、llama.cpp、Proxy、Antigravity 和 OpenAI Codex。
 只有一个 Cargo package、一个动态库和一个插件入口；供应商实现分别放在模块中。
 核心继续保留 OpenAI / Anthropic 通用协议，CLI 不依赖供应商包。
 
@@ -11,8 +11,9 @@
 | `llama-cpp` | `local` | 可匿名，可选 `LLAMA_CPP_API_KEY` |
 | `proxy` | `default` | 可匿名，可选 `PROXY_API_KEY` |
 | `antigravity` | `antigravity-gemini-3.8-flash` 等 6 个目录模型 | 必须认证，仅 OAuth 登录，无 API key 环境变量 |
+| `openai-codex` | `gpt-6.1-sol`、`gpt-6.1-terra`、`gpt-5.6-luna` | 必须认证，仅 OAuth 登录，无 API key 环境变量 |
 
-包名 `rpi-providers` 与 provider ID 不同。一次安装注册五份目录，认证仍按 provider ID
+包名 `rpi-providers` 与 provider ID 不同。一次安装注册六份目录，认证仍按 provider ID
 隔离，不能借用 `OPENAI_API_KEY` 或其他供应商的 key。已有 models.json、auth.json 的
 provider ID 不变，无需合并凭据。匿名目录就绪不代表本地服务已经启动，使用时指定 provider。
 
@@ -64,7 +65,7 @@ rpi --provider proxy --model default --base-url http://localhost:8080/v1
 
 也可以直接设置相应环境变量。`auth check` 只检查本地就绪状态，不发网络请求。
 默认凭据优先级仍由宿主管理：显式 `--api-key` → auth.json → models.json → 专属 env。
-仅 `antigravity` 注册 OAuth 登录流程（见下文）；其他供应商不注册 OAuth，宿主已有的
+仅 `antigravity` 与 `openai-codex` 注册 OAuth 登录流程（见下文）；其他供应商不注册 OAuth，宿主已有的
 有效 OAuth access token 仍可作为 Bearer 凭据使用。
 
 ## Antigravity 行为与登录
@@ -98,6 +99,47 @@ Cloud Code 项目，发往 Google 的只有 token。流式请求直接使用绑�
 发现。没有 `|` 后缀的旧凭据仍按原有方式使用进程内缓存与项目发现；登录时已发现项目的旧凭据，执行
 一次 `rpi auth refresh` 即可写入绑定。过期凭据不会在请求前自动刷新，需要先执行 `rpi auth refresh`。
 
+## OpenAI Codex 行为与登录
+
+目录与协议改编自 pi-ai（`@earendil-works/pi-ai`）的 `openai-codex` provider、`auth/oauth/openai-codex.ts`
+与 `api/openai-codex-responses.ts`。请求端点为 `https://chatgpt.com/backend-api/codex/responses`，
+协议为 `openai-codex-responses`（OpenAI Responses API，`store: false`、`stream: true`），
+请求头携带 `Authorization: Bearer <access token>`、`ChatGPT-Account-Id: <account id>` 与
+`OpenAI-Beta: responses=experimental`。模型上的 `baseUrl` 登记为 `https://chatgpt.com/backend-api`；
+若被覆盖，支持 backend 根地址、以 `/codex` 或 `/codex/responses` 结尾的地址及尾斜线。
+目录有意只包含上游 7 个 Codex 模型中的这 3 个；其余模型可通过 `models.json` 添加。
+当前 SDK 0.8.3 目录未移植上游的 `compat` / `inputLimits` 元数据，不能据此宣称支持这些额外限制。
+Pi 的 WebSocket 传输与 zstd 压缩未移植，SSE 路径
+使用相同线上协议。
+
+登录同样使用 PKCE 授权 URL，粘贴回调地址或 code 完成交换；OAuth 客户端为 Pi 使用的公开
+Codex CLI 客户端（`app_EMoamEEZ73f0CkXaXp7hrann`，`https://auth.openai.com`），无客户端密钥，
+无需构建期配置。刷新令牌在每次刷新时轮换；OpenAI 不提供吊销端点，`logout` 成功移除本地凭据，
+不发送远端吊销请求，也不撤销其他设备上的授权。`ChatGPT-Account-Id` 不单独存储：交换与刷新时校验 access token 的 JWT 声明
+（`https://api.openai.com/auth` 的 `chatgpt_account_id`），请求时从 JWT 重新推导；没有该声明的
+令牌在登录与请求两侧都会被拒绝。每次登录 10 分钟内有效，最多保留 8 次未完成的登录：
+
+```sh
+rpi auth login --provider openai-codex
+rpi auth refresh --provider openai-codex
+```
+
+已有 `models.json` 若手动配置了 `openai-codex`，请将 provider 与模型的 `api` 改为
+`openai-codex-responses`；推荐 `baseUrl` 为 `https://chatgpt.com/backend-api`，也兼容 `/codex` 与完整端点。
+旧 `openai-responses` 配置会与扩展目录产生重复模型，导致 TUI 报 “Model … not found in catalog”。
+也可删除冗余模型声明，直接使用扩展目录；保留 `auth.json` 中的 OAuth 凭据。
+
+本地测试通过 loopback 服务覆盖目录与路由、PKCE、令牌交换与刷新（端点注入只在单元测试内部）、
+Responses 请求体与 reasoning 映射、SSE 增量（文本 / 思考 / 工具调用）、取消、HTTP 错误中的
+凭据与账号脱敏、生命周期与多账号隔离；运行方式：
+
+```sh
+cargo test -p rpi-providers --test codex
+cargo test -p rpi-providers --lib codex
+```
+
+### Antigravity 测试
+
 本地测试通过 loopback 服务覆盖目录与路由、PKCE、令牌交换与刷新（端点注入只在单元测试内部）、
 项目绑定与重启后的流式请求、Gemini SSE 增量、取消、HTTP 错误、生命周期与凭据隔离；运行方式与其他供应商相同：
 
@@ -111,7 +153,7 @@ cargo test -p rpi-providers --lib antigravity
 新包中的同名 provider：宿主按加载顺序保留第一份实现。unlink 不会删除 models.json 或 auth.json。
 
 以后修改任意供应商，只维护并重新构建 / link `rpi-providers`。卸载统一使用
-`rpi package unlink providers`，会一起移除四个 provider；`/provider remove <id>` 只删除对应配置。
+`rpi package unlink providers`，会一起移除六个 provider；`/provider remove <id>` 只删除对应配置。
 已链接包更新后重启或 `/reload` 生效；移除当前使用的包时，重载报错并保留旧会话。
 
 ## 开发结构
@@ -124,6 +166,7 @@ src/openrouter.rs      # OpenRouter 目录及 HTTP-Referer / X-Title
 src/llama_cpp/         # 本地推理、模型查询、服务管理
 src/proxy/             # 通用代理推理
 src/antigravity/       # Antigravity 目录、Gemini 转换、SSE、项目发现与 OAuth
+src/codex/             # OpenAI Codex 目录、Responses 转换、SSE 与 OAuth（ChatGPT 账号）
 src/bin/rpi-llama.rs   # 原有本地服务管理程序
 ```
 
@@ -210,7 +253,8 @@ cargo test -p rpi-providers --test reliability --locked -- --include-ignored
 OpenAI key 隔离、端点 / 请求头覆盖和实际 CLI 推理，不访问 DeepSeek 服务。
 `reliability` 另覆盖四个 Provider 的流空闲超时、心跳与分帧、取消、禁用、独立总超时、
 兼容字段和思考历史，以及实际宿主通过扩展重试卡住的 SSE 请求。
-新增测试通过真实动态库验证四个 Provider 的连接复用、跨请求凭据隔离、生命周期取消、
+新增测试通过真实动态库验证四个 chat Provider 与 Antigravity、OpenAI Codex 的连接复用、
+跨请求凭据隔离、生命周期取消、
 关闭后拒绝请求和客户端配置错误；旧宿主回退另使用正式发布的 0.8.2 CLI 验证。
 PR 工作流在 Linux、Windows、macOS 上执行这些离线检查，并验证宿主重载时将
 配置警告返回界面，不直接写入正在使用的终端。
