@@ -203,3 +203,32 @@ fn resume_rotates_the_goal_id_only_from_a_stopped_state() {
     assert_eq!(after["noProgressCount"], json!(0));
     assert!(after["safetyPauseCause"].is_null());
 }
+
+#[test]
+fn a_state_write_deferred_by_the_host_stays_visible() {
+    let _guard = support::serial();
+    support::install();
+    support::settle_pause();
+
+    // A host commits an entry written during a run only after that turn ends.
+    support::defer_appends(true);
+    support::command("start Deferred commit");
+    assert!(
+        support::committed_goal().is_none(),
+        "the fixture must not have committed the entry yet"
+    );
+    let status = support::command("status");
+    assert!(
+        status["text"].as_str().unwrap().contains("Deferred commit"),
+        "a queued write must stay visible to the extension: {}",
+        status["text"]
+    );
+
+    support::commit_staged();
+    assert!(support::committed_goal().is_some());
+    assert!(support::command("status")["text"]
+        .as_str()
+        .unwrap()
+        .contains("Deferred commit"));
+    support::defer_appends(false);
+}

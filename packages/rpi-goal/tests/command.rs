@@ -47,6 +47,23 @@ fn start_command_returns_before_work_starts_and_status_reports_it() {
 }
 
 #[test]
+fn a_token_budget_on_the_start_route_is_parsed_as_tokens() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    support::settle_pause();
+
+    support::command("start Ship it --tokens 100");
+    assert_eq!(support::active_goal().unwrap()["tokenBudget"], json!(100));
+
+    support::command("start Ship it again --tokens 1.5m");
+    assert_eq!(
+        support::active_goal().unwrap()["tokenBudget"],
+        json!(1_500_000)
+    );
+}
+
+#[test]
 fn shorthand_start_and_bare_status_do_not_break() {
     let _guard = support::serial();
     support::install();

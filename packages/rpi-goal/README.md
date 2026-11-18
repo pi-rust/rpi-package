@@ -139,6 +139,23 @@ Neither guard, nor the token budget, is a dollar-cost cap.
   blocked, limited, waiting, shutdown, and offline time do not count.
 - Budget exhaustion stops automatic work without injecting a wrap-up turn and
   without scheduling another model request. Raise the budget and `/goal resume`.
+- **Token budgets need a host that reports usage.** Usage comes from the
+  `AfterProviderResponse` provider hook (payload fields `usage.totalTokens` /
+  `cacheRead` / `cacheWrite`). When the host never delivers that event, a token
+  budget cannot be enforced; after the first goal-owned turn the goal says so once
+  (`/goal status` shows `usage: not reported by this host`) and the turn, time, and
+  continuation limits remain the effective caps. Verified absent on rpi 0.24.0 and
+  0.25.0, where the host wires the response observer internally instead of
+  dispatching it to plugins.
+
+## Write visibility
+
+`AppendEntry` is queued while a run is active and committed by the host only after
+that turn, so a branch read does not see it immediately. The extension therefore
+keeps its newest local intent until a branch read confirms the same write revision;
+`/goal status`, the terminal tools, and the worker all see the goal during that
+window. A session switch, fork, or tree change drops the local intent so it can
+never leak into a different branch.
 
 ## Non-goals for 0.3.0
 

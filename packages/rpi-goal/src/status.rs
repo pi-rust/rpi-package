@@ -37,6 +37,9 @@ pub fn label(goal: &Goal) -> String {
         Status::Active => {
             let elapsed = state::format_duration_ms(goal.elapsed_ms(now));
             match goal.token_budget {
+                Some(_) if goal.usage_unavailable => {
+                    format!("active {elapsed} · tokens unreported · {automatic}")
+                }
                 Some(budget) => format!(
                     "active {elapsed} · {}/{} · {automatic}",
                     format_token_count(goal.tokens_used),

@@ -19,17 +19,31 @@ pub enum ResponseClass {
     ProviderError,
 }
 
-/// Classify an `AfterProviderResponse` payload (a serialized `AssistantMessage`).
-pub fn classify_response(value: &serde_json::Value) -> ResponseClass {
-    let stop = value
-        .get("stop_reason")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let error = value
-        .get("error_message")
+/// Read a camelCase field with a snake_case fallback. The host serializes
+/// `AssistantMessage` and `Usage` with `rename_all = "camelCase"`; the fallback
+/// keeps older or hand-written payloads readable.
+fn field<'a>(
+    value: &'a serde_json::Value,
+    camel: &str,
+    snake: &str,
+) -> Option<&'a serde_json::Value> {
+    value.get(camel).or_else(|| value.get(snake))
+}
+
+/// Error text of an assistant response, if any.
+pub fn error_message(value: &serde_json::Value) -> &str {
+    field(value, "errorMessage", "error_message")
         .and_then(|v| v.as_str())
         .unwrap_or("")
-        .trim();
+        .trim()
+}
+
+/// Classify an `AfterProviderResponse` payload (a serialized `AssistantMessage`).
+pub fn classify_response(value: &serde_json::Value) -> ResponseClass {
+    let stop = field(value, "stopReason", "stop_reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let error = error_message(value);
     if stop == "length" {
         return ResponseClass::Length;
     }
@@ -68,17 +82,25 @@ pub fn is_usage_limit(text: &str) -> bool {
 /// the components pi-goal sums. `reasoning` is a subset of output and
 /// `cacheWrite1h` a subset of cache writes, so neither is added.
 pub fn response_tokens(value: &serde_json::Value) -> u64 {
-    let usage = value.get("usage");
-    let number = |key: &str| -> Option<i64> { usage?.get(key)?.as_i64().filter(|n| *n >= 0) };
-    if let Some(total) = number("total_tokens") {
+    let Some(usage) = value.get("usage") else {
+        return 0;
+    };
+    let number = |camel: &str, snake: &str| -> Option<i64> {
+        field(usage, camel, snake)?.as_i64().filter(|n| *n >= 0)
+    };
+    if let Some(total) = number("totalTokens", "total_tokens") {
         if total > 0 {
             return total as u64;
         }
     }
-    let sum = ["input", "output", "cache_read", "cache_write"]
-        .iter()
-        .filter_map(|key| number(key))
-        .fold(0i64, |acc, n| acc.saturating_add(n));
+    let sum = [
+        number("input", "input").unwrap_or(0),
+        number("output", "output").unwrap_or(0),
+        number("cacheRead", "cache_read").unwrap_or(0),
+        number("cacheWrite", "cache_write").unwrap_or(0),
+    ]
+    .iter()
+    .fold(0i64, |acc, n| acc.saturating_add(*n));
     sum.max(0) as u64
 }
 
@@ -261,13 +283,17 @@ mod tests {
 
     #[test]
     fn usage_tokens_prefer_total_and_never_add_reasoning() {
+        // The host serializes Usage with camelCase field names.
         let with_total =
-            json!({"usage": {"total_tokens": 120, "input": 100, "output": 20, "reasoning": 10}});
+            json!({"usage": {"totalTokens": 120, "input": 100, "output": 20, "reasoning": 10}});
         assert_eq!(response_tokens(&with_total), 120);
-        let without_total = json!({"usage": {"input": 100, "output": 20, "cache_read": 5, "cache_write": 5, "reasoning": 10}});
+        let without_total = json!({"usage": {"input": 100, "output": 20, "cacheRead": 5, "cacheWrite": 5, "reasoning": 10}});
         assert_eq!(response_tokens(&without_total), 130);
-        let negative = json!({"usage": {"total_tokens": -1, "input": 10, "output": -4}});
+        let negative = json!({"usage": {"totalTokens": -1, "input": 10, "output": -4}});
         assert_eq!(response_tokens(&negative), 10);
+        // snake_case payloads still read.
+        let snake = json!({"usage": {"total_tokens": 7}});
+        assert_eq!(response_tokens(&snake), 7);
         assert_eq!(response_tokens(&json!({})), 0);
     }
 

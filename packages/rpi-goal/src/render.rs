@@ -33,8 +33,13 @@ pub fn status_text(goals: &Goals) -> String {
     let Some(goal) = goals.active.as_ref() else {
         return "🎯 No active goal. Start one with `/goal <objective>`.".to_string();
     };
+    let usage = if goal.usage_unavailable {
+        "\nusage: not reported by this host — the token budget cannot be enforced"
+    } else {
+        ""
+    };
     format!(
-        "🎯 {}\nstatus: {}\nid: {}\nnotes: {}\n{}",
+        "🎯 {}\nstatus: {}\nid: {}\nnotes: {}\n{}{usage}",
         goal.title,
         status_line(goal),
         goal.id,
@@ -232,6 +237,7 @@ mod tests {
         let goal = goal();
         let goals = Goals {
             version: 2,
+            revision: 1,
             active: Some(goal.clone()),
             archived: vec![],
         };
@@ -260,6 +266,7 @@ mod tests {
         second.title = "second".into();
         let goals = Goals {
             version: 2,
+            revision: 1,
             active: None,
             archived: vec![first, second],
         };
@@ -279,6 +286,7 @@ mod tests {
         });
         let goals = Goals {
             version: 2,
+            revision: 1,
             active: Some(goal),
             archived: vec![],
         };

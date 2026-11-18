@@ -123,3 +123,45 @@ fn a_tool_free_automatic_turn_feeds_the_no_progress_counter() {
     support::release_sends();
     support::sleep(100);
 }
+
+#[test]
+fn a_token_budget_says_so_when_the_host_reports_no_usage() {
+    let _guard = support::serial();
+    seed_active("Unreported usage", json!({"tokenBudget": 100_000}));
+
+    // One completed turn with no provider usage report.
+    rpi_goal::events::account_turn_end("", true);
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["usageUnavailable"], json!(true), "{goal}");
+    assert_eq!(support::status(), "active", "the goal must keep working");
+
+    let warning = support::calls_named("AppendEntry").into_iter().any(|call| {
+        call["message"]["content"][0]["text"]
+            .as_str()
+            .map(|text| text.contains("cannot be enforced"))
+            .unwrap_or(false)
+    });
+    assert!(warning, "the limitation must be reported once");
+    assert!(!rpi_goal::status::label(&{
+        let mut goal = rpi_goal::state::read().unwrap().active.unwrap();
+        goal.usage_unavailable = true;
+        goal
+    })
+    .contains("0/100k"));
+}
+
+#[test]
+fn an_observed_usage_report_clears_the_unavailable_flag() {
+    let _guard = support::serial();
+    seed_active(
+        "Reported usage",
+        json!({"tokenBudget": 100_000, "usageUnavailable": true}),
+    );
+    rpi_goal::events::account_response(
+        &json!({"stopReason": "stop", "usage": {"totalTokens": 250}}),
+    );
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["usageSeen"], json!(1));
+    assert_eq!(goal["usageUnavailable"], json!(false));
+    assert_eq!(goal["tokensUsed"], json!(250));
+}

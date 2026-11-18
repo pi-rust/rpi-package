@@ -33,6 +33,10 @@ static HANDLERS: Mutex<Vec<(EventTag, EventHandlerFn)>> = Mutex::new(Vec::new())
 static COMMAND: Mutex<Option<CommandHandlerFn>> = Mutex::new(None);
 static TOOLS: Mutex<BTreeMap<String, ToolFns>> = Mutex::new(BTreeMap::new());
 static SERVED: OnceLock<()> = OnceLock::new();
+/// Model the host's deferred commit: `AppendEntry` succeeds but the entry only
+/// reaches the branch when the test commits it.
+static DEFER_APPENDS: Mutex<bool> = Mutex::new(false);
+static STAGED: Mutex<Option<Value>> = Mutex::new(None);
 /// Blocking `SendMessage`: simulates a run that stays in flight so a test can
 /// fire events while the continuation is still active.
 static SEND_BLOCKS: Mutex<bool> = Mutex::new(false);
@@ -72,7 +76,12 @@ pub fn reset() {
     rpi_goal::dispatch::wake();
     std::thread::sleep(Duration::from_millis(40));
     let _ = rpi_goal::state::flush();
+    // The extension keeps its newest intent until the branch confirms it; a new
+    // test must start from the branch alone.
+    rpi_goal::state::discard_desired();
     *STATE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *DEFER_APPENDS.lock().unwrap_or_else(|p| p.into_inner()) = false;
+    *STAGED.lock().unwrap_or_else(|p| p.into_inner()) = None;
     CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
     *SEND_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = "completed".into();
     *ACTIVE_TOOLS.lock().unwrap_or_else(|p| p.into_inner()) = None;
@@ -107,6 +116,7 @@ pub fn set_send_status(status: &str) {
 }
 
 pub fn set_goal(state: Value) {
+    rpi_goal::state::discard_desired();
     *STATE.lock().unwrap_or_else(|p| p.into_inner()) = Some(state);
     CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
 }
@@ -260,8 +270,12 @@ fn runtime_action(action, args, out, _user_data) {
         }
         "AppendEntry" => {
             if args.get("customType").and_then(Value::as_str) == Some("goal-state") {
-                *STATE.lock().unwrap_or_else(|p| p.into_inner()) =
-                    Some(args.get("data").cloned().unwrap_or(Value::Null));
+                let data = args.get("data").cloned().unwrap_or(Value::Null);
+                if *DEFER_APPENDS.lock().unwrap_or_else(|p| p.into_inner()) {
+                    *STAGED.lock().unwrap_or_else(|p| p.into_inner()) = Some(data);
+                } else {
+                    *STATE.lock().unwrap_or_else(|p| p.into_inner()) = Some(data);
+                }
             }
             json!({"entryId": "fixture-entry"})
         }
@@ -526,6 +540,25 @@ pub fn active_goal_state(id: &str, title: &str) -> Value {
         },
         "archived": []
     })
+}
+
+/// Defer `goal-state` commits, like a host that only commits an entry written
+/// during a run after that turn ends.
+pub fn defer_appends(defer: bool) {
+    *DEFER_APPENDS.lock().unwrap_or_else(|p| p.into_inner()) = defer;
+}
+
+/// Commit whatever the deferred `AppendEntry` staged.
+pub fn commit_staged() {
+    let staged = STAGED.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(staged) = staged {
+        *STATE.lock().unwrap_or_else(|p| p.into_inner()) = Some(staged);
+    }
+}
+
+/// The branch as the host has committed it (bypasses the extension).
+pub fn committed_goal() -> Option<Value> {
+    goal_state()
 }
 
 /// Short pause for negative assertions (the worker must *not* act).

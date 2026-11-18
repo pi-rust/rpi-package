@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leave it active but quiet (`waiting`)
 - the legacy `.rpi/goals.json` project file is no longer a source of truth
 
+### Fixed
+
+- provider responses are read with the host's camelCase field names
+  (`usage.totalTokens`, `stopReason`, `errorMessage`); the previous snake_case
+  lookups silently counted zero tokens and never classified an interruption
+- a state write that the host defers until the current turn ends stays visible:
+  the newest local intent is served until a branch read confirms its revision, so
+  `/goal status` and the terminal tools no longer report "no active goal" mid-run
+- a token budget that this host cannot report usage for is reported once instead
+  of silently never triggering
+
 ## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.4...rpi-goal-v0.2.5) - 2026-11-06
 
 ### Fixed

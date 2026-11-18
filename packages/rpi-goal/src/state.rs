@@ -159,6 +159,13 @@ pub struct Goal {
     pub active_since: Option<i64>,
     #[serde(default)]
     pub waiting: Option<Waiting>,
+    /// Provider responses whose usage was observed. Zero after real work means
+    /// the host does not report usage to extensions, so a token budget cannot be
+    /// enforced and must not look enforced.
+    #[serde(default, alias = "usage_seen")]
+    pub usage_seen: u32,
+    #[serde(default, alias = "usage_unavailable")]
+    pub usage_unavailable: bool,
     /// `completed` / `aborted` / `error` for the last finished run.
     #[serde(default, alias = "last_outcome")]
     pub last_outcome: Option<String>,
@@ -187,6 +194,8 @@ impl Goal {
             active_ms: 0,
             active_since: Some(now),
             waiting: None,
+            usage_seen: 0,
+            usage_unavailable: false,
             last_outcome: None,
         }
     }
@@ -268,6 +277,10 @@ impl Goal {
 pub struct Goals {
     #[serde(default)]
     pub version: u32,
+    /// Write revision. The host may defer committing an entry written during a
+    /// run until that turn ends, so this is what proves a queued write landed.
+    #[serde(default)]
+    pub revision: u64,
     #[serde(default)]
     pub active: Option<Goal>,
     #[serde(default)]
@@ -295,20 +308,44 @@ pub fn revision() -> u64 {
     REVISION.load(Ordering::SeqCst)
 }
 
-fn bump_revision() -> u64 {
+fn next_revision() -> u64 {
     REVISION.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
 }
 
-fn pending_state() -> &'static Mutex<Option<Goals>> {
-    static PENDING: OnceLock<Mutex<Option<Goals>>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(None))
+/// The newest local intent. It stays authoritative until a branch read shows an
+/// entry at least that new, because `AppendEntry` is *queued* while a run is
+/// active and committed only after the current turn. Dropping the intent as soon
+/// as the host accepted it would make `/goal status` report "no active goal"
+/// for the rest of that turn.
+fn desired() -> &'static Mutex<Option<Goals>> {
+    static DESIRED: OnceLock<Mutex<Option<Goals>>> = OnceLock::new();
+    DESIRED.get_or_init(|| Mutex::new(None))
 }
 
 /// Queue a state write for the next safe boundary. Writing immediately from a
 /// tool would insert a custom entry between an `assistant(tool_calls)` message
 /// and its `toolResult`, which strict providers reject.
 pub fn queue(goals: &Goals) {
-    *pending_state().lock().unwrap_or_else(|p| p.into_inner()) = Some(goals.clone());
+    let mut goals = goals.clone();
+    goals.revision = next_revision();
+    *desired().lock().unwrap_or_else(|p| p.into_inner()) = Some(goals);
+}
+
+/// Forget the local intent: a session switch or teardown means the queued state
+/// belongs to a branch this process no longer serves.
+pub fn discard_desired() {
+    *desired().lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+fn desired_goals() -> Option<Goals> {
+    desired().lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+fn confirm_desired(revision: u64) {
+    let mut slot = desired().lock().unwrap_or_else(|p| p.into_inner());
+    if slot.as_ref().map(|goals| goals.revision <= revision) == Some(true) {
+        *slot = None;
+    }
 }
 
 /// Write any queued state. Returns false when the host write failed, leaving the
@@ -321,30 +358,16 @@ pub fn queue(goals: &Goals) {
 /// the lock held here.
 pub fn flush() -> bool {
     let _guard = lock();
-    let queued = pending_state()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take();
-    let Some(goals) = queued else {
+    let Some(goals) = desired_goals() else {
         return true;
     };
-    if write(&goals).is_ok() {
-        true
-    } else {
-        *pending_state().lock().unwrap_or_else(|p| p.into_inner()) = Some(goals);
-        false
-    }
+    // The intent is kept even on success: only a branch read that sees this
+    // revision may drop it (see `read`).
+    write(&goals).is_ok()
 }
 
 pub fn read() -> Result<Goals, String> {
     if runtime::snapshot().is_some() {
-        if let Some(goals) = pending_state()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
-        {
-            return Ok(goals);
-        }
         let value = crate::call_runtime(
             RuntimeActionId::GetSessionBranch,
             json!({"customTypes": [GOAL_STATE_ENTRY]}),
@@ -356,19 +379,32 @@ pub fn read() -> Result<Goals, String> {
             .get("entries")
             .and_then(Value::as_array)
             .ok_or("GetSessionBranch returned no valid entries array")?;
+        let mut committed: Option<Goals> = None;
         for entry in entries.iter().rev() {
             if entry.get("type").and_then(Value::as_str) == Some("custom")
                 && entry.get("customType").and_then(Value::as_str) == Some(GOAL_STATE_ENTRY)
             {
                 if let Some(data) = entry.get("data") {
-                    return Ok(serde_json::from_value(data.clone()).unwrap_or_default());
+                    committed = Some(serde_json::from_value(data.clone()).unwrap_or_default());
+                    break;
                 }
             }
         }
-        return Ok(Goals::default());
+        // A queued write is not on the branch yet; keep serving the newest local
+        // intent until the branch confirms that revision.
+        if let Some(local) = desired_goals() {
+            match committed.as_ref().map(|goals| goals.revision) {
+                Some(revision) if revision >= local.revision => {
+                    confirm_desired(revision);
+                    return Ok(committed.unwrap_or_default());
+                }
+                _ => return Ok(local),
+            }
+        }
+        return Ok(committed.unwrap_or_default());
     }
     // No host runtime: a direct-library caller keeps the file fallback.
-    Ok(read_file().unwrap_or_default())
+    Ok(desired_goals().or_else(read_file).unwrap_or_default())
 }
 
 /// Read state, treating any host error as "no goal". Event handlers must never
@@ -380,7 +416,6 @@ pub fn read_lenient() -> Goals {
 pub fn write(goals: &Goals) -> Result<(), String> {
     let mut goals = goals.clone();
     goals.version = Goals::VERSION;
-    bump_revision();
     if runtime::snapshot().is_some() {
         crate::call_runtime(
             RuntimeActionId::AppendEntry,

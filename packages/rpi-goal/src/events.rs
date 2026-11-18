@@ -90,6 +90,31 @@ pub fn account_turn_end(output: &str, used_tool: bool) {
         return;
     }
 
+    // A token budget that no host report can ever fill is a lie in the status
+    // line. Say so once instead of silently never enforcing it.
+    if goal.token_budget.is_some() && goal.usage_seen == 0 && !goal.usage_unavailable {
+        let mut goals = state::read_lenient();
+        if let Some(mut active) = goals.active.clone() {
+            if active.id == goal.id {
+                active.usage_unavailable = true;
+                active.updated_at = state::now_ms();
+                goals.active = Some(active.clone());
+                if state::persist(&goals).is_ok() {
+                    inject::queue(
+                        &active,
+                        Some(format!(
+                            "⚠️ Token budget cannot be enforced: this host is not reporting provider usage to extensions. The turn, time, and continuation limits still apply ({}).",
+                            active.budget_summary(state::now_ms())
+                        )),
+                    );
+                    inject::flush();
+                }
+                status::publish(&active);
+            }
+        }
+        return;
+    }
+
     status::publish(&goal);
     if inject::should_inject(&goal) && !inject::has_pending() {
         inject::queue(&goal, None);
@@ -104,12 +129,7 @@ pub fn account_response(value: &serde_json::Value) {
     }
     let tokens = policy::response_tokens(value);
     let class = policy::classify_response(value);
-    let error = value
-        .get("error_message")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let error = policy::error_message(value).to_string();
 
     let goal = {
         let _guard = state::lock();
@@ -121,6 +141,8 @@ pub fn account_response(value: &serde_json::Value) {
             return;
         }
         goal.tokens_used = goal.tokens_used.saturating_add(tokens);
+        goal.usage_seen = goal.usage_seen.saturating_add(1);
+        goal.usage_unavailable = false;
         goal.updated_at = state::now_ms();
         goals.active = Some(goal.clone());
         state::queue(&goals);
@@ -227,6 +249,9 @@ pub fn registrations() -> Vec<(EventTag, rpi_plugin_sdk::EventHandlerFn)> {
         (EventTag::MessageEnd, on_message_end),
         (EventTag::SessionBeforeCompact, on_session_compact),
         (EventTag::SessionCompact, on_session_compact),
+        (EventTag::SessionBeforeSwitch, on_session_replaced),
+        (EventTag::SessionBeforeFork, on_session_replaced),
+        (EventTag::SessionTree, on_session_replaced),
         (EventTag::SessionShutdown, on_session_shutdown),
     ]
 }
@@ -324,6 +349,16 @@ rpi_plugin_sdk::event_handler! {
 fn on_session_compact(_event, data) {
     let _scope = runtime::enter(runtime::callback(data));
     after_compaction();
+    0
+}
+}
+
+rpi_plugin_sdk::event_handler! {
+fn on_session_replaced(_event, data) {
+    let _scope = runtime::enter(runtime::callback(data));
+    // A queued write belongs to the branch this process no longer serves.
+    state::discard_desired();
+    inject::discard();
     0
 }
 }
