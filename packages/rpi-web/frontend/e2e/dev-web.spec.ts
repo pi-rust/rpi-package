@@ -6,7 +6,7 @@ import {
   refreshChats,
 } from "./controls";
 import { writeFile } from "node:fs/promises";
-import { test, expect, type Page, type Route } from "@playwright/test";
+import { test, expect, devices, type Page, type Route } from "@playwright/test";
 
 const timelineToggle = (page: Page) =>
   page.getByRole("button", { name: /^(Conversation timeline|对话时间线)$/ });
@@ -12876,4 +12876,37 @@ test.describe("retirement", () => {
     await expect(page.getByRole("menuitem", { name: "Delete", exact: true })).toHaveCount(0);
     expect(mutations).toEqual([]);
   });
+});
+
+test("mobile composer inserts a newline on Enter without sending", async ({
+  browser,
+}) => {
+  let prompts = 0;
+  // Mobile devices report a coarse pointer and have no Shift key on the soft
+  // keyboard, so Enter must fall through to the textarea's native newline.
+  const context = await browser.newContext({
+    ...devices["iPhone 13"],
+    baseURL: process.env.BASE_URL ?? "http://127.0.0.1:4191",
+  });
+  const mobilePage = await context.newPage();
+  mobilePage.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/commands") &&
+      request.postDataJSON().type === "prompt"
+    )
+      prompts++;
+  });
+  await mockHost(mobilePage);
+  await mobilePage.goto("/");
+  const input = mobilePage.locator(".composer textarea");
+  await input.fill("first line");
+  await input.press("Enter");
+  await input.type("second line");
+  await expect(input).toHaveValue("first line\nsecond line");
+  expect(prompts).toBe(0);
+  await expect(
+    mobilePage.getByRole("button", { name: "Send message", exact: true }),
+  ).toBeEnabled();
+  await context.close();
 });
