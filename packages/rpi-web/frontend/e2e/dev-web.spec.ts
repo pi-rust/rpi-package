@@ -6316,6 +6316,61 @@ test("composer model picker groups by provider and applies the selection", async
   await expect(page.locator(".composer-model")).toContainText("Model Beta");
 });
 
+test("model menu runtime entry uses the weight of an unselected model row", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const catalog = [
+    { id: "alpha-id", name: "Model Alpha", provider: "alpha" },
+    { id: "beta-id", name: "Model Beta", provider: "beta" },
+  ];
+  await page.route("**/api/v1/capabilities", (route) =>
+    route.fulfill({
+      json: {
+        ...capabilities,
+        supportedCommands: [
+          ...capabilities.supportedCommands,
+          "get_available_models",
+          "set_model",
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/v1/sessions/*/commands", (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type === "get_available_models")
+      return route.fulfill({ json: response({ models: catalog }, body.type) });
+    if (body.type === "get_state")
+      return route.fulfill({
+        json: response({ modelId: "alpha-id", provider: "alpha" }, body.type),
+      });
+    return route.fallback();
+  });
+  await page.goto("/");
+  await page.locator(".composer-model").click();
+  const entry = page.locator(".dropdown-popover .slim-model-runtime");
+  await expect(entry).toBeVisible();
+
+  // #302: the runtime entry is supporting navigation, not an emphasised
+  // choice. Its label must match an unselected model row (the menu inherits
+  // font-weight 400 from the document) and stay lighter than the selected
+  // row, which keeps its own emphasis.
+  const weight = (target: typeof entry) =>
+    target.evaluate((node) => Number(window.getComputedStyle(node).fontWeight));
+  const runtimeLabel = entry.locator(".slim-model-runtime-label");
+  const unselected = page
+    .locator(".dropdown-popover .dropdown-item")
+    .filter({ hasText: "Model Beta" });
+  const selected = page.locator(
+    ".dropdown-popover .dropdown-item[aria-selected='true']",
+  );
+
+  const runtimeWeight = await weight(runtimeLabel);
+  expect(runtimeWeight).toBe(await weight(unselected));
+  expect(runtimeWeight).toBeLessThanOrEqual(500);
+  expect(await weight(selected)).toBeGreaterThan(runtimeWeight);
+});
+
 test("edit tool renders a file diff and powershell renders as a terminal", async ({
   page,
 }) => {
