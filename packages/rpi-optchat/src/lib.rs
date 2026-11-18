@@ -23,6 +23,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod compact;
+mod import;
 mod memory;
 mod runtime;
 mod store;
@@ -1147,7 +1148,7 @@ fn fit_command() -> Result<String, String> {
 
 /// A line of an import file: JSON text when the line is a JSON object/string,
 /// otherwise the raw line.
-fn import_line(line: &str) -> String {
+pub(crate) fn import_line(line: &str) -> String {
     let line = line.trim();
     if let Some(rest) = line.strip_prefix('#') {
         return rest.trim_start_matches('#').trim().to_string();
@@ -1176,8 +1177,28 @@ fn import_line(line: &str) -> String {
     line.to_string()
 }
 
-fn import_command(path: &str) -> Result<String, String> {
-    let path = PathBuf::from(path.trim().trim_matches('"'));
+/// `/optchat import <file> [--format claude|chatgpt|jsonl|text]`.
+fn import_command(rest: &str) -> Result<String, String> {
+    let mut format: Option<String> = None;
+    let mut target: Option<String> = None;
+    let mut tokens = rest.split_whitespace();
+    while let Some(token) = tokens.next() {
+        match token {
+            "--format" | "-f" => {
+                format = Some(
+                    tokens
+                        .next()
+                        .ok_or("`--format` needs a name: claude, chatgpt, jsonl, text")?
+                        .to_string(),
+                );
+            }
+            other if target.is_none() => target = Some(other.trim_matches('"').to_string()),
+            _ => {}
+        }
+    }
+    let target =
+        target.ok_or("Usage: /optchat import <file> [--format claude|chatgpt|jsonl|text]")?;
+    let path = PathBuf::from(&target);
     let metadata = fs::metadata(&path)
         .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
     if !metadata.is_file() {
@@ -1196,33 +1217,27 @@ fn import_command(path: &str) -> Result<String, String> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
+    let format = import::Format::resolve(format.as_deref(), &target, &text)
+        .ok_or_else(|| "unknown `--format`: use claude, chatgpt, jsonl, or text".to_string())?;
+    let items = import::parse(format, &text, MAX_IMPORT_LINES);
+    if items.is_empty() {
+        return Err(format!(
+            "`{conversation}` holds no messages this parser recognises ({} format).",
+            format.as_str()
+        ));
+    }
     let mut added = 0usize;
-    let mut skipped = 0usize;
-    for (line_no, line) in text.lines().enumerate() {
-        let body = import_line(line);
-        if body.trim().is_empty() || added >= MAX_IMPORT_LINES {
-            skipped += 1;
-            continue;
-        }
-        let origin = Origin {
-            source: "import".into(),
-            conversation: conversation.clone(),
-            message: (line_no + 1).to_string(),
-            title: conversation.clone(),
-            project: None,
-        };
-        match record_note(Kind::Note, body, Some(origin)) {
+    for item in items {
+        let origin = import::origin(format, &conversation, added, item.date.as_deref());
+        match record_note(item.kind, item.text, Some(origin)) {
             Ok(_) => added += 1,
             Err(error) => return Err(format!("stopped after {added} messages: {error}")),
         }
     }
-    let mut summary = format!("Imported {added} messages from `{conversation}`.");
-    if skipped > 0 {
-        summary.push_str(&format!(
-            " {skipped} empty lines or lines over the {MAX_IMPORT_LINES}-message limit were skipped."
-        ));
-    }
-    Ok(summary)
+    Ok(format!(
+        "Imported {added} messages from `{conversation}` as {} history.",
+        format.as_str()
+    ))
 }
 
 fn run_command(args: &str) -> String {

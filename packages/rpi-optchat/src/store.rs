@@ -122,14 +122,6 @@ pub fn count(profile: &str) -> usize {
     read(profile).map(|entries| entries.len()).unwrap_or(0)
 }
 
-/// Whether the store already holds something for this profile.
-#[cfg(test)]
-pub fn exists(profile: &str) -> bool {
-    path(profile)
-        .map(|path| Path::new(&path).is_file())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
