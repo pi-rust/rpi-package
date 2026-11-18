@@ -3580,9 +3580,15 @@ details[open] > summary:before {
   color: var(--muted);
   border-radius: 9px;
 }
-.thinking-row > summary {
+.thinking-row > summary,
+.thinking-row-heading {
   color: var(--muted);
   font-size: 12px;
+}
+.thinking-row-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .thinking-row[open] {
   background: var(--soft);
@@ -3590,6 +3596,24 @@ details[open] > summary:before {
 }
 .thinking-row > .prose {
   padding: 4px 0 0 8px;
+  border-left: 2px solid var(--line);
+  font-size: 12.5px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+.thinking-row-streaming {
+  background: var(--soft);
+  padding: 6px 12px 10px;
+}
+.thinking-row-streaming .thinking-row-viewport {
+  height: 112px;
+  margin-top: 4px;
+  padding-right: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.thinking-row-streaming .thinking-row-viewport > .prose {
+  padding: 0 0 0 8px;
   border-left: 2px solid var(--line);
   font-size: 12.5px;
   line-height: 1.75;

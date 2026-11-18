@@ -2811,6 +2811,102 @@ test("the working indicator does not resize the transcript", async ({
   hold();
 });
 
+test("streaming thinking does not resize the transcript", async ({ page }) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          {
+            role: "user",
+            entryId: "thinking-jitter-user",
+            content: "Check the streamed reasoning",
+          },
+        ],
+      },
+    }),
+  );
+  let streams = 0;
+  let releaseUpdate!: () => void;
+  const readyForUpdate = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  const shortThinking = "**检查思路**\n\n- 确认段落";
+  const longThinking = `**检查思路**\n\n- 确认段落\n\n\`\`\`typescript\nconst line = "${"long_line_".repeat(60)}";\n\`\`\`\n`;
+  const message = (text: string) =>
+    JSON.stringify({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: text }],
+      },
+    });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      streams++;
+      if (streams === 1)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+          headers: { "cache-control": "no-store" },
+        });
+      if (streams === 2)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            'id: 6\nevent: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n' +
+            `id: 7\nevent: message_update\ndata: ${message(shortThinking)}\n\n`,
+          headers: { "cache-control": "no-store" },
+        });
+      await readyForUpdate;
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: `id: 8\nevent: message_update\ndata: ${message(longThinking)}\n\n`,
+        headers: { "cache-control": "no-store" },
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toContainText("Check the streamed reasoning");
+  await expect(page.locator(".transcript")).not.toHaveAttribute("data-history-window", "true");
+  const transcript = page.locator(".transcript");
+  const row = page.locator(".thinking-row-streaming");
+  await expect(row).toBeVisible();
+  await expect(row.locator(".thinking-row-viewport")).toHaveCSS(
+    "overflow-y",
+    "auto",
+  );
+  const firstHeight = await transcript.evaluate(
+    (node) => node.scrollHeight,
+  );
+  const viewportHeight = await row
+    .locator(".thinking-row-viewport")
+    .evaluate((node) => node.clientHeight);
+  releaseUpdate();
+  await expect(row.locator(".thinking-row-viewport strong")).toHaveText(
+    "检查思路",
+  );
+  const secondHeight = await transcript.evaluate(
+    (node) => node.scrollHeight,
+  );
+  expect(secondHeight).toBe(firstHeight);
+  expect(
+    await row
+      .locator(".thinking-row-viewport")
+      .evaluate((node) => node.clientHeight),
+  ).toBe(viewportHeight);
+  expect(
+    await row
+      .locator(".thinking-row-viewport")
+      .evaluate((node) => node.scrollHeight > node.clientHeight),
+  ).toBe(true);
+});
+
 // The indicator is out of flow, so the only thing keeping it off the transcript
 // is the band .message-list reserves for it. A scrolled conversation puts the
 // last row exactly under the pill, which is where the overlap was reported.
