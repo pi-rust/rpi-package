@@ -90,7 +90,7 @@ pub struct Origin {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
-    pub i: usize,
+    pub i: u64,
     pub kind: Kind,
     pub text: String,
     /// ISO-8601 UTC, e.g. `2026-02-03T04:05:06Z`.
@@ -267,6 +267,10 @@ pub fn page(text: &str, offset: usize, limit: usize) -> Result<String, String> {
 #[derive(Debug)]
 pub struct Memory {
     entries: Vec<Entry>,
+    /// The absolute id of `entries[0]`. Ids stay stable when the oldest
+    /// messages are dropped from the retained window, so a `zoom` id that a
+    /// summary printed keeps meaning the same message.
+    base: u64,
     tree: HashMap<(u32, u64), String>,
     view: Vec<Part>,
     measured: usize,
@@ -288,6 +292,7 @@ impl Memory {
     pub fn with_budget(budget: usize) -> Self {
         Self {
             entries: Vec::new(),
+            base: 0,
             tree: HashMap::new(),
             view: Vec::new(),
             measured: 0,
@@ -302,13 +307,24 @@ impl Memory {
     pub fn load(mut entries: Vec<Entry>) -> Self {
         entries.sort_by_key(|entry| entry.i);
         entries.dedup_by_key(|entry| entry.i);
-        let mut memory = Self::new();
-        for (index, mut entry) in entries.into_iter().enumerate() {
-            entry.i = index;
-            memory.push_entry(entry);
-            memory.fit(memory.entries.len() as u64, false);
+        // Absolute ids are only meaningful while they are contiguous: a branch
+        // that lost or duplicated an entry (hand-edited file, stale import) is
+        // renumbered instead of refused.
+        if !entries.windows(2).all(|pair| pair[1].i == pair[0].i + 1) {
+            for (index, entry) in entries.iter_mut().enumerate() {
+                entry.i = index as u64;
+            }
         }
-        memory.fit(memory.entries.len() as u64, false);
+        let base = entries.first().map(|entry| entry.i).unwrap_or(0);
+        let mut memory = Self::with_budget(VIEW);
+        memory.base = base;
+        for entry in entries {
+            memory.push_entry(entry);
+            let total = memory.end();
+            memory.fit(total, false);
+        }
+        let total = memory.end();
+        memory.fit(total, false);
         memory
     }
 
@@ -320,8 +336,19 @@ impl Memory {
         self.entries.len()
     }
 
+    /// The absolute id of the oldest message still retained.
+    pub fn base(&self) -> u64 {
+        self.base
+    }
+
+    /// One past the newest absolute id.
+    pub fn end(&self) -> u64 {
+        self.base + self.entries.len() as u64
+    }
+
     pub fn get(&self, i: u64) -> Option<&Entry> {
-        self.entries.get(usize::try_from(i).ok()?)
+        let index = usize::try_from(i.checked_sub(self.base)?).ok()?;
+        self.entries.get(index)
     }
 
     pub fn stats(&self) -> Stats {
@@ -344,7 +371,7 @@ impl Memory {
         origin: Option<Origin>,
     ) -> Entry {
         Entry {
-            i: self.entries.len(),
+            i: self.end(),
             kind,
             text: head_bytes(&text, SOURCE).to_string(),
             date,
@@ -355,15 +382,16 @@ impl Memory {
 
     /// Commit an entry previously returned by [`Self::prepare`].
     pub fn append_prepared(&mut self, entry: Entry) -> Result<Entry, String> {
-        if entry.i != self.entries.len() {
+        if entry.i != self.end() {
             return Err(format!(
-                "cannot append message {} to a log with {} messages",
+                "cannot append message {} to a log ending at {}",
                 entry.i,
-                self.entries.len()
+                self.end()
             ));
         }
         self.push_entry(entry.clone());
-        self.fit(self.entries.len() as u64, false);
+        let total = self.end();
+        self.fit(total, false);
         Ok(entry)
     }
 
@@ -381,11 +409,41 @@ impl Memory {
             .expect("a freshly prepared entry must append at the end of the log")
     }
 
+    /// Drop the oldest messages so at most `cap` stay retained. Ids of the
+    /// surviving messages do not change, so a summary line printed before the
+    /// trim still names the same message afterwards.
+    pub fn trim_to(&mut self, cap: usize) -> usize {
+        let cap = cap.max(2);
+        if self.entries.len() <= cap {
+            return 0;
+        }
+        let dropped = self.entries.len() - cap;
+        self.entries.drain(..dropped);
+        self.base += dropped as u64;
+        self.rebuild();
+        dropped
+    }
+
+    /// Rebuild the summary tree and view from the retained entries (after a
+    /// trim, or when saved summary nodes arrive late).
+    fn rebuild(&mut self) {
+        let entries = std::mem::take(&mut self.entries);
+        self.tree.clear();
+        self.view.clear();
+        self.measured = 0;
+        self.merging = false;
+        for entry in entries {
+            self.push_entry(entry);
+        }
+        let total = self.end();
+        self.fit(total, false);
+    }
+
     /// Merge as far as the tree allows: the smallest view that still tiles the
     /// log. `/optchat fit` exposes this to the user; the automatic sawtooth stays
     /// inside its budget without collapsing history on its own.
     pub fn collapse(&mut self) {
-        let total = self.entries.len() as u64;
+        let total = self.end();
         while let Some(index) = most_due(&self.view, total) {
             self.merge_at(index);
         }
@@ -393,10 +451,7 @@ impl Memory {
     }
 
     fn push_entry(&mut self, entry: Entry) {
-        let part = Part {
-            l: 0,
-            i: entry.i as u64,
-        };
+        let part = Part { l: 0, i: entry.i };
         self.tree.insert((0, part.i), leaf_text(&entry));
         self.entries.push(entry);
         self.view.push(part);
@@ -533,8 +588,9 @@ impl Memory {
         if part.l == 0 {
             let entry = self.get(id).ok_or_else(|| {
                 format!(
-                    "No message {id}: memory holds messages 0..{}",
-                    self.entries.len()
+                    "No message {id}: memory holds messages {}..{}",
+                    self.base,
+                    self.end()
                 )
             })?;
             return Ok(format!(
@@ -546,9 +602,10 @@ impl Memory {
         }
         if !self.tree.contains_key(&(part.l, part.i)) {
             return Err(format!(
-                "No summary line {}: memory holds {} messages in {} view lines",
+                "No summary line {}: memory holds messages {}..{} in {} view lines",
                 part.label(),
-                self.entries.len(),
+                self.base,
+                self.end(),
                 self.view.len()
             ));
         }
@@ -583,7 +640,7 @@ impl Memory {
             .entries
             .iter()
             .rev()
-            .filter(|entry| before.map(|seq| (entry.i as u64) < seq).unwrap_or(true))
+            .filter(|entry| before.map(|seq| (entry.i) < seq).unwrap_or(true))
             .filter(|entry| find_ci(&entry.text, &lower).is_some())
             .collect();
         let older = if before.is_some() { "older " } else { "" };
@@ -604,7 +661,7 @@ impl Memory {
         for entry in page {
             let at = find_ci(&entry.text, &lower).unwrap_or(0);
             let snippet = snippet(&entry.text, at);
-            let line = self.covering(entry.i as u64);
+            let line = self.covering(entry.i);
             let inside = line
                 .filter(|part| part.l > 0)
                 .map(|part| format!(" (in {})", part.label()))
@@ -700,7 +757,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
 
-    fn entry(i: usize, kind: Kind, text: &str) -> Entry {
+    fn entry(i: u64, kind: Kind, text: &str) -> Entry {
         Entry {
             i,
             kind,
@@ -769,6 +826,44 @@ mod tests {
         assert_eq!(m.entries()[0].text, "durable");
         assert!(m.append_prepared(entry).is_err());
         assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn trim_keeps_ids_and_rebuilds_a_consistent_view() {
+        let mut m = Memory::new();
+        for i in 0..10 {
+            m.record(Kind::User, format!("m{i}"), iso8601(i * 1000), None, None);
+        }
+        assert_eq!((m.base(), m.end()), (0, 10));
+        assert_eq!(m.trim_to(4), 6);
+        assert_eq!((m.base(), m.end(), m.len()), (6, 10, 4));
+        assert!(m.get(5).is_none());
+        assert_eq!(m.get(6).unwrap().text, "m6");
+        let error = m.zoom(5, 1, 0, PAGE).unwrap_err();
+        assert!(error.contains("6..10"), "{error}");
+        assert!(m.zoom(6, 1, 0, PAGE).unwrap().contains("m6"));
+        assert!(m.view.iter().all(|part| part.start() >= 6));
+        assert_eq!(m.view.last().expect("a line").end(), 10);
+
+        // Ids survive a reload, so a printed summary keeps its meaning.
+        let reloaded = Memory::load(m.entries().to_vec());
+        assert_eq!(reloaded.base(), 6);
+        assert_eq!(reloaded.view_text(), m.view_text());
+
+        // A prepared entry continues from the end, not from the retained count.
+        let next = m.prepare(Kind::Note, "m10".into(), iso8601(0), None, None);
+        assert_eq!(next.i, 10);
+        assert_eq!(m.append_prepared(next).unwrap().i, 10);
+        assert_eq!(m.end(), 11);
+    }
+
+    #[test]
+    fn load_renumbers_a_non_contiguous_log_but_keeps_contiguous_ids() {
+        let contiguous = memory(vec![entry(5, Kind::User, "a"), entry(6, Kind::User, "b")]);
+        assert_eq!((contiguous.base(), contiguous.end()), (5, 7));
+
+        let gapped = memory(vec![entry(0, Kind::User, "a"), entry(9, Kind::User, "b")]);
+        assert_eq!((gapped.base(), gapped.end()), (0, 2));
     }
 
     #[test]

@@ -49,6 +49,9 @@ const OWN_TOOLS: [&str; 2] = ["zoom", "search"];
 /// Bounds for `/optchat import`.
 const MAX_IMPORT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_IMPORT_LINES: usize = 2_000;
+/// How many messages to release at once when the retained window overflows, so
+/// the tree rebuild is amortized rather than paid per message.
+const TRIM_SLACK: usize = 512;
 /// `GetSessionBranch` page size while hydrating the log.
 const HYDRATE_PAGE: usize = 200;
 /// How close two identical captures must be to count as one message.
@@ -108,6 +111,7 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
 
 struct State {
     session: String,
+
     memory: Memory,
     /// The last captured message, so one message delivered twice — a user
     /// prompt via `before_agent_start` and again via `message_end`, or a
@@ -167,7 +171,7 @@ fn hydrate() -> Result<Memory, String> {
                 continue;
             }
             if let Some(data) = record.get("data") {
-                if let Ok(entry) = serde_json::from_value(data.clone()) {
+                if let Ok(entry) = serde_json::from_value::<memory::Entry>(data.clone()) {
                     entries.push(entry);
                 }
             }
@@ -181,29 +185,79 @@ fn hydrate() -> Result<Memory, String> {
             _ => break,
         }
     }
-    Ok(Memory::load(entries))
+    let mut memory = Memory::load(entries);
+    memory.trim_to(MAX_ENTRIES);
+    Ok(memory)
+}
+
+/// The id of the newest message the branch holds, read in one cheap query.
+/// `None` means the branch holds no memory entry at all.
+fn branch_mark() -> Result<Option<u64>, String> {
+    let value = call_runtime(
+        RuntimeActionId::GetSessionBranch,
+        json!({
+            "customTypes": [ENTRY_TYPE],
+            "limit": 1,
+            "order": "newestFirst",
+        }),
+    )?;
+    if value.get("filtered").and_then(Value::as_bool) != Some(true) {
+        return Err("This rpi host answered GetSessionBranch without `filtered: true`".into());
+    }
+    let Some(record) = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.first())
+    else {
+        return Ok(None);
+    };
+    Ok(record
+        .get("data")
+        .and_then(|data| data.get("i"))
+        .and_then(Value::as_u64))
+}
+
+/// Whether a cached state still describes the branch it was loaded from: the
+/// newest message in the branch must be the newest one this state holds. A
+/// branch switch inside one session keeps `RPI_SESSION_ID`, so identity — not a
+/// timestamp or a session name — decides whether the cache is still valid.
+fn state_is_current(session: &str, state: &State) -> bool {
+    if state.session != session {
+        return false;
+    }
+    let expected = if state.memory.len() == 0 {
+        None
+    } else {
+        Some(state.memory.end() - 1)
+    };
+    match branch_mark() {
+        Ok(actual) => actual == expected,
+        // A failed identity probe must not destroy a working cache: the next
+        // capture still appends, and a later probe repairs the view.
+        Err(_) => true,
+    }
 }
 
 /// Run `f` against the state of the session this process is serving, reloading
-/// the log when the host switched sessions. Hydration happens outside the lock:
-/// it calls the host, and a host call must never be made while holding a lock a
-/// callback could re-enter.
+/// the log when the host switched sessions or moved to another branch. Both the
+/// hydration and the identity probe call the host, which must never happen while
+/// `STATE` is held: a host call can re-enter a callback.
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Result<T, String> {
     let session = current_session();
     let stale = {
         let guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
-        guard
-            .as_ref()
-            .map(|state| state.session != session)
-            .unwrap_or(true)
+        match guard.as_ref() {
+            Some(state) => !state_is_current(&session, state),
+            None => true,
+        }
     };
     if stale {
         let memory = hydrate()?;
         let mut guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
-        let still_stale = guard
-            .as_ref()
-            .map(|state| state.session != session)
-            .unwrap_or(true);
+        let still_stale = match guard.as_ref() {
+            Some(state) => !state_is_current(&session, state),
+            None => true,
+        };
         if still_stale {
             *guard = Some(State {
                 session,
@@ -217,6 +271,12 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Result<T, String> {
         .as_mut()
         .ok_or("OptChat memory state is unavailable")?;
     Ok(f(state))
+}
+
+/// Drop the cached log: the session or its branch changed.
+fn reset_state() {
+    let mut guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
+    *guard = None;
 }
 
 fn with_memory<T>(f: impl FnOnce(&mut Memory) -> T) -> Result<T, String> {
@@ -254,13 +314,19 @@ fn persist_then_commit(
     entry: memory::Entry,
     session: &str,
     last: Option<(Kind, String, i64)>,
-) -> Result<usize, String> {
+) -> Result<u64, String> {
     persist(&entry)?;
     with_state(|state| {
         if state.session != session {
             return Err("OptChat session changed while persisting an entry".to_string());
         }
         let committed = state.memory.append_prepared(entry)?;
+        // Retaining a window, not a prefix: past the cap the oldest messages
+        // fall out instead of new ones being dropped. Trimming in batches keeps
+        // the tree rebuild off the per-message path.
+        if state.memory.len() > MAX_ENTRIES {
+            state.memory.trim_to(MAX_ENTRIES - TRIM_SLACK);
+        }
         if let Some(last) = last {
             state.last = Some(last);
         }
@@ -297,7 +363,7 @@ fn capture(
                     && last_text == &text
                     && (millis - last).abs() <= DUPLICATE_WINDOW_MS
             });
-        if duplicate || state.memory.len() >= MAX_ENTRIES {
+        if duplicate {
             return None;
         }
         Some(state.memory.prepare(kind, text, date, receipt, origin))
@@ -314,21 +380,13 @@ fn capture(
 /// Log an entry the user asked for (`/optchat note`, import): not deduplicated,
 /// because two identical notes are two notes. It also uses the same append gate
 /// as automatic capture, so its index cannot race a message event.
-fn record_note(kind: Kind, text: String, origin: Option<Origin>) -> Result<usize, String> {
+fn record_note(kind: Kind, text: String, origin: Option<Origin>) -> Result<u64, String> {
     let date = iso8601(now_ms());
     let _gate = APPEND_GATE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let session = current_session();
-    let candidate = with_state(|state| {
-        (state.memory.len() < MAX_ENTRIES)
-            .then(|| state.memory.prepare(kind, text, date, None, origin))
-    })?;
-    let Some(entry) = candidate else {
-        return Err(format!(
-            "This session's memory already holds {MAX_ENTRIES} messages; nothing was recorded."
-        ));
-    };
+    let entry = with_state(|state| state.memory.prepare(kind, text, date, None, origin))?;
     persist_then_commit(entry, &session, None)
 }
 
@@ -438,6 +496,22 @@ fn on_tool_end(event, data) {
     debug(&format!("tool_execution_end {}", result.tool_name));
     if !OWN_TOOLS.contains(&result.tool_name.as_str()) {
         capture_tool_result(&result);
+    }
+    0
+}
+}
+
+rpi_plugin_sdk::event_handler! {
+/// The host announces session boundaries; the branch behind them changes too.
+/// The memory is loaded lazily, so dropping the cache is enough — a session that
+/// navigates back to a branch reloads exactly that branch.
+fn on_session_lifecycle(event, data) {
+    let _scope = runtime::enter(runtime::callback(data));
+    if matches!(
+        event.tag(),
+        EventTag::SessionStart | EventTag::SessionShutdown
+    ) {
+        reset_state();
     }
     0
 }
@@ -703,12 +777,19 @@ fn status() -> String {
                 conversation continues; `/optchat note <text>` adds one now."
             .to_string();
     }
+    let window = if stats.messages > 0 {
+        with_memory(|memory| (memory.base(), memory.end())).unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
     format!(
-        "OptChat memory · {} messages · {} view lines · {} of {} bytes\n\
+        "OptChat memory · {} messages (ids {}..{}) · {} view lines · {} of {} bytes\n\
          user {} · talk {} · tool {} · echo {} · note {} · work {}\n\n\
          Stored as `optchat-entry` custom entries on this session branch. \
          `/optchat view` shows the summary view; `/optchat help` lists commands.",
         stats.messages,
+        window.0,
+        window.1,
         stats.lines,
         stats.bytes,
         VIEW,
@@ -926,6 +1007,14 @@ rpi_plugin_sdk::export_plugin!(|api| {
             on_tool_start as EventHandlerFn,
         ),
         (EventTag::ToolExecutionEnd, on_tool_end as EventHandlerFn),
+        (
+            EventTag::SessionStart,
+            on_session_lifecycle as EventHandlerFn,
+        ),
+        (
+            EventTag::SessionShutdown,
+            on_session_lifecycle as EventHandlerFn,
+        ),
     ] {
         let rc = register_event(tag, handler, api.user_data);
         if rc != 0 {
