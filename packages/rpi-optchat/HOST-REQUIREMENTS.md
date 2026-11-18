@@ -1,12 +1,28 @@
 # Host requirements
 
-What `rpi-optchat` needs from the `rpi` host, ordered by impact. Each item names
-the code or behaviour it depends on, what the plugin does without it, and how the
-change could be accepted. Evidence was read from the `pi-rust` checkout at
-`038f193` (`v0.24.2-3`); the shipped host at the time was `rpi 0.24.0`, so line
-numbers may move.
+What `rpi-optchat` needs from the `rpi` host. Each item names the code or
+behaviour it depends on, what the plugin does without it, and how the change
+can be accepted.
 
-## 1. Dispatch the session-tree lifecycle events (blocking for exact scope)
+Status: items 1 and 4 are implemented on the host's `feat/session-tree-lifecycle`
+branch (verified against `pi-rust` `b0ac963` + that branch's working tree) and
+consumed here; items 2, 3 and 5 are still open. The plugin keeps its
+workarounds, because an installed host may predate the branch and the plugin has
+no way to ask which behaviours it dispatches.
+
+### Implemented on the host branch
+
+1. Session-tree lifecycle dispatch — see below.
+4. Entry-renderer request/response contract — see below.
+
+Items 2, 3 and 5 remain outstanding.
+
+## 1. Dispatch the session-tree lifecycle events — implemented
+
+Accepted on `feat/session-tree-lifecycle`; the plugin now registers all eight
+session tags and resets its branch cache from them. The text below is the
+original request; the probe described at the end is kept as the fallback for
+older hosts.
 
 `rpi_plugin_sdk::EventTag` declares `SessionBeforeSwitch`, `SessionBeforeFork`,
 `SessionBeforeCompact`, `SessionCompact`, `SessionBeforeTree`, and `SessionTree`,
@@ -97,7 +113,13 @@ Related ask: if tool events stay undispatched in print mode, allow a bounded
 full-branch read (the `customTypes` filter is a privacy/performance guard, and a
 plugin asking for entries after its own last sequence is the same class of read).
 
-## 4. Document the entry-renderer payload (needed for memory rows)
+## 4. Document the entry-renderer payload — implemented
+
+Accepted: the SDK now states the envelope (`{"customType":"...","data":...}`) and
+the accepted replies (`{"text","markdown"}` or `{"lines":[...]}`), and the TUI
+passes `customType`/`data` through `extension_entry_component`. The plugin
+registers `optchat_entry_renderer` for `optchat-entry` and `optchat-node`; the
+text below is the original request.
 
 `register_entry_renderer` is declared as
 

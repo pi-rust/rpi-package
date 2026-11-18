@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/optchat status`.
 - `/optchat recall <text>` searches the profile store, so messages that left the
   20000-message window stay findable; a `zoom` past the window points at it.
+- Session-tree lifecycle handling: `SessionBeforeSwitch`, `SessionBeforeFork`,
+  `SessionBeforeTree`, `SessionTree`, `SessionBeforeCompact` and `SessionCompact`
+  are registered, so a host that dispatches them drops the branch cache before
+  the branch changes instead of detecting it afterwards.
+- An entry renderer (`optchat`) that turns `optchat-entry` and `optchat-node`
+  into one transcript row each (`OptChat <kind> · <head>`,
+  `OptChat summary <l>+<i> · <head>`), leaving other types to their own renderers.
 - The view shape is saved as `optchat-view`, so `/optchat fit` and model-written
   lines survive a resume; a shape that no longer tiles the window is refolded.
 

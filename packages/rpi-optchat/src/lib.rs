@@ -737,21 +737,44 @@ fn on_tool_end(event, data) {
 }
 
 rpi_plugin_sdk::event_handler! {
-/// The host announces session boundaries; the branch behind them changes too.
-/// The memory is loaded lazily, so dropping the cache is enough — a session that
-/// navigates back to a branch reloads exactly that branch.
+/// Session transitions invalidate the branch-local cache. The host dispatches
+/// these events around tree navigation, fork, session switching and compaction;
+/// the reset is deliberately idempotent because both before/after tree events
+/// may be observed by a plugin.
 fn on_session_lifecycle(event, data) {
     let _scope = runtime::enter(runtime::callback(data));
-    if matches!(
-        event.tag(),
-        EventTag::SessionStart | EventTag::SessionShutdown
-    ) {
-        // A session that ends without an explicit `/optchat fit` still keeps the
-        // shape it folded to, so resuming shows the same lines.
-        if event.tag() == EventTag::SessionShutdown {
-            persist_view();
+    debug(&format!("{:?}", event.tag()));
+    match event.tag() {
+        EventTag::SessionStart | EventTag::SessionShutdown => {
+            // A session that ends without an explicit `/optchat fit` still keeps
+            // the shape it folded to, so resuming shows the same lines.
+            if event.tag() == EventTag::SessionShutdown {
+                persist_view();
+            }
+            reset_state();
         }
-        reset_state();
+        EventTag::SessionBeforeSwitch
+        | EventTag::SessionBeforeFork
+        | EventTag::SessionBeforeTree
+        | EventTag::SessionTree => {
+            // Persist the old branch before a transition, then discard the
+            // cache. The next callback hydrates the branch selected by the host.
+            if matches!(
+                event.tag(),
+                EventTag::SessionBeforeSwitch
+                    | EventTag::SessionBeforeFork
+                    | EventTag::SessionBeforeTree
+            ) {
+                persist_view();
+            }
+            reset_state();
+        }
+        EventTag::SessionBeforeCompact | EventTag::SessionCompact => {
+            // Compaction changes native transcript state, not the branch id;
+            // the next boundary probe still provides a safe fallback for older
+            // hosts that do not dispatch these lifecycle events.
+        }
+        _ => {}
     }
     0
 }
@@ -1437,8 +1460,42 @@ fn optchat_command(input, out, data) {
 }
 
 // ---------------------------------------------------------------------------
-// Entrypoint
+// Inline transcript rendering
 // ---------------------------------------------------------------------------
+
+// Render OptChat's custom entries when a host supplies the entry-renderer
+// capability. Raw entries and summary nodes stay recognizable in the TUI while
+// `optchat-view`/`optchat-profile` metadata remains silent.
+rpi_plugin_sdk::string_handler! {
+fn optchat_entry_renderer(input, out, _data) {
+    let envelope: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let Some(custom_type) = envelope.get("customType").and_then(Value::as_str) else {
+        return 1;
+    };
+    let Some(data) = envelope.get("data") else {
+        return 1;
+    };
+    let text = match custom_type {
+        ENTRY_TYPE => {
+            let Ok(entry) = serde_json::from_value::<memory::Entry>(data.clone()) else {
+                return 1;
+            };
+            format!("OptChat {} · {}", entry.kind.as_str(), clip(&entry.text, 320))
+        }
+        compact::NODE_TYPE => {
+            let Some(text) = data.get("text").and_then(Value::as_str) else {
+                return 1;
+            };
+            let level = data.get("l").and_then(Value::as_u64).unwrap_or_default();
+            let index = data.get("i").and_then(Value::as_u64).unwrap_or_default();
+            format!("OptChat summary {level}+{index} · {}", clip(text, 320))
+        }
+        _ => return 1,
+    };
+    out.write(json!({"text": text}).to_string());
+    0
+}
+}
 
 rpi_plugin_sdk::export_plugin!(|api| {
     capture_process_role();
@@ -1453,16 +1510,36 @@ rpi_plugin_sdk::export_plugin!(|api| {
             on_tool_start as EventHandlerFn,
         ),
         (EventTag::ToolExecutionEnd, on_tool_end as EventHandlerFn),
-        (
-            EventTag::SessionStart,
-            on_session_lifecycle as EventHandlerFn,
-        ),
-        (
-            EventTag::SessionShutdown,
-            on_session_lifecycle as EventHandlerFn,
-        ),
     ] {
         let rc = register_event(tag, handler, api.user_data);
+        if rc != 0 {
+            return rc;
+        }
+    }
+    let lifecycle_tags = [
+        EventTag::SessionStart,
+        EventTag::SessionShutdown,
+        EventTag::SessionBeforeSwitch,
+        EventTag::SessionBeforeFork,
+        EventTag::SessionBeforeCompact,
+        EventTag::SessionCompact,
+        EventTag::SessionBeforeTree,
+        EventTag::SessionTree,
+    ];
+    for tag in lifecycle_tags {
+        let rc = register_event(tag, on_session_lifecycle as EventHandlerFn, api.user_data);
+        if rc != 0 {
+            return rc;
+        }
+    }
+
+    if let Some(register_entry_renderer) = api.register_entry_renderer {
+        let rc = register_entry_renderer(
+            StbStringRef::from_str("optchat"),
+            optchat_entry_renderer,
+            free_string,
+            api.user_data,
+        );
         if rc != 0 {
             return rc;
         }
@@ -1558,6 +1635,63 @@ mod tests {
         assert_eq!(import_line("   "), "");
     }
 
+    #[test]
+    fn entry_renderer_formats_optchat_entries_and_ignores_other_types() {
+        let render = |value: Value| {
+            let mut out = StbString::empty();
+            let rc = optchat_entry_renderer(
+                StbStringRef::from_str(&value.to_string()),
+                &mut out,
+                std::ptr::null_mut(),
+            );
+            let text = out.to_string_lossy();
+            free_string(out);
+            (rc, text)
+        };
+        let (rc, text) = render(json!({
+            "customType": compact::NODE_TYPE,
+            "data": {"l": 2, "i": 3, "text": "bounded summary"}
+        }));
+        assert_eq!(rc, 0);
+        assert!(text.contains("OptChat summary 2+3"), "{text}");
+        assert!(text.contains("bounded summary"), "{text}");
+
+        let (rc, text) = render(json!({
+            "customType": "unrelated-entry",
+            "data": {"text": "leave this to another renderer"}
+        }));
+        assert_eq!(rc, 1);
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn entry_renderer_formats_a_memory_entry() {
+        let entry = memory::Entry {
+            i: 4,
+            kind: Kind::Note,
+            text: "a durable note".into(),
+            date: iso8601(0),
+            receipt: None,
+            origin: None,
+        };
+        let mut out = StbString::empty();
+        let input = json!({
+            "customType": ENTRY_TYPE,
+            "data": serde_json::to_value(entry).expect("entry json"),
+        });
+        assert_eq!(
+            optchat_entry_renderer(
+                StbStringRef::from_str(&input.to_string()),
+                &mut out,
+                std::ptr::null_mut(),
+            ),
+            0
+        );
+        let rendered = out.to_string_lossy();
+        free_string(out);
+        assert!(rendered.contains("OptChat note"), "{rendered}");
+        assert!(rendered.contains("a durable note"), "{rendered}");
+    }
     #[test]
     fn tool_schemas_advertise_canonical_arguments_without_host_context() {
         let zoom = zoom_schema();

@@ -20,13 +20,16 @@ port keeps OptChat's memory and exposes it to the host instead:
   so another session can attach it, and Claude Code / ChatGPT / JSONL / text
   history can be imported;
 - the model reads it with the `zoom` and `search` tools;
-- the user reads it with `/optchat view`, `/optchat zoom`, `/optchat search`;
+- the user reads it with `/optchat view`, `/optchat zoom`, `/optchat search`, and
+  hosts that dispatch entry renderers show each logged message inline as
+  `OptChat <kind> · <head>`;
 - `register_before_agent_start` appends one short pointer line to the system
   prompt so the model knows the memory exists.
 
 Storage is the session branch itself: memory follows a fork, disappears with a
-discarded branch, and reloads with a resumed session. No project file, no
-background worker, no model call, no durable-scheduler state.
+discarded branch, and reloads with a resumed session. The summary lines and the
+cross-session profile live beside it; there is no background worker, no
+durable-scheduler state, and no model call unless compaction is switched on.
 
 ## Install
 
@@ -124,8 +127,9 @@ lossy archive.
 
 The view grows one line per message and, once it passes 128 KB, merges its most
 due sibling pairs down to 64 KB (`/optchat fit` merges as far as the tree
-allows). Nothing about the view is persisted: the merge order is a pure function
-of the log, so a resumed session rebuilds the identical tree from its entries.
+allows). The merge order is a pure function of the log, so it can always be
+rebuilt; the shape is also saved as an `optchat-view` entry, which is what keeps
+a `/optchat fit` or a model-written layout stable across a resume.
 
 ## Known limitations
 
@@ -140,10 +144,19 @@ of the log, so a resumed session rebuilds the identical tree from its entries.
 - **No background agents or UI panels.** rpi already provides child agents
   (`rpi-subagents`, `rpi-orchestrator`) and renders commands as messages; the
   footer count is published through `SetStatus`.
+- **Inline rows need a host that dispatches entry renderers.** The plugin
+  registers one (`OptChat <kind> · <head>`), but a host that does not invoke it
+  simply renders the raw entry, and `/optchat view` remains the full view.
 - **Tool activity depends on host event dispatch.** rpi 0.24.0 dispatches
   `tool_execution_start`/`tool_execution_end` to plugins during interactive and
   `--mode rpc` runs, but not in `--print` runs; user and reply capture still
-  works there.
+  works there. `packages/rpi-optchat/HOST-REQUIREMENTS.md` carries the open
+  request.
+- **Branch switches are read from lifecycle events when the host sends them.**
+  `SessionBeforeTree`/`SessionTree`/`SessionBeforeSwitch`/`SessionBeforeFork`
+  drop the cache before the branch changes; on a host that does not dispatch them
+  the plugin falls back to a `GetSessionBranch(limit: 1, newestFirst)` watermark,
+  which costs one call per turn boundary.
 - **The session log keeps a 20000-message window; the profile store does not.**
   Past the cap the oldest messages leave the view and `zoom`, in batches, and
   their ids are never reused, so a printed summary keeps naming the same message.
@@ -165,11 +178,15 @@ The unit tests cover the log/tree/view invariants (bounded lines, collapsing,
 tiling, paging with stable ids, UTF-8-safe clipping, search paging), the
 compaction child (a stub executable that answers, fails, or times out), the
 profile store (name safety, append/read, malformed lines), the importers
-(Claude, ChatGPT mapping order, generic JSONL, text) and the command/schema
+(Claude, ChatGPT mapping order, generic JSONL, text), the entry renderer
+(entry and summary envelopes, foreign types declined) and the command/schema
 surface. End-to-end checks against a running host are described in the pull
 request: `/optchat note` writes `optchat-entry` entries, a second process
 resuming the session hydrates them, the `search` tool executes through the ABI,
 and a `before_agent_start` run shows the pointer line in the provider request.
+Against a host that dispatches the session-tree events, `RPI_OPTCHAT_DEBUG=1`
+prints `[optchat] SessionBeforeTree` / `[optchat] SessionTree` around an RPC
+`navigate`, and the memory rehydrates on the branch the host selected.
 
 ## Attribution
 
