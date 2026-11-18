@@ -15,6 +15,7 @@ parameter schemas, and regression checks.
 | Package | Tools and capabilities |
 | --- | --- |
 | [rpi-mcp-adapter](packages/rpi-mcp-adapter/README.md) | Discover/call tools and manage resources with `mcp_list`, `mcp_call`, `mcp_resource`; raw diagnostics with `mcp_request` |
+| [rpi-mcp-server](packages/rpi-mcp-server/README.md) | Publish the agent as an MCP server with `--mcp`, or run the standalone `rpi-mcp-bridge` |
 | [rpi-subagents](packages/rpi-subagents/README.md) | Delegate work with `delegate_task` |
 | [rpi-codemode](packages/rpi-codemode/README.md) | Compose native tools with bounded JavaScript, lossless business JSON and explicit exact native-result selection within inline limits; published/prebuilt extension, requires the companion ToolProgram v1 capabilities |
 | [rpi-orchestrator](packages/rpi-orchestrator/README.md) | Bounded child agents and task graphs with `subagent`, `plan` and `dispatch` |
@@ -129,6 +130,25 @@ host.
 can depend on the compatible minor line with `rpi-extcore = "0.1"`; it requires
 Rust 1.78+ and a compatible native `rpi --mode rpc` executable at runtime. See
 [rpi-extcore](packages/rpi-extcore/README.md), [rpi-httpcore](packages/rpi-httpcore/README.md) and the [architecture contract](docs/architecture/extension-core.md). The new packages are ordinary Rust libraries; existing extension installation and startup commands remain the same.
+
+## MCP server
+
+`rpi-mcp-server` is the reverse direction of `rpi-mcp-adapter`: it publishes the
+agent to MCP clients instead of consuming MCP servers.
+
+```text
+MCP client -> MCP over stdin/stdout -> rpi-mcp-bridge -> rpi --mode rpc
+             (or `rpi --mcp`, which reuses the host's `ownsStdio` ABI)
+```
+
+The package owns the MCP JSON-RPC framing, tool catalog, `tools/call`
+concurrency and cancellation mapping. Native session lifecycle, prompt
+acceptance, settlement and child cleanup stay in `rpi-extcore`. The standalone
+bridge is the recommended integration because it owns its own stdin/stdout and
+therefore needs no host stdio arbitration.
+
+See the [MCP server package README](packages/rpi-mcp-server/README.md) for the
+tool catalog, limits and client configuration.
 
 ## Native ACP integration
 

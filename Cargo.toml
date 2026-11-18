@@ -3,6 +3,7 @@ members = [
     "packages/rpi-run-stats",
     "packages/rpi-mcp-adapter",
     "packages/rpi-mcp-core",
+    "packages/rpi-mcp-server",
     "packages/rpi-subagents",
     "packages/rpi-codemode",
     "packages/rpi-btw",

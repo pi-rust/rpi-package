@@ -41,6 +41,38 @@ flowchart TD
   which owns Windows suspended/headless Job Object setup and Unix process groups.
   ABI-free does not mean all platform FFI is unsafe-free.
 
+### MCP server adapter
+
+`rpi-mcp-server` is the serving counterpart of the MCP client boundary above; it
+is not part of `rpi-mcp-core` and must not add server policy there:
+
+- **rpi-mcp-server** owns MCP JSON-RPC 2.0 framing (one frame per line), the
+  `initialize`/`tools/list`/`tools/call` surface, progress and cancellation
+  mapping, `tools/call` concurrency, output serialization and the plugin flag
+  plumbing (`--mcp`). It must not own native child lifecycle, run settlement,
+  transcript or history semantics.
+- Native session lifecycle, prompt acceptance, settlement, cancellation and
+  process-tree cleanup remain `rpi-extcore`'s (`HostSession`,
+  `begin_prompt`/`abort_run`, `RunTracker`). The adapter only maps them onto MCP
+  requests and results.
+- Two entry points share one implementation: the `rpi-mcp-bridge` executable
+  (owns its own stdin/stdout, needs no host change) and the `rpi --mcp` plugin
+  entry, which claims `{"ownsStdio":true}` exactly like `--acp` and `--http`.
+- In-process stdio has a single owner. `--mcp` is therefore mutually exclusive
+  with `--acp`, `--http`, `--webserver`, `--web`, `--server` and `--webui`, and
+  every one of those adapters rejects `--mcp` before claiming stdio. The
+  standalone bridge sidesteps the conflict entirely and stays the recommended
+  integration for MCP clients.
+- stdout carries protocol frames only; diagnostics use stderr, because a stray
+  stdout line corrupts the MCP session rather than merely adding noise.
+- Bounds are adapter policy: a 16 MiB frame ceiling, at most 16 concurrent
+  `tools/call` requests, 64 queued outbound frames and a 256 KiB tool-result text
+  ceiling. Closing stdin drains already-dispatched calls (bounded by 600 s);
+  `SessionShutdown` or an I/O error aborts them.
+- Not implemented in this adapter: MCP resources, prompts, sampling,
+  elicitation, and Streamable HTTP transport. Those need new reverse-request
+  directions and are not implied by the existing client transports.
+
 ### Session-owned MCP tools integration
 
 `rpi-extcore::external_tools::ToolServer::{Stdio, Http}` wraps `StdioToolServer`

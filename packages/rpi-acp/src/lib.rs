@@ -341,6 +341,12 @@ fn register_plugin(api: &rpi_plugin_sdk::PluginApi) -> i32 {
     if !acp && !install && !print && !setup {
         return 0;
     }
+    for other in ["mcp", "http", "webserver", "web", "server", "webui"] {
+        if flag_is_on(get_cli_flag(other).as_ref()) {
+            diagln!("[rpi-acp] ACP actions cannot be combined with --{other}");
+            return 1;
+        }
+    }
 
     if !lifecycle_action("status", 0) {
         diagln!("[rpi-acp] host must support the StdioLifecycle runtime action");
