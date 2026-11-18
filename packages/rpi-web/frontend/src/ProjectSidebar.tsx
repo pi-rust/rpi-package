@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -31,6 +30,7 @@ import {
 import { api, type Project, type SessionSummary } from "./api";
 import { translate, type Language } from "./i18n";
 import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
+import { RecentChats } from "./RecentChats";
 import { SessionSearch } from "./SessionSearch";
 import { createPortal } from "react-dom";
 type FolderNode = {
@@ -864,24 +864,6 @@ export function ProjectSidebar({
       return next;
     });
   }
-  /** Most recently answered first (#296): settledAt falls back to updatedAt
-   * when an older host has not recorded a settlement timestamp. */
-  function answeredAt(session: SessionSummary): number {
-    const settledAt = session.latestSettlement?.settledAt;
-    return settledAt ?? session.updatedAt;
-  }
-  const recentChats = useMemo(() => {
-    const candidates = sessions.filter(
-      (session) => !session.archived && !session.deleting,
-    );
-    const sorted = [...candidates].sort(
-      (a, b) =>
-        Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) ||
-        answeredAt(b) - answeredAt(a),
-    );
-    return { top: sorted.slice(0, 5), overflow: sorted.slice(5, 15) };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions]);
   async function metadata(
     session: SessionSummary,
     patch: { pinned?: boolean; archived?: boolean; tags?: string[] },
@@ -905,7 +887,7 @@ export function ProjectSidebar({
       setPending("");
     }
   }
-  function sessionRow(session: SessionSummary, options?: { compact?: boolean }) {
+  function sessionRow(session: SessionSummary) {
     const title = session.title || (zh ? "新会话" : "New session");
     const relationKind =
       session.relation === "clone"
@@ -931,12 +913,7 @@ export function ProjectSidebar({
       >
         <button
           className="project-session-link"
-          onClick={() => {
-            onSelectSession(session);
-            // Selecting from the embedded recent-chats list closes it; in the
-            // project tree the flag is already false and this is a no-op.
-            setRecentOpen(false);
-          }}
+          onClick={() => onSelectSession(session)}
           title={title}
           aria-current={session.sessionId === sessionId ? "page" : undefined}
         >
@@ -952,7 +929,7 @@ export function ProjectSidebar({
           ) : (
             <span className="session-indent-dot" />
           )}
-          {relationKind && !options?.compact && (
+          {relationKind && (
             <span
               className={`session-relation-prefix session-relation-${relationKind}`}
               title={
@@ -1133,9 +1110,7 @@ export function ProjectSidebar({
   function jumpToSession(session: SessionSummary) {
     onSelectSession(session);
     // A hit may live in the archived set or a collapsed project; open both so
-    // the row is actually visible after the jump. Recent chats lives outside
-    // the tree, so close it after selecting from there.
-    setRecentOpen(false);
+    // the row is actually visible after the jump.
     setArchived(Boolean(session.archived));
     if (session.projectId) {
       setCollapsed((current) => {
@@ -1158,8 +1133,8 @@ export function ProjectSidebar({
           <kbd>Ctrl N</kbd>
         </button>
         {/* Two primary navigation actions beside New session. Search finds
-            sessions across projects as a floating window. Recent chats are
-            embedded below so they can be managed like project rows (#296). */}
+            sessions across projects; Recent chats shows cross-project recency.
+            Both open as floating windows so the tree keeps its height. */}
         <button
           type="button"
           className={`sidebar-new-chat slim-chat-search-trigger${searchOpen ? " active" : ""}`}
@@ -1178,12 +1153,14 @@ export function ProjectSidebar({
         </button>
         <button
           type="button"
-          className="sidebar-new-chat slim-recent-trigger"
+          className={`sidebar-new-chat slim-recent-trigger${recentOpen ? " active" : ""}`}
           aria-label={translate(language, "recentChats")}
+          aria-expanded={recentOpen}
+          aria-controls={recentOpen ? "sidebar-recent-chats" : undefined}
           title={translate(language, "recentChats")}
           onClick={() => {
             setSearchOpen(false);
-            setRecentOpen(true);
+            setRecentOpen((open) => !open);
           }}
         >
           <Clock3 size={16} />
@@ -1392,30 +1369,14 @@ export function ProjectSidebar({
         })}
       </nav>
       {recentOpen && (
-        <section className="recent-inline" aria-label={translate(language, "recentChats")}>
-          <div className="recent-inline-heading">
-            <span>
-              <Clock3 size={13} aria-hidden="true" />
-              {translate(language, "recentChats")}
-            </span>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={translate(language, "closePanel")}
-              onClick={() => setRecentOpen(false)}
-            >
-              <X size={14} />
-            </button>
-          </div>
-          {recentChats.top.map((session) => sessionRow(session, { compact: true }))}
-          {recentChats.overflow.length > 0 && (
-            <div className="recent-inline-more">
-              {recentChats.overflow.map((session) =>
-                sessionRow(session, { compact: true }),
-              )}
-            </div>
-          )}
-        </section>
+        <RecentChats
+          language={language}
+          sessions={sessions}
+          projects={projects}
+          activeSessionId={sessionId}
+          onSelect={jumpToSession}
+          onClose={() => setRecentOpen(false)}
+        />
       )}
       {searchOpen && (
         <SessionSearch
