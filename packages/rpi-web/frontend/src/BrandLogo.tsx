@@ -1,9 +1,9 @@
-/** Light variant of the official rpi mark, bundled locally; no remote request. */
+/** Project logo from the main repo README, bundled locally; no remote request. */
 export function BrandLogo({ size = 28 }: { size?: number }) {
   return (
     <img
       className="rpi-logo"
-      src="/favicon.svg"
+      src="/rpi-logo.png"
       width={size}
       height={size}
       alt=""

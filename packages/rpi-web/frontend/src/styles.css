@@ -4303,3 +4303,22 @@ details[open] > summary:before {
   color: var(--danger);
   overflow-wrap: anywhere;
 }
+
+/* Project logo from the main repo README (docs/images/rpi-logo.jpg), rendered
+   from a transparent PNG. The gear is scaled up and anchored so its ink bottom
+   meets the "p" descender; the word next to it is lifted 3px to match the
+   proposal layout. Dark theme inverts the black ink so it stays legible. */
+.rpi-logo {
+  object-fit: contain;
+  transform: scale(1.1) translateY(-3.07px);
+}
+.message-heading .brand-mark .rpi-logo {
+  transform: scale(1.1) translateY(-2px);
+}
+.sidebar-brand > span:first-of-type,
+.message.assistant .message-heading strong {
+  transform: translateY(-3px);
+}
+:root[data-theme="dark"] .rpi-logo {
+  filter: invert(1);
+}
