@@ -834,6 +834,7 @@ export default function App() {
   const followingRef = useRef(true);
   const [following, setFollowing] = useState(true);
   const [rows, setRows] = useState<Row[]>([]);
+  const streamingAssistant = useRef<string | null>(null);
   const rowsBySession = useRef(new Map<string, Row[]>());
   const rowsSessionRef = useRef(sessionId);
   const earlierPage = useRef<{
@@ -1594,6 +1595,7 @@ export default function App() {
           if (roleOf(event.message) !== "assistant") break;
           const prefix = `m${seq}`;
           currentAssistant.current = prefix;
+          streamingAssistant.current = prefix;
           const initial = rowsFromAssistant(
             (event.message ?? {}) as Record<string, unknown>,
             prefix,
@@ -1637,6 +1639,7 @@ export default function App() {
           }
           const prefix = currentAssistant.current ?? `restored-${seq}`;
           currentAssistant.current = prefix;
+          if (event.type === "message_end") streamingAssistant.current = null;
           const rebuilt = rowsFromAssistant(
             (event.message ?? {}) as Record<string, unknown>,
             prefix,
@@ -2137,6 +2140,7 @@ export default function App() {
     lastSeq.current = 0;
     currentAssistant.current = null;
     currentUser.current = null;
+    streamingAssistant.current = null;
     followingRef.current = true;
     setFollowing(true);
     setDraft(draftBySession.current.get(sessionId) ?? "");
@@ -2213,6 +2217,7 @@ export default function App() {
         restoreSnapshotStatus(snapshot);
         currentAssistant.current = null;
         currentUser.current = null;
+        streamingAssistant.current = null;
         const restored = prependRows(
           earlierPage.current?.rows ?? [],
           rowsFromMessages(snapshot.messages),
@@ -5186,6 +5191,13 @@ export default function App() {
                               language={language}
                               onSpeak={speakMessage}
                               readingRowId={readingRowId}
+                              thinkingStreaming={
+                                !historical.active &&
+                                streamingAssistant.current !== null &&
+                                row.id.startsWith(
+                                  `${streamingAssistant.current}:`,
+                                )
+                              }
                             />
                           )}
                           {group !== null && row.kind === "tool" && parentToolCallId(row) && (
@@ -6115,12 +6127,14 @@ const RowView = memo(function RowView({
   todoHistory,
   onSpeak,
   readingRowId,
+  thinkingStreaming,
 }: {
   row: Row;
   language: Language;
   todoHistory?: ToolRow[];
   onSpeak?: (rowId: string, text: string) => void;
   readingRowId?: string | null;
+  thinkingStreaming?: boolean;
 }) {
   const t = (key: MessageKey) => translate(language, key);
   if (row.kind === "boundary") return null;
@@ -6157,6 +6171,22 @@ const RowView = memo(function RowView({
     return <ImagePreview image={row.image} language={language} />;
   }
   if (row.kind === "thinking") {
+    // A streamed thinking block is replaced on every message_update. Letting
+    // its Markdown reflow in normal flow makes scrollHeight move up and down,
+    // which makes the followed transcript jitter. Pin the body to a fixed
+    // height while the assistant message is streaming; the completed block
+    // keeps the existing disclosure behavior.
+    if (thinkingStreaming)
+      return (
+        <div className="thinking-row thinking-row-streaming">
+          <div className="thinking-row-heading">
+            <Sparkles size={13} /> {t("thinking")}
+          </div>
+          <div className="thinking-row-viewport">
+            <MarkdownBody text={row.text} language={language} />
+          </div>
+        </div>
+      );
     return (
       <details className="thinking-row">
         <summary>
