@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { createHash } from "node:crypto";
 
 const lightVariantHash =
-  "67f5fd2e2791443e3dace12dc02219a387248f4948e2bd840bf34c88bba36744";
+  "21b74c57400ca20e738e6cb2c6ab235764df3badd2cc599da268a2e2573b9c9c";
 for (const width of [1280, 390]) {
   for (const authenticated of [false, true]) {
     test(`official rpi logo ${authenticated ? "workspace" : "login"} at ${width}px`, async ({
@@ -119,7 +119,7 @@ for (const width of [1280, 390]) {
         )
         .toBeGreaterThan(0);
       const src = await page.locator(selector).getAttribute("src");
-      expect(src).toBe("/favicon.svg");
+      expect(src).toBe("/rpi-logo.png");
       const response = await page.request.get(src!);
       expect(
         createHash("sha256")
