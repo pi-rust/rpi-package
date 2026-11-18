@@ -5963,6 +5963,53 @@ test("slash model selection rejects ambiguous names and accepts provider qualifi
     ]);
 });
 
+test("an unknown slash word is sent as a prompt, not rejected", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const prompts: string[] = [];
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type === "prompt") {
+        prompts.push(body.message);
+        return route.fulfill({ json: response({ accepted: true }, body.type) });
+      }
+      return route.fallback();
+    },
+  );
+  await page.goto("/");
+  const input = page.locator(".composer textarea");
+  // A slash-prefixed word that is not a command must reach the model as a
+  // normal prompt instead of an "Unknown command" note.
+  await input.fill("/modelx please explain this");
+  await input.press("Enter");
+  await expect.poll(() => prompts).toEqual(["/modelx please explain this"]);
+  // A fresh composer: a typo against a real command falls through the same
+  // way (a new load sidesteps the running state the first prompt left).
+  await page.goto("/");
+  await input.fill("/modle sumo");
+  await input.press("Enter");
+  await expect.poll(() => prompts).toEqual([
+    "/modelx please explain this",
+    "/modle sumo",
+  ]);
+  // A known command is still routed to the slash handler, not the model.
+  // ("/abort" while idle is advertised by the mock host and notes without
+  // sending a prompt; "/help" lists commands.)
+  await page.goto("/");
+  await input.fill("/abort");
+  await input.press("Enter");
+  await expect(page.locator(".transcript-note")).toContainText([
+    "Nothing is running.",
+  ]);
+  await input.fill("/help");
+  await input.press("Enter");
+  await expect(page.locator(".transcript-note")).toContainText(["/help"]);
+  await expect.poll(() => prompts).toHaveLength(2);
+});
+
 for (const outcome of ["done", "error", "closed"] as const) {
   test(`bash elapsed time advances, freezes after ${outcome}, and survives reload`, async ({
     page,
