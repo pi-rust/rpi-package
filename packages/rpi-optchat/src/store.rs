@@ -63,7 +63,7 @@ pub fn read(profile: &str) -> Result<Vec<Entry>, String> {
     read_in(&directory(), profile)
 }
 
-fn read_in(base: &Path, profile: &str) -> Result<Vec<Entry>, String> {
+pub(crate) fn read_in(base: &Path, profile: &str) -> Result<Vec<Entry>, String> {
     let Some(path) = path_in(base, profile) else {
         return Err(format!("`{profile}` is not a usable profile name"));
     };
@@ -115,6 +115,12 @@ fn append_in(base: &Path, profile: &str, entry: &Entry) -> Result<(), String> {
         .open(&path)
         .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
     writeln!(file, "{line}").map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
+/// Append into an explicit base directory; tests only.
+#[cfg(test)]
+pub(crate) fn append_in_for_tests(base: &Path, profile: &str, entry: &Entry) -> Result<(), String> {
+    append_in(base, profile, entry)
 }
 
 /// How many entries a profile holds, for `/optchat status`.

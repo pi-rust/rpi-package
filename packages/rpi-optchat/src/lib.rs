@@ -746,6 +746,11 @@ fn on_session_lifecycle(event, data) {
         event.tag(),
         EventTag::SessionStart | EventTag::SessionShutdown
     ) {
+        // A session that ends without an explicit `/optchat fit` still keeps the
+        // shape it folded to, so resuming shows the same lines.
+        if event.tag() == EventTag::SessionShutdown {
+            persist_view();
+        }
         reset_state();
     }
     0
@@ -985,6 +990,7 @@ const HELP: &str = r#"OptChat memory — this session branch, persisted with the
 /optchat note <text>     append a durable note to memory
 /optchat import <file>   append a text/markdown/JSONL file as imported notes
 /optchat profile [name]  show or switch the cross-session profile
+/optchat recall <text>   search the profile store, beyond the retained window
 /optchat attach [name]   copy a profile store into this session
 /optchat compact on|off  rewrite summary lines with a child model
 /optchat fit             merge the view as far as the tree allows
@@ -1149,7 +1155,37 @@ fn profile_command(rest: &str) -> Result<String, String> {
     ))
 }
 
-/// `/optchat attach`: copy the profile store into this session as imported notes,
+/// Search a profile store: the messages that may already have left the retained
+/// window, so `recall` is what makes the memory effectively unbounded.
+fn recall_from(base: &std::path::Path, profile: &str, needle: &str) -> Result<String, String> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return Err("Usage: /optchat recall <text>".to_string());
+    }
+    let entries = store::read_in(base, profile)?;
+    if entries.is_empty() {
+        return Ok(format!(
+            "Profile `{profile}` holds nothing yet; messages mirror into it as they are logged."
+        ));
+    }
+    let memory = Memory::load(entries);
+    let hits = memory.search(needle, None);
+    Ok(format!(
+        "Profile `{profile}` store · {} messages\n{hits}",
+        memory.len()
+    ))
+}
+
+/// `/optchat recall <text>`: search the profile store.
+fn recall_command(rest: &str) -> Result<String, String> {
+    if rest.trim().is_empty() {
+        return Err("Usage: /optchat recall <text>".to_string());
+    }
+    let profile = with_state(|state| state.profile.clone())?;
+    recall_from(&store::directory(), &profile, rest)
+}
+
+/// `/optchat attach`: copy the profile store into this session as imported notes,/// `/optchat attach`: copy the profile store into this session as imported notes,
 /// skipping anything this session already logged.
 fn attach_command(rest: &str) -> Result<String, String> {
     let profile = with_state(|state| state.profile.clone())?;
@@ -1347,6 +1383,7 @@ fn run_command(args: &str) -> String {
             .map(|i| format!("Noted as memory message {i}.")),
         "import" if !rest.is_empty() => import_command(rest),
         "profile" => profile_command(rest),
+        "recall" => recall_command(rest),
         "attach" => attach_command(rest),
         "compact" | "compress" => match rest {
             "" | "status" => Ok(compact_status()),
@@ -1361,8 +1398,19 @@ fn run_command(args: &str) -> String {
     };
     match result {
         Ok(text) => text,
-        Err(error) => format!("⚠️ {error}"),
+        Err(error) => zoom_hint(error),
     }
+}
+
+/// A `zoom` past the retained window is answered by the store, not by luck.
+fn zoom_hint(error: String) -> String {
+    if error.contains("memory holds messages") {
+        return format!(
+            "⚠️ {error}\nOlder messages are kept in the profile store: `/optchat recall <text>` \
+             searches it, and `/optchat attach` copies it back in."
+        );
+    }
+    format!("⚠️ {error}")
 }
 
 fn command_output(out: &mut rpi_plugin_sdk::callbacks::Output<'_>, value: Value) -> i32 {
@@ -1534,6 +1582,44 @@ mod tests {
         assert_eq!(params["properties"]["text"]["minLength"], 1);
         assert_eq!(params["properties"]["before"]["minimum"], 0);
         assert!(!params.to_string().contains("__rpi"));
+    }
+
+    #[test]
+    fn a_zoom_past_the_window_points_at_recall() {
+        let hinted = zoom_hint("No message 3: memory holds messages 7..9".to_string());
+        assert!(hinted.contains("recall <text>"), "{hinted}");
+        assert!(hinted.contains("memory holds messages 7..9"), "{hinted}");
+        let plain = zoom_hint("zoom needs an integer `id`".to_string());
+        assert!(!plain.contains("recall"), "{plain}");
+        assert_eq!(plain, "⚠️ zoom needs an integer `id`");
+    }
+
+    #[test]
+    fn recall_reads_the_store_without_a_session() {
+        let dir = std::env::temp_dir().join(format!("optchat-recall-{}", std::process::id()));
+        let base = dir.join(".rpi").join("optchat");
+        let entry = |i: u64, text: &str| memory::Entry {
+            i,
+            kind: Kind::Note,
+            text: text.to_string(),
+            date: iso8601(1_700_000_000_000 + i as i64 * 1000),
+            receipt: None,
+            origin: None,
+        };
+        store::append_in_for_tests(&base, "work", &entry(0, "the parser bug was fixed"))
+            .expect("append");
+        store::append_in_for_tests(&base, "work", &entry(1, "unrelated note")).expect("append");
+
+        let hits = recall_from(&base, "work", "PARSER").expect("recall");
+        assert!(hits.contains("Profile `work` store"), "{hits}");
+        assert!(hits.contains("1 message contains"), "{hits}");
+        assert!(hits.contains("parser bug"), "{hits}");
+        assert!(!hits.contains("unrelated note"), "{hits}");
+
+        assert!(recall_from(&base, "work", "   ").is_err());
+        let empty = recall_from(&base, "absent", "anything").expect("empty store");
+        assert!(empty.contains("holds nothing yet"), "{empty}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

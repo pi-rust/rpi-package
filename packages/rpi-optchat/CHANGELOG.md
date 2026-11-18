@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSONL/JSON exports and plain text, with `/optchat import --format`.
 - A footer count published through `SetStatus`, and the retained id window in
   `/optchat status`.
+- `/optchat recall <text>` searches the profile store, so messages that left the
+  20000-message window stay findable; a `zoom` past the window points at it.
 - The view shape is saved as `optchat-view`, so `/optchat fit` and model-written
   lines survive a resume; a shape that no longer tiles the window is refolded.
 

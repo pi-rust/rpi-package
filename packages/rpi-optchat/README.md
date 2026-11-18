@@ -63,6 +63,7 @@ Both tools read the current session branch only; both return text plus
 /optchat note <text>     append a durable note to memory
 /optchat import <file> [--format claude|chatgpt|jsonl|text]
 /optchat profile [name]  show or switch the cross-session profile
+/optchat recall <text>   search the profile store, beyond the retained window
 /optchat attach [name]   copy a profile store into this session
 /optchat compact on|off  rewrite summary lines with a child model
 /optchat fit             merge the view as far as the tree allows
@@ -129,9 +130,9 @@ of the log, so a resumed session rebuilds the identical tree from its entries.
 ## Known limitations
 
 - **Profiles attach, they do not merge live.** Memory is mirrored into
-  `.rpi/optchat/<profile>.jsonl`; another session picks it up with
-  `/optchat attach`, which copies it in as imported notes. Upstream instead
-  serves one profile store as the live log.
+  `.rpi/optchat/<profile>.jsonl`; `/optchat recall` searches it and
+  `/optchat attach` copies it back in as imported notes. Upstream instead serves
+  one profile store as the live log.
 - **Compaction is opt-in and per session.** A line costs one child model call, so
   it stays off unless `/optchat compact on` or `RPI_OPTCHAT_COMPACT=auto`.
 - **Imports are one-way and bounded.** A source-specific parser is only promised
@@ -143,9 +144,11 @@ of the log, so a resumed session rebuilds the identical tree from its entries.
   `tool_execution_start`/`tool_execution_end` to plugins during interactive and
   `--mode rpc` runs, but not in `--print` runs; user and reply capture still
   works there.
-- **The log keeps a 20000-message window.** Past the cap the oldest messages fall
-  out in batches and their ids are never reused, so a printed summary keeps
-  naming the same message; `zoom` on a dropped id says which range is retained.
+- **The session log keeps a 20000-message window; the profile store does not.**
+  Past the cap the oldest messages leave the view and `zoom`, in batches, and
+  their ids are never reused, so a printed summary keeps naming the same message.
+  They are still in `.rpi/optchat/<profile>.jsonl`: `recall` searches it, and a
+  `zoom` past the window says so instead of failing silently.
 - **Capture is best effort.** A failed `AppendEntry` never fails the turn and the
   entry is not committed to the in-memory log, so a later capture can retry
   without creating a phantom message. `/optchat note` reports the persistence
