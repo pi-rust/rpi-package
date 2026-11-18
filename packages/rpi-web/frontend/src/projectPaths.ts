@@ -19,6 +19,77 @@ export function hiddenProjectComponent(name: string): boolean {
   return HIDDEN_COMPONENTS.has(lower) || lower.startsWith(".env");
 }
 
+/** A path resolved against the project root or one of its linked worktrees. */
+export interface RootedPath {
+  /** Linked worktree that matched; omitted when the project root matched. */
+  root?: string;
+  /** `/`-separated path relative to the matched root. */
+  path: string;
+}
+
+/**
+ * Every directory a preview may read: the project root first, then the linked
+ * worktrees the backend reports (`git worktree list`). An agent usually works
+ * in a sibling checkout, so matching the project root alone would leave every
+ * file it wrote unopenable.
+ */
+function projectRoots(project: {
+  path: string;
+  worktrees?: string[];
+}): Array<{ root?: string; path: string }> {
+  const roots: Array<{ root?: string; path: string }> = [
+    { path: project.path },
+  ];
+  for (const worktree of project.worktrees ?? []) {
+    if (worktree && worktree !== project.path)
+      roots.push({ root: worktree, path: worktree });
+  }
+  return roots;
+}
+
+/** The `/`-separated prefix an absolute path must start with to sit inside `root`. */
+function rootPrefix(root: string, windows: boolean): string | null {
+  const normalized = root.replace(/\\/g, "/");
+  // A Windows root never matches a Unix path, and the reverse is true too.
+  if (/^[a-z]:\//i.test(normalized) !== windows) return null;
+  // Preserve filesystem roots: "/" and "D:/" keep their trailing separator.
+  const trimmed =
+    normalized.replace(/\/+$/, "") +
+    (/^(?:[a-z]:)?\/+$/i.test(normalized) ? "/" : "");
+  if (!trimmed) return null;
+  return trimmed.endsWith("/") ? trimmed : trimmed + "/";
+}
+
+/**
+ * Resolve an absolute `source` against the project's browsable roots.
+ *
+ * The longest matching root wins, so a worktree nested inside the checkout is
+ * attributed to the worktree rather than to the enclosing project. Windows
+ * roots are compared case-insensitively only when the source is drive
+ * qualified; Unix roots stay case-sensitive. Relative sources belong to the
+ * caller's root and return `null` here.
+ */
+export function matchProjectRoot(
+  source: string,
+  project: { path: string; worktrees?: string[] },
+): RootedPath | null {
+  const windows = /^[a-z]:\//i.test(source);
+  let best: RootedPath | null = null;
+  for (const candidate of projectRoots(project)) {
+    const prefix = rootPrefix(candidate.path, windows);
+    if (!prefix) continue;
+    const matches = windows
+      ? source.toLowerCase().startsWith(prefix.toLowerCase())
+      : source.startsWith(prefix);
+    if (!matches) continue;
+    const path = source.slice(prefix.length);
+    // A shorter remainder means a more specific root; keep that one.
+    if (!path || (best && best.path.length <= path.length)) continue;
+    best = candidate.root ? { root: candidate.root, path } : { path };
+  }
+  return best;
+}
+
 /**
  * Join a project-relative file path onto the server's canonical project root.
  * `Project.path` comes from the backend (`/api/v1/projects`), not from the

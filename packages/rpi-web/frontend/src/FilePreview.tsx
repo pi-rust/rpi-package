@@ -25,7 +25,11 @@ export function FilePreview({
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
   // The server root determines the platform-specific separator, not the
   // browser. Show this exact value so "Copy path" is what the user can see.
-  const absolutePath = absoluteProjectPath(project.path, file.path);
+  // A linked-worktree link is joined onto that worktree, not the project root.
+  const absolutePath = absoluteProjectPath(
+    file.root ?? project.path,
+    file.path,
+  );
   const dialogRef = useRef<HTMLDialogElement>(null);
   const targetRef = useRef<HTMLSpanElement>(null);
   const [attempt, setAttempt] = useState(0);
@@ -55,20 +59,18 @@ export function FilePreview({
       void (async () => {
         try {
           if (image) {
-            const blob = await api.image(
-              project.id,
-              file.path,
-              controller.signal,
-            );
+            const blob = await api.image(project.id, file.path, {
+              root: file.root,
+              signal: controller.signal,
+            });
             if (controller.signal.aborted) return;
             objectUrl = URL.createObjectURL(blob);
             setImageUrl(objectUrl);
           } else {
-            const result = await api.file(
-              project.id,
-              file.path,
-              controller.signal,
-            );
+            const result = await api.file(project.id, file.path, {
+              root: file.root,
+              signal: controller.signal,
+            });
             if (!controller.signal.aborted) setContent(result.content);
           }
         } catch (cause: unknown) {
@@ -82,7 +84,7 @@ export function FilePreview({
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [project.id, project.path, file.path, image, attempt]);
+  }, [project.id, project.path, file.path, file.root, image, attempt]);
   const lines = useMemo(() => {
     if (content === null) return [];
     const extension = file.path.split(".").pop()?.toLowerCase() ?? "";

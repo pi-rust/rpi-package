@@ -1305,6 +1305,24 @@ export default function App() {
     status === "running" ||
     status === "starting" ||
     status === "awaiting_input";
+  // Agents create linked worktrees while a run is in progress and then report
+  // the files they wrote there. Refresh the roots once the run settles so those
+  // paths become previewable without a page reload; a failed refresh keeps the
+  // previous roots, and previews still fall back to the project root.
+  const refreshProjectRoots = useCallback(async () => {
+    try {
+      const result = await api.projects();
+      setProjects(result.projects);
+      setProjectsRoot(result.projectsRoot ?? "");
+    } catch {
+      // Offline or locked servers keep the previous list; nothing to report.
+    }
+  }, []);
+  const previouslyBusy = useRef(busy);
+  useEffect(() => {
+    if (previouslyBusy.current && !busy) void refreshProjectRoots();
+    previouslyBusy.current = busy;
+  }, [busy, refreshProjectRoots]);
   const composerAbort = busy && supported.has("abort") && !loadingSession && !connectionFailed;
   const composerContinue = !busy && status !== "closed" && !queueEditId && !draft.trim() && attachments.length === 0 &&
     ((interrupted && supported.has("resume_pending")) || (failedRun && supported.has("prompt")));

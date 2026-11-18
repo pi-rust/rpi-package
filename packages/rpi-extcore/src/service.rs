@@ -265,9 +265,28 @@ impl Service {
 }
 
 pub async fn list_projects(state: &Service) -> Value {
-    let projects = state.projects.read().await;
+    // Linked worktrees are read outside the catalog lock: each entry shells out
+    // to Git, and a project rename must not wait on that.
+    let (entries, root) = {
+        let projects = state.projects.read().await;
+        (projects.entries.clone(), projects.root.clone())
+    };
+    let mut payload = Vec::with_capacity(entries.len());
+    for project in &entries {
+        let worktrees = workspace::worktree_paths(project).await;
+        payload.push(json!(ProjectPayload { project, worktrees }));
+    }
 
-    json!({"projects":projects.entries, "defaultProjectId":state.default_project_id,"projectsRoot":projects.root.to_string_lossy().trim_start_matches(r"\\?\")})
+    json!({"projects":payload, "defaultProjectId":state.default_project_id,"projectsRoot":root.to_string_lossy().trim_start_matches(r"\\?\")})
+}
+
+/// A `/projects` entry: the project exactly as its `Serialize` renders it,
+/// plus the linked worktrees a preview may read.
+#[derive(serde::Serialize)]
+struct ProjectPayload<'a> {
+    #[serde(flatten)]
+    project: &'a Project,
+    worktrees: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -395,6 +414,9 @@ pub async fn upload_project_file(
 pub struct FileQuery {
     #[serde(default)]
     pub path: String,
+    /// Linked worktree to read from; empty is the project root itself.
+    #[serde(default)]
+    pub root: String,
     #[serde(default)]
     pub staged: bool,
 }
@@ -402,14 +424,14 @@ pub async fn project_files(state: &Service, id: String, query: FileQuery) -> wor
     workspace::files(&project_by_id(state, &id).await?, &query.path).await
 }
 pub async fn project_file(state: &Service, id: String, query: FileQuery) -> workspace::Reply {
-    workspace::file(&project_by_id(state, &id).await?, &query.path).await
+    workspace::file_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
 }
 pub async fn project_image(
     state: &Service,
     id: String,
     query: FileQuery,
 ) -> Result<workspace::ProjectImage, (ReplyKind, Value)> {
-    workspace::image(&project_by_id(state, &id).await?, &query.path).await
+    workspace::image_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
 }
 pub async fn project_status(state: &Service, id: String) -> workspace::Reply {
     workspace::status(&project_by_id(state, &id).await?).await

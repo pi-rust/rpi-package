@@ -1,8 +1,10 @@
 import type { Project } from "./api";
-import { hiddenProjectComponent } from "./projectPaths";
+import { hiddenProjectComponent, matchProjectRoot } from "./projectPaths";
 
 export interface ProjectFileLink {
   path: string;
+  /** Linked worktree the path belongs to; omitted for the project root. */
+  root?: string;
   line?: number;
   endLine?: number;
 }
@@ -38,22 +40,16 @@ export function projectFileLink(
   if (!path || path.startsWith("//") || /[?#]/.test(path)) return null;
   const windows = /^[a-z]:\//i.test(path);
   if (!windows && /^[a-z][a-z\d+.-]*:/i.test(path)) return null;
-  // Preserve filesystem roots: D:/ must not become a drive-relative D: path.
-  const normalizedRoot = project.path.replace(/\\/g, "/");
-  const root =
-    normalizedRoot.replace(/\/+$/, "") +
-    (/^(?:[a-z]:)?\/+$/i.test(normalizedRoot) ? "/" : "");
-  // Unix roots are case-sensitive. Only a drive-qualified Windows root is folded.
+  // An absolute path names its own checkout: the project root, or one of its
+  // linked worktrees (`git worktree add ../name`). Keep the matched root so a
+  // preview reads that checkout instead of the same relative path in the main
+  // one. Relative paths stay project-relative.
+  let root: string | undefined;
   if (windows || path.startsWith("/")) {
-    if (windows !== /^[a-z]:\//i.test(root)) return null;
-    const prefix = root.endsWith("/") ? root : root + "/";
-    if (
-      !(windows
-        ? path.toLowerCase().startsWith(prefix.toLowerCase())
-        : path.startsWith(prefix))
-    )
-      return null;
-    path = path.slice(prefix.length);
+    const match = matchProjectRoot(path, project);
+    if (!match) return null;
+    path = match.path;
+    root = match.root;
   }
   const parts = path.split("/");
   if (parts.some((part) => part === ".." || /[:]/.test(part))) return null;
@@ -63,7 +59,7 @@ export function projectFileLink(
   if (components.some(hiddenProjectComponent)) return null;
   path = components.join("/");
   if (!path || source.endsWith("/")) return null;
-  return { path, line, endLine };
+  return root ? { path, root, line, endLine } : { path, line, endLine };
 }
 
 /** Inline code needs a recognizable filename/path, not an arbitrary identifier. */

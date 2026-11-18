@@ -66,6 +66,8 @@ export interface Project {
   name: string;
   path: string;
   archived?: boolean;
+  /** Linked worktrees of this repository, as reported by `git worktree list`. */
+  worktrees?: string[];
 }
 
 /** A read-only row from the native `rpi resource list` observation. */
@@ -723,19 +725,37 @@ export const api = {
     request<{ path: string; entries: FileEntry[] }>(
       `/projects/${projectId}/files?${new URLSearchParams({ path })}`,
     ),
-  file: (projectId: string, path: string, signal?: AbortSignal) =>
-    request<{ path: string; content: string }>(
-      `/projects/${projectId}/file?${new URLSearchParams({ path })}`,
-      { signal },
-    ),
-  image: async (projectId: string, path: string, signal?: AbortSignal) => {
+  /** `root` selects a linked worktree; it defaults to the project root. */
+  file: (
+    projectId: string,
+    path: string,
+    options: { root?: string; signal?: AbortSignal } = {},
+  ) => {
+    const query = new URLSearchParams({ path });
+    if (options.root) query.set("root", options.root);
+    return request<{ path: string; content: string }>(
+      `/projects/${projectId}/file?${query}`,
+      { signal: options.signal },
+    );
+  },
+  image: async (
+    projectId: string,
+    path: string,
+    options: { root?: string; signal?: AbortSignal } = {},
+  ) => {
+    const query = new URLSearchParams({ path });
+    if (options.root) query.set("root", options.root);
     const response = await fetch(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/image?${new URLSearchParams({ path })}`,
-      { signal, headers: { "x-rpi-web": "1" }, cache: "no-store" },
+      `/api/v1/projects/${encodeURIComponent(projectId)}/image?${query}`,
+      {
+        signal: options.signal,
+        headers: { "x-rpi-web": "1" },
+        cache: "no-store",
+      },
     );
     if (!response.ok) {
       const value = await response.json().catch((cause) => {
-        if (signal?.aborted) throw cause;
+        if (options.signal?.aborted) throw cause;
         return null;
       });
       throw new ApiError(
