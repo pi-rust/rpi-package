@@ -31,6 +31,7 @@ prompt acceptance, settlement, cancellation and process-tree cleanup stay in
 | `rpi_thinking_levels` | — | Thinking levels the native host can switch to |
 | `rpi_set_model` | `model`, optional `provider` | `{"updated":true}` |
 | `rpi_set_thinking_level` | `level` | `{"updated":true}` |
+| `rpi_compact` | — | Compaction summary and `outcome`; fails when the host cannot compact |
 | `rpi_abort` | — | `{"aborted":true}` |
 
 Results are returned as MCP `content` text plus `structuredContent`. A tool-level

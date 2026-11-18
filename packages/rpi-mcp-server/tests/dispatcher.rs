@@ -27,7 +27,25 @@ impl Harness {
     fn new() -> Self {
         // The host's stdin is the server's downstream command stream.
         let (host_stdin, downstream) = tokio::io::duplex(256 * 1024);
-        let (session, events) = HostSession::test_connection(host_stdin, 64);
+        // Advertise the commands the adapter gates on, like a real host would.
+        let (session, events) = HostSession::test_connection_with_ready(
+            host_stdin,
+            64,
+            json!({
+                "type": "ready",
+                "protocol": "rpi",
+                "supportedCommands": [
+                    "get_state",
+                    "get_messages",
+                    "compact",
+                    "get_available_models",
+                    "get_available_thinking_levels",
+                    "set_model",
+                    "set_thinking_level",
+                    "abort",
+                ],
+            }),
+        );
         Self {
             server: Arc::new(McpServer::from_session(session)),
             events,
@@ -134,7 +152,7 @@ async fn serves_initialize_catalog_and_method_errors_without_native_calls() {
         true
     );
     assert_eq!(frames[1]["id"], 2);
-    assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 8);
     assert_eq!(frames[2]["error"]["code"], -32601);
     assert_eq!(frames[3]["error"]["code"], -32602);
 }
@@ -405,4 +423,58 @@ async fn denies_permission_dialogs_instead_of_hanging() {
         .as_str()
         .unwrap()
         .contains("denied 1 approval request"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compacts_context_and_returns_the_summary() {
+    let mut harness = Harness::new();
+    harness.push(request(
+        1,
+        "initialize",
+        json!({"protocolVersion":"2025-06-18"}),
+    ));
+    harness.push(request(
+        2,
+        "tools/call",
+        json!({"name":"rpi_compact","arguments":{}}),
+    ));
+    harness.inject(
+        300,
+        json!({
+            "type":"agent_settled",
+            "outcome":"compacted",
+            "summary":"Earlier work summarized.",
+        }),
+    );
+    let (frames, commands) = harness
+        .run(|command| {
+            (command["type"] == "compact").then(|| {
+                json!({
+                    "type":"response",
+                    "id": command["id"],
+                    "success": true,
+                    "data": {"accepted": true},
+                })
+            })
+        })
+        .await;
+
+    assert!(
+        commands.iter().any(|command| command["type"] == "compact"),
+        "{commands:#?}"
+    );
+    let result = frames
+        .iter()
+        .find(|frame| frame["id"] == 2)
+        .expect("compact response")
+        .clone();
+    assert_eq!(result["result"]["isError"], false, "{result:#?}");
+    assert_eq!(
+        result["result"]["structuredContent"]["outcome"],
+        "completed"
+    );
+    assert!(result["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Earlier work summarized."));
 }

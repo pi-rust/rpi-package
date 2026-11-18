@@ -394,7 +394,8 @@ impl McpServer {
         match call.name.as_str() {
             "rpi_prompt" => {
                 let message = string_argument(&arguments, "message")?;
-                self.prompt(message, out, call.progress_token).await
+                self.operation(Some(message), out, call.progress_token)
+                    .await
             }
             "rpi_state" => self.session.state().await,
             "rpi_available_models" => self.session.available_models().await,
@@ -413,6 +414,12 @@ impl McpServer {
                     .await
                     .map(|_| json!({"updated":true}))
             }
+            "rpi_compact" => {
+                if !self.session.supports_command("compact") {
+                    return Err("native host does not support compact".into());
+                }
+                self.operation(None, out, call.progress_token).await
+            }
             "rpi_abort" => self
                 .session
                 .abort_run()
@@ -423,15 +430,18 @@ impl McpServer {
         }
     }
 
-    /// One prompt turn, settled by native acceptance plus settlement, with
-    /// progress notifications when the client supplied a progress token.
-    async fn prompt(
+    /// One native run (prompt or compaction), settled by acceptance plus
+    /// settlement, with progress notifications when the client sent a token.
+    async fn operation(
         &self,
-        message: String,
+        message: Option<String>,
         out: &mpsc::Sender<Value>,
         progress_token: Option<Value>,
     ) -> Result<Value, String> {
-        let mut run = self.session.begin_prompt(message).await?;
+        let mut run = match message {
+            Some(message) => self.session.begin_prompt(message).await?,
+            None => self.session.begin_compaction(None).await?,
+        };
         let mut text = String::new();
         let mut cancelled = false;
         let mut denied: Vec<String> = Vec::new();
@@ -889,6 +899,11 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
+            "rpi_compact",
+            "Compact the native context and return the summary; fails when the host cannot compact.",
+            object_schema(),
+        ),
+        tool(
             "rpi_abort",
             "Abort the active native rpi run.",
             object_schema(),
@@ -1019,7 +1034,8 @@ mod tests {
     #[test]
     fn tool_catalog_has_stable_native_tools() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 8);
+        assert!(tools.iter().any(|tool| tool["name"] == "rpi_compact"));
         assert_eq!(tools[0]["name"], "rpi_prompt");
         assert_eq!(tools[0]["inputSchema"]["required"], json!(["message"]));
         for tool in &tools {
