@@ -25,6 +25,7 @@
 mod compact;
 mod memory;
 mod runtime;
+mod store;
 
 use memory::{clip, flat, iso8601, Kind, Memory, Origin, MAX_ENTRIES, PAGE, VIEW};
 use rpi_plugin_sdk::callbacks::free_string;
@@ -42,6 +43,8 @@ use std::sync::Mutex;
 
 /// Session custom-entry type holding one whole message.
 const ENTRY_TYPE: &str = "optchat-entry";
+/// Session custom-entry type remembering which profile this session belongs to.
+const PROFILE_TYPE: &str = "optchat-profile";
 /// Marker that makes the injected pointer line idempotent.
 const MEMORY_MARKER: &str = "[OptChat memory]";
 /// The two tools this plugin owns; their own calls are not logged as memory,
@@ -121,6 +124,8 @@ struct State {
     memory: Memory,
     /// Model-written summaries are enabled for this session.
     compact: bool,
+    /// The cross-session profile this session mirrors into.
+    profile: String,
     /// The last captured message, so one message delivered twice — a user
     /// prompt via `before_agent_start` and again via `message_end`, or a
     /// re-dispatched turn — is not logged twice. Two genuinely identical
@@ -144,6 +149,7 @@ fn current_session() -> String {
 struct Hydrated {
     memory: Memory,
     compact: bool,
+    profile: String,
 }
 
 /// Reload the log from the current session branch. Only `optchat-entry` entries
@@ -153,10 +159,16 @@ fn hydrate() -> Result<Hydrated, String> {
     let mut entries: Vec<memory::Entry> = Vec::new();
     let mut nodes: Vec<(u32, u64, String)> = Vec::new();
     let mut compact: Option<bool> = None;
+    let mut profile: Option<String> = None;
     let mut after: Option<u64> = None;
     for _ in 0..(MAX_ENTRIES / HYDRATE_PAGE + 4) {
         let mut args = json!({
-            "customTypes": [ENTRY_TYPE, compact::NODE_TYPE, compact::CONFIG_TYPE],
+            "customTypes": [
+                ENTRY_TYPE,
+                compact::NODE_TYPE,
+                compact::CONFIG_TYPE,
+                PROFILE_TYPE,
+            ],
             "limit": HYDRATE_PAGE,
             "order": "oldestFirst",
         });
@@ -189,6 +201,7 @@ fn hydrate() -> Result<Hydrated, String> {
             if custom_type != ENTRY_TYPE
                 && custom_type != compact::NODE_TYPE
                 && custom_type != compact::CONFIG_TYPE
+                && custom_type != PROFILE_TYPE
             {
                 continue;
             }
@@ -208,9 +221,14 @@ fn hydrate() -> Result<Hydrated, String> {
                         nodes.push((l, i, text.to_string()));
                     }
                 }
-                _ => {
+                compact::CONFIG_TYPE => {
                     if let Some(enabled) = data.get("compact").and_then(Value::as_bool) {
                         compact = Some(enabled);
+                    }
+                }
+                _ => {
+                    if let Some(name) = data.get("name").and_then(Value::as_str) {
+                        profile = Some(name.to_string());
                     }
                 }
             }
@@ -232,7 +250,19 @@ fn hydrate() -> Result<Hydrated, String> {
     Ok(Hydrated {
         memory,
         compact: compact.unwrap_or_else(compact::env_enabled),
+        profile: profile
+            .and_then(|name| store::normalize(&name))
+            .unwrap_or_else(default_profile),
     })
+}
+
+/// The profile this session serves: the launch environment first, then the
+/// remembered binding, then the neutral default.
+fn default_profile() -> String {
+    std::env::var("RPI_OPTCHAT_PROFILE")
+        .ok()
+        .and_then(|name| store::normalize(&name))
+        .unwrap_or_else(|| "default".to_string())
 }
 
 /// The id of the newest message the branch holds, read in one cheap query.
@@ -297,7 +327,11 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Result<T, String> {
         }
     };
     if stale {
-        let Hydrated { memory, compact } = hydrate()?;
+        let Hydrated {
+            memory,
+            compact,
+            profile,
+        } = hydrate()?;
         if compact {
             compact::bind_session(&call_action);
         }
@@ -311,6 +345,7 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Result<T, String> {
                 session,
                 memory,
                 compact,
+                profile,
                 last: None,
             });
         }
@@ -462,10 +497,27 @@ fn capture(
     let Some(entry) = candidate else {
         return Ok(());
     };
-    if let Err(error) = persist_then_commit(entry, &session, Some((kind, dedupe_text, millis))) {
-        debug(&format!("could not persist message: {error}"));
+    match persist_then_commit(entry, &session, Some((kind, dedupe_text, millis))) {
+        Ok(id) => mirror(id),
+        Err(error) => debug(&format!("could not persist message: {error}")),
     }
     Ok(())
+}
+
+/// Copy one committed entry into the project profile store, where another
+/// session can attach it. Best effort: the branch is authoritative.
+fn mirror(id: u64) {
+    let Ok((profile, entry)) =
+        with_state(|state| (state.profile.clone(), state.memory.get(id).cloned()))
+    else {
+        return;
+    };
+    let Some(entry) = entry else { return };
+    if let Err(error) = store::append(&profile, &entry) {
+        debug(&format!(
+            "could not mirror message {id} into `{profile}`: {error}"
+        ));
+    }
 }
 
 /// Log an entry the user asked for (`/optchat note`, import): not deduplicated,
@@ -478,7 +530,9 @@ fn record_note(kind: Kind, text: String, origin: Option<Origin>) -> Result<u64, 
         .unwrap_or_else(|error| error.into_inner());
     let session = current_session();
     let entry = with_state(|state| state.memory.prepare(kind, text, date, None, origin))?;
-    persist_then_commit(entry, &session, None)
+    let id = persist_then_commit(entry, &session, None)?;
+    mirror(id);
+    Ok(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -838,6 +892,8 @@ const HELP: &str = r#"OptChat memory — this session branch, persisted with the
 /optchat search <text>   find logged messages by content
 /optchat note <text>     append a durable note to memory
 /optchat import <file>   append a text/markdown/JSONL file as imported notes
+/optchat profile [name]  show or switch the cross-session profile
+/optchat attach [name]   copy a profile store into this session
 /optchat compact on|off  rewrite summary lines with a child model
 /optchat fit             merge the view as far as the tree allows
 /optchat help            this list
@@ -880,7 +936,7 @@ fn status() -> String {
         "OptChat memory · {} messages (ids {}..{}) · {} view lines · {} of {} bytes\n\
          user {} · talk {} · tool {} · echo {} · note {} · work {}\n\n\
          Stored as `optchat-entry` custom entries on this session branch; model \
-         compaction is {}. `/optchat view` shows the summary view; \
+         compaction is {}; profile {} . `/optchat view` shows the summary view; \
          `/optchat help` lists commands.",
         stats.messages,
         window.0,
@@ -894,7 +950,13 @@ fn status() -> String {
         kinds[3],
         kinds[4],
         kinds[5],
-        with_state(|state| if state.compact { "on" } else { "off" }).unwrap_or("off")
+        with_state(|state| if state.compact { "on" } else { "off" }).unwrap_or("off"),
+        with_state(|state| {
+            let profile = state.profile.clone();
+            (profile, store::count(&state.profile))
+        })
+        .map(|(profile, count)| format!("`{profile}` ({count} stored)"))
+        .unwrap_or_else(|_| "unavailable".to_string())
     )
 }
 
@@ -948,6 +1010,94 @@ fn view_command(rest: &str) -> Result<String, String> {
             memory.view_tail(count)
         )
     })
+}
+
+/// `/optchat profile`: show or switch the cross-session profile.
+fn profile_command(rest: &str) -> Result<String, String> {
+    if rest.is_empty() {
+        let (profile, mirrored, in_store) = with_state(|state| {
+            let profile = state.profile.clone();
+            let mirrored = state
+                .memory
+                .entries()
+                .iter()
+                .filter(|entry| {
+                    entry
+                        .origin
+                        .as_ref()
+                        .map(|origin| origin.source == "profile")
+                        .unwrap_or(false)
+                })
+                .count();
+            let stored = store::count(&profile);
+            (profile, mirrored, stored)
+        })?;
+        let location = store::path(&profile)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "(unusable name)".to_string());
+        return Ok(format!(
+            "OptChat profile `{profile}` · {in_store} messages stored · {mirrored} attached here\n\
+             Store: {location}\n\
+             `/optchat profile <name>` switches profile; `/optchat attach` copies the \
+             store's messages into this session as imported notes."
+        ));
+    }
+    let name = store::normalize(rest).ok_or_else(|| {
+        format!("`{rest}` is not a profile name: use letters, digits, `-`, `_`, `.`")
+    })?;
+    with_state(|state| state.profile = name.clone())?;
+    call_action(
+        RuntimeActionId::AppendEntry as u32,
+        json!({"customType": PROFILE_TYPE, "data": {"name": name}}),
+    )
+    .map_err(|error| format!("could not persist the profile binding: {error}"))?;
+    Ok(format!(
+        "OptChat profile is now `{name}`; new messages mirror into it. \
+         `/optchat attach` imports what it already holds."
+    ))
+}
+
+/// `/optchat attach`: copy the profile store into this session as imported notes,
+/// skipping anything this session already logged.
+fn attach_command(rest: &str) -> Result<String, String> {
+    let profile = with_state(|state| state.profile.clone())?;
+    let name = if rest.is_empty() {
+        profile
+    } else {
+        store::normalize(rest).ok_or_else(|| format!("`{rest}` is not a profile name"))?
+    };
+    let stored = store::read(&name)?;
+    if stored.is_empty() {
+        return Ok(format!("Profile `{name}` holds nothing yet."));
+    }
+    let known: std::collections::HashSet<(String, String)> = with_state(|state| {
+        state
+            .memory
+            .entries()
+            .iter()
+            .map(|entry| (entry.text.clone(), entry.date.clone()))
+            .collect()
+    })?;
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    for entry in stored {
+        if known.contains(&(entry.text.clone(), entry.date.clone())) {
+            skipped += 1;
+            continue;
+        }
+        let origin = Origin {
+            source: "profile".into(),
+            conversation: name.clone(),
+            message: entry.i.to_string(),
+            title: name.clone(),
+            project: None,
+        };
+        record_note(entry.kind, entry.text, Some(origin))?;
+        added += 1;
+    }
+    Ok(format!(
+        "Attached {added} messages from `{name}`; {skipped} were already here."
+    ))
 }
 
 fn compact_status() -> String {
@@ -1088,6 +1238,8 @@ fn run_command(args: &str) -> String {
         "note" if !rest.is_empty() => record_note(Kind::Note, rest.to_string(), None)
             .map(|i| format!("Noted as memory message {i}.")),
         "import" if !rest.is_empty() => import_command(rest),
+        "profile" => profile_command(rest),
+        "attach" => attach_command(rest),
         "compact" | "compress" => match rest {
             "" | "status" => Ok(compact_status()),
             "on" | "off" => set_compaction(rest == "on"),
@@ -1273,6 +1425,21 @@ mod tests {
         assert_eq!(params["properties"]["text"]["minLength"], 1);
         assert_eq!(params["properties"]["before"]["minimum"], 0);
         assert!(!params.to_string().contains("__rpi"));
+    }
+
+    #[test]
+    fn profile_commands_stay_inside_the_store_directory() {
+        // Without a host the commands report unavailability instead of panicking.
+        assert!(run_command("profile").contains("unavailable"));
+        assert!(run_command("attach").contains("unavailable"));
+        // A traversal attempt is refused before any file is touched.
+        let refused = run_command("profile ../escape");
+        assert!(refused.contains("not a profile name"), "{refused}");
+        let refused = run_command("attach ../escape");
+        assert!(
+            refused.contains("not a profile name") || refused.contains("unavailable"),
+            "{refused}"
+        );
     }
 
     #[test]
