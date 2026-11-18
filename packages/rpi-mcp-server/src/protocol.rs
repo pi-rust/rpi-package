@@ -9,10 +9,11 @@ use rpi_extcore::process::resolve_rpi_executable;
 use rpi_extcore::run::RunOutcome;
 use rpi_plugin_sdk::stdio::{InputLine, StdinLines};
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{broadcast, mpsc, watch, Semaphore};
 use tokio::task::JoinSet;
 
 const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -24,6 +25,14 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 const MAX_CONCURRENT_CALLS: usize = 16;
 /// Model-visible text bound per tool result.
 const MAX_TOOL_TEXT: usize = 256 * 1024;
+/// Bound for one `resources/read` body.
+const MAX_RESOURCE_TEXT: usize = 256 * 1024;
+/// Transcript resource: the session's committed messages.
+const TRANSCRIPT_URI: &str = "rpi://session/transcript";
+/// State resource: the native session state document.
+const STATE_URI: &str = "rpi://session/state";
+/// Messages requested for one transcript read.
+const TRANSCRIPT_MESSAGES: usize = 200;
 /// Queued outbound frames before the writer is considered stalled.
 const OUTPUT_QUEUE: usize = 64;
 /// How long a closed stdin keeps waiting for already-dispatched tool calls.
@@ -48,6 +57,8 @@ pub struct ServerOptions {
     pub bypass: bool,
     /// Explicit native session directory; `None` uses the native default.
     pub session_dir: Option<PathBuf>,
+    /// Existing native session file to continue instead of starting a new one.
+    pub saved_session: Option<PathBuf>,
 }
 
 impl Default for ServerOptions {
@@ -58,6 +69,7 @@ impl Default for ServerOptions {
             provider: None,
             bypass: false,
             session_dir: None,
+            saved_session: None,
         }
     }
 }
@@ -82,6 +94,10 @@ struct ServerState {
     initialized: bool,
     /// Request id of the tool call that currently drives the native run.
     active: Option<String>,
+    /// Resource URIs this client subscribed to.
+    subscribed: HashSet<String>,
+    /// One session-wide watcher that turns settlements into resource updates.
+    watcher: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl McpServer {
@@ -93,7 +109,7 @@ impl McpServer {
             project: options.cwd.clone(),
             session_id,
             session_dir: options.session_dir,
-            saved_session: None,
+            saved_session: options.saved_session,
             fork_source: None,
             timings_dir,
             model: options.model,
@@ -116,6 +132,9 @@ impl McpServer {
     }
 
     pub async fn close(&self) {
+        if let Some(watcher) = self.state.lock().expect("server state").watcher.take() {
+            watcher.abort();
+        }
         self.session.shutdown().await;
     }
 
@@ -134,9 +153,13 @@ impl McpServer {
         self.state.lock().expect("server state").initialized = true;
         json!({
             "protocolVersion": protocol_version,
-            "capabilities": {"tools": {}},
+            "capabilities": {
+                "tools": {},
+                "resources": {"subscribe": true, "listChanged": false}
+            },
             "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "Use rpi_prompt to run the rpi agent in the current workspace."
+            "instructions": "Use rpi_prompt to run the rpi agent in the current workspace. \
+                rpi://session/transcript and rpi://session/state expose its transcript and state."
         })
     }
 
@@ -171,7 +194,16 @@ impl McpServer {
     }
 
     /// Methods answered without owning the native run.
-    fn handle_request(&self, method: &str, params: Option<Value>) -> Result<Value, RpcError> {
+    async fn handle_request(
+        self: &Arc<Self>,
+        method: &str,
+        params: Option<Value>,
+        out: &mpsc::Sender<Value>,
+    ) -> Result<Value, RpcError> {
+        if (method.starts_with("tools/") || method.starts_with("resources/")) && !self.initialized()
+        {
+            return Err(RpcError::invalid_request("initialize must complete first"));
+        }
         match method {
             "initialize" => Ok(self.initialize(params)),
             "ping" | "notifications/initialized" => Ok(json!({})),
@@ -186,7 +218,128 @@ impl McpServer {
                     "tools/call is dispatched asynchronously",
                 ))
             }
+            "resources/list" => Ok(json!({"resources": resource_definitions()})),
+            "resources/read" => self.read_resource(params).await,
+            "resources/subscribe" => self.subscribe_resource(params, out),
+            "resources/unsubscribe" => self.unsubscribe_resource(params),
             other => Err(RpcError::method_not_found(other)),
+        }
+    }
+
+    async fn read_resource(&self, params: Option<Value>) -> Result<Value, RpcError> {
+        let uri = resource_uri(params)?;
+        let (mime_type, text) = match uri.as_str() {
+            TRANSCRIPT_URI => ("text/markdown", self.transcript().await?),
+            STATE_URI => {
+                let state = self.session.state().await.map_err(|error| {
+                    RpcError::new(-32603, format!("state unavailable: {error}"))
+                })?;
+                ("application/json", state.to_string())
+            }
+            other => return Err(RpcError::unknown_resource(other)),
+        };
+        Ok(json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": mime_type,
+                "text": truncate(&text, MAX_RESOURCE_TEXT),
+            }]
+        }))
+    }
+
+    /// Render the committed transcript. Read-only: it never starts a run.
+    async fn transcript(&self) -> Result<String, RpcError> {
+        let response = self
+            .session
+            .send(json!({
+                "type": "get_messages",
+                "id": uuid::Uuid::new_v4().to_string(),
+                "limit": TRANSCRIPT_MESSAGES,
+            }))
+            .await
+            .map_err(|error| RpcError::new(-32603, format!("transcript unavailable: {error}")))?;
+        if response["success"] != true {
+            let error = response["error"]
+                .as_str()
+                .unwrap_or("native host refused get_messages");
+            return Err(RpcError::new(
+                -32603,
+                format!("transcript unavailable: {error}"),
+            ));
+        }
+        let messages = response["data"]["messages"].as_array();
+        Ok(render_transcript(
+            messages.map(Vec::as_slice).unwrap_or_default(),
+        ))
+    }
+
+    fn subscribe_resource(
+        self: &Arc<Self>,
+        params: Option<Value>,
+        out: &mpsc::Sender<Value>,
+    ) -> Result<Value, RpcError> {
+        let uri = resource_uri(params)?;
+        if !resource_definitions()
+            .iter()
+            .any(|resource| resource["uri"].as_str() == Some(uri.as_str()))
+        {
+            return Err(RpcError::unknown_resource(&uri));
+        }
+        // A single guard: re-locking here would deadlock the dispatcher.
+        let mut state = self.state.lock().expect("server state");
+        state.subscribed.insert(uri);
+        if state.watcher.is_none() {
+            let server = Arc::clone(self);
+            let out = out.clone();
+            state.watcher = Some(tokio::spawn(
+                async move { server.watch_settlements(out).await },
+            ));
+        }
+        Ok(json!({}))
+    }
+
+    fn unsubscribe_resource(&self, params: Option<Value>) -> Result<Value, RpcError> {
+        let uri = resource_uri(params)?;
+        self.state
+            .lock()
+            .expect("server state")
+            .subscribed
+            .remove(&uri);
+        Ok(json!({}))
+    }
+
+    /// Notify subscribed resources whenever the native run settles, so a client
+    /// re-reads the transcript instead of polling it.
+    async fn watch_settlements(self: Arc<Self>, out: mpsc::Sender<Value>) {
+        let mut events = self.session.subscribe();
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    if event.value["type"] != "agent_settled" {
+                        continue;
+                    }
+                    let subscribed: Vec<String> = self
+                        .state
+                        .lock()
+                        .expect("server state")
+                        .subscribed
+                        .iter()
+                        .cloned()
+                        .collect();
+                    for uri in subscribed {
+                        let notification = json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/resources/updated",
+                            "params": {"uri": uri},
+                        });
+                        if out.send(notification).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
         }
     }
 
@@ -472,7 +625,10 @@ where
             continue;
         }
 
-        let response = match server.handle_request(&request.method, request.params) {
+        let response = match server
+            .handle_request(&request.method, request.params, &sender)
+            .await
+        {
             Ok(result) => ok_response(id, result),
             Err(error) => error_response(id, error),
         };
@@ -700,6 +856,81 @@ fn tool_definitions() -> Vec<Value> {
     ]
 }
 
+fn resource_definitions() -> Vec<Value> {
+    vec![
+        json!({
+            "uri": TRANSCRIPT_URI,
+            "name": "Session transcript",
+            "description": "Committed messages of this MCP session, rendered read-only.",
+            "mimeType": "text/markdown",
+        }),
+        json!({
+            "uri": STATE_URI,
+            "name": "Session state",
+            "description": "Native session state: model, thinking level, tools, context and queue.",
+            "mimeType": "application/json",
+        }),
+    ]
+}
+
+fn resource_uri(params: Option<Value>) -> Result<String, RpcError> {
+    params
+        .as_ref()
+        .and_then(|params| params.get("uri"))
+        .and_then(Value::as_str)
+        .filter(|uri| !uri.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| RpcError::invalid_params("uri is required"))
+}
+
+/// One bounded, read-only rendering of the committed messages.
+fn render_transcript(messages: &[Value]) -> String {
+    if messages.is_empty() {
+        return "No messages yet.".to_string();
+    }
+    let mut out = String::new();
+    for message in messages {
+        let role = message["role"].as_str().unwrap_or("unknown");
+        out.push_str("## ");
+        out.push_str(role);
+        out.push('\n');
+        match &message["content"] {
+            Value::String(text) => {
+                out.push_str(text);
+                out.push('\n');
+            }
+            Value::Array(blocks) => {
+                for block in blocks {
+                    match block["type"].as_str().unwrap_or_default() {
+                        "text" => {
+                            if let Some(text) = block["text"].as_str() {
+                                out.push_str(text);
+                                out.push('\n');
+                            }
+                        }
+                        "image" => out.push_str("[image]\n"),
+                        "thinking" => out.push_str("[thinking]\n"),
+                        other if other.contains("tool") => {
+                            let name = block["name"].as_str().unwrap_or("tool");
+                            out.push_str(&format!("[{other}: {name}]\n"));
+                        }
+                        other => {
+                            out.push_str(&format!("[{other}]\n"));
+                        }
+                    }
+                }
+            }
+            Value::Null => out.push('\n'),
+            other => {
+                out.push_str(&other.to_string());
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {
     json!({"name":name,"description":description,"inputSchema":input_schema})
 }
@@ -729,6 +960,9 @@ impl RpcError {
     }
     fn method_not_found(method: &str) -> Self {
         Self::new(-32601, format!("method not found: {method}"))
+    }
+    fn unknown_resource(uri: &str) -> Self {
+        Self::new(-32602, format!("unknown resource: {uri}"))
     }
     fn tool_not_found(tool: &str) -> Self {
         Self::new(-32602, format!("unknown tool: {tool}"))
@@ -801,6 +1035,47 @@ mod tests {
         let cut = truncate(text, 7);
         assert!(cut.ends_with("\n[truncated]"));
         assert!(cut.len() < text.len() + 13);
+    }
+
+    #[test]
+    fn renders_transcripts_without_losing_structure() {
+        let text = render_transcript(&[
+            json!({"role":"user","content":"hello"}),
+            json!({"role":"assistant","content":[
+                {"type":"text","text":"hi"},
+                {"type":"tool_use","name":"read"},
+                {"type":"image"},
+            ]}),
+        ]);
+        assert!(text.starts_with("## user\nhello"), "{text}");
+        assert!(text.contains("## assistant\nhi"), "{text}");
+        assert!(text.contains("[tool_use: read]"), "{text}");
+        assert!(text.contains("[image]"), "{text}");
+        assert_eq!(render_transcript(&[]), "No messages yet.");
+    }
+
+    #[test]
+    fn resources_require_a_non_empty_uri() {
+        assert!(resource_uri(None).is_err());
+        assert!(resource_uri(Some(json!({"uri":"  "}))).is_err());
+        assert_eq!(
+            resource_uri(Some(json!({"uri":"rpi://session/state"}))).unwrap(),
+            "rpi://session/state"
+        );
+        let error = resource_uri(Some(json!({}))).unwrap_err();
+        assert_eq!(error.code, -32602);
+    }
+
+    #[test]
+    fn resource_catalog_covers_readable_uris() {
+        let resources = resource_definitions();
+        assert_eq!(resources.len(), 2);
+        assert!(resources
+            .iter()
+            .any(|resource| resource["uri"] == TRANSCRIPT_URI));
+        assert!(resources
+            .iter()
+            .any(|resource| resource["uri"] == STATE_URI));
     }
 
     #[test]

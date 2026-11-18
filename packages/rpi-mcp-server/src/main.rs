@@ -18,6 +18,7 @@ OPTIONS:
     --model <MODEL>        Model forwarded to the native host
     --provider <PROVIDER>  Provider forwarded to the native host
     --session-dir <DIR>    Native session directory (default: native default)
+    --resume <FILE>        Continue an existing native session file
     --bypass               Disable permission-gate approvals (trusted use only)
     -h, --help             Show this help
     -V, --version          Show this version
@@ -72,6 +73,9 @@ fn options_from_args(args: &[String]) -> Result<ServerOptions, String> {
             "--session-dir" => {
                 options.session_dir = Some(PathBuf::from(value(args, &mut index, "--session-dir")?))
             }
+            "--resume" => {
+                options.saved_session = Some(PathBuf::from(value(args, &mut index, "--resume")?))
+            }
             other => return Err(format!("unknown option `{other}` (try --help)")),
         }
         index += 1;
@@ -86,4 +90,47 @@ fn value(args: &[String], index: &mut usize, name: &str) -> Result<String, Strin
         .ok_or_else(|| format!("{name} needs a value"))?;
     *index += 1;
     Ok(next.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_server_options() {
+        let options = options_from_args(&args(&[
+            "--cwd",
+            "/tmp/work",
+            "--model",
+            "provider/model",
+            "--provider",
+            "provider",
+            "--session-dir",
+            "/tmp/sessions",
+            "--resume",
+            "/tmp/sessions/one.jsonl",
+            "--bypass",
+        ]))
+        .unwrap();
+        assert_eq!(options.cwd, PathBuf::from("/tmp/work"));
+        assert_eq!(options.model.as_deref(), Some("provider/model"));
+        assert_eq!(options.provider.as_deref(), Some("provider"));
+        assert_eq!(options.session_dir, Some(PathBuf::from("/tmp/sessions")));
+        assert_eq!(
+            options.saved_session,
+            Some(PathBuf::from("/tmp/sessions/one.jsonl"))
+        );
+        assert!(options.bypass);
+    }
+
+    #[test]
+    fn rejects_missing_values_and_unknown_options() {
+        assert!(options_from_args(&args(&["--cwd"])).is_err());
+        assert!(options_from_args(&args(&["--cwd", "--model"])).is_err());
+        assert!(options_from_args(&args(&["--nope"])).is_err());
+    }
 }

@@ -16,9 +16,10 @@ MCP client -> MCP JSON-RPC over stdin/stdout -> rpi-mcp-bridge -> rpi --mode rpc
                                                                (one child host)
 ```
 
-The adapter owns MCP framing, the tool catalog, `tools/call` concurrency and
-cancellation mapping. Native session lifecycle, prompt acceptance, settlement,
-cancellation and process-tree cleanup stay in `rpi-extcore`.
+The adapter owns MCP framing, the tool catalog, resource exposure,
+`tools/call` concurrency and cancellation mapping. Native session lifecycle,
+prompt acceptance, settlement, cancellation and process-tree cleanup stay in
+`rpi-extcore`.
 
 ## Tools
 
@@ -43,6 +44,19 @@ JSON-RPC errors.
 `rpi_prompt` request aborts the native run; the prompt then settles with
 `isError: true` and `{"error":"prompt cancelled"}`.
 
+## Resources
+
+| URI | MIME type | Content |
+| --- | --- | --- |
+| `rpi://session/transcript` | `text/markdown` | Committed messages of this session, read-only |
+| `rpi://session/state` | `application/json` | Native session state (model, thinking, tools, context, queue) |
+
+`resources/list` returns exactly these two; `resources/read` renders them without
+starting a run. `resources/subscribe` is supported: whenever the native run
+settles, the server sends `notifications/resources/updated` for each subscribed
+URI so the client re-reads instead of polling. Reads are bounded to 256 KiB of
+text and the transcript is capped at the newest 200 messages.
+
 ## Client configuration
 
 ```json
@@ -63,21 +77,29 @@ Bridge options:
 --model <MODEL>        Model forwarded to the native host
 --provider <PROVIDER>  Provider forwarded to the native host
 --session-dir <DIR>    Native session directory (default: native default)
+--resume <FILE>        Continue an existing native session file
 --bypass               Disable permission-gate approvals (trusted use only)
 ```
 
 The native host is located with `RPI_BIN`, a sibling `rpi` next to the bridge, or
 `rpi` on `PATH` (see `rpi_extcore::process::resolve_rpi_executable`).
 
-`rpi --mcp` accepts the same `--model`, `--provider`, `--session-dir` and
-`--bypass` flags from the host command line.
+`rpi --mcp` accepts the same `--model`, `--provider`, `--session-dir`,
+`--resume` and `--bypass` flags from the host command line. `--resume` starts the
+child with the native `--session <FILE>` flag, so an MCP client can continue an
+existing transcript.
+
+The bridge does not answer `ui_dialog_request` permission prompts: a run that
+needs an approval no client can answer stays pending. Use `--bypass` only for a
+trusted client and workspace, or keep runs to tool-free prompts.
 
 ## Protocol surface
 
 - MCP JSON-RPC 2.0, one frame per line on stdin/stdout; stdout carries protocol
   frames only and all diagnostics go to stderr.
 - Negotiated versions: `2025-06-18`, `2025-03-26`, `2024-11-05`, falling back to
-  `2025-06-18` for an unknown request. Capabilities: `tools` only.
+  `2025-06-18` for an unknown request. Capabilities: `tools` and
+  `resources` (`subscribe: true`).
 - `initialize` must complete before `tools/call`;
   `notifications/initialized` and `ping` are accepted.
 
@@ -98,7 +120,8 @@ The native host is located with `RPI_BIN`, a sibling `rpi` next to the bridge, o
 
 ## Not implemented
 
-MCP resources, prompts, sampling, elicitation and Streamable HTTP transport.
+MCP prompts, sampling, elicitation and Streamable HTTP transport. Permission
+dialogs are not bridged to a client either.
 There is no `--mcp` HTTP listener, no credential bridging and no MCP-level
 authentication: the bridge inherits the native host's provider credentials and
 runs tools with the configured workspace's privileges. Only connect it to a
@@ -113,5 +136,14 @@ cargo clippy --locked -p rpi-mcp-server --all-targets -- -D warnings
 
 `tests/dispatcher.rs` drives the real dispatcher against a scripted native host
 (`rpi-extcore` `test-support`): framing, `initialize` gating, method errors, tool
-validation and native request/response correlation. It does not replace a run
-against a real `rpi` binary.
+validation, prompt settlement, resource reads and subscription notifications.
+It does not replace a run against a real `rpi` binary.
+
+Live checks against `rpi 0.24.0` covered `initialize`, `tools/list`,
+`rpi_state`, `rpi_available_models`, `rpi_thinking_levels`,
+`rpi_set_thinking_level`, `resources/list`, `resources/read` (transcript and
+state), unknown-resource rejection and `notifications/cancelled` (the cancelled
+prompt settled with `{"error":"prompt cancelled"}`). A full model round trip was
+**not** verified here: in this environment the native `rpi --mode rpc` child
+stalls after `message_start` with no adapter in the path, so the settle path is
+covered by the scripted-host test instead of a live model call.

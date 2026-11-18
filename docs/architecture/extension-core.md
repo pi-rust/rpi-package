@@ -47,10 +47,12 @@ flowchart TD
 is not part of `rpi-mcp-core` and must not add server policy there:
 
 - **rpi-mcp-server** owns MCP JSON-RPC 2.0 framing (one frame per line), the
-  `initialize`/`tools/list`/`tools/call` surface, progress and cancellation
-  mapping, `tools/call` concurrency, output serialization and the plugin flag
-  plumbing (`--mcp`). It must not own native child lifecycle, run settlement,
-  transcript or history semantics.
+  `initialize`/`tools/list`/`tools/call` and
+  `resources/list`/`read`/`subscribe` surface, progress, resource-update and
+  cancellation mapping, `tools/call` concurrency, output serialization and the
+  plugin flag plumbing (`--mcp`). It must not own native child lifecycle, run
+  settlement, transcript or history semantics; resource reads forward a bounded
+  native `get_messages`/`get_state` request and never start a run.
 - Native session lifecycle, prompt acceptance, settlement, cancellation and
   process-tree cleanup remain `rpi-extcore`'s (`HostSession`,
   `begin_prompt`/`abort_run`, `RunTracker`). The adapter only maps them onto MCP
@@ -69,9 +71,13 @@ is not part of `rpi-mcp-core` and must not add server policy there:
   `tools/call` requests, 64 queued outbound frames and a 256 KiB tool-result text
   ceiling. Closing stdin drains already-dispatched calls (bounded by 600 s);
   `SessionShutdown` or an I/O error aborts them.
-- Not implemented in this adapter: MCP resources, prompts, sampling,
-  elicitation, and Streamable HTTP transport. Those need new reverse-request
-  directions and are not implied by the existing client transports.
+- Not implemented in this adapter: MCP prompts, sampling, elicitation,
+  Streamable HTTP transport and permission-dialog bridging. Those need new
+  reverse-request directions (or a client capability) and are not implied by the
+  existing client transports.
+- Resource updates are settlement-driven: the adapter subscribes to the native
+  event stream and emits `notifications/resources/updated` for subscribed URIs
+  when a run settles. It does not poll the transcript.
 
 ### Session-owned MCP tools integration
 

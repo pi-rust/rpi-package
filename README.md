@@ -141,8 +141,10 @@ MCP client -> MCP over stdin/stdout -> rpi-mcp-bridge -> rpi --mode rpc
              (or `rpi --mcp`, which reuses the host's `ownsStdio` ABI)
 ```
 
-The package owns the MCP JSON-RPC framing, tool catalog, `tools/call`
-concurrency and cancellation mapping. Native session lifecycle, prompt
+The package owns the MCP JSON-RPC framing, tool catalog, bounded session
+resources (`rpi://session/transcript`, `rpi://session/state`) with
+`resources/subscribe` updates, `tools/call` concurrency and cancellation
+mapping. Native session lifecycle, prompt
 acceptance, settlement and child cleanup stay in `rpi-extcore`. The standalone
 bridge is the recommended integration because it owns its own stdin/stdout and
 therefore needs no host stdio arbitration.

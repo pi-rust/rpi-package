@@ -19,6 +19,8 @@ struct Harness {
     events: TestEvents,
     stdin: VecDeque<String>,
     downstream: DuplexStream,
+    /// Native events to inject after a delay, in milliseconds.
+    injections: Vec<(u64, Value)>,
 }
 
 impl Harness {
@@ -31,6 +33,7 @@ impl Harness {
             events,
             stdin: VecDeque::new(),
             downstream,
+            injections: Vec::new(),
         }
     }
 
@@ -38,9 +41,17 @@ impl Harness {
         self.stdin.push_back(value.to_string());
     }
 
+    /// Inject a native event once the dispatcher has started.
+    fn inject(&mut self, delay_ms: u64, event: Value) {
+        self.injections.push((delay_ms, event));
+    }
+
     /// Run the dispatcher, feed queued frames, then stop it and return every
     /// frame the server wrote. `reply` answers native commands.
-    async fn run(mut self, reply: impl Fn(&Value) -> Option<Value> + Send + 'static) -> Vec<Value> {
+    async fn run<S>(mut self, reply: S) -> Vec<Value>
+    where
+        S: Fn(&Value) -> Option<Value> + Send + 'static,
+    {
         let input = Arc::new(Mutex::new(std::mem::take(&mut self.stdin)));
         let poll = {
             let input = Arc::clone(&input);
@@ -66,6 +77,13 @@ impl Harness {
                 }
             }
         });
+        for (delay, event) in std::mem::take(&mut self.injections) {
+            let events = self.events.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                events.send_projected(event).await;
+            });
+        }
         let serving = tokio::spawn(serve(self.server, poll, None, stop_rx, out));
         let mut frames = Vec::new();
         let mut reader = BufReader::new(out_reader).lines();
@@ -103,7 +121,11 @@ async fn serves_initialize_catalog_and_method_errors_without_native_calls() {
     assert_eq!(frames.len(), 4, "{frames:#?}");
     assert_eq!(frames[0]["id"], 1);
     assert_eq!(frames[0]["result"]["protocolVersion"], "2025-03-26");
-    assert_eq!(frames[0]["result"]["capabilities"], json!({"tools":{}}));
+    assert_eq!(frames[0]["result"]["capabilities"]["tools"], json!({}));
+    assert_eq!(
+        frames[0]["result"]["capabilities"]["resources"]["subscribe"],
+        true
+    );
     assert_eq!(frames[1]["id"], 2);
     assert_eq!(frames[1]["result"]["tools"].as_array().unwrap().len(), 7);
     assert_eq!(frames[2]["error"]["code"], -32601);
@@ -154,4 +176,164 @@ async fn correlates_native_state_response_with_the_mcp_request() {
         .as_str()
         .unwrap()
         .contains("fixture/model"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lists_and_reads_transcript_and_state_resources() {
+    let mut harness = Harness::new();
+    harness.push(request(
+        1,
+        "initialize",
+        json!({"protocolVersion":"2025-06-18"}),
+    ));
+    harness.push(request(2, "resources/list", json!({})));
+    harness.push(request(
+        3,
+        "resources/read",
+        json!({"uri":"rpi://session/transcript"}),
+    ));
+    harness.push(request(
+        4,
+        "resources/read",
+        json!({"uri":"rpi://session/state"}),
+    ));
+    harness.push(request(
+        5,
+        "resources/read",
+        json!({"uri":"rpi://session/unknown"}),
+    ));
+    let frames = harness
+        .run(|command| match command["type"].as_str() {
+            Some("get_messages") => Some(json!({
+                "type":"response",
+                "id": command["id"],
+                "success": true,
+                "data": {"messages": [
+                    {"role":"user","content":"hello there"},
+                    {"role":"assistant","content":[{"type":"text","text":"hi"}]},
+                ]},
+            })),
+            Some("get_state") => Some(json!({
+                "type":"response",
+                "id": command["id"],
+                "success": true,
+                "data": {"model":"fixture/model"},
+            })),
+            _ => None,
+        })
+        .await;
+
+    assert_eq!(frames.len(), 5, "{frames:#?}");
+    let resources = frames[1]["result"]["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 2);
+    assert_eq!(resources[0]["uri"], "rpi://session/transcript");
+    assert_eq!(resources[0]["mimeType"], "text/markdown");
+    assert_eq!(resources[1]["uri"], "rpi://session/state");
+
+    let transcript = frames[2]["result"]["contents"][0]["text"].as_str().unwrap();
+    assert!(transcript.contains("hello there"), "{transcript}");
+    assert!(transcript.contains("## assistant"), "{transcript}");
+
+    assert_eq!(
+        frames[3]["result"]["contents"][0]["mimeType"],
+        "application/json"
+    );
+    assert!(frames[3]["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("fixture/model"));
+    assert_eq!(frames[4]["error"]["code"], -32602);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notifies_subscribed_resources_when_the_run_settles() {
+    let mut harness = Harness::new();
+    harness.push(request(
+        1,
+        "initialize",
+        json!({"protocolVersion":"2025-06-18"}),
+    ));
+    harness.push(request(
+        2,
+        "resources/subscribe",
+        json!({"uri":"rpi://session/transcript"}),
+    ));
+    // The watcher is spawned by subscribe; settle a few times so the test does
+    // not depend on that spawn racing the first injected event.
+    for step in 1..=5 {
+        harness.inject(
+            step * 150,
+            json!({"type":"agent_settled","outcome":"completed"}),
+        );
+    }
+    let frames = harness.run(|_| None).await;
+
+    assert_eq!(frames[0]["id"], 1);
+    assert_eq!(frames[1]["id"], 2);
+    assert_eq!(frames[1]["result"], json!({}));
+    let updates: Vec<&Value> = frames
+        .iter()
+        .filter(|frame| frame["method"] == "notifications/resources/updated")
+        .collect();
+    assert!(!updates.is_empty(), "{frames:#?}");
+    assert_eq!(updates[0]["params"]["uri"], "rpi://session/transcript");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_returns_settled_text_and_reports_progress() {
+    let mut harness = Harness::new();
+    harness.push(request(
+        1,
+        "initialize",
+        json!({"protocolVersion":"2025-06-18"}),
+    ));
+    harness.push(request(
+        2,
+        "tools/call",
+        json!({
+            "name":"rpi_prompt",
+            "arguments":{"message":"say pong"},
+            "_meta":{"progressToken":"p1"},
+        }),
+    ));
+    // Acceptance is correlated by request id; the settlement then ends the run.
+    harness.inject(
+        300,
+        json!({"type":"agent_settled","outcome":"completed","finalText":"pong"}),
+    );
+    let frames = harness
+        .run(|command| {
+            (command["type"] == "prompt").then(|| {
+                json!({
+                    "type":"response",
+                    "id": command["id"],
+                    "success": true,
+                    "data": {"accepted": true},
+                })
+            })
+        })
+        .await;
+
+    let result = frames
+        .iter()
+        .find(|frame| frame["id"] == 2)
+        .expect("prompt response")
+        .clone();
+    assert_eq!(result["result"]["isError"], false, "{result:#?}");
+    assert_eq!(
+        result["result"]["structuredContent"]["outcome"],
+        "completed"
+    );
+    assert!(result["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("pong"));
+    // Progress notifications only appear when the client supplies a token.
+    let progress: Vec<&Value> = frames
+        .iter()
+        .filter(|frame| frame["method"] == "notifications/progress")
+        .collect();
+    for frame in progress {
+        assert_eq!(frame["params"]["progressToken"], "p1");
+    }
 }

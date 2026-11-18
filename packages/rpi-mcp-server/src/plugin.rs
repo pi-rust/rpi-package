@@ -96,6 +96,7 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
         provider: get_arg("--provider"),
         bypass: get_flag("--bypass"),
         session_dir: get_arg("--session-dir").map(Into::into),
+        saved_session: get_arg("--resume").map(Into::into),
     };
     *thread = Some(thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
