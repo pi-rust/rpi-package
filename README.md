@@ -23,6 +23,7 @@ parameter schemas, and regression checks.
 | [rpi-todo](packages/rpi-todo/README.md) | Track tasks with `todo` |
 | [rpi-background-tasks](packages/rpi-background-tasks/README.md) | Run long commands with `background` and inspect them with `jobs` |
 | [rpi-goal](packages/rpi-goal/README.md) | Maintain a persistent project objective with `goal` |
+| [rpi-optchat](packages/rpi-optchat/README.md) | Recall this session's chat memory with `zoom`, `search` and `/optchat` |
 | [rpi-plan-mode](packages/rpi-plan-mode/README.md) | Plan work with `/plan`, `plan_mode_start` and `plan_mode_complete` |
 | [rpi-btw](packages/rpi-btw/README.md) | Read-only side conversations with `/btw`; requires rpi 0.6.0 or newer |
 | [rpi-ask-user](packages/rpi-ask-user/README.md) | Ask interactive questions with `ask_user` |

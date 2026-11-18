@@ -281,6 +281,12 @@
   font-size: 9px;
   line-height: 1.2;
 }
+/* NOTE (#306): .composer-metrics-summary / .composer-metrics-detail below
+   never match the slim composer markup — the slim strip is
+   `composer-metrics slim-metrics` with plain .composer-metric children and a
+   .slim-metrics-more button (aligned via desktop.css .workspace .slim-metrics
+   { display:flex } + ui-slim.css .slim-metrics-more { margin-left:auto }).
+   These rules exist for the full-composer summary/detail split only. */
 .workspace .composer-metrics-summary {
   min-height: 19px;
   gap: 7px;

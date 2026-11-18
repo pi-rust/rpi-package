@@ -1105,6 +1105,42 @@ test("recent chats open as a floating window without moving the project tree", a
   await expect(recent).toHaveCount(0);
 });
 
+test("details jump is right-aligned in the slim metrics strip (#306)", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.goto("/");
+  const strip = page.locator(".composer-metrics.slim-metrics");
+  await expect(strip).toBeVisible();
+  const probe = async () =>
+    strip.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const stripRect = element.getBoundingClientRect();
+      const buttonRect = element
+        .querySelector(".slim-metrics-more")
+        ?.getBoundingClientRect();
+      const metrics = [
+        ...element.querySelectorAll(".composer-metric"),
+      ].map((metric) => metric.getBoundingClientRect().right);
+      return {
+        // Right edge of the strip's *content box* — margin-left:auto pushes
+        // the button flush against it, no matter the strip padding.
+        contentRight:
+          stripRect.right - parseFloat(style.paddingRight || "0"),
+        buttonRight: buttonRect?.right ?? 0,
+        buttonLeft: buttonRect?.left ?? 0,
+        lastMetricRight: metrics.length ? metrics[metrics.length - 1] : 0,
+      };
+    });
+  const { contentRight, buttonRight, buttonLeft, lastMetricRight } =
+    await probe();
+  // The jump sits flush at the row end (margin-left:auto in a flex row) and
+  // does not overlap the context metric. Under the pre-fix block layout the
+  // button follows the metrics in flow, far from the content edge.
+  expect(contentRight - buttonRight).toBeLessThan(2);
+  expect(buttonLeft).toBeGreaterThan(lastMetricRight);
+});
+
 test("session tags can be edited without sidebar filters", async ({ page }) => {
   await mockHost(page);
   await page.goto("/");

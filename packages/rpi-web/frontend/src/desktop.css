@@ -1035,6 +1035,12 @@
   background: var(--text);
   color: var(--bg);
   border: 0;
+  /* #303: the send/stop swap is a state change, not a replacement button;
+     fade background and icon color instead of hard-cutting between them. */
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
 }
 .workspace .send-button:disabled {
   background: var(--hover);
@@ -1056,6 +1062,18 @@
   height: 10px;
   flex: 0 0 10px;
   background: var(--danger);
+  /* #303: a breathing square reads as "click to stop" without implying
+     progress; abort has no indeterminate duration to animate. */
+  animation: stop-indicator-pulse 1.6s ease-in-out infinite;
+}
+@keyframes stop-indicator-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 .workspace .send-button.composer-action-stop:hover:not(:disabled) {
   background: var(--soft);
@@ -1802,6 +1820,14 @@
 .workspace .composer-metrics {
   display: block;
 }
+/* The slim composer renders the metrics strip without the summary/detail
+   split, so the block layout above must not win here: the "details" jump is
+   pushed to the row end with margin-left:auto only in a flex container
+   (#306; the desktop.css .composer-metrics-more rule never matches the slim
+   markup). */
+.workspace .slim-metrics {
+  display: flex;
+}
 .workspace .composer-metrics-summary {
   display: flex;
   align-items: center;
@@ -1814,6 +1840,9 @@
   flex: 0 0 auto;
 }
 .workspace .composer-metrics-more {
+  /* Never matches the slim composer (no .composer-metrics-more element); kept
+     for the full-composer summary/detail split. The slim "details" jump is
+     aligned by .workspace .slim-metrics { display:flex } above (#306). */
   margin-left: auto;
   flex: 0 0 auto;
   color: var(--muted);

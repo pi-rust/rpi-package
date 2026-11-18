@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.1.64](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.63...rpi-web-v0.1.64) - 2026-11-18
+
+### Fixed
+
+- *(web)* keep the right-aligned composer metrics details fix (#306) and remove the #302/#296 changes from the stable line
+
+## [0.1.63](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.62...rpi-web-v0.1.63) - 2026-11-17
+
+### Fixed
+
+- *(web)* regular-weight runtime labels, right-aligned details jump, inline recent chats
+
+## [0.1.62](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.57...rpi-web-v0.1.62) - 2026-11-17
+
+### Fixed
+
+- *(web)* retry idempotent GET reads with a 30s timeout and bounded backoff ([#310](https://github.com/pi-rust/rpi-package/pull/310))
+- *(web)* animate the stop indicator during send/stop transitions ([#312](https://github.com/pi-rust/rpi-package/pull/312))
+- *(web)* restore panel state when leaving immersive mode ([#313](https://github.com/pi-rust/rpi-package/pull/313))
+- *(web)* keep only the retained fixes on main ([#318](https://github.com/pi-rust/rpi-package/pull/318))
+
 ## [0.1.57](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.56...rpi-web-v0.1.57) - 2026-11-16
 
 ### Added

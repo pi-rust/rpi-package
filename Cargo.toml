@@ -11,6 +11,7 @@ members = [
     "packages/rpi-todo",
     "packages/rpi-background-tasks",
     "packages/rpi-goal",
+    "packages/rpi-optchat",
     "packages/rpi-plan-mode",
     "packages/rpi-codegraph",
     "packages/rpi-ask-user",

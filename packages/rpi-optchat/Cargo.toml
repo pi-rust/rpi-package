@@ -1,0 +1,30 @@
+[package]
+name = "rpi-optchat"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OptChat's persistent chat memory for the rpi Rust agent: a session-scoped message log, a bounded summary view, and zoom/search recall tools"
+readme = "README.md"
+keywords = ["rpi", "memory", "context", "optchat", "plugin"]
+categories = ["development-tools"]
+
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rpi-plugin-sdk = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }

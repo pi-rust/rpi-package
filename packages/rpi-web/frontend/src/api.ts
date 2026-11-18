@@ -464,33 +464,89 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
-    ...init,
-    headers: {
-      "x-rpi-web": "1",
-      ...(init?.body && !(init.body instanceof FormData)
-        ? { "content-type": "application/json" }
-        : {}),
-      ...init?.headers,
-    },
-  });
-  if (response.status === 204) return undefined as T;
-  const value: unknown = await response.json().catch((cause) => {
-    if (init?.signal?.aborted) throw cause;
-    return null;
-  });
-  if (!response.ok) {
-    const error = value as { error?: unknown; code?: unknown } | null;
-    throw new ApiError(
-      typeof error?.error === "string"
-        ? error.error
-        : `HTTP ${response.status}`,
-      response.status,
-      typeof error?.code === "string" ? error.code : undefined,
-    );
+/**
+ * Read resilience for flaky links (#301): idempotent GET requests get a
+ * response timeout and a small backoff retry. Mutating requests are never
+ * retried — the host has no request deduplication, so replaying a POST could
+ * append a duplicate prompt or queue entry.
+ */
+const READ_TIMEOUT_MS = 30_000;
+const READ_RETRY_ATTEMPTS = 3;
+const READ_RETRY_BASE_DELAY_MS = 300;
+
+async function fetchOnce(
+  path: string,
+  init: RequestInit | undefined,
+  timeoutMs: number | undefined,
+): Promise<Response> {
+  const controller = new AbortController();
+  const onOuterAbort = () => controller.abort();
+  init?.signal?.addEventListener("abort", onOuterAbort, { once: true });
+  const timer =
+    timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    return await fetch(`/api/v1${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        "x-rpi-web": "1",
+        ...(init?.body && !(init.body instanceof FormData)
+          ? { "content-type": "application/json" }
+          : {}),
+        ...init?.headers,
+      },
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    init?.signal?.removeEventListener("abort", onOuterAbort);
   }
-  return value as T;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // Only reads are retried, and only on transport failures (`fetch` rejects
+  // before any server answer, including the read timeout). An `ApiError` is a
+  // definitive server answer; a caller abort must surface immediately.
+  const read = !init?.method || init.method.toUpperCase() === "GET";
+  const attempts = read ? READ_RETRY_ATTEMPTS : 1;
+  let lastCause: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, READ_RETRY_BASE_DELAY_MS * 2 ** (attempt - 2)),
+      );
+      if (init?.signal?.aborted) throw lastCause;
+    }
+    try {
+      const response = await fetchOnce(
+        path,
+        init,
+        read ? READ_TIMEOUT_MS : undefined,
+      );
+      if (response.status === 204) return undefined as T;
+      const value: unknown = await response.json().catch((cause) => {
+        if (init?.signal?.aborted) throw cause;
+        return null;
+      });
+      if (!response.ok) {
+        const error = value as { error?: unknown; code?: unknown } | null;
+        throw new ApiError(
+          typeof error?.error === "string"
+            ? error.error
+            : `HTTP ${response.status}`,
+          response.status,
+          typeof error?.code === "string" ? error.code : undefined,
+        );
+      }
+      return value as T;
+    } catch (cause) {
+      if (init?.signal?.aborted || cause instanceof ApiError) throw cause;
+      lastCause = cause;
+    }
+  }
+  throw lastCause;
 }
 
 export function sendCommand<T = Record<string, unknown>>(
