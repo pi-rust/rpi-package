@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(tools)* steer callers away from `timeout` on open-ended `ask_user` input questions: the model-facing description, schema and README now recommend omitting the deadline (or allowing at least 300 seconds for short choices), so a question that needs a human to look something up is no longer closed by a too-short timeout.
+
+### Fixed
+
+- *(tools)* release the host UI dialog entry after timeout/cancellation/abort via the new `forget` op. On older hosts that do not implement the op the call is a best-effort no-op, so cancellation behavior is unchanged.
+
 ## [0.1.10](https://github.com/pi-rust/rpi-package/compare/rpi-ask-user-v0.1.9...rpi-ask-user-v0.1.10) - 2026-11-06
 
 ### Fixed
