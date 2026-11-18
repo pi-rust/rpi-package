@@ -18,8 +18,15 @@ const MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// Most entries one attach imports.
 const MAX_ENTRIES: usize = 5_000;
 
+/// Where the store lives, when the project directory is not writable or the
+/// caller wants profiles somewhere else.
+const DIRECTORY_ENV: &str = "RPI_OPTCHAT_STORE_DIR";
+
 /// The store directory for this project.
 pub fn directory() -> PathBuf {
+    if let Some(dir) = std::env::var_os(DIRECTORY_ENV).filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".rpi")

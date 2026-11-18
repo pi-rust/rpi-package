@@ -134,7 +134,8 @@ a `/optchat fit` or a model-written layout stable across a resume.
 ## Known limitations
 
 - **Profiles attach, they do not merge live.** Memory is mirrored into
-  `.rpi/optchat/<profile>.jsonl`; `/optchat recall` searches it and
+  `.rpi/optchat/<profile>.jsonl` (`RPI_OPTCHAT_STORE_DIR` moves that directory,
+  for a read-only checkout); `/optchat recall` searches it and
   `/optchat attach` copies it back in as imported notes. Upstream instead serves
   one profile store as the live log.
 - **Compaction is opt-in and per session.** A line costs one child model call, so
@@ -170,9 +171,19 @@ a `/optchat fit` or a model-written layout stable across a resume.
 ## Verification
 
 ```sh
-cargo test -p rpi-optchat
+cargo test -p rpi-optchat            # unit tests + the host-facing suite
 cargo clippy -p rpi-optchat --all-targets
 ```
+
+`tests/host.rs` drives the plugin through its ABI with a fake host that answers
+`GetSessionBranch`, `AppendEntry`, `SetStatus` and `GetExecutionContext` the way
+`rpi` does, and covers what only shows up against a host: the `filtered: true`
+refusal (an unfiltered branch is never read as memory), `afterSeq` paging,
+reloading when another writer added a message, `SessionBeforeTree`/`SessionTree`
+dropping the cache, persist-before-commit with a host that rejects the append, the
+duplicate window, the footer being published and cleared, and the entry renderer
+declining foreign types. The fake returns a non-zero rc when it rejects a write,
+because that is the ABI; a `{"error":…}` body with `rc == 0` is a success.
 
 The unit tests cover the log/tree/view invariants (bounded lines, collapsing,
 tiling, paging with stable ids, UTF-8-safe clipping, search paging), the

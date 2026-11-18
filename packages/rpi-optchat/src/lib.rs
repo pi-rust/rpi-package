@@ -492,6 +492,17 @@ fn publish_status() {
     );
 }
 
+/// Drop the footer when this session stops owning it, so a closed or switched
+/// session does not leave a count behind. The host clears on an empty value.
+fn clear_status() {
+    if let Err(error) = call_runtime(
+        RuntimeActionId::SetStatus,
+        json!({"key": "optchat", "value": ""}),
+    ) {
+        debug(&format!("could not clear the footer: {error}"));
+    }
+}
+
 fn persist(entry: &memory::Entry) -> Result<(), String> {
     call_runtime(
         RuntimeActionId::AppendEntry,
@@ -750,6 +761,7 @@ fn on_session_lifecycle(event, data) {
             // the shape it folded to, so resuming shows the same lines.
             if event.tag() == EventTag::SessionShutdown {
                 persist_view();
+                clear_status();
             }
             reset_state();
         }
@@ -766,6 +778,7 @@ fn on_session_lifecycle(event, data) {
                     | EventTag::SessionBeforeTree
             ) {
                 persist_view();
+                clear_status();
             }
             reset_state();
         }

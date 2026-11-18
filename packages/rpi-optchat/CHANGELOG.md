@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SessionBeforeTree`, `SessionTree`, `SessionBeforeCompact` and `SessionCompact`
   are registered, so a host that dispatches them drops the branch cache before
   the branch changes instead of detecting it afterwards.
+- `packages/rpi-optchat/tests/host.rs`: the plugin ABI driven against a fake host
+  (filter contract, paging, branch reload, persist-before-commit, duplicate
+  window, footer lifecycle, renderer fall-through).
+- `RPI_OPTCHAT_STORE_DIR` moves the profile store out of the project directory.
 - An entry renderer (`optchat`) that turns `optchat-entry` and `optchat-node`
   into one transcript row each (`OptChat <kind> · <head>`,
   `OptChat summary <l>+<i> · <head>`), leaving other types to their own renderers.
@@ -38,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   messages at the cap, so a printed summary keeps naming the same message.
 - Cached memory is validated against the branch's newest message, so
   `navigate_tree` inside one session reloads instead of drifting.
+- The `/optchat` footer is cleared when the session ends or moves to another
+  branch, instead of leaving a stale count behind.
 
 ## [0.1.0]
 
