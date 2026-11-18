@@ -33,6 +33,8 @@ const TRANSCRIPT_URI: &str = "rpi://session/transcript";
 const STATE_URI: &str = "rpi://session/state";
 /// Messages requested for one transcript read.
 const TRANSCRIPT_MESSAGES: usize = 200;
+/// Approval titles reported back for one prompt.
+const MAX_DENIED_APPROVALS: usize = 8;
 /// Queued outbound frames before the writer is considered stalled.
 const OUTPUT_QUEUE: usize = 64;
 /// How long a closed stdin keeps waiting for already-dispatched tool calls.
@@ -432,6 +434,7 @@ impl McpServer {
         let mut run = self.session.begin_prompt(message).await?;
         let mut text = String::new();
         let mut cancelled = false;
+        let mut denied: Vec<String> = Vec::new();
         loop {
             let event = tokio::select! {
                 biased;
@@ -442,6 +445,31 @@ impl McpServer {
                 event = run.events.recv() => event,
             };
             let event = event.map_err(|error| format!("native event stream failed: {error}"))?;
+            // MCP has no approval channel, so a native permission dialog is
+            // denied instead of leaving the run pending forever.
+            if event["type"] == "ui_dialog_request" {
+                if let Some(request_id) = event["requestId"].as_str() {
+                    let title = event["title"]
+                        .as_str()
+                        .filter(|title| !title.trim().is_empty())
+                        .unwrap_or("approval");
+                    if denied.len() < MAX_DENIED_APPROVALS {
+                        denied.push(title.to_string());
+                    }
+                    let _ = self
+                        .session
+                        .notify(json!({
+                            "type": "ui_dialog_response",
+                            "requestId": request_id,
+                            "cancelled": true,
+                        }))
+                        .await;
+                }
+                continue;
+            }
+            if event["type"] == "ui_dialog_closed" {
+                continue;
+            }
             let progress = run.tracker.observe(&event, cancelled);
             for delta in progress.deltas {
                 if delta["kind"] != "text" {
@@ -469,10 +497,22 @@ impl McpServer {
             };
             return match outcome {
                 Ok(RunOutcome::Cancelled) => Err("prompt cancelled".into()),
-                Ok(outcome) => Ok(json!({
-                    "text": truncate(&text, MAX_TOOL_TEXT),
-                    "outcome": format_outcome(outcome),
-                })),
+                Ok(outcome) => {
+                    let mut result = json!({
+                        "text": truncate(&text, MAX_TOOL_TEXT),
+                        "outcome": format_outcome(outcome),
+                    });
+                    if !denied.is_empty() {
+                        let note = format!(
+                            "\n\n[denied {} approval request(s): MCP has no approval channel]",
+                            denied.len()
+                        );
+                        let text = result["text"].as_str().unwrap_or_default().to_string();
+                        result["text"] = json!(format!("{text}{note}"));
+                        result["deniedApprovals"] = json!(denied);
+                    }
+                    Ok(result)
+                }
                 Err(error) => Err(error),
             };
         }

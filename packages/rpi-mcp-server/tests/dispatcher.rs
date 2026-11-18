@@ -48,7 +48,7 @@ impl Harness {
 
     /// Run the dispatcher, feed queued frames, then stop it and return every
     /// frame the server wrote. `reply` answers native commands.
-    async fn run<S>(mut self, reply: S) -> Vec<Value>
+    async fn run<S>(mut self, reply: S) -> (Vec<Value>, Vec<Value>)
     where
         S: Fn(&Value) -> Option<Value> + Send + 'static,
     {
@@ -65,6 +65,8 @@ impl Harness {
         let (out, out_reader) = tokio::io::duplex(256 * 1024);
         let (stop_tx, stop_rx) = watch::channel(false);
         let events = self.events.clone();
+        let commands_seen = Arc::new(Mutex::new(Vec::new()));
+        let commands_handle = Arc::clone(&commands_seen);
         // Native command pump: answer like `rpi --mode rpc` would.
         let responder = tokio::spawn(async move {
             let mut commands = BufReader::new(self.downstream).lines();
@@ -72,6 +74,10 @@ impl Harness {
                 let Ok(command) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
+                commands_handle
+                    .lock()
+                    .unwrap()
+                    .push(command.clone() as Value);
                 if let Some(response) = reply(&command) {
                     let _ = events.send(response);
                 }
@@ -96,7 +102,8 @@ impl Harness {
         serving.await.expect("dispatcher task");
         drop(reader);
         responder.abort();
-        frames
+        let commands = commands_seen.lock().unwrap().clone();
+        (frames, commands)
     }
 }
 
@@ -116,7 +123,7 @@ async fn serves_initialize_catalog_and_method_errors_without_native_calls() {
     harness.push(request(2, "tools/list", json!({})));
     harness.push(request(3, "does/not/exist", json!({})));
     harness.push(request(4, "tools/call", json!({"name":"nope"})));
-    let frames = harness.run(|_| None).await;
+    let (frames, _) = harness.run(|_| None).await;
 
     assert_eq!(frames.len(), 4, "{frames:#?}");
     assert_eq!(frames[0]["id"], 1);
@@ -136,7 +143,7 @@ async fn serves_initialize_catalog_and_method_errors_without_native_calls() {
 async fn rejects_tool_calls_before_initialize() {
     let mut harness = Harness::new();
     harness.push(request(1, "tools/call", json!({"name":"rpi_state"})));
-    let frames = harness.run(|_| None).await;
+    let (frames, _) = harness.run(|_| None).await;
     assert_eq!(frames.len(), 1, "{frames:#?}");
     assert_eq!(frames[0]["error"]["code"], -32600);
 }
@@ -154,7 +161,7 @@ async fn correlates_native_state_response_with_the_mcp_request() {
         "tools/call",
         json!({"name":"rpi_state","arguments":{}}),
     ));
-    let frames = harness
+    let (frames, _) = harness
         .run(|command| {
             (command["type"] == "get_state").then(|| {
                 json!({
@@ -202,7 +209,7 @@ async fn lists_and_reads_transcript_and_state_resources() {
         "resources/read",
         json!({"uri":"rpi://session/unknown"}),
     ));
-    let frames = harness
+    let (frames, _) = harness
         .run(|command| match command["type"].as_str() {
             Some("get_messages") => Some(json!({
                 "type":"response",
@@ -266,7 +273,7 @@ async fn notifies_subscribed_resources_when_the_run_settles() {
             json!({"type":"agent_settled","outcome":"completed"}),
         );
     }
-    let frames = harness.run(|_| None).await;
+    let (frames, _) = harness.run(|_| None).await;
 
     assert_eq!(frames[0]["id"], 1);
     assert_eq!(frames[1]["id"], 2);
@@ -301,7 +308,7 @@ async fn prompt_returns_settled_text_and_reports_progress() {
         300,
         json!({"type":"agent_settled","outcome":"completed","finalText":"pong"}),
     );
-    let frames = harness
+    let (frames, _) = harness
         .run(|command| {
             (command["type"] == "prompt").then(|| {
                 json!({
@@ -336,4 +343,66 @@ async fn prompt_returns_settled_text_and_reports_progress() {
     for frame in progress {
         assert_eq!(frame["params"]["progressToken"], "p1");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn denies_permission_dialogs_instead_of_hanging() {
+    let mut harness = Harness::new();
+    harness.push(request(
+        1,
+        "initialize",
+        json!({"protocolVersion":"2025-06-18"}),
+    ));
+    harness.push(request(
+        2,
+        "tools/call",
+        json!({"name":"rpi_prompt","arguments":{"message":"run a command"}}),
+    ));
+    harness.inject(
+        200,
+        json!({
+            "type":"ui_dialog_request",
+            "requestId":"d1",
+            "title":"Allow bash?",
+            "options":["Allow","Deny"],
+        }),
+    );
+    harness.inject(
+        500,
+        json!({"type":"agent_settled","outcome":"completed","finalText":"done"}),
+    );
+    let (frames, commands) = harness
+        .run(|command| {
+            (command["type"] == "prompt").then(|| {
+                json!({
+                    "type":"response",
+                    "id": command["id"],
+                    "success": true,
+                    "data": {"accepted": true},
+                })
+            })
+        })
+        .await;
+
+    let denial = commands
+        .iter()
+        .find(|command| command["type"] == "ui_dialog_response")
+        .expect("dispatcher answers the native dialog");
+    assert_eq!(denial["requestId"], "d1");
+    assert_eq!(denial["cancelled"], true);
+
+    let result = frames
+        .iter()
+        .find(|frame| frame["id"] == 2)
+        .expect("prompt response")
+        .clone();
+    assert_eq!(result["result"]["isError"], false, "{result:#?}");
+    assert_eq!(
+        result["result"]["structuredContent"]["deniedApprovals"][0],
+        "Allow bash?"
+    );
+    assert!(result["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("denied 1 approval request"));
 }

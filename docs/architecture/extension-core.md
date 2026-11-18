@@ -74,7 +74,9 @@ is not part of `rpi-mcp-core` and must not add server policy there:
 - Not implemented in this adapter: MCP prompts, sampling, elicitation,
   Streamable HTTP transport and permission-dialog bridging. Those need new
   reverse-request directions (or a client capability) and are not implied by the
-  existing client transports.
+  existing client transports. Because MCP has no approval channel, native
+  `ui_dialog_request` events are answered as denied (`cancelled: true`) and the
+  denial is reported in the tool result instead of leaving the run pending.
 - Resource updates are settlement-driven: the adapter subscribes to the native
   event stream and emits `notifications/resources/updated` for subscribed URIs
   when a run settles. It does not poll the transcript.

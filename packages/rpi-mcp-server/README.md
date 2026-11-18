@@ -89,9 +89,11 @@ The native host is located with `RPI_BIN`, a sibling `rpi` next to the bridge, o
 child with the native `--session <FILE>` flag, so an MCP client can continue an
 existing transcript.
 
-The bridge does not answer `ui_dialog_request` permission prompts: a run that
-needs an approval no client can answer stays pending. Use `--bypass` only for a
-trusted client and workspace, or keep runs to tool-free prompts.
+MCP has no approval channel, so a native `ui_dialog_request` (permission gate,
+`ask_user`) is **denied** instead of leaving the run pending. The prompt still
+settles; its result lists the denied titles in `deniedApprovals` and appends a
+`[denied N approval request(s)]` note. Use `--bypass` only for a trusted client
+and workspace when a run must be allowed to use gated tools.
 
 ## Protocol surface
 
@@ -120,8 +122,8 @@ trusted client and workspace, or keep runs to tool-free prompts.
 
 ## Not implemented
 
-MCP prompts, sampling, elicitation and Streamable HTTP transport. Permission
-dialogs are not bridged to a client either.
+MCP prompts, sampling, elicitation and Streamable HTTP transport. Approval
+requests are denied rather than bridged to the client.
 There is no `--mcp` HTTP listener, no credential bridging and no MCP-level
 authentication: the bridge inherits the native host's provider credentials and
 runs tools with the configured workspace's privileges. Only connect it to a
@@ -136,7 +138,8 @@ cargo clippy --locked -p rpi-mcp-server --all-targets -- -D warnings
 
 `tests/dispatcher.rs` drives the real dispatcher against a scripted native host
 (`rpi-extcore` `test-support`): framing, `initialize` gating, method errors, tool
-validation, prompt settlement, resource reads and subscription notifications.
+validation, prompt settlement, approval denial, resource reads and subscription
+notifications.
 It does not replace a run against a real `rpi` binary.
 
 Live checks against `rpi 0.24.0` covered `initialize`, `tools/list`,
