@@ -1,0 +1,3274 @@
+{
+  "source": "https://github.com/dieuluucanh/pi-for-office packages/protocol/src/office-catalog.ts",
+  "sourcePackage": "@dieulc/pi-office-protocol",
+  "sourceVersion": "0.5.1",
+  "catalogVersion": 3,
+  "protocolVersion": 3,
+  "generatedBy": "esbuild + node JSON.stringify of the upstream TypeBox catalog",
+  "hostLabels": {
+    "excel": "Excel",
+    "word": "Word",
+    "powerpoint": "PowerPoint"
+  },
+  "legacyV1Ops": [
+    "excel.get_overview",
+    "excel.read_range",
+    "excel.write_cells",
+    "excel.fill_formula",
+    "word.get_overview",
+    "word.read_document",
+    "word.insert_text",
+    "word.replace_text",
+    "powerpoint.get_overview",
+    "powerpoint.read_slide",
+    "powerpoint.add_slide",
+    "powerpoint.add_text_box"
+  ],
+  "entries": [
+    {
+      "host": "excel",
+      "op": "get_overview",
+      "name": "office_excel_get_overview",
+      "label": "Excel Workbook Overview",
+      "description": "Read a compact overview of the attached Excel workbook: sheet names, used ranges, table names, and named ranges. Call this first before any range operation.",
+      "promptSnippet": "Outline the attached Excel workbook",
+      "promptGuidelines": [
+        "Call office_excel_get_overview before office_excel_read_range to learn the workbook structure."
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet": {
+            "type": "string",
+            "description": "If provided, return detailed info for this specific sheet (dimensions, headers, tables, named ranges, objects, and a data preview). If omitted, return the workbook-level overview."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "excel",
+      "op": "read_range",
+      "name": "office_excel_read_range",
+      "label": "Excel Read Range",
+      "description": "Read cell values (and optionally formulas/formatting) from a range in the attached Excel workbook.",
+      "promptSnippet": "Read cells from the attached Excel workbook",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "range"
+        ],
+        "properties": {
+          "range": {
+            "type": "string",
+            "description": "Cell range in A1 notation, e.g. \"A1:D10\", \"Sheet2!A1:B5\". If no sheet is specified, uses the active sheet."
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "compact"
+              },
+              {
+                "type": "string",
+                "const": "csv"
+              },
+              {
+                "type": "string",
+                "const": "detailed"
+              }
+            ],
+            "description": "\"compact\" (default): markdown table of values. \"csv\": values only as CSV. \"detailed\": includes formulas and number formats."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "excel",
+      "op": "write_cells",
+      "name": "office_excel_write_cells",
+      "label": "Excel Write Cells",
+      "description": "Write a 2D array of values into the attached Excel workbook, starting at a top-left cell. values[row][col]; the array is written down and to the right from start_cell.",
+      "promptSnippet": "Write values/formulas into the attached Excel workbook",
+      "promptGuidelines": [
+        "Prefer office_excel_write_cells in a single batched call instead of many small edits.",
+        "Always verify with office_excel_read_range after office_excel_write_cells when the change is user-visible."
+      ],
+      "parameters": {
+        "type": "object",
+        "required": [
+          "start_cell",
+          "values"
+        ],
+        "properties": {
+          "start_cell": {
+            "type": "string",
+            "description": "Top-left cell to write from, e.g. \"A1\", \"Sheet2!B3\". If no sheet is specified, uses the active sheet."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {}
+            },
+            "description": "2D array of values. Each inner array is a row. Strings starting with \"=\" are formulas. Example: [[\"Name\", \"Total\"], [\"Alice\", \"=SUM(B2:B10)\"]]"
+          },
+          "allow_overwrite": {
+            "type": "boolean",
+            "description": "Set to true to overwrite existing data. Default: false. If false and the target range contains values or formulas, the write is blocked and the existing data is returned so you can ask the user."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "excel",
+      "op": "fill_formula",
+      "name": "office_excel_fill_formula",
+      "label": "Excel Fill Formula",
+      "description": "Write a formula into a single contiguous range of the attached Excel workbook. Relative references adjust as the formula fills.",
+      "promptSnippet": "Fill a formula across an Excel range",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "range",
+          "formula"
+        ],
+        "properties": {
+          "range": {
+            "type": "string",
+            "description": "Target range to fill, e.g. \"B2:B20\" or \"Sheet1!C3:F20\". Single contiguous range only."
+          },
+          "formula": {
+            "type": "string",
+            "description": "Formula to fill, starting with \"=\", e.g. \"=SUM(B2:B10)\". Relative refs will adjust."
+          },
+          "allow_overwrite": {
+            "type": "boolean",
+            "description": "Set to true to overwrite existing data. Default: false. If false and the target range contains data, the fill is blocked."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "excel",
+      "op": "search_workbook",
+      "name": "office_excel_search_workbook",
+      "label": "Excel Search Workbook",
+      "description": "Search for text, values, or formulas across the attached Excel workbook. Returns matching cells with sheet name, address, value, and formula. Use to find data, locate cells by label, or trace cross-sheet references.",
+      "promptSnippet": "Search for text/values/formulas in the attached Excel workbook",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search term. For formula search, use references like \"Sheet1!\" to find cross-sheet links."
+          },
+          "search_formulas": {
+            "type": "boolean",
+            "description": "If true, search in formula text instead of values. Useful for finding cross-sheet references (e.g. query \"Inputs!\" to find all cells referencing Inputs sheet)."
+          },
+          "use_regex": {
+            "type": "boolean",
+            "description": "If true, treat the query as a regular expression (case-insensitive)."
+          },
+          "offset": {
+            "type": "number",
+            "description": "Skip the first N matches (pagination). Default: 0."
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Restrict search to this sheet. If omitted, searches all sheets."
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum number of results to return. Default: 20."
+          },
+          "context_rows": {
+            "type": "number",
+            "description": "Number of rows above and below each match to include as context. Default: 0 (no context). Use 2-5 when searching for labels to see surrounding structure."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "modify_structure",
+      "name": "office_excel_modify_structure",
+      "label": "Excel Modify Structure",
+      "description": "Modify the workbook structure of the attached Excel workbook: insert/delete rows and columns, add/delete/rename/duplicate/hide/unhide sheets. Be careful with deletions — there is no undo.",
+      "promptSnippet": "Insert/delete rows, columns, or sheets in the attached Excel workbook",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "insert_rows"
+              },
+              {
+                "type": "string",
+                "const": "delete_rows"
+              },
+              {
+                "type": "string",
+                "const": "insert_columns"
+              },
+              {
+                "type": "string",
+                "const": "delete_columns"
+              },
+              {
+                "type": "string",
+                "const": "add_sheet"
+              },
+              {
+                "type": "string",
+                "const": "delete_sheet"
+              },
+              {
+                "type": "string",
+                "const": "rename_sheet"
+              },
+              {
+                "type": "string",
+                "const": "duplicate_sheet"
+              },
+              {
+                "type": "string",
+                "const": "hide_sheet"
+              },
+              {
+                "type": "string",
+                "const": "unhide_sheet"
+              }
+            ],
+            "description": "The structural modification to perform."
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Target sheet name. Required for sheet operations and row/column operations on a specific sheet. If omitted for row/column ops, uses the active sheet."
+          },
+          "position": {
+            "type": "number",
+            "description": "For insert_rows/delete_rows: the 1-indexed row number. For insert_columns/delete_columns: the 1-indexed column number. For add_sheet: the 0-indexed position to insert the new sheet."
+          },
+          "count": {
+            "type": "number",
+            "description": "Number of rows or columns to insert/delete. Default: 1."
+          },
+          "new_name": {
+            "type": "string",
+            "description": "New name for rename_sheet or add_sheet. Also used for duplicate_sheet target name."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "format_cells",
+      "name": "office_excel_format_cells",
+      "label": "Excel Format Cells",
+      "description": "Apply formatting to a range of cells in the attached Excel workbook (supports comma-separated ranges on one sheet). Use named styles for common patterns: style: \"currency\" or style: [\"currency\", \"total-row\"]. Individual params (bold, fill_color, etc.) override style properties. Does NOT modify cell values — use office_excel_write_cells for that.",
+      "promptSnippet": "Format cells (font, fill, borders, alignment, number format) in the attached Excel workbook",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "range"
+        ],
+        "properties": {
+          "range": {
+            "type": "string",
+            "description": "Range to format, e.g. \"A1:D1\", \"Sheet2!B3:B20\". Supports comma/semicolon-separated ranges on the same sheet (e.g. \"A1:B2, D1:D2\")."
+          },
+          "style": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "Named style(s) to apply. Compose as array (left-to-right). Format: \"number\", \"integer\", \"currency\", \"percent\", \"ratio\", \"text\". Structural: \"header\", \"total-row\", \"subtotal\", \"input\", \"blank-section\". Example: [\"currency\", \"total-row\"] = currency format + bold + top border."
+          },
+          "bold": {
+            "type": "boolean",
+            "description": "Set bold."
+          },
+          "italic": {
+            "type": "boolean",
+            "description": "Set italic."
+          },
+          "underline": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string",
+                "const": "None"
+              },
+              {
+                "type": "string",
+                "const": "Single"
+              },
+              {
+                "type": "string",
+                "const": "Double"
+              },
+              {
+                "type": "string",
+                "const": "SingleAccountant"
+              },
+              {
+                "type": "string",
+                "const": "DoubleAccountant"
+              }
+            ],
+            "description": "Underline. Pass true = \"Single\", false = \"None\"; or name a style directly: \"None\", \"Single\", \"Double\", \"SingleAccountant\", \"DoubleAccountant\"."
+          },
+          "strikethrough": {
+            "type": "boolean",
+            "description": "Strikethrough the text. Needs ExcelApi 1.9."
+          },
+          "indent_level": {
+            "type": "number",
+            "description": "Indent level, 0-250. Needs ExcelApi 1.9; reports an error on older hosts."
+          },
+          "font_color": {
+            "type": "string",
+            "description": "Font color as hex, e.g. \"#0000FF\" for blue."
+          },
+          "font_size": {
+            "type": "number",
+            "description": "Font size in points."
+          },
+          "font_name": {
+            "type": "string",
+            "description": "Font name, e.g. \"Arial\", \"Calibri\"."
+          },
+          "fill_color": {
+            "type": "string",
+            "description": "Background fill color as hex, e.g. \"#FFFF00\" for yellow."
+          },
+          "number_format": {
+            "type": "string",
+            "description": "Preset name (\"number\", \"integer\", \"currency\", \"percent\", \"ratio\", \"text\") or raw Excel format string. Overrides style's number format."
+          },
+          "number_format_dp": {
+            "type": "number",
+            "description": "Override decimal places for a number format preset."
+          },
+          "currency_symbol": {
+            "type": "string",
+            "description": "Override currency symbol, e.g. \"£\", \"€\". Only with currency preset."
+          },
+          "horizontal_alignment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "General"
+              },
+              {
+                "type": "string",
+                "const": "Left"
+              },
+              {
+                "type": "string",
+                "const": "Center"
+              },
+              {
+                "type": "string",
+                "const": "Right"
+              },
+              {
+                "type": "string",
+                "const": "Fill"
+              },
+              {
+                "type": "string",
+                "const": "Justify"
+              },
+              {
+                "type": "string",
+                "const": "CenterAcrossSelection"
+              },
+              {
+                "type": "string",
+                "const": "Distributed"
+              }
+            ],
+            "description": "\"Left\", \"Center\", \"Right\", \"General\", \"Fill\", \"Justify\", \"CenterAcrossSelection\", or \"Distributed\"."
+          },
+          "vertical_alignment": {
+            "type": "string",
+            "description": "\"Top\", \"Center\", \"Bottom\"."
+          },
+          "wrap_text": {
+            "type": "boolean",
+            "description": "Enable text wrapping."
+          },
+          "column_width": {
+            "type": "number",
+            "description": "Set column width in Excel character-width units (assumes Arial 10)."
+          },
+          "row_height": {
+            "type": "number",
+            "description": "Set row height in points."
+          },
+          "auto_fit": {
+            "type": "boolean",
+            "description": "Auto-fit column widths to content. Default: false."
+          },
+          "borders": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "thin"
+              },
+              {
+                "type": "string",
+                "const": "medium"
+              },
+              {
+                "type": "string",
+                "const": "thick"
+              },
+              {
+                "type": "string",
+                "const": "none"
+              }
+            ],
+            "description": "Border weight for ALL edges (shorthand). Individual edge params override this."
+          },
+          "border_top": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "thin"
+              },
+              {
+                "type": "string",
+                "const": "medium"
+              },
+              {
+                "type": "string",
+                "const": "thick"
+              },
+              {
+                "type": "string",
+                "const": "none"
+              }
+            ],
+            "description": "Top border weight."
+          },
+          "border_bottom": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "thin"
+              },
+              {
+                "type": "string",
+                "const": "medium"
+              },
+              {
+                "type": "string",
+                "const": "thick"
+              },
+              {
+                "type": "string",
+                "const": "none"
+              }
+            ],
+            "description": "Bottom border weight."
+          },
+          "border_left": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "thin"
+              },
+              {
+                "type": "string",
+                "const": "medium"
+              },
+              {
+                "type": "string",
+                "const": "thick"
+              },
+              {
+                "type": "string",
+                "const": "none"
+              }
+            ],
+            "description": "Left border weight."
+          },
+          "border_right": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "thin"
+              },
+              {
+                "type": "string",
+                "const": "medium"
+              },
+              {
+                "type": "string",
+                "const": "thick"
+              },
+              {
+                "type": "string",
+                "const": "none"
+              }
+            ],
+            "description": "Right border weight."
+          },
+          "border_color": {
+            "type": "string",
+            "description": "Hex color for borders (e.g. \"#000000\"). Applies to all borders set in this call. Default: automatic (black)."
+          },
+          "border_style": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "None"
+              },
+              {
+                "type": "string",
+                "const": "Continuous"
+              },
+              {
+                "type": "string",
+                "const": "Dash"
+              },
+              {
+                "type": "string",
+                "const": "DashDot"
+              },
+              {
+                "type": "string",
+                "const": "DashDotDot"
+              },
+              {
+                "type": "string",
+                "const": "Dot"
+              },
+              {
+                "type": "string",
+                "const": "Double"
+              },
+              {
+                "type": "string",
+                "const": "SlantDashDot"
+              }
+            ],
+            "description": "Border line style applied to every border set in this call. Default \"Continuous\". \"Dash\", \"DashDot\", \"DashDotDot\", \"Dot\", \"Double\" and \"SlantDashDot\" give the full Excel line-style set (ExcelApi 1.1)."
+          },
+          "merge": {
+            "type": "boolean",
+            "description": "Merge the range into a single cell."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "conditional_format",
+      "name": "office_excel_conditional_format",
+      "label": "Excel Conditional Format",
+      "description": "Add or clear conditional formatting rules in the attached Excel workbook. Supports custom formula and cell value rules.",
+      "promptSnippet": "Add or clear conditional formatting rules in the attached Excel workbook",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "action",
+          "range"
+        ],
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "add"
+              },
+              {
+                "type": "string",
+                "const": "clear"
+              }
+            ],
+            "description": "\"add\" to create a rule, \"clear\" to remove all rules in the range."
+          },
+          "range": {
+            "type": "string",
+            "description": "Target range, e.g. \"A1:D10\" or \"Sheet2!B2:B50\"."
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "formula"
+              },
+              {
+                "type": "string",
+                "const": "cell_value"
+              },
+              {
+                "type": "string",
+                "const": "data_bar"
+              },
+              {
+                "type": "string",
+                "const": "color_scale"
+              },
+              {
+                "type": "string",
+                "const": "icon_set"
+              },
+              {
+                "type": "string",
+                "const": "top_bottom"
+              },
+              {
+                "type": "string",
+                "const": "preset_criteria"
+              },
+              {
+                "type": "string",
+                "const": "contains_text"
+              }
+            ],
+            "description": "Rule family for \"add\" (all ExcelApi 1.6). \"formula\" = custom formula, \"cell_value\" = comparison, \"data_bar\", \"color_scale\", \"icon_set\", \"top_bottom\", \"preset_criteria\" (blanks/average/dates/unique), \"contains_text\"."
+          },
+          "formula": {
+            "type": "string",
+            "description": "Custom formula for type=\"formula\", e.g. \"=A1>0\"."
+          },
+          "operator": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Between"
+              },
+              {
+                "type": "string",
+                "const": "NotBetween"
+              },
+              {
+                "type": "string",
+                "const": "EqualTo"
+              },
+              {
+                "type": "string",
+                "const": "NotEqualTo"
+              },
+              {
+                "type": "string",
+                "const": "GreaterThan"
+              },
+              {
+                "type": "string",
+                "const": "LessThan"
+              },
+              {
+                "type": "string",
+                "const": "GreaterThanOrEqual"
+              },
+              {
+                "type": "string",
+                "const": "LessThanOrEqual"
+              }
+            ],
+            "description": "Cell value operator (required for cell_value rules)."
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "Cell value comparison target (required for cell_value rules). Use numbers or formulas like \"=$B$2\"."
+          },
+          "value2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "Second value for Between/NotBetween operators (optional)."
+          },
+          "text_operator": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Contains"
+              },
+              {
+                "type": "string",
+                "const": "NotContains"
+              },
+              {
+                "type": "string",
+                "const": "BeginsWith"
+              },
+              {
+                "type": "string",
+                "const": "EndsWith"
+              }
+            ],
+            "description": "Text comparison for type=\"contains_text\". Default \"Contains\"."
+          },
+          "text": {
+            "type": "string",
+            "description": "Text to match for type=\"contains_text\"."
+          },
+          "top_bottom_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "TopItems"
+              },
+              {
+                "type": "string",
+                "const": "TopPercent"
+              },
+              {
+                "type": "string",
+                "const": "BottomItems"
+              },
+              {
+                "type": "string",
+                "const": "BottomPercent"
+              }
+            ],
+            "description": "Rank basis for type=\"top_bottom\". Default \"TopItems\"."
+          },
+          "top_bottom_rank": {
+            "type": "number",
+            "description": "Rank for type=\"top_bottom\": 1-1000 for item ranks, 1-100 for percent ranks. Default 10."
+          },
+          "preset_criterion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Blanks"
+              },
+              {
+                "type": "string",
+                "const": "NonBlanks"
+              },
+              {
+                "type": "string",
+                "const": "Errors"
+              },
+              {
+                "type": "string",
+                "const": "NonErrors"
+              },
+              {
+                "type": "string",
+                "const": "Yesterday"
+              },
+              {
+                "type": "string",
+                "const": "Today"
+              },
+              {
+                "type": "string",
+                "const": "Tomorrow"
+              },
+              {
+                "type": "string",
+                "const": "LastSevenDays"
+              },
+              {
+                "type": "string",
+                "const": "LastWeek"
+              },
+              {
+                "type": "string",
+                "const": "ThisWeek"
+              },
+              {
+                "type": "string",
+                "const": "NextWeek"
+              },
+              {
+                "type": "string",
+                "const": "LastMonth"
+              },
+              {
+                "type": "string",
+                "const": "ThisMonth"
+              },
+              {
+                "type": "string",
+                "const": "NextMonth"
+              },
+              {
+                "type": "string",
+                "const": "AboveAverage"
+              },
+              {
+                "type": "string",
+                "const": "BelowAverage"
+              },
+              {
+                "type": "string",
+                "const": "EqualOrAboveAverage"
+              },
+              {
+                "type": "string",
+                "const": "EqualOrBelowAverage"
+              },
+              {
+                "type": "string",
+                "const": "OneStdDevAboveAverage"
+              },
+              {
+                "type": "string",
+                "const": "OneStdDevBelowAverage"
+              },
+              {
+                "type": "string",
+                "const": "TwoStdDevAboveAverage"
+              },
+              {
+                "type": "string",
+                "const": "TwoStdDevBelowAverage"
+              },
+              {
+                "type": "string",
+                "const": "ThreeStdDevAboveAverage"
+              },
+              {
+                "type": "string",
+                "const": "ThreeStdDevBelowAverage"
+              },
+              {
+                "type": "string",
+                "const": "UniqueValues"
+              },
+              {
+                "type": "string",
+                "const": "DuplicateValues"
+              }
+            ],
+            "description": "Preset criterion for type=\"preset_criteria\", e.g. \"AboveAverage\", \"Blanks\", \"Today\", \"DuplicateValues\"."
+          },
+          "data_bar_fill_color": {
+            "type": "string",
+            "description": "Positive data-bar fill hex, e.g. \"#638EC6\"."
+          },
+          "data_bar_negative_fill_color": {
+            "type": "string",
+            "description": "Negative data-bar fill hex."
+          },
+          "data_bar_direction": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Context"
+              },
+              {
+                "type": "string",
+                "const": "LeftToRight"
+              },
+              {
+                "type": "string",
+                "const": "RightToLeft"
+              }
+            ],
+            "description": "Data-bar direction. Default \"Context\"."
+          },
+          "data_bar_show_only": {
+            "type": "boolean",
+            "description": "Show the data bar only, hiding the cell value."
+          },
+          "data_bar_axis_color": {
+            "type": "string",
+            "description": "Data-bar axis color hex."
+          },
+          "color_scale_min_color": {
+            "type": "string",
+            "description": "Minimum color for type=\"color_scale\". Default \"#F8696B\"."
+          },
+          "color_scale_mid_color": {
+            "type": "string",
+            "description": "Midpoint color for type=\"color_scale\". Omit for a two-color scale."
+          },
+          "color_scale_max_color": {
+            "type": "string",
+            "description": "Maximum color for type=\"color_scale\". Default \"#63BE7B\"."
+          },
+          "icon_set_style": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "ThreeArrows"
+              },
+              {
+                "type": "string",
+                "const": "ThreeArrowsGray"
+              },
+              {
+                "type": "string",
+                "const": "ThreeFlags"
+              },
+              {
+                "type": "string",
+                "const": "ThreeTrafficLights1"
+              },
+              {
+                "type": "string",
+                "const": "ThreeTrafficLights2"
+              },
+              {
+                "type": "string",
+                "const": "ThreeSigns"
+              },
+              {
+                "type": "string",
+                "const": "ThreeSymbols"
+              },
+              {
+                "type": "string",
+                "const": "ThreeSymbols2"
+              },
+              {
+                "type": "string",
+                "const": "FourArrows"
+              },
+              {
+                "type": "string",
+                "const": "FourArrowsGray"
+              },
+              {
+                "type": "string",
+                "const": "FourRedToBlack"
+              },
+              {
+                "type": "string",
+                "const": "FourRating"
+              },
+              {
+                "type": "string",
+                "const": "FourTrafficLights"
+              },
+              {
+                "type": "string",
+                "const": "FiveArrows"
+              },
+              {
+                "type": "string",
+                "const": "FiveArrowsGray"
+              },
+              {
+                "type": "string",
+                "const": "FiveRating"
+              },
+              {
+                "type": "string",
+                "const": "FiveQuarters"
+              },
+              {
+                "type": "string",
+                "const": "ThreeStars"
+              },
+              {
+                "type": "string",
+                "const": "ThreeTriangles"
+              },
+              {
+                "type": "string",
+                "const": "FiveBoxes"
+              }
+            ],
+            "description": "Icon set for type=\"icon_set\". Default \"ThreeTrafficLights1\"."
+          },
+          "icon_set_reverse_order": {
+            "type": "boolean",
+            "description": "Reverse the icon order."
+          },
+          "icon_set_show_icon_only": {
+            "type": "boolean",
+            "description": "Show only the icon, hiding the cell value."
+          },
+          "fill_color": {
+            "type": "string",
+            "description": "Fill color hex, e.g. \"#FFFDE0\"."
+          },
+          "font_color": {
+            "type": "string",
+            "description": "Font color hex, e.g. \"#000000\"."
+          },
+          "bold": {
+            "type": "boolean",
+            "description": "Bold text."
+          },
+          "italic": {
+            "type": "boolean",
+            "description": "Italic text."
+          },
+          "underline": {
+            "type": "boolean",
+            "description": "Underline text."
+          },
+          "stop_if_true": {
+            "type": "boolean",
+            "description": "Stop evaluating later rules if true."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "charts",
+      "name": "office_excel_charts",
+      "label": "Excel Charts",
+      "description": "List, create, update, delete, and capture images of charts in the attached Excel workbook.",
+      "promptSnippet": "List/create/update/delete charts in the attached Excel workbook",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "list"
+              },
+              {
+                "type": "string",
+                "const": "create"
+              },
+              {
+                "type": "string",
+                "const": "update"
+              },
+              {
+                "type": "string",
+                "const": "delete"
+              },
+              {
+                "type": "string",
+                "const": "get_image"
+              }
+            ],
+            "description": "Chart operation: list, create, update, delete, or get_image."
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Worksheet name. For list, limits output to one sheet. For create/update, defaults to the active sheet or the source range sheet."
+          },
+          "name": {
+            "type": "string",
+            "description": "Chart name. Required for update, delete, and get_image. Optional assigned name for create."
+          },
+          "new_name": {
+            "type": "string",
+            "description": "New chart name for update."
+          },
+          "source_range": {
+            "type": "string",
+            "description": "Source data range for create/update, e.g. `Sheet1!A1:B12` or `A1:B12` relative to sheet."
+          },
+          "chart_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "column"
+              },
+              {
+                "type": "string",
+                "const": "column_stacked"
+              },
+              {
+                "type": "string",
+                "const": "column_stacked_100"
+              },
+              {
+                "type": "string",
+                "const": "bar"
+              },
+              {
+                "type": "string",
+                "const": "bar_stacked"
+              },
+              {
+                "type": "string",
+                "const": "bar_stacked_100"
+              },
+              {
+                "type": "string",
+                "const": "line"
+              },
+              {
+                "type": "string",
+                "const": "line_markers"
+              },
+              {
+                "type": "string",
+                "const": "area"
+              },
+              {
+                "type": "string",
+                "const": "area_stacked"
+              },
+              {
+                "type": "string",
+                "const": "pie"
+              },
+              {
+                "type": "string",
+                "const": "doughnut"
+              },
+              {
+                "type": "string",
+                "const": "scatter"
+              },
+              {
+                "type": "string",
+                "const": "scatter_lines"
+              },
+              {
+                "type": "string",
+                "const": "scatter_smooth"
+              },
+              {
+                "type": "string",
+                "const": "radar"
+              }
+            ],
+            "description": "Chart type: column, column_stacked, column_stacked_100, bar, bar_stacked, bar_stacked_100, line, line_markers, area, area_stacked, pie, doughnut, scatter, scatter_lines, scatter_smooth, or radar."
+          },
+          "series_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "const": "columns"
+              },
+              {
+                "type": "string",
+                "const": "rows"
+              }
+            ],
+            "description": "How source rows/columns become series: auto, columns, or rows."
+          },
+          "title": {
+            "type": "string",
+            "description": "Chart title. Empty string hides the title."
+          },
+          "legend_position": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "none"
+              },
+              {
+                "type": "string",
+                "const": "right"
+              },
+              {
+                "type": "string",
+                "const": "left"
+              },
+              {
+                "type": "string",
+                "const": "top"
+              },
+              {
+                "type": "string",
+                "const": "bottom"
+              }
+            ],
+            "description": "Legend position, or none to hide the legend."
+          },
+          "x_axis_title": {
+            "type": "string",
+            "description": "Category/X axis title. Empty string hides it."
+          },
+          "y_axis_title": {
+            "type": "string",
+            "description": "Value/Y axis title. Empty string hides it."
+          },
+          "position": {
+            "type": "string",
+            "description": "Anchor range for chart placement, e.g. `D2:J18`."
+          },
+          "width": {
+            "type": "number",
+            "description": "Image width in pixels for get_image. Defaults to 600; capped at 1200."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "trace_dependencies",
+      "name": "office_excel_trace_dependencies",
+      "label": "Excel Trace Dependencies",
+      "description": "Return formula lineage for a cell in the attached Excel workbook: precedents (upstream) or dependents (downstream).",
+      "promptSnippet": "Trace formula precedents/dependents of an Excel cell",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "cell"
+        ],
+        "properties": {
+          "cell": {
+            "type": "string",
+            "description": "Cell to trace, e.g. \"D10\", \"Sheet2!F5\". Must be a single cell, not a range."
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "precedents"
+              },
+              {
+                "type": "string",
+                "const": "dependents"
+              }
+            ],
+            "description": "Trace direction: precedents (upstream) or dependents (downstream). Default: precedents."
+          },
+          "depth": {
+            "type": "number",
+            "description": "How many levels of dependencies to trace. Default: 2. Max: 5."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "explain_formula",
+      "name": "office_excel_explain_formula",
+      "label": "Excel Explain Formula",
+      "description": "Explain a formula cell in the attached Excel workbook in plain language, including direct input references and current values.",
+      "promptSnippet": "Explain what an Excel formula cell does",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "cell"
+        ],
+        "properties": {
+          "cell": {
+            "type": "string",
+            "description": "Single formula cell to explain, e.g. \"D10\" or \"Sheet2!F5\"."
+          },
+          "max_references": {
+            "type": "number",
+            "description": "Max number of direct references to preview. Default: 8. Max: 20."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "view_settings",
+      "name": "office_excel_view_settings",
+      "label": "Excel View Settings",
+      "description": "Read or change worksheet view/navigation settings in the attached Excel workbook: gridlines, row/column headings, freeze panes, tab color, sheet visibility, sheet activation, and standard width.",
+      "promptSnippet": "Change Excel view settings (gridlines, freeze panes, tab color, visibility)",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "get"
+              },
+              {
+                "type": "string",
+                "const": "show_gridlines"
+              },
+              {
+                "type": "string",
+                "const": "hide_gridlines"
+              },
+              {
+                "type": "string",
+                "const": "show_headings"
+              },
+              {
+                "type": "string",
+                "const": "hide_headings"
+              },
+              {
+                "type": "string",
+                "const": "freeze_rows"
+              },
+              {
+                "type": "string",
+                "const": "freeze_columns"
+              },
+              {
+                "type": "string",
+                "const": "freeze_at"
+              },
+              {
+                "type": "string",
+                "const": "unfreeze"
+              },
+              {
+                "type": "string",
+                "const": "set_tab_color"
+              },
+              {
+                "type": "string",
+                "const": "hide_sheet"
+              },
+              {
+                "type": "string",
+                "const": "show_sheet"
+              },
+              {
+                "type": "string",
+                "const": "very_hide_sheet"
+              },
+              {
+                "type": "string",
+                "const": "set_standard_width"
+              },
+              {
+                "type": "string",
+                "const": "activate"
+              }
+            ],
+            "description": "The view setting to read or change."
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Target sheet name. Defaults to the active sheet for most actions. Required for hide/show/very_hide and activate."
+          },
+          "count": {
+            "type": "number",
+            "description": "Number of rows or columns to freeze. Required for freeze_rows/freeze_columns."
+          },
+          "range": {
+            "type": "string",
+            "description": "Cell range for freeze_at (e.g. \"B3\"). Everything above and to the left of this cell will be frozen."
+          },
+          "color": {
+            "type": "string",
+            "description": "Tab color in #RRGGBB format (e.g. \"#FF6600\"). Use \"\" to clear."
+          },
+          "width": {
+            "type": "number",
+            "description": "Standard (default) column width for the worksheet, in Excel character-width units. Required for set_standard_width."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "comments",
+      "name": "office_excel_comments",
+      "label": "Excel Comments",
+      "description": "Read, add, update, reply, delete, resolve, and reopen cell comments in the attached Excel workbook.",
+      "promptSnippet": "Read or manage Excel cell comments and reply threads",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "action",
+          "range"
+        ],
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "type": "string",
+                "const": "add"
+              },
+              {
+                "type": "string",
+                "const": "update"
+              },
+              {
+                "type": "string",
+                "const": "reply"
+              },
+              {
+                "type": "string",
+                "const": "delete"
+              },
+              {
+                "type": "string",
+                "const": "resolve"
+              },
+              {
+                "type": "string",
+                "const": "reopen"
+              }
+            ],
+            "description": "Comment operation: read (list comments in range), add (new comment on cell), update (edit existing comment text), reply (add threaded reply), delete (remove comment + replies), resolve/reopen (toggle thread status)."
+          },
+          "range": {
+            "type": "string",
+            "description": "Target cell or range in A1 notation, e.g. \"A1\", \"B2:D10\", \"Sheet2!A1\". Range supported for read; other actions require a single cell."
+          },
+          "content": {
+            "type": "string",
+            "description": "Comment text. Required for add, update, and reply actions."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "workbook_history",
+      "name": "office_excel_workbook_history",
+      "label": "Excel Workbook History",
+      "description": "List, restore, and manage automatic workbook backups created before edits in the attached Excel workbook.",
+      "promptSnippet": "List/restore automatic backups of the attached Excel workbook",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "list"
+              },
+              {
+                "type": "string",
+                "const": "restore"
+              },
+              {
+                "type": "string",
+                "const": "delete"
+              },
+              {
+                "type": "string",
+                "const": "clear"
+              }
+            ],
+            "description": "Operation to run. list (default): show recent backups; restore: revert one backup; delete: remove one backup; clear: remove all backups for current workbook."
+          },
+          "snapshot_id": {
+            "type": "string",
+            "description": "Backup id for restore/delete. If omitted, the latest backup is used."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Max backups to list (list action only). Default: 10."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "excel",
+      "op": "get_capabilities",
+      "name": "office_excel_get_capabilities",
+      "label": "Excel Capabilities",
+      "description": "Report which Excel capabilities the current host actually supports: the platform, and whether each formatting/structure capability is available or gated by a newer ExcelApi version. Read-only — it never changes the workbook. Call this before telling the user a capability is unavailable, so the answer reflects the real host rather than an assumption.",
+      "promptSnippet": "Report which Excel capabilities the current host supports",
+      "promptGuidelines": [
+        "Call office_excel_get_capabilities before claiming an Excel feature is unavailable."
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "since": 3
+    },
+    {
+      "host": "word",
+      "op": "get_overview",
+      "name": "office_word_get_overview",
+      "label": "Word Document Overview",
+      "description": "Read a compact overview of the attached Word document: heading outline (with text), paragraph count, table count, and word count. Call this first before editing.",
+      "promptSnippet": "Outline the attached Word document",
+      "promptGuidelines": [
+        "Call office_word_get_overview before office_word_insert_text or office_word_replace_text."
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "word",
+      "op": "get_capabilities",
+      "name": "office_word_get_capabilities",
+      "label": "Word Capabilities",
+      "description": "Report which Word capabilities the current host actually supports: the platform, and whether each formatting/insertion capability is available or desktop-only. Read-only — it never changes the document. Call this before telling the user that a capability is unavailable, so the answer reflects the real host rather than an assumption.",
+      "promptSnippet": "Report which Word capabilities the current host supports",
+      "promptGuidelines": [
+        "Call office_word_get_capabilities before claiming a Word formatting feature is unavailable."
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "since": 2
+    },
+    {
+      "host": "word",
+      "op": "read_document",
+      "name": "office_word_read_document",
+      "label": "Word Read Document",
+      "description": "Read text from the attached Word document: the whole body or the current selection. Paragraphs are preserved (one line per paragraph) with heading/list markers.",
+      "promptSnippet": "Read the attached Word document (or selection)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "all"
+              },
+              {
+                "type": "string",
+                "const": "selection"
+              }
+            ],
+            "description": "\"all\": whole document. \"selection\": currently selected text only."
+          },
+          "maxChars": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 200000,
+            "description": "Cap on characters returned (default 20000)."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "word",
+      "op": "insert_text",
+      "name": "office_word_insert_text",
+      "label": "Word Insert Text",
+      "description": "Insert text into the attached Word document — at the start, at the end (default), or replacing the current selection. Multi-line text becomes separate paragraphs. Optionally format the inserted text in the same call: font (bold, italic, underline, size, name, color), paragraph alignment (\"Left\"/\"Centered\"/\"Right\"/\"Justified\"), style names (e.g. \"Heading 1\", \"Title\"), spacing, and indents. Use format: \"markdown\" to insert a markdown document (headings, bold/italic, bullets). Only the formatting properties listed above are exposed — if the user asks for one that is not listed, say it is not available rather than claiming support.",
+      "promptSnippet": "Insert (and format) text into the attached Word document",
+      "promptGuidelines": [
+        "For a formatted document use office_word_insert_blocks (precise per-block control) or office_word_insert_text with format: \"markdown\".",
+        "Never emit HTML for Word documents; use office_word_insert_text / office_word_insert_blocks instead."
+      ],
+      "parameters": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to insert. Newlines create separate paragraphs."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "start"
+              },
+              {
+                "type": "string",
+                "const": "end"
+              },
+              {
+                "type": "string",
+                "const": "replace_selection"
+              }
+            ],
+            "description": "\"end\" (default) appends to the document. \"replace_selection\" overwrites the selection."
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "text"
+              },
+              {
+                "type": "string",
+                "const": "markdown"
+              }
+            ],
+            "description": "\"text\" (default): plain text with newline→paragraph. \"markdown\": parse a markdown subset."
+          },
+          "bold": {
+            "type": "boolean",
+            "description": "Set bold (true) or unbold (false)."
+          },
+          "italic": {
+            "type": "boolean",
+            "description": "Set italic (true) or unitalicize (false)."
+          },
+          "underline": {
+            "type": "boolean",
+            "description": "Underline the text (single underline)."
+          },
+          "size": {
+            "type": "number",
+            "description": "Font size in points (e.g. 16)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Font name (e.g. \"Times New Roman\")."
+          },
+          "color": {
+            "type": "string",
+            "description": "Font color as #RRGGBB (e.g. \"#000000\")."
+          },
+          "highlight": {
+            "type": "string",
+            "description": "Text highlight (marker) color as #RRGGBB, or \"none\" to clear. This is what a \"fill\"/\"background\"/\"highlight\" request on text maps to. Available on Word desktop and Word for the web (WordApi 1.1); on Word for Windows desktop a value outside the 15 named highlight colors snaps to the nearest one."
+          },
+          "alignment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Left"
+              },
+              {
+                "type": "string",
+                "const": "Centered"
+              },
+              {
+                "type": "string",
+                "const": "Right"
+              },
+              {
+                "type": "string",
+                "const": "Justified"
+              }
+            ],
+            "description": "Paragraph alignment. Word values: \"Left\", \"Centered\" (note the capital C), \"Right\", \"Justified\"."
+          },
+          "style": {
+            "type": "string",
+            "description": "Paragraph style name, e.g. \"Heading 1\", \"Title\", \"Normal\". Style names are locale-sensitive; a fallback to direct formatting is applied when the style cannot be verified."
+          },
+          "spaceBefore": {
+            "type": "number",
+            "description": "Space before the paragraph, in points."
+          },
+          "spaceAfter": {
+            "type": "number",
+            "description": "Space after the paragraph, in points."
+          },
+          "lineSpacing": {
+            "type": "number",
+            "description": "Line spacing, in points."
+          },
+          "firstLineIndent": {
+            "type": "number",
+            "description": "First-line indent, in points."
+          },
+          "leftIndent": {
+            "type": "number",
+            "description": "Left indent, in points."
+          },
+          "shading": {
+            "type": "string",
+            "description": "Background fill (\"shading\") as #RRGGBB. Desktop-only: needs WordApiDesktop 1.3, so it reports an error on Word for the web. Its span depends on the tool: word_format_range fills only the matched text, while word_insert_text / word_insert_blocks fill the whole paragraph. Use `highlight` instead for a character-level marker that works on every platform."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "word",
+      "op": "replace_text",
+      "name": "office_word_replace_text",
+      "label": "Word Replace Text",
+      "description": "Find and replace literal text in the attached Word document. Returns how many occurrences were replaced.",
+      "promptSnippet": "Find and replace literal text in the attached Word document",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "find",
+          "replace"
+        ],
+        "properties": {
+          "find": {
+            "type": "string",
+            "description": "Literal text to find."
+          },
+          "replace": {
+            "type": "string",
+            "description": "Replacement text."
+          },
+          "matchCase": {
+            "type": "boolean",
+            "description": "Case-sensitive match (default false)."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "word",
+      "op": "format_range",
+      "name": "office_word_format_range",
+      "label": "Word Format Range",
+      "description": "Find text by literal content in the attached Word document and apply formatting to every match: bold, italic, underline, font size (points), font name, color (#RRGGBB), paragraph alignment, paragraph style (e.g. \"Heading 1\"), spacing, and indents. Use this to bold/size/center existing content — e.g. format a document title. Only the formatting properties listed above are exposed — if the user asks for one that is not listed, say it is not available rather than claiming support.",
+      "promptSnippet": "Format existing Word text (bold, size, alignment, style)",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Literal text to find and format. Every occurrence is formatted."
+          },
+          "matchCase": {
+            "type": "boolean",
+            "description": "Case-sensitive search (default false)."
+          },
+          "bold": {
+            "type": "boolean",
+            "description": "Set bold (true) or unbold (false)."
+          },
+          "italic": {
+            "type": "boolean",
+            "description": "Set italic (true) or unitalicize (false)."
+          },
+          "underline": {
+            "type": "boolean",
+            "description": "Underline the text (single underline)."
+          },
+          "size": {
+            "type": "number",
+            "description": "Font size in points (e.g. 16)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Font name (e.g. \"Times New Roman\")."
+          },
+          "color": {
+            "type": "string",
+            "description": "Font color as #RRGGBB (e.g. \"#000000\")."
+          },
+          "highlight": {
+            "type": "string",
+            "description": "Text highlight (marker) color as #RRGGBB, or \"none\" to clear. This is what a \"fill\"/\"background\"/\"highlight\" request on text maps to. Available on Word desktop and Word for the web (WordApi 1.1); on Word for Windows desktop a value outside the 15 named highlight colors snaps to the nearest one."
+          },
+          "alignment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Left"
+              },
+              {
+                "type": "string",
+                "const": "Centered"
+              },
+              {
+                "type": "string",
+                "const": "Right"
+              },
+              {
+                "type": "string",
+                "const": "Justified"
+              }
+            ],
+            "description": "Paragraph alignment. Word values: \"Left\", \"Centered\" (note the capital C), \"Right\", \"Justified\"."
+          },
+          "style": {
+            "type": "string",
+            "description": "Paragraph style name, e.g. \"Heading 1\", \"Title\", \"Normal\". Style names are locale-sensitive; a fallback to direct formatting is applied when the style cannot be verified."
+          },
+          "spaceBefore": {
+            "type": "number",
+            "description": "Space before the paragraph, in points."
+          },
+          "spaceAfter": {
+            "type": "number",
+            "description": "Space after the paragraph, in points."
+          },
+          "lineSpacing": {
+            "type": "number",
+            "description": "Line spacing, in points."
+          },
+          "firstLineIndent": {
+            "type": "number",
+            "description": "First-line indent, in points."
+          },
+          "leftIndent": {
+            "type": "number",
+            "description": "Left indent, in points."
+          },
+          "shading": {
+            "type": "string",
+            "description": "Background fill (\"shading\") as #RRGGBB. Desktop-only: needs WordApiDesktop 1.3, so it reports an error on Word for the web. Its span depends on the tool: word_format_range fills only the matched text, while word_insert_text / word_insert_blocks fill the whole paragraph. Use `highlight` instead for a character-level marker that works on every platform."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "word",
+      "op": "insert_blocks",
+      "name": "office_word_insert_blocks",
+      "label": "Word Insert Blocks",
+      "description": "Assemble a structured formatted document in the attached Word document from blocks: paragraphs, headings (level 1-6), bullet/numbered list items, and page breaks. Each block can carry its own font (bold/italic/underline/size/name/color), paragraph alignment, style name, spacing and indents. Use this for a complete formatted document in one call — e.g. a title, then body paragraphs, then a right-aligned signature block.",
+      "promptSnippet": "Insert a fully formatted document (title, headings, lists, alignment) into Word",
+      "promptGuidelines": [
+        "Prefer office_word_insert_blocks over many small inserts when composing a formatted document.",
+        "Align office_word_insert_blocks signatures/dates right (alignment: \"Right\") and keep heading levels ≤ 6.",
+        "Never emit HTML for Word documents; use office_word_insert_blocks / office_word_insert_text instead."
+      ],
+      "parameters": {
+        "type": "object",
+        "required": [
+          "blocks"
+        ],
+        "properties": {
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "start"
+              },
+              {
+                "type": "string",
+                "const": "end"
+              },
+              {
+                "type": "string",
+                "const": "replace_selection"
+              }
+            ],
+            "description": "\"end\" (default) appends to the document. \"replace_selection\" overwrites the selection."
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "text"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Text content of the block."
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "paragraph"
+                    },
+                    {
+                      "type": "string",
+                      "const": "heading"
+                    },
+                    {
+                      "type": "string",
+                      "const": "listItem"
+                    },
+                    {
+                      "type": "string",
+                      "const": "pageBreak"
+                    }
+                  ],
+                  "description": "Block type: \"paragraph\" (default), \"heading\" (use with level), \"listItem\", or \"pageBreak\" (text is ignored)."
+                },
+                "level": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 6,
+                  "description": "Heading level 1-6 (for type: heading)."
+                },
+                "listType": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "bullet"
+                    },
+                    {
+                      "type": "string",
+                      "const": "number"
+                    }
+                  ],
+                  "description": "List marker style for type: listItem (\"bullet\" or \"number\")."
+                },
+                "bold": {
+                  "type": "boolean",
+                  "description": "Set bold (true) or unbold (false)."
+                },
+                "italic": {
+                  "type": "boolean",
+                  "description": "Set italic (true) or unitalicize (false)."
+                },
+                "underline": {
+                  "type": "boolean",
+                  "description": "Underline the text (single underline)."
+                },
+                "size": {
+                  "type": "number",
+                  "description": "Font size in points (e.g. 16)."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Font name (e.g. \"Times New Roman\")."
+                },
+                "color": {
+                  "type": "string",
+                  "description": "Font color as #RRGGBB (e.g. \"#000000\")."
+                },
+                "highlight": {
+                  "type": "string",
+                  "description": "Text highlight (marker) color as #RRGGBB, or \"none\" to clear. This is what a \"fill\"/\"background\"/\"highlight\" request on text maps to. Available on Word desktop and Word for the web (WordApi 1.1); on Word for Windows desktop a value outside the 15 named highlight colors snaps to the nearest one."
+                },
+                "alignment": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "Left"
+                    },
+                    {
+                      "type": "string",
+                      "const": "Centered"
+                    },
+                    {
+                      "type": "string",
+                      "const": "Right"
+                    },
+                    {
+                      "type": "string",
+                      "const": "Justified"
+                    }
+                  ],
+                  "description": "Paragraph alignment. Word values: \"Left\", \"Centered\" (note the capital C), \"Right\", \"Justified\"."
+                },
+                "style": {
+                  "type": "string",
+                  "description": "Paragraph style name, e.g. \"Heading 1\", \"Title\", \"Normal\". Style names are locale-sensitive; a fallback to direct formatting is applied when the style cannot be verified."
+                },
+                "spaceBefore": {
+                  "type": "number",
+                  "description": "Space before the paragraph, in points."
+                },
+                "spaceAfter": {
+                  "type": "number",
+                  "description": "Space after the paragraph, in points."
+                },
+                "lineSpacing": {
+                  "type": "number",
+                  "description": "Line spacing, in points."
+                },
+                "firstLineIndent": {
+                  "type": "number",
+                  "description": "First-line indent, in points."
+                },
+                "leftIndent": {
+                  "type": "number",
+                  "description": "Left indent, in points."
+                },
+                "shading": {
+                  "type": "string",
+                  "description": "Background fill (\"shading\") as #RRGGBB. Desktop-only: needs WordApiDesktop 1.3, so it reports an error on Word for the web. Its span depends on the tool: word_format_range fills only the matched text, while word_insert_text / word_insert_blocks fill the whole paragraph. Use `highlight` instead for a character-level marker that works on every platform."
+                }
+              }
+            },
+            "description": "Ordered list of blocks to insert."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "word",
+      "op": "insert_table",
+      "name": "office_word_insert_table",
+      "label": "Word Insert Table",
+      "description": "Insert a table into the attached Word document with values[row][col]. Optionally bold the header row, apply a table style/alignment.",
+      "promptSnippet": "Insert a table into the attached Word document",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "2D array of cell values (rows × cols)."
+          },
+          "headerRow": {
+            "type": "boolean",
+            "description": "Bold the first row as a header. Default: false."
+          },
+          "style": {
+            "type": "string",
+            "description": "Table style name, e.g. \"Grid Table 4 - Accent 1\". Locale-sensitive; degraded gracefully."
+          },
+          "alignment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Left"
+              },
+              {
+                "type": "string",
+                "const": "Centered"
+              },
+              {
+                "type": "string",
+                "const": "Right"
+              },
+              {
+                "type": "string",
+                "const": "Justified"
+              }
+            ],
+            "description": "Paragraph alignment. Word values: \"Left\", \"Centered\" (note the capital C), \"Right\", \"Justified\"."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "start"
+              },
+              {
+                "type": "string",
+                "const": "end"
+              }
+            ],
+            "description": "\"end\" (default) appends to the document. \"start\" inserts at the beginning."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "word",
+      "op": "insert_page_break",
+      "name": "office_word_insert_page_break",
+      "label": "Word Insert Page Break",
+      "description": "Insert a page break at the start or end of the attached Word document.",
+      "promptSnippet": "Insert a page break in the attached Word document",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "start"
+              },
+              {
+                "type": "string",
+                "const": "end"
+              }
+            ],
+            "description": "\"end\" (default) appends to the document. \"start\" inserts at the beginning."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "word",
+      "op": "insert_image",
+      "name": "office_word_insert_image",
+      "label": "Word Insert Image",
+      "description": "Insert an inline image into the attached Word document from a base64 string (or a data URL). Max decoded size ~5 MB. To embed a local file, encode it first: on macOS/Linux run `base64 -w0 <file>` in bash and pass the output; on Windows run `certutil -encode <file> tmp.b64` and read the file.",
+      "promptSnippet": "Insert an image (base64) into the attached Word document",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "base64"
+        ],
+        "properties": {
+          "base64": {
+            "type": "string",
+            "description": "Base64-encoded image, optionally prefixed with data:<mime>;base64,"
+          },
+          "width": {
+            "type": "number",
+            "description": "Width in points. Default: keep source size."
+          },
+          "height": {
+            "type": "number",
+            "description": "Height in points. Default: keep source size."
+          },
+          "alignment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Left"
+              },
+              {
+                "type": "string",
+                "const": "Centered"
+              },
+              {
+                "type": "string",
+                "const": "Right"
+              },
+              {
+                "type": "string",
+                "const": "Justified"
+              }
+            ],
+            "description": "Paragraph alignment. Word values: \"Left\", \"Centered\" (note the capital C), \"Right\", \"Justified\"."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "start"
+              },
+              {
+                "type": "string",
+                "const": "end"
+              }
+            ],
+            "description": "\"end\" (default) appends to the document. \"start\" inserts at the beginning."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "word",
+      "op": "insert_hyperlink",
+      "name": "office_word_insert_hyperlink",
+      "label": "Word Insert Hyperlink",
+      "description": "Insert a clickable hyperlink with display text into the attached Word document.",
+      "promptSnippet": "Insert a hyperlink into the attached Word document",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "text",
+          "url"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Display text for the hyperlink."
+          },
+          "url": {
+            "type": "string",
+            "description": "Target URL (e.g. https://example.com)."
+          },
+          "screenTip": {
+            "type": "string",
+            "description": "Optional hover tooltip."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "start"
+              },
+              {
+                "type": "string",
+                "const": "end"
+              }
+            ],
+            "description": "\"end\" (default) appends to the document. \"start\" inserts at the beginning."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "powerpoint",
+      "op": "get_overview",
+      "name": "office_powerpoint_get_overview",
+      "label": "PowerPoint Overview",
+      "description": "Read a compact overview of the attached presentation: slide count, each slide's title and shape count. Call this first before any slide operation.",
+      "promptSnippet": "Outline the attached PowerPoint presentation",
+      "promptGuidelines": [
+        "Call office_powerpoint_get_overview before office_powerpoint_read_slide or office_powerpoint_add_slide."
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "powerpoint",
+      "op": "read_slide",
+      "name": "office_powerpoint_read_slide",
+      "label": "PowerPoint Read Slide",
+      "description": "Read all text content of one slide in the attached presentation (shapes, text frames, notes).",
+      "promptSnippet": "Read the text of a PowerPoint slide",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "slideIndex"
+        ],
+        "properties": {
+          "slideIndex": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based slide index."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "powerpoint",
+      "op": "add_slide",
+      "name": "office_powerpoint_add_slide",
+      "label": "PowerPoint Add Slide",
+      "description": "Append a new slide to the attached presentation and navigate to it. Uses the default layout.",
+      "promptSnippet": "Append a slide to the attached PowerPoint presentation",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "powerpoint",
+      "op": "add_text_box",
+      "name": "office_powerpoint_add_text_box",
+      "label": "PowerPoint Add Text Box",
+      "description": "Add a text box with the given text to a slide. Coordinates/geometry are in points. Supports formatting in the same call (bold, italic, underline, fontSize/fontName/fontColor, alignment \"Left\"/\"Center\"/\"Right\"/\"Justify\") — always pass formatting for titles and headings.",
+      "promptSnippet": "Add a (formatted) text box to a PowerPoint slide",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "slideIndex",
+          "text"
+        ],
+        "properties": {
+          "slideIndex": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based slide index."
+          },
+          "text": {
+            "type": "string",
+            "description": "Text box content."
+          },
+          "x": {
+            "type": "number",
+            "description": "Left edge in points (default centered)."
+          },
+          "y": {
+            "type": "number",
+            "description": "Top edge in points (default centered)."
+          },
+          "width": {
+            "type": "number",
+            "description": "Width in points (default 400)."
+          },
+          "height": {
+            "type": "number",
+            "description": "Height in points (default 60)."
+          },
+          "bold": {
+            "type": "boolean",
+            "description": "Set bold (true) or unbold (false)."
+          },
+          "italic": {
+            "type": "boolean",
+            "description": "Set italic (true) or unitalicize (false)."
+          },
+          "underline": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string",
+                "const": "None"
+              },
+              {
+                "type": "string",
+                "const": "Single"
+              },
+              {
+                "type": "string",
+                "const": "Double"
+              },
+              {
+                "type": "string",
+                "const": "Heavy"
+              },
+              {
+                "type": "string",
+                "const": "Dotted"
+              },
+              {
+                "type": "string",
+                "const": "DottedHeavy"
+              },
+              {
+                "type": "string",
+                "const": "Dash"
+              },
+              {
+                "type": "string",
+                "const": "DashHeavy"
+              },
+              {
+                "type": "string",
+                "const": "DashLong"
+              },
+              {
+                "type": "string",
+                "const": "DashLongHeavy"
+              },
+              {
+                "type": "string",
+                "const": "DotDash"
+              },
+              {
+                "type": "string",
+                "const": "DotDashHeavy"
+              },
+              {
+                "type": "string",
+                "const": "DotDotDash"
+              },
+              {
+                "type": "string",
+                "const": "DotDotDashHeavy"
+              },
+              {
+                "type": "string",
+                "const": "Wavy"
+              },
+              {
+                "type": "string",
+                "const": "WavyHeavy"
+              },
+              {
+                "type": "string",
+                "const": "WavyDouble"
+              }
+            ],
+            "description": "Underline. true = \"Single\", false = \"None\"; or name a style directly: \"Double\", \"Heavy\", \"Dotted\", \"Wavy\", \"DashLong\", … Needs PowerPointApi 1.4."
+          },
+          "fontSize": {
+            "type": "number",
+            "description": "Font size in points (e.g. 24)."
+          },
+          "fontName": {
+            "type": "string",
+            "description": "Font name (e.g. \"Arial\")."
+          },
+          "fontColor": {
+            "type": "string",
+            "description": "Font color as #RRGGBB (e.g. \"#333333\")."
+          },
+          "alignment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Left"
+              },
+              {
+                "type": "string",
+                "const": "Center"
+              },
+              {
+                "type": "string",
+                "const": "Right"
+              },
+              {
+                "type": "string",
+                "const": "Justify"
+              }
+            ],
+            "description": "Horizontal alignment. PowerPoint values: \"Left\", \"Center\", \"Right\", \"Justify\"."
+          },
+          "strikethrough": {
+            "type": "boolean",
+            "description": "Strikethrough the text. Needs PowerPointApi 1.8."
+          },
+          "doubleStrikethrough": {
+            "type": "boolean",
+            "description": "Double strikethrough. Needs PowerPointApi 1.8."
+          },
+          "smallCaps": {
+            "type": "boolean",
+            "description": "Small caps. Needs PowerPointApi 1.8."
+          },
+          "allCaps": {
+            "type": "boolean",
+            "description": "All caps. Needs PowerPointApi 1.8."
+          },
+          "subscript": {
+            "type": "boolean",
+            "description": "Subscript. Needs PowerPointApi 1.8."
+          },
+          "superscript": {
+            "type": "boolean",
+            "description": "Superscript. Needs PowerPointApi 1.8."
+          },
+          "bulletVisible": {
+            "type": "boolean",
+            "description": "Show (true) or hide (false) bullets. Needs PowerPointApi 1.4."
+          },
+          "bulletStyle": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "AlphabetLowercasePeriod"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetUppercasePeriod"
+              },
+              {
+                "type": "string",
+                "const": "ArabicNumeralParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "ArabicNumeralPeriod"
+              },
+              {
+                "type": "string",
+                "const": "RomanLowercaseParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "RomanLowercaseParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "RomanLowercasePeriod"
+              },
+              {
+                "type": "string",
+                "const": "RomanUppercasePeriod"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetLowercaseParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetLowercaseParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetUppercaseParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetUppercaseParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "ArabicNumeralParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "ArabicNumeralPlain"
+              },
+              {
+                "type": "string",
+                "const": "RomanUppercaseParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "RomanUppercaseParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "SimplifiedChinesePlain"
+              },
+              {
+                "type": "string",
+                "const": "SimplifiedChinesePeriod"
+              },
+              {
+                "type": "string",
+                "const": "CircleNumberDoubleBytePlain"
+              },
+              {
+                "type": "string",
+                "const": "CircleNumberWideDoubleByteWhitePlain"
+              },
+              {
+                "type": "string",
+                "const": "CircleNumberWideDoubleByteBlackPlain"
+              },
+              {
+                "type": "string",
+                "const": "TraditionalChinesePlain"
+              },
+              {
+                "type": "string",
+                "const": "TraditionalChinesePeriod"
+              },
+              {
+                "type": "string",
+                "const": "ArabicAlphabetDash"
+              },
+              {
+                "type": "string",
+                "const": "ArabicAbjadDash"
+              },
+              {
+                "type": "string",
+                "const": "HebrewAlphabetDash"
+              },
+              {
+                "type": "string",
+                "const": "KanjiKoreanPlain"
+              },
+              {
+                "type": "string",
+                "const": "KanjiKoreanPeriod"
+              },
+              {
+                "type": "string",
+                "const": "ArabicDoubleBytePlain"
+              },
+              {
+                "type": "string",
+                "const": "ArabicDoubleBytePeriod"
+              },
+              {
+                "type": "string",
+                "const": "ThaiAlphabetPeriod"
+              },
+              {
+                "type": "string",
+                "const": "ThaiAlphabetParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "ThaiAlphabetParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "ThaiNumeralPeriod"
+              },
+              {
+                "type": "string",
+                "const": "ThaiNumeralParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "ThaiNumeralParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "HindiAlphabetPeriod"
+              },
+              {
+                "type": "string",
+                "const": "HindiNumeralPeriod"
+              },
+              {
+                "type": "string",
+                "const": "KanjiSimplifiedChineseDoubleBytePeriod"
+              },
+              {
+                "type": "string",
+                "const": "HindiNumeralParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "HindiAlphabet1Period"
+              }
+            ],
+            "description": "Numbered bullet style (e.g. \"ArabicNumeralPeriod\"). Needs PowerPointApi 1.10."
+          },
+          "bulletType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "None"
+              },
+              {
+                "type": "string",
+                "const": "Numbered"
+              },
+              {
+                "type": "string",
+                "const": "Unnumbered"
+              }
+            ],
+            "description": "Bullet type: \"None\", \"Numbered\" or \"Unnumbered\". Needs PowerPointApi 1.10."
+          },
+          "indentLevel": {
+            "type": "number",
+            "description": "Paragraph indent level (0 = no indent). Needs PowerPointApi 1.10."
+          },
+          "fillColor": {
+            "type": "string",
+            "description": "Solid shape fill color as #RRGGBB (e.g. \"#FFFF00\"). Needs PowerPointApi 1.4."
+          },
+          "fillTransparency": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Fill transparency, 0 (opaque) to 1 (clear). Needs PowerPointApi 1.4."
+          },
+          "fillClear": {
+            "type": "boolean",
+            "description": "Remove the shape fill entirely. Needs PowerPointApi 1.4."
+          },
+          "lineColor": {
+            "type": "string",
+            "description": "Line color as #RRGGBB (e.g. \"#000000\"). Needs PowerPointApi 1.4."
+          },
+          "lineWeight": {
+            "type": "number",
+            "description": "Line weight in points. Needs PowerPointApi 1.4."
+          },
+          "lineStyle": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Single"
+              },
+              {
+                "type": "string",
+                "const": "ThickBetweenThin"
+              },
+              {
+                "type": "string",
+                "const": "ThickThin"
+              },
+              {
+                "type": "string",
+                "const": "ThinThick"
+              },
+              {
+                "type": "string",
+                "const": "ThinThin"
+              }
+            ],
+            "description": "Line style. Needs PowerPointApi 1.4. Default \"Single\"."
+          },
+          "lineDashStyle": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Dash"
+              },
+              {
+                "type": "string",
+                "const": "DashDot"
+              },
+              {
+                "type": "string",
+                "const": "DashDotDot"
+              },
+              {
+                "type": "string",
+                "const": "LongDash"
+              },
+              {
+                "type": "string",
+                "const": "LongDashDot"
+              },
+              {
+                "type": "string",
+                "const": "RoundDot"
+              },
+              {
+                "type": "string",
+                "const": "Solid"
+              },
+              {
+                "type": "string",
+                "const": "SquareDot"
+              },
+              {
+                "type": "string",
+                "const": "LongDashDotDot"
+              },
+              {
+                "type": "string",
+                "const": "SystemDash"
+              },
+              {
+                "type": "string",
+                "const": "SystemDot"
+              },
+              {
+                "type": "string",
+                "const": "SystemDashDot"
+              }
+            ],
+            "description": "Line dash style (e.g. \"Dash\", \"Solid\"). Needs PowerPointApi 1.4."
+          },
+          "lineVisible": {
+            "type": "boolean",
+            "description": "Show (true) or hide (false) the shape outline. Needs PowerPointApi 1.4."
+          },
+          "lineTransparency": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Line transparency, 0 (opaque) to 1 (clear). Needs PowerPointApi 1.4."
+          }
+        }
+      },
+      "since": 1,
+      "legacyV1": true
+    },
+    {
+      "host": "powerpoint",
+      "op": "format_slide",
+      "name": "office_powerpoint_format_slide",
+      "label": "PowerPoint Format Slide",
+      "description": "Apply formatting (bold, italic, underline, fontSize in points, fontName, fontColor #RRGGBB, alignment \"Left\"/\"Center\"/\"Right\"/\"Justify\") to every text box on a slide of the attached PowerPoint presentation. Use this to restyle existing content, e.g. make all text on a slide bold and centered.",
+      "promptSnippet": "Restyle all text boxes on a PowerPoint slide",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "slideIndex"
+        ],
+        "properties": {
+          "slideIndex": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based slide index."
+          },
+          "bold": {
+            "type": "boolean",
+            "description": "Set bold (true) or unbold (false)."
+          },
+          "italic": {
+            "type": "boolean",
+            "description": "Set italic (true) or unitalicize (false)."
+          },
+          "underline": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string",
+                "const": "None"
+              },
+              {
+                "type": "string",
+                "const": "Single"
+              },
+              {
+                "type": "string",
+                "const": "Double"
+              },
+              {
+                "type": "string",
+                "const": "Heavy"
+              },
+              {
+                "type": "string",
+                "const": "Dotted"
+              },
+              {
+                "type": "string",
+                "const": "DottedHeavy"
+              },
+              {
+                "type": "string",
+                "const": "Dash"
+              },
+              {
+                "type": "string",
+                "const": "DashHeavy"
+              },
+              {
+                "type": "string",
+                "const": "DashLong"
+              },
+              {
+                "type": "string",
+                "const": "DashLongHeavy"
+              },
+              {
+                "type": "string",
+                "const": "DotDash"
+              },
+              {
+                "type": "string",
+                "const": "DotDashHeavy"
+              },
+              {
+                "type": "string",
+                "const": "DotDotDash"
+              },
+              {
+                "type": "string",
+                "const": "DotDotDashHeavy"
+              },
+              {
+                "type": "string",
+                "const": "Wavy"
+              },
+              {
+                "type": "string",
+                "const": "WavyHeavy"
+              },
+              {
+                "type": "string",
+                "const": "WavyDouble"
+              }
+            ],
+            "description": "Underline. true = \"Single\", false = \"None\"; or name a style directly: \"Double\", \"Heavy\", \"Dotted\", \"Wavy\", \"DashLong\", … Needs PowerPointApi 1.4."
+          },
+          "fontSize": {
+            "type": "number",
+            "description": "Font size in points (e.g. 24)."
+          },
+          "fontName": {
+            "type": "string",
+            "description": "Font name (e.g. \"Arial\")."
+          },
+          "fontColor": {
+            "type": "string",
+            "description": "Font color as #RRGGBB (e.g. \"#333333\")."
+          },
+          "alignment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Left"
+              },
+              {
+                "type": "string",
+                "const": "Center"
+              },
+              {
+                "type": "string",
+                "const": "Right"
+              },
+              {
+                "type": "string",
+                "const": "Justify"
+              }
+            ],
+            "description": "Horizontal alignment. PowerPoint values: \"Left\", \"Center\", \"Right\", \"Justify\"."
+          },
+          "strikethrough": {
+            "type": "boolean",
+            "description": "Strikethrough the text. Needs PowerPointApi 1.8."
+          },
+          "doubleStrikethrough": {
+            "type": "boolean",
+            "description": "Double strikethrough. Needs PowerPointApi 1.8."
+          },
+          "smallCaps": {
+            "type": "boolean",
+            "description": "Small caps. Needs PowerPointApi 1.8."
+          },
+          "allCaps": {
+            "type": "boolean",
+            "description": "All caps. Needs PowerPointApi 1.8."
+          },
+          "subscript": {
+            "type": "boolean",
+            "description": "Subscript. Needs PowerPointApi 1.8."
+          },
+          "superscript": {
+            "type": "boolean",
+            "description": "Superscript. Needs PowerPointApi 1.8."
+          },
+          "bulletVisible": {
+            "type": "boolean",
+            "description": "Show (true) or hide (false) bullets. Needs PowerPointApi 1.4."
+          },
+          "bulletStyle": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "AlphabetLowercasePeriod"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetUppercasePeriod"
+              },
+              {
+                "type": "string",
+                "const": "ArabicNumeralParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "ArabicNumeralPeriod"
+              },
+              {
+                "type": "string",
+                "const": "RomanLowercaseParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "RomanLowercaseParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "RomanLowercasePeriod"
+              },
+              {
+                "type": "string",
+                "const": "RomanUppercasePeriod"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetLowercaseParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetLowercaseParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetUppercaseParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "AlphabetUppercaseParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "ArabicNumeralParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "ArabicNumeralPlain"
+              },
+              {
+                "type": "string",
+                "const": "RomanUppercaseParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "RomanUppercaseParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "SimplifiedChinesePlain"
+              },
+              {
+                "type": "string",
+                "const": "SimplifiedChinesePeriod"
+              },
+              {
+                "type": "string",
+                "const": "CircleNumberDoubleBytePlain"
+              },
+              {
+                "type": "string",
+                "const": "CircleNumberWideDoubleByteWhitePlain"
+              },
+              {
+                "type": "string",
+                "const": "CircleNumberWideDoubleByteBlackPlain"
+              },
+              {
+                "type": "string",
+                "const": "TraditionalChinesePlain"
+              },
+              {
+                "type": "string",
+                "const": "TraditionalChinesePeriod"
+              },
+              {
+                "type": "string",
+                "const": "ArabicAlphabetDash"
+              },
+              {
+                "type": "string",
+                "const": "ArabicAbjadDash"
+              },
+              {
+                "type": "string",
+                "const": "HebrewAlphabetDash"
+              },
+              {
+                "type": "string",
+                "const": "KanjiKoreanPlain"
+              },
+              {
+                "type": "string",
+                "const": "KanjiKoreanPeriod"
+              },
+              {
+                "type": "string",
+                "const": "ArabicDoubleBytePlain"
+              },
+              {
+                "type": "string",
+                "const": "ArabicDoubleBytePeriod"
+              },
+              {
+                "type": "string",
+                "const": "ThaiAlphabetPeriod"
+              },
+              {
+                "type": "string",
+                "const": "ThaiAlphabetParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "ThaiAlphabetParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "ThaiNumeralPeriod"
+              },
+              {
+                "type": "string",
+                "const": "ThaiNumeralParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "ThaiNumeralParenthesesBoth"
+              },
+              {
+                "type": "string",
+                "const": "HindiAlphabetPeriod"
+              },
+              {
+                "type": "string",
+                "const": "HindiNumeralPeriod"
+              },
+              {
+                "type": "string",
+                "const": "KanjiSimplifiedChineseDoubleBytePeriod"
+              },
+              {
+                "type": "string",
+                "const": "HindiNumeralParenthesisRight"
+              },
+              {
+                "type": "string",
+                "const": "HindiAlphabet1Period"
+              }
+            ],
+            "description": "Numbered bullet style (e.g. \"ArabicNumeralPeriod\"). Needs PowerPointApi 1.10."
+          },
+          "bulletType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "None"
+              },
+              {
+                "type": "string",
+                "const": "Numbered"
+              },
+              {
+                "type": "string",
+                "const": "Unnumbered"
+              }
+            ],
+            "description": "Bullet type: \"None\", \"Numbered\" or \"Unnumbered\". Needs PowerPointApi 1.10."
+          },
+          "indentLevel": {
+            "type": "number",
+            "description": "Paragraph indent level (0 = no indent). Needs PowerPointApi 1.10."
+          },
+          "fillColor": {
+            "type": "string",
+            "description": "Solid shape fill color as #RRGGBB (e.g. \"#FFFF00\"). Needs PowerPointApi 1.4."
+          },
+          "fillTransparency": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Fill transparency, 0 (opaque) to 1 (clear). Needs PowerPointApi 1.4."
+          },
+          "fillClear": {
+            "type": "boolean",
+            "description": "Remove the shape fill entirely. Needs PowerPointApi 1.4."
+          },
+          "lineColor": {
+            "type": "string",
+            "description": "Line color as #RRGGBB (e.g. \"#000000\"). Needs PowerPointApi 1.4."
+          },
+          "lineWeight": {
+            "type": "number",
+            "description": "Line weight in points. Needs PowerPointApi 1.4."
+          },
+          "lineStyle": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Single"
+              },
+              {
+                "type": "string",
+                "const": "ThickBetweenThin"
+              },
+              {
+                "type": "string",
+                "const": "ThickThin"
+              },
+              {
+                "type": "string",
+                "const": "ThinThick"
+              },
+              {
+                "type": "string",
+                "const": "ThinThin"
+              }
+            ],
+            "description": "Line style. Needs PowerPointApi 1.4. Default \"Single\"."
+          },
+          "lineDashStyle": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "Dash"
+              },
+              {
+                "type": "string",
+                "const": "DashDot"
+              },
+              {
+                "type": "string",
+                "const": "DashDotDot"
+              },
+              {
+                "type": "string",
+                "const": "LongDash"
+              },
+              {
+                "type": "string",
+                "const": "LongDashDot"
+              },
+              {
+                "type": "string",
+                "const": "RoundDot"
+              },
+              {
+                "type": "string",
+                "const": "Solid"
+              },
+              {
+                "type": "string",
+                "const": "SquareDot"
+              },
+              {
+                "type": "string",
+                "const": "LongDashDotDot"
+              },
+              {
+                "type": "string",
+                "const": "SystemDash"
+              },
+              {
+                "type": "string",
+                "const": "SystemDot"
+              },
+              {
+                "type": "string",
+                "const": "SystemDashDot"
+              }
+            ],
+            "description": "Line dash style (e.g. \"Dash\", \"Solid\"). Needs PowerPointApi 1.4."
+          },
+          "lineVisible": {
+            "type": "boolean",
+            "description": "Show (true) or hide (false) the shape outline. Needs PowerPointApi 1.4."
+          },
+          "lineTransparency": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Line transparency, 0 (opaque) to 1 (clear). Needs PowerPointApi 1.4."
+          },
+          "slideBackgroundColor": {
+            "type": "string",
+            "description": "Solid slide background color as #RRGGBB. Needs PowerPointApi 1.10."
+          },
+          "slideBackgroundTransparency": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Background transparency, 0 (opaque) to 1 (clear). Needs PowerPointApi 1.10."
+          },
+          "slideBackgroundClear": {
+            "type": "boolean",
+            "description": "Reset the slide background to the layout/master default. Needs PowerPointApi 1.10."
+          }
+        }
+      },
+      "since": 1
+    },
+    {
+      "host": "powerpoint",
+      "op": "get_capabilities",
+      "name": "office_powerpoint_get_capabilities",
+      "label": "PowerPoint Capabilities",
+      "description": "Report which PowerPoint capabilities the current host actually supports: the platform, and whether each formatting capability is available or gated by a newer PowerPointApi version. Read-only — it never changes the presentation. Call this before telling the user a capability is unavailable, so the answer reflects the real host rather than an assumption.",
+      "promptSnippet": "Report which PowerPoint capabilities the current host supports",
+      "promptGuidelines": [
+        "Call office_powerpoint_get_capabilities before claiming a PowerPoint feature is unavailable."
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "since": 3
+    }
+  ]
+}
