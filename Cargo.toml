@@ -20,6 +20,7 @@ members = [
     "packages/rpi-webfetch",
     "packages/rpi-edit-diagnostics",
     "packages/rpi-im-message",
+    "packages/rpi-office",
     "packages/rpi-server",
     "packages/rpi-acp",
     "packages/rpi-ui-adapter",
