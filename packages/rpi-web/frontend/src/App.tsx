@@ -1136,6 +1136,9 @@ export default function App() {
   const [modelPreferenceFailures, setModelPreferenceFailures] = useState<
     Record<string, string>
   >({});
+  const [thinkingPreferenceFailures, setThinkingPreferenceFailures] = useState<
+    Record<string, string>
+  >({});
   // Capture the origin before I/O; successful old-session writes belong to its
   // project even if navigation happens while the command is in flight.
   const onModelSelected: ModelSelected = (model) => {
@@ -1161,6 +1164,32 @@ export default function App() {
       }
       return current;
     };
+  };
+  const recordThinkingSelected = (
+    project: string,
+    session: string,
+    level: string,
+    navigation: number,
+  ) => {
+    const previous = readModelPreference(project);
+    writeModelPreference(project, {
+      ...(previous?.provider && previous.modelId
+        ? { provider: previous.provider, modelId: previous.modelId }
+        : {}),
+      thinkingLevel: level,
+    });
+    if (
+      session === activeSessionRef.current &&
+      project === projectRef.current &&
+      navigation === navigationRevision.current
+    ) {
+      setModelPreferenceRevision((value) => value + 1);
+      setThinkingPreferenceFailures((prior) => {
+        const next = { ...prior };
+        delete next[session];
+        return next;
+      });
+    }
   };
   const [thinkingPending, setThinkingPending] = useState(false);
   const [language, setLanguage] = useState<Language>(() => detectLanguage());
@@ -1860,13 +1889,29 @@ export default function App() {
         // Settle the preference before publishing the session or its composer.
         // A failure must not discard the newly-created, reachable session.
         if (preference) {
-          try {
-            await commandData(created.sessionId, "set_model", { ...preference });
-          } catch {
-            setModelPreferenceFailures((previous) => ({
-              ...previous,
-              [created.sessionId]: `${preference.provider}/${preference.modelId}`,
-            }));
+          const { thinkingLevel, ...model } = preference;
+          const hasModel = Boolean(preference.provider && preference.modelId);
+          if (thinkingLevel) {
+            try {
+              await commandData(created.sessionId, "set_thinking_level", {
+                level: thinkingLevel,
+              });
+            } catch {
+              setThinkingPreferenceFailures((previous) => ({
+                ...previous,
+                [created.sessionId]: thinkingLevel,
+              }));
+            }
+          }
+          if (hasModel) {
+            try {
+              await commandData(created.sessionId, "set_model", { ...model });
+            } catch {
+              setModelPreferenceFailures((previous) => ({
+                ...previous,
+                [created.sessionId]: `${preference.provider}/${preference.modelId}`,
+              }));
+            }
           }
         }
         if (navigation !== navigationRevision.current) {
@@ -2694,11 +2739,19 @@ export default function App() {
 
   async function selectThinkingLevel(level: string) {
     if (!sessionId || thinkingPending) return;
+    const targetSession = sessionId;
+    const project = projectRef.current;
+    const navigation = navigationRevision.current;
+    const current = () =>
+      navigation === navigationRevision.current &&
+      targetSession === activeSessionRef.current;
     setThinkingPending(true);
     setError("");
     try {
-      await commandData(sessionId, "set_thinking_level", { level });
-      const state = await api.runtimeState(sessionId);
+      await commandData(targetSession, "set_thinking_level", { level });
+      recordThinkingSelected(project, targetSession, level, navigation);
+      const state = await api.runtimeState(targetSession);
+      if (!current()) return;
       setRuntime(state);
       note(
         language === "zh"
@@ -2706,9 +2759,9 @@ export default function App() {
           : `Thinking level → ${level}`,
       );
     } catch (cause) {
-      setError(errorText(cause));
+      if (current()) setError(errorText(cause));
     } finally {
-      setThinkingPending(false);
+      if (current()) setThinkingPending(false);
     }
   }
 
@@ -2833,8 +2886,9 @@ export default function App() {
           );
           return;
         }
-        await commandData(sessionId, "set_thinking_level", { level });
-        const state = await api.runtimeState(sessionId);
+        await commandData(targetSession, "set_thinking_level", { level });
+        recordThinkingSelected(projectRef.current, targetSession, level, navigation);
+        const state = await api.runtimeState(targetSession);
         if (navigation !== navigationRevision.current) return;
         setRuntime(state);
         note(`Thinking level → ${level}`);
@@ -4938,6 +4992,22 @@ export default function App() {
           </div>
         )}
 
+        {thinkingPreferenceFailures[sessionId] && (
+          <div className="error-banner" role="alert">
+            <AlertTriangle size={14} />
+            <span>
+              {language === "zh"
+                ? `未能应用记住的思考深度 ${thinkingPreferenceFailures[sessionId]}。请在运行时设置中选择可用档位后再发送；偏好已保留，也可清除以让未来新会话使用默认档位。`
+                : `Could not apply remembered thinking level ${thinkingPreferenceFailures[sessionId]}. Select an available level in Runtime settings before sending. The preference is kept; clear it to use the default level for future sessions.`}
+            </span>
+            <button
+              className="banner-action"
+              onClick={() => { setTraceOpen(false); setPanel(true); }}
+            >
+              {language === "zh" ? "运行时设置" : "Runtime settings"}
+            </button>
+          </div>
+        )}
         {modelPreferenceFailures[sessionId] && (
           <div className="error-banner" role="alert">
             <AlertTriangle size={14} />
@@ -5613,9 +5683,33 @@ export default function App() {
               canAuth={actions.has("provider_auth")}
               runtime={runtime}
               onModelSelected={onModelSelected}
+              onThinkingSelected={(level) =>
+                recordThinkingSelected(
+                  projectRef.current,
+                  sessionId,
+                  level,
+                  navigationRevision.current,
+                )
+              }
               preference={readModelPreference(projectId)}
-              onClearPreference={() => {
-                writeModelPreference(projectRef.current, null);
+              onClearModelPreference={() => {
+                const previous = readModelPreference(projectRef.current);
+                writeModelPreference(
+                  projectRef.current,
+                  previous?.thinkingLevel
+                    ? { thinkingLevel: previous.thinkingLevel }
+                    : null,
+                );
+                setModelPreferenceRevision((value) => value + 1);
+              }}
+              onClearThinkingPreference={() => {
+                const previous = readModelPreference(projectRef.current);
+                writeModelPreference(
+                  projectRef.current,
+                  previous?.provider && previous.modelId
+                    ? { provider: previous.provider, modelId: previous.modelId }
+                    : null,
+                );
                 setModelPreferenceRevision((value) => value + 1);
               }}
               onChange={setRuntime}
@@ -6757,8 +6851,10 @@ function RuntimePanel({
   autoRead,
   onAutoRead,
   onModelSelected,
+  onThinkingSelected,
   preference,
-  onClearPreference,
+  onClearModelPreference,
+  onClearThinkingPreference,
   details,
   onClose,
 }: {
@@ -6772,8 +6868,10 @@ function RuntimePanel({
   autoRead: boolean;
   onAutoRead: (value: boolean) => void;
   onModelSelected: ModelSelected;
+  onThinkingSelected: (level: string) => void;
   preference: ModelPreference | null;
-  onClearPreference: () => void;
+  onClearModelPreference: () => void;
+  onClearThinkingPreference: () => void;
   details?: ReactNode;
   onClose: () => void;
 }) {
@@ -6921,9 +7019,15 @@ function RuntimePanel({
         {zh
           ? "成功选择的模型会在此浏览器中按项目记住，仅用于未来新会话；已有会话不变。"
           : "Successful model choices are remembered in this browser per project for future new sessions only; existing sessions are unchanged."}
-        {preference && <> {preference.provider}/{preference.modelId}</>}
+        {preference?.provider && preference.modelId && (
+          <> {preference.provider}/{preference.modelId}</>
+        )}
       </p>
-      <button type="button" disabled={!preference} onClick={onClearPreference}>
+      <button
+        type="button"
+        disabled={!preference?.provider || !preference.modelId}
+        onClick={onClearModelPreference}
+      >
         {zh ? "清除模型偏好（未来使用原生默认值）" : "Clear model preference (future native defaults)"}
       </button>
       <label htmlFor="model">{zh ? "模型" : "Model"}</label>
@@ -6976,6 +7080,7 @@ function RuntimePanel({
         onChange={(next) =>
           void run("thinking", async () => {
             await commandData(sessionId, "set_thinking_level", { level: next });
+            onThinkingSelected(next);
             return api.runtimeState(sessionId);
           })
         }
@@ -6987,6 +7092,19 @@ function RuntimePanel({
           })),
         ]}
       />
+      <p className="muted">
+        {zh
+          ? "成功选择的思考深度会在此浏览器中按项目记住，仅用于未来新会话；已有会话不变。"
+          : "Successful thinking level choices are remembered in this browser per project for future new sessions only; existing sessions are unchanged."}
+        {preference?.thinkingLevel ? <> {valueLabel(language, preference.thinkingLevel)}</> : null}
+      </p>
+      <button
+        type="button"
+        disabled={!preference?.thinkingLevel}
+        onClick={onClearThinkingPreference}
+      >
+        {zh ? "清除思考深度偏好（未来使用默认档位）" : "Clear thinking preference (future default off)"}
+      </button>
 
       <h3 className="panel-heading">{zh ? "上下文" : "Context"}</h3>
       {context ? (
