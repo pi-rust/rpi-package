@@ -272,6 +272,9 @@ pub struct Memory {
     /// summary printed keeps meaning the same message.
     base: u64,
     tree: HashMap<(u32, u64), String>,
+    /// Model-written summary lines, keyed like `tree`. They outlive a trim and a
+    /// rebuild, so a compressed line is not thrown away when the window slides.
+    nodes: HashMap<(u32, u64), String>,
     view: Vec<Part>,
     measured: usize,
     merging: bool,
@@ -294,6 +297,7 @@ impl Memory {
             entries: Vec::new(),
             base: 0,
             tree: HashMap::new(),
+            nodes: HashMap::new(),
             view: Vec::new(),
             measured: 0,
             merging: false,
@@ -452,7 +456,12 @@ impl Memory {
 
     fn push_entry(&mut self, entry: Entry) {
         let part = Part { l: 0, i: entry.i };
-        self.tree.insert((0, part.i), leaf_text(&entry));
+        let text = self
+            .nodes
+            .get(&(0, part.i))
+            .cloned()
+            .unwrap_or_else(|| leaf_text(&entry));
+        self.tree.insert((0, part.i), text);
         self.entries.push(entry);
         self.view.push(part);
         self.measured += self.line_size(part);
@@ -499,10 +508,67 @@ impl Memory {
         let left_text = self.text_of(left).to_string();
         let right_text = self.text_of(right).to_string();
         let before = self.line_size(left) + self.line_size(right);
-        self.tree
-            .insert((parent.l, parent.i), merge_text(&left_text, &right_text));
+        let text = self
+            .nodes
+            .get(&(parent.l, parent.i))
+            .cloned()
+            .unwrap_or_else(|| merge_text(&left_text, &right_text));
+        self.tree.insert((parent.l, parent.i), text);
         self.view.splice(index..index + 2, [parent]);
         self.measured = self.measured.saturating_sub(before) + self.line_size(parent);
+    }
+
+    /// Install a model-written line. Returns false when the part does not
+    /// address a block the retained log still covers.
+    pub fn install_node(&mut self, l: u32, i: u64, text: String) -> bool {
+        if l > 62 || text.trim().is_empty() {
+            return false;
+        }
+        let part = Part { l, i };
+        if part.start() < self.base || part.end() > self.end() {
+            return false;
+        }
+        let text = clip(&flat(&text), NODE);
+        self.nodes.insert((l, i), text.clone());
+        // If this block is a current view line, the visible text and its byte
+        // accounting change now; otherwise the node is applied when it merges.
+        if self.view.contains(&part) {
+            let before = self.line_size(part);
+            self.tree.insert((l, i), text);
+            let after = self.line_size(part);
+            self.measured = self.measured.saturating_sub(before) + after;
+        }
+        true
+    }
+
+    pub fn has_node(&self, part: Part) -> bool {
+        self.nodes.contains_key(&(part.l, part.i))
+    }
+
+    /// Merges the view still shows as an extractive cut, oldest first, with the
+    /// two lines they join: the compressor's queue.
+    pub fn extractive_parts(&self, limit: usize) -> Vec<(Part, String)> {
+        let mut parts = Vec::new();
+        for part in &self.view {
+            if parts.len() >= limit {
+                break;
+            }
+            if part.l == 0 || self.has_node(*part) {
+                continue;
+            }
+            let halves: Vec<String> = [0, 1]
+                .iter()
+                .map(|offset| {
+                    let child = Part {
+                        l: part.l - 1,
+                        i: part.i * 2 + offset,
+                    };
+                    flat(self.text_of(child))
+                })
+                .collect();
+            parts.push((*part, halves.join("\n")));
+        }
+        parts
     }
 
     fn text_of(&self, part: Part) -> &str {

@@ -22,6 +22,7 @@
 // The pinned SDK exports safe C entrypoints around its internal raw ABI reads.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+mod compact;
 mod memory;
 mod runtime;
 
@@ -81,11 +82,17 @@ fn is_subagent() -> bool {
 // ---------------------------------------------------------------------------
 
 fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
+    call_action(id as u32, args)
+}
+
+/// Call a runtime action by ABI id, for host actions the published SDK does not
+/// declare yet (`GetExecutionContext`).
+fn call_action(id: u32, args: Value) -> Result<Value, String> {
     let runtime = runtime::snapshot().ok_or("optchat runtime is unavailable")?;
     let input = args.to_string();
     let mut output = StbString::empty();
     let rc = (runtime.runtime_action)(
-        id as u32,
+        id,
         StbStringRef::from_str(&input),
         &mut output,
         runtime.user_data,
@@ -94,7 +101,7 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     (runtime.free_string)(output);
     if rc != 0 {
         return Err(if text.trim().is_empty() {
-            format!("runtime action {id:?} failed")
+            format!("runtime action {id} failed")
         } else {
             text
         });
@@ -111,8 +118,9 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
 
 struct State {
     session: String,
-
     memory: Memory,
+    /// Model-written summaries are enabled for this session.
+    compact: bool,
     /// The last captured message, so one message delivered twice — a user
     /// prompt via `before_agent_start` and again via `message_end`, or a
     /// re-dispatched turn — is not logged twice. Two genuinely identical
@@ -132,15 +140,23 @@ fn current_session() -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
+/// What one branch read yields: the log plus the lines and settings stored with it.
+struct Hydrated {
+    memory: Memory,
+    compact: bool,
+}
+
 /// Reload the log from the current session branch. Only `optchat-entry` entries
 /// are requested, and a host that cannot filter them is refused rather than
 /// reading the whole branch.
-fn hydrate() -> Result<Memory, String> {
+fn hydrate() -> Result<Hydrated, String> {
     let mut entries: Vec<memory::Entry> = Vec::new();
+    let mut nodes: Vec<(u32, u64, String)> = Vec::new();
+    let mut compact: Option<bool> = None;
     let mut after: Option<u64> = None;
     for _ in 0..(MAX_ENTRIES / HYDRATE_PAGE + 4) {
         let mut args = json!({
-            "customTypes": [ENTRY_TYPE],
+            "customTypes": [ENTRY_TYPE, compact::NODE_TYPE, compact::CONFIG_TYPE],
             "limit": HYDRATE_PAGE,
             "order": "oldestFirst",
         });
@@ -167,12 +183,35 @@ fn hydrate() -> Result<Memory, String> {
             if record.get("type").and_then(Value::as_str) != Some("custom") {
                 continue;
             }
-            if record.get("customType").and_then(Value::as_str) != Some(ENTRY_TYPE) {
+            let Some(custom_type) = record.get("customType").and_then(Value::as_str) else {
+                continue;
+            };
+            if custom_type != ENTRY_TYPE
+                && custom_type != compact::NODE_TYPE
+                && custom_type != compact::CONFIG_TYPE
+            {
                 continue;
             }
-            if let Some(data) = record.get("data") {
-                if let Ok(entry) = serde_json::from_value::<memory::Entry>(data.clone()) {
-                    entries.push(entry);
+            let Some(data) = record.get("data") else {
+                continue;
+            };
+            match custom_type {
+                ENTRY_TYPE => {
+                    if let Ok(entry) = serde_json::from_value::<memory::Entry>(data.clone()) {
+                        entries.push(entry);
+                    }
+                }
+                compact::NODE_TYPE => {
+                    let l = data.get("l").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let i = data.get("i").and_then(Value::as_u64).unwrap_or(0);
+                    if let Some(text) = data.get("text").and_then(Value::as_str) {
+                        nodes.push((l, i, text.to_string()));
+                    }
+                }
+                _ => {
+                    if let Some(enabled) = data.get("compact").and_then(Value::as_bool) {
+                        compact = Some(enabled);
+                    }
                 }
             }
         }
@@ -187,7 +226,13 @@ fn hydrate() -> Result<Memory, String> {
     }
     let mut memory = Memory::load(entries);
     memory.trim_to(MAX_ENTRIES);
-    Ok(memory)
+    for (l, i, text) in nodes {
+        memory.install_node(l, i, text);
+    }
+    Ok(Hydrated {
+        memory,
+        compact: compact.unwrap_or_else(compact::env_enabled),
+    })
 }
 
 /// The id of the newest message the branch holds, read in one cheap query.
@@ -252,7 +297,10 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Result<T, String> {
         }
     };
     if stale {
-        let memory = hydrate()?;
+        let Hydrated { memory, compact } = hydrate()?;
+        if compact {
+            compact::bind_session(&call_action);
+        }
         let mut guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
         let still_stale = match guard.as_ref() {
             Some(state) => !state_is_current(&session, state),
@@ -262,6 +310,7 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Result<T, String> {
             *guard = Some(State {
                 session,
                 memory,
+                compact,
                 last: None,
             });
         }
@@ -281,6 +330,48 @@ fn reset_state() {
 
 fn with_memory<T>(f: impl FnOnce(&mut Memory) -> T) -> Result<T, String> {
     with_state(|state| f(&mut state.memory))
+}
+
+/// Install finished lines, persist them, and queue merges the view still shows
+/// as extractive cuts. Runs on paths that already talk to the host, so it never
+/// adds a host call of its own to a hot path.
+fn service_compaction() {
+    for node in compact::drain() {
+        if node.text.is_empty() {
+            continue;
+        }
+        let installed =
+            with_state(|state| state.memory.install_node(node.l, node.i, node.text.clone()))
+                .unwrap_or(false);
+        if !installed {
+            continue;
+        }
+        if let Err(error) = call_action(
+            RuntimeActionId::AppendEntry as u32,
+            json!({
+                "customType": compact::NODE_TYPE,
+                "data": {"l": node.l, "i": node.i, "text": node.text},
+            }),
+        ) {
+            debug(&format!("could not persist a summary line: {error}"));
+        }
+    }
+    let Ok((enabled, parts)) = with_state(|state| {
+        let parts = if state.compact {
+            state.memory.extractive_parts(2)
+        } else {
+            Vec::new()
+        };
+        (state.compact, parts)
+    }) else {
+        return;
+    };
+    if !enabled {
+        return;
+    }
+    for (part, source) in parts {
+        compact::enqueue(part.l, part.i, source);
+    }
 }
 
 fn persist(entry: &memory::Entry) -> Result<(), String> {
@@ -559,6 +650,7 @@ fn before_agent_start(input, out, data) {
     if let Some(text) = envelope.get("prompt").and_then(Value::as_str) {
         let _ = capture(Kind::User, text.to_string(), None, None, None);
     }
+    service_compaction();
     let hint = if prompt.contains(MEMORY_MARKER) {
         None
     } else {
@@ -635,6 +727,7 @@ extern "C" fn poll(handle: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void)
         ));
     }
     drive.done = true;
+    service_compaction();
     let tool = match drive.op {
         Op::Zoom => "zoom",
         Op::Search => "search",
@@ -745,6 +838,7 @@ const HELP: &str = r#"OptChat memory — this session branch, persisted with the
 /optchat search <text>   find logged messages by content
 /optchat note <text>     append a durable note to memory
 /optchat import <file>   append a text/markdown/JSONL file as imported notes
+/optchat compact on|off  rewrite summary lines with a child model
 /optchat fit             merge the view as far as the tree allows
 /optchat help            this list
 ```
@@ -785,8 +879,9 @@ fn status() -> String {
     format!(
         "OptChat memory · {} messages (ids {}..{}) · {} view lines · {} of {} bytes\n\
          user {} · talk {} · tool {} · echo {} · note {} · work {}\n\n\
-         Stored as `optchat-entry` custom entries on this session branch. \
-         `/optchat view` shows the summary view; `/optchat help` lists commands.",
+         Stored as `optchat-entry` custom entries on this session branch; model \
+         compaction is {}. `/optchat view` shows the summary view; \
+         `/optchat help` lists commands.",
         stats.messages,
         window.0,
         window.1,
@@ -798,7 +893,8 @@ fn status() -> String {
         kinds[2],
         kinds[3],
         kinds[4],
-        kinds[5]
+        kinds[5],
+        with_state(|state| if state.compact { "on" } else { "off" }).unwrap_or("off")
     )
 }
 
@@ -851,6 +947,39 @@ fn view_command(rest: &str) -> Result<String, String> {
             stats.bytes,
             memory.view_tail(count)
         )
+    })
+}
+
+fn compact_status() -> String {
+    let enabled = with_state(|state| state.compact).unwrap_or(false);
+    let pending = with_state(|state| state.memory.extractive_parts(usize::MAX).len()).unwrap_or(0);
+    format!(
+        "Model compaction is {}. {pending} merge(s) are still extractive.\n\
+         `/optchat compact on` enables it for this session (each line costs one \
+         model call through a child `rpi -p`); `/optchat compact off` falls back to \
+         extractive cuts. `RPI_OPTCHAT_COMPACT=auto` sets the launch default.",
+        if enabled { "on" } else { "off" }
+    )
+}
+
+fn set_compaction(enabled: bool) -> Result<String, String> {
+    with_state(|state| state.compact = enabled)?;
+    call_action(
+        RuntimeActionId::AppendEntry as u32,
+        json!({
+            "customType": compact::CONFIG_TYPE,
+            "data": {"compact": enabled},
+        }),
+    )
+    .map_err(|error| format!("could not persist the compaction setting: {error}"))?;
+    if enabled {
+        compact::bind_session(&call_action);
+        service_compaction();
+    }
+    Ok(if enabled {
+        "Model compaction is on for this session; queued merges will be rewritten as the engine answers.".to_string()
+    } else {
+        "Model compaction is off; the view keeps extractive cuts.".to_string()
     })
 }
 
@@ -959,7 +1088,14 @@ fn run_command(args: &str) -> String {
         "note" if !rest.is_empty() => record_note(Kind::Note, rest.to_string(), None)
             .map(|i| format!("Noted as memory message {i}.")),
         "import" if !rest.is_empty() => import_command(rest),
-        "fit" | "compact" => fit_command(),
+        "compact" | "compress" => match rest {
+            "" | "status" => Ok(compact_status()),
+            "on" | "off" => set_compaction(rest == "on"),
+            other => Err(format!(
+                "`{other}` is not a compaction setting: use `/optchat compact on|off`"
+            )),
+        },
+        "fit" => fit_command(),
         "help" | "-h" | "--help" => Ok(HELP.to_string()),
         other => Err(format!("unknown /optchat command `{other}`\n\n{HELP}")),
     };
@@ -985,6 +1121,7 @@ fn optchat_command(input, out, data) {
         .get("args")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    service_compaction();
     let text = run_command(args);
     command_output(out, json!({"kind": "message", "text": text, "markdown": true}))
 }
@@ -1136,6 +1273,15 @@ mod tests {
         assert_eq!(params["properties"]["text"]["minLength"], 1);
         assert_eq!(params["properties"]["before"]["minimum"], 0);
         assert!(!params.to_string().contains("__rpi"));
+    }
+
+    #[test]
+    fn compact_command_reports_state_without_a_host() {
+        let text = run_command("compact");
+        assert!(text.contains("Model compaction is off"), "{text}");
+        assert!(text.contains("extractive"), "{text}");
+        assert!(run_command("compact nope").contains("not a compaction setting"));
+        assert!(run_command("help").contains("/optchat compact on|off"));
     }
 
     #[test]
