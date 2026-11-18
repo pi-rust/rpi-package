@@ -327,7 +327,10 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-weight: 550;
+  /* Same weight as an unselected model row in this menu (#302). The entry is
+     already separated by the divider and the trailing hint, so it does not
+     need weight to stand out from the provider groups. */
+  font-weight: 400;
 }
 .slim-model-runtime-hint {
   color: var(--muted);
