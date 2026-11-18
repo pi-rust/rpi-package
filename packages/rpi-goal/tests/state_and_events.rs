@@ -163,3 +163,43 @@ fn a_wait_deadline_in_the_future_keeps_the_goal_quiet() {
     assert!(support::sends_mentioning("Quiet objective").is_empty());
     assert_eq!(support::active_goal().unwrap()["status"], json!("active"));
 }
+
+#[test]
+fn resume_rotates_the_goal_id_only_from_a_stopped_state() {
+    let _guard = support::serial();
+    support::install();
+    support::settle_pause();
+    support::tool(
+        "goal",
+        json!({"action": "start", "title": "Resume semantics"}),
+    )
+    .expect("start must succeed");
+    let started = support::active_goal().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Waiting resume keeps the identity so the stale-turn guard stays valid.
+    support::tool(
+        "goal_wait",
+        json!({"goal_id": started, "reason": "waiting for review"}),
+    )
+    .expect("wait must be accepted");
+    support::tool("goal", json!({"action": "resume"})).expect("resume must succeed");
+    let resumed = support::active_goal().unwrap();
+    assert_eq!(resumed["id"], json!(started));
+    assert!(resumed["waiting"].is_null());
+
+    // Stopped resume rotates the id and resets the safety epoch.
+    support::tool("goal", json!({"action": "pause"})).unwrap();
+    support::tool("goal", json!({"action": "resume"})).unwrap();
+    let after = support::active_goal().unwrap();
+    assert_ne!(
+        after["id"],
+        json!(started),
+        "a stopped resume rotates the id"
+    );
+    assert_eq!(after["automaticTurns"], json!(0));
+    assert_eq!(after["noProgressCount"], json!(0));
+    assert!(after["safetyPauseCause"].is_null());
+}
