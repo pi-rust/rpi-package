@@ -4,18 +4,18 @@ What `rpi-optchat` needs from the `rpi` host. Each item names the code or
 behaviour it depends on, what the plugin does without it, and how the change
 can be accepted.
 
-Status: items 1 and 4 are implemented on the host's `feat/session-tree-lifecycle`
-branch (verified against `pi-rust` `b0ac963` + that branch's working tree) and
-consumed here; items 2, 3 and 5 are still open. The plugin keeps its
-workarounds, because an installed host may predate the branch and the plugin has
-no way to ask which behaviours it dispatches.
+Status, verified against `pi-rust`:
 
-### Implemented on the host branch
+| item | state |
+| --- | --- |
+| 1. session-tree lifecycle dispatch | shipped on `origin/feat/session-tree-lifecycle` (`30eac36`), consumed here |
+| 2. `GetExecutionContext` in the SDK | shipped: declared at `rpi-plugin-sdk` 0.25.0; this workspace still pins `=0.3.20`, so the numeric id stays until that pin moves |
+| 3. print-mode tool events | open |
+| 4. entry-renderer contract | shipped on the same branch, consumed here |
+| 5. project-scoped store | open |
 
-1. Session-tree lifecycle dispatch — see below.
-4. Entry-renderer request/response contract — see below.
-
-Items 2, 3 and 5 remain outstanding.
+The plugin keeps its fallbacks for 1 and 2, because an installed host may predate
+the branch and a plugin cannot ask which behaviours it dispatches.
 
 ## 1. Dispatch the session-tree lifecycle events — implemented
 
@@ -55,7 +55,7 @@ handler fires on `navigate_tree`.
 Workaround shipped here: watermark reload plus reload-on-demand for every tool
 and command call.
 
-## 2. Publish `GetExecutionContext` (blocking for model-written summaries)
+## 2. Publish `GetExecutionContext` — implemented, blocked here by the SDK pin
 
 The host implements `RuntimeActionId::GetExecutionContext` as raw action id `23`
 — `packages/rpi-orchestrator/src/host.rs` documents it, and hardcodes the number
@@ -78,9 +78,13 @@ bump the workspace pin. Acceptance: a plugin reads the parent provider/model wit
 no numeric literal, and the reply shape stays
 `{"model":{"id","provider","api"},"thinkingLevel":…}`.
 
-Workaround shipped here: the id is isolated in one constant with a test that
-fails if the host rejects it, and compaction degrades to extractive summaries
-when the action is unavailable.
+Update: `rpi-plugin-sdk` 0.25.0 declares `RuntimeActionId::GetExecutionContext`
+(`23`), so the request is met upstream. This workspace still pins `=0.3.20` — its
+comment records that newer releases make raw ABI string operations unsafe and
+require migrating every plugin's callbacks — so the plugin keeps the numeric id
+in one place until that migration happens. Workaround shipped here: the id is
+isolated in one constant, and compaction degrades to extractive summaries when
+the action is unavailable.
 
 ## 3. Investigate tool events in print mode (observed, not yet explained)
 
