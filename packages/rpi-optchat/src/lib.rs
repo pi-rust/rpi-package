@@ -44,6 +44,9 @@ use std::sync::Mutex;
 
 /// Session custom-entry type holding one whole message.
 const ENTRY_TYPE: &str = "optchat-entry";
+/// Session custom-entry type remembering the view shape (its parts and whether a
+/// merge batch is running), so a resumed session shows the same lines.
+const VIEW_TYPE: &str = "optchat-view";
 /// Session custom-entry type remembering which profile this session belongs to.
 const PROFILE_TYPE: &str = "optchat-profile";
 /// Marker that makes the injected pointer line idempotent.
@@ -161,6 +164,7 @@ fn hydrate() -> Result<Hydrated, String> {
     let mut nodes: Vec<(u32, u64, String)> = Vec::new();
     let mut compact: Option<bool> = None;
     let mut profile: Option<String> = None;
+    let mut view: Option<(Vec<(u32, u64)>, bool)> = None;
     let mut after: Option<u64> = None;
     for _ in 0..(MAX_ENTRIES / HYDRATE_PAGE + 4) {
         let mut args = json!({
@@ -169,6 +173,7 @@ fn hydrate() -> Result<Hydrated, String> {
                 compact::NODE_TYPE,
                 compact::CONFIG_TYPE,
                 PROFILE_TYPE,
+                VIEW_TYPE,
             ],
             "limit": HYDRATE_PAGE,
             "order": "oldestFirst",
@@ -203,6 +208,7 @@ fn hydrate() -> Result<Hydrated, String> {
                 && custom_type != compact::NODE_TYPE
                 && custom_type != compact::CONFIG_TYPE
                 && custom_type != PROFILE_TYPE
+                && custom_type != VIEW_TYPE
             {
                 continue;
             }
@@ -227,10 +233,33 @@ fn hydrate() -> Result<Hydrated, String> {
                         compact = Some(enabled);
                     }
                 }
-                _ => {
+                PROFILE_TYPE => {
                     if let Some(name) = data.get("name").and_then(Value::as_str) {
                         profile = Some(name.to_string());
                     }
+                }
+                _ => {
+                    let parts: Vec<(u32, u64)> = data
+                        .get("parts")
+                        .and_then(Value::as_array)
+                        .map(|parts| {
+                            parts
+                                .iter()
+                                .filter_map(|part| {
+                                    let part = part.as_array()?;
+                                    Some((
+                                        u32::try_from(part.first()?.as_u64()?).ok()?,
+                                        part.get(1)?.as_u64()?,
+                                    ))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let merging = data
+                        .get("merging")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    view = Some((parts, merging));
                 }
             }
         }
@@ -247,6 +276,11 @@ fn hydrate() -> Result<Hydrated, String> {
     memory.trim_to(MAX_ENTRIES);
     for (l, i, text) in nodes {
         memory.install_node(l, i, text);
+    }
+    if let Some((parts, merging)) = view {
+        // A shape saved before a trim may no longer tile the window; then the
+        // log is folded afresh instead of refusing the session.
+        memory.restore_view(&parts, merging);
     }
     Ok(Hydrated {
         memory,
@@ -368,20 +402,39 @@ fn with_memory<T>(f: impl FnOnce(&mut Memory) -> T) -> Result<T, String> {
     with_state(|state| f(&mut state.memory))
 }
 
+/// Persist the current view shape so a resumed session shows the same lines.
+fn persist_view() {
+    let Ok(shape) = with_state(|state| state.memory.view_shape()) else {
+        return;
+    };
+    let parts: Vec<Value> = shape.0.iter().map(|(l, i)| json!([l, i])).collect();
+    if let Err(error) = call_action(
+        RuntimeActionId::AppendEntry as u32,
+        json!({
+            "customType": VIEW_TYPE,
+            "data": {"parts": parts, "merging": shape.1},
+        }),
+    ) {
+        debug(&format!("could not persist the view shape: {error}"));
+    }
+}
+
 /// Install finished lines, persist them, and queue merges the view still shows
 /// as extractive cuts. Runs on paths that already talk to the host, so it never
 /// adds a host call of its own to a hot path.
 fn service_compaction() {
+    let mut installed = false;
     for node in compact::drain() {
         if node.text.is_empty() {
             continue;
         }
-        let installed =
+        let applied =
             with_state(|state| state.memory.install_node(node.l, node.i, node.text.clone()))
                 .unwrap_or(false);
-        if !installed {
+        if !applied {
             continue;
         }
+        installed = true;
         if let Err(error) = call_action(
             RuntimeActionId::AppendEntry as u32,
             json!({
@@ -391,6 +444,9 @@ fn service_compaction() {
         ) {
             debug(&format!("could not persist a summary line: {error}"));
         }
+    }
+    if installed {
+        persist_view();
     }
     let Ok((enabled, parts)) = with_state(|state| {
         let parts = if state.compact {
@@ -405,9 +461,35 @@ fn service_compaction() {
     if !enabled {
         return;
     }
-    for (part, source) in parts {
-        compact::enqueue(part.l, part.i, source);
+    for (part, source) in &parts {
+        compact::enqueue(part.l, part.i, source.clone());
     }
+}
+
+/// Publish a one-line footer (`SetStatus`) so the host UI can show the memory
+/// without the user asking. Best effort: a headless host accepts and ignores it.
+fn publish_status() {
+    let Ok(text) = with_state(|state| {
+        let stats = state.memory.stats();
+        let window = format!("{}..{}", state.memory.base(), state.memory.end());
+        let size = match stats.bytes {
+            0 => String::new(),
+            bytes => format!(" · {} KB", bytes / 1024),
+        };
+        format!(
+            "optchat · {} messages ({window}) · {} lines · compact {} · profile {}{size}",
+            stats.messages,
+            stats.lines,
+            if state.compact { "on" } else { "off" },
+            state.profile,
+        )
+    }) else {
+        return;
+    };
+    let _ = call_action(
+        RuntimeActionId::SetStatus as u32,
+        json!({"key": "optchat", "value": text}),
+    );
 }
 
 fn persist(entry: &memory::Entry) -> Result<(), String> {
@@ -443,7 +525,14 @@ fn persist_then_commit(
     last: Option<(Kind, String, i64)>,
 ) -> Result<u64, String> {
     persist(&entry)?;
-    with_state(|state| {
+    // Commit into the state this entry was prepared from, without the branch
+    // identity probe `with_state` runs: the probe would see the entry this call
+    // just appended as a foreign change and reload the log underneath it.
+    let mut guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
+    (|| {
+        let state = guard
+            .as_mut()
+            .ok_or("OptChat memory state is unavailable")?;
         if state.session != session {
             return Err("OptChat session changed while persisting an entry".to_string());
         }
@@ -458,7 +547,7 @@ fn persist_then_commit(
             state.last = Some(last);
         }
         Ok(committed.i)
-    })?
+    })()
 }
 
 /// Log one message, then store it as a session custom entry. The entry is only
@@ -706,6 +795,7 @@ fn before_agent_start(input, out, data) {
         let _ = capture(Kind::User, text.to_string(), None, None, None);
     }
     service_compaction();
+    publish_status();
     let hint = if prompt.contains(MEMORY_MARKER) {
         None
     } else {
@@ -783,6 +873,7 @@ extern "C" fn poll(handle: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void)
     }
     drive.done = true;
     service_compaction();
+    publish_status();
     let tool = match drive.op {
         Op::Zoom => "zoom",
         Op::Search => "search",
@@ -1135,7 +1226,7 @@ fn set_compaction(enabled: bool) -> Result<String, String> {
 }
 
 fn fit_command() -> Result<String, String> {
-    with_memory(|memory| {
+    let text = with_memory(|memory| {
         let before = memory.stats();
         memory.collapse();
         let after = memory.stats();
@@ -1143,7 +1234,9 @@ fn fit_command() -> Result<String, String> {
             "Merged the view from {} to {} lines ({} to {} bytes).",
             before.lines, after.lines, before.bytes, after.bytes
         )
-    })
+    })?;
+    persist_view();
+    Ok(text)
 }
 
 /// A line of an import file: JSON text when the line is a JSON object/string,
@@ -1289,6 +1382,7 @@ fn optchat_command(input, out, data) {
         .and_then(Value::as_str)
         .unwrap_or_default();
     service_compaction();
+    publish_status();
     let text = run_command(args);
     command_output(out, json!({"kind": "message", "text": text, "markdown": true}))
 }

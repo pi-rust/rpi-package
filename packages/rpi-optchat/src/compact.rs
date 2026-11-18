@@ -51,8 +51,16 @@ pub(crate) struct Done {
 struct Engine {
     queue: SyncSender<Job>,
     done: Mutex<Receiver<Done>>,
-    /// Provider/model the child should run on, resolved once per session.
-    binding: Mutex<Option<(Option<String>, Option<String>)>>,
+}
+
+/// Provider/model the child should run on, resolved once per session. Kept
+/// outside `Engine`: the worker reads it while `Engine` is still initializing,
+/// and reaching back into the `OnceLock` from inside its initializer deadlocks.
+type Binding = Option<(Option<String>, Option<String>)>;
+static BINDING: OnceLock<Mutex<Binding>> = OnceLock::new();
+
+fn binding() -> &'static Mutex<Binding> {
+    BINDING.get_or_init(|| Mutex::new(None))
 }
 
 /// Merges already queued, so a candidate is not asked for twice while the
@@ -77,7 +85,6 @@ fn engine() -> &'static Engine {
         Engine {
             queue,
             done: Mutex::new(done),
-            binding: Mutex::new(None),
         }
     })
 }
@@ -180,7 +187,7 @@ fn parse_reply(stdout: &str) -> Option<String> {
     Some(super::memory::clip(&super::memory::flat(&text), LINE))
 }
 
-fn command(exe: &PathBuf, job: &Job) -> Command {
+fn command(exe: &PathBuf) -> Command {
     let mut command = Command::new(exe);
     command
         .arg("-p")
@@ -194,7 +201,7 @@ fn command(exe: &PathBuf, job: &Job) -> Command {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Ok(binding) = engine().binding.lock() {
+    if let Ok(binding) = binding().lock() {
         if let Some((provider, model)) = binding.as_ref() {
             if let Some(provider) = provider {
                 command.arg("--provider").arg(provider);
@@ -206,13 +213,12 @@ fn command(exe: &PathBuf, job: &Job) -> Command {
             }
         }
     }
-    let _ = job;
     command
 }
 
 /// Run one call: prompt on stdin, answer on stdout, killed at the deadline.
 fn run(exe: &PathBuf, job: &Job) -> Result<String, String> {
-    let mut child = command(exe, job)
+    let mut child = command(exe)
         .spawn()
         .map_err(|error| format!("cannot start the compactor: {error}"))?;
     if let Some(mut stdin) = child.stdin.take() {
@@ -345,8 +351,8 @@ pub(crate) fn bind_session(
     if provider.is_none() && model.is_none() {
         return;
     }
-    if let Ok(mut binding) = engine().binding.lock() {
-        *binding = Some((provider, model));
+    if let Ok(mut slot) = binding().lock() {
+        *slot = Some((provider, model));
     }
 }
 
@@ -388,7 +394,7 @@ mod tests {
 
     #[test]
     fn command_is_ephemeral_and_tool_free() {
-        let command = command(&PathBuf::from("/usr/bin/rpi"), &job("x"));
+        let command = command(&PathBuf::from("/usr/bin/rpi"));
         let args: Vec<String> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())

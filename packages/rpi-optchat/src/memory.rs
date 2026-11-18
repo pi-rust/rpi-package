@@ -481,6 +481,79 @@ impl Memory {
         VIEW_FRAME_BYTES + self.measured + usize::from(self.view.is_empty())
     }
 
+    /// The current view shape, for persistence: the parts plus the flag that
+    /// says whether the next message continues a merge batch.
+    pub fn view_shape(&self) -> (Vec<(u32, u64)>, bool) {
+        (
+            self.view.iter().map(|part| (part.l, part.i)).collect(),
+            self.merging,
+        )
+    }
+
+    /// Restore a saved view shape when it still tiles the retained log. A part
+    /// without a saved line is folded from its halves, so a shape saved before a
+    /// node arrived is still usable.
+    pub fn restore_view(&mut self, parts: &[(u32, u64)], merging: bool) -> bool {
+        let mut covered = self.base;
+        for (l, i) in parts {
+            let part = Part { l: *l, i: *i };
+            if part.start() != covered || part.end() > self.end() {
+                return false;
+            }
+            covered = part.end();
+        }
+        if covered != self.end() {
+            return false;
+        }
+        let mut view = Vec::with_capacity(parts.len());
+        for (l, i) in parts {
+            let part = Part { l: *l, i: *i };
+            self.fold(part);
+            view.push(part);
+        }
+        self.view = view;
+        self.measured = 0;
+        for part in self.view.clone() {
+            self.measured += self.line_size(part);
+        }
+        self.merging = merging;
+        true
+    }
+
+    /// Make sure `part` has a line, building it from its halves when it does not.
+    fn fold(&mut self, part: Part) {
+        if self.tree.contains_key(&(part.l, part.i)) {
+            return;
+        }
+        if part.l == 0 {
+            if let Some(entry) = self.get(part.i).cloned() {
+                let text = self
+                    .nodes
+                    .get(&(0, part.i))
+                    .cloned()
+                    .unwrap_or_else(|| leaf_text(&entry));
+                self.tree.insert((0, part.i), text);
+            }
+            return;
+        }
+        let left = Part {
+            l: part.l - 1,
+            i: part.i * 2,
+        };
+        let right = Part {
+            l: part.l - 1,
+            i: part.i * 2 + 1,
+        };
+        self.fold(left);
+        self.fold(right);
+        let text = self
+            .nodes
+            .get(&(part.l, part.i))
+            .cloned()
+            .unwrap_or_else(|| merge_text(self.text_of(left), self.text_of(right)));
+        self.tree.insert((part.l, part.i), text);
+    }
+
     /// Grow a line per message and, once over the budget or when forced, merge
     /// the most due pairs in one batch down to half of it.
     fn fit(&mut self, total: u64, force: bool) {
@@ -921,6 +994,27 @@ mod tests {
         assert_eq!(next.i, 10);
         assert_eq!(m.append_prepared(next).unwrap().i, 10);
         assert_eq!(m.end(), 11);
+    }
+
+    #[test]
+    fn a_saved_view_shape_restores_after_a_reload() {
+        let mut m = Memory::new();
+        for i in 0..8 {
+            m.record(Kind::Talk, format!("m{i}"), iso8601(i * 1000), None, None);
+        }
+        m.collapse();
+        let (parts, merging) = m.view_shape();
+        assert_eq!(parts, vec![(3, 0)]);
+
+        let reloaded = Memory::load(m.entries().to_vec());
+        let mut reloaded = reloaded;
+        assert_eq!(reloaded.stats().lines, 8, "a fresh load starts unfolded");
+        assert!(reloaded.restore_view(&parts, merging));
+        assert_eq!(reloaded.stats().lines, 1);
+        assert_eq!(reloaded.view_text(), m.view_text());
+        // A shape that does not tile the log is refused, not partially applied.
+        assert!(!reloaded.restore_view(&[(4, 0)], false));
+        assert!(!reloaded.restore_view(&[(3, 1)], false));
     }
 
     #[test]
