@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.64](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.63...rpi-web-v0.1.64) - 2026-11-18
+
+### Fixed
+
+- *(web)* keep the right-aligned composer metrics details fix (#306) and remove the #302/#296 changes from the stable line
+
 ## [0.1.63](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.62...rpi-web-v0.1.63) - 2026-11-17
 
 ### Fixed
