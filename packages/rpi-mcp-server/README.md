@@ -111,6 +111,21 @@ settles, the server sends `notifications/resources/updated` for each subscribed
 URI so the client re-reads instead of polling. Reads are bounded to 256 KiB of
 text and the transcript is capped at the newest 200 messages.
 
+## Getting the bridge
+
+The crate ships the `rpi-mcp-server` extension (cdylib) and the `rpi-mcp-bridge`
+executable. `rpi install rpi-mcp-server` installs the extension, so `rpi --mcp`
+works. **No release archive ships the bridge binary yet**; build it from source:
+
+```bash
+cargo build --release -p rpi-mcp-server --bin rpi-mcp-bridge
+# or
+cargo install --path packages/rpi-mcp-server --bin rpi-mcp-bridge
+```
+
+Track `rpi-package-install pack-mcp` (the ACP bridge has `pack-acp`) before
+documenting a downloadable bridge.
+
 ## Client configuration
 
 ```json

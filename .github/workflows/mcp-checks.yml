@@ -96,6 +96,8 @@ jobs:
         run: cargo test --locked -p rpi-mcp-server --all-targets
       - name: Check MCP server library and bridge targets
         run: cargo check --locked -p rpi-mcp-server --all-targets
+      - name: Strict MCP server Clippy
+        run: cargo clippy --locked -p rpi-mcp-server --all-targets --no-deps -- -D warnings
       - name: Verify the MCP server package
         run: cargo package --locked -p rpi-mcp-server
       - name: Test stdio bridge with real MCP children and a fixture native peer

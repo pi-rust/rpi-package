@@ -151,6 +151,14 @@ therefore needs no host stdio arbitration. The same bridge can serve MCP
 Streamable HTTP (`--http <addr>`, `POST /mcp`) for clients that cannot spawn a
 process, plus a private WebSocket channel (`GET /mcp/ws`) for our own clients.
 
+`rpi install rpi-mcp-server` installs the extension (`rpi --mcp`). The
+recommended entry point, the `rpi-mcp-bridge` executable, is built from source
+until a release archive exists:
+
+```bash
+cargo build --release -p rpi-mcp-server --bin rpi-mcp-bridge
+```
+
 See the [MCP server package README](packages/rpi-mcp-server/README.md) for the
 tool catalog, limits and client configuration.
 
