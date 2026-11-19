@@ -51,6 +51,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of silently never triggering
 - an unsupported abort never blocks a stop or repeats its warning: the goal still
   reaches its stopped state
+- token usage is counted as observed only when a response carries positive tokens;
+  a zeroed usage object from a host that reported nothing no longer hides the
+  unenforceable token-budget warning
+- `goal_complete`, `goal_blocked`, and `goal_wait` validate their `goal_id` inside
+  the same state lock that applies the transition, so a replacement between the
+  tool's read and the write cannot affect the new goal
+- continuation dispatch re-checks the goal revision and status immediately before
+  `SendMessage`, so a pause or replacement that lands after evaluation does not
+  start a stale run
+- the dispatch worker reads host-backed state, settings, and active tools before
+  taking the mutation lock
 
 ## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.4...rpi-goal-v0.2.5) - 2026-11-06
 
