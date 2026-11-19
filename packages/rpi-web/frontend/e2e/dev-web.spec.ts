@@ -1077,56 +1077,33 @@ test("fork is available from a session context menu", async ({ page }) => {
   await expect.poll(() => forkBody).toEqual({ title: "Design fork" });
 });
 
-test("recent chats open as a floating window without moving the project tree", async ({
+test("recent chats stay inline as a scrollable sidebar list", async ({
   page,
 }) => {
   await mockHost(page, { additionalSessions: 40 });
   await page.goto("/");
-  const tree = page.locator(".project-tree");
-  const treeBox = async () =>
-    tree.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      return { top: rect.top, height: rect.height };
-    });
-  const before = await treeBox();
-  await page.getByRole("button", { name: "Recent chats", exact: true }).click();
-  const recent = page.getByRole("dialog", { name: "Recent chats" });
+  const recent = page.getByRole("region", { name: "Recent chats" });
   await expect(recent).toBeVisible();
-  // Cross-project recency is the one thing the tree cannot express; the window
-  // lists every non-archived chat and tags each row with its project.
-  await expect(recent.locator(".slim-recent-option")).toHaveCount(41);
-  await expect(recent.locator(".slim-recent-project").first()).toHaveText(
-    "rpi-package",
-  );
-  // The floating window costs no permanent vertical space: the tree keeps its
-  // full height and position while it is open.
-  expect(await treeBox()).toEqual(before);
-  // The list must scroll *inside* the capped window and show a real, space-
-  // reserving scrollbar. With only `scrollbar-width: thin` Chromium renders an
-  // overlay bar that is invisible until interaction: clientWidth == offsetWidth.
-  // An always-visible bar reduces clientWidth; assert both facts so the probe
-  // fails when the bar regresses to overlay-only.
-  const list = recent.locator(".slim-recent-list");
-  const geometry = await list.evaluate((element) => {
+  const rows = recent.locator(".project-session-link.recent-session-link");
+  await expect(rows).toHaveCount(15);
+  await expect(recent.locator(".project-session-link")).toHaveCount(15);
+  const wrap = recent.locator(".recent-wrap");
+  const clientHeight = await wrap.evaluate((element) => element.clientHeight);
+  const firstFiveFit = await wrap.evaluate((element) => {
     const box = element.getBoundingClientRect();
-    const parent = element.parentElement!.getBoundingClientRect();
-    return {
-      bottom: box.bottom,
-      parentBottom: parent.bottom,
-      client: element.clientHeight,
-      scroll: element.scrollHeight,
-      clientWidth: element.clientWidth,
-      offsetWidth: element.offsetWidth,
-    };
+    return [...element.querySelectorAll(".project-session")]
+      .slice(0, 5)
+      .every((row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.top >= box.top - 0.5 && rect.bottom <= box.bottom + 0.5;
+      });
   });
-  expect(geometry.scroll).toBeGreaterThan(geometry.client);
-  expect(geometry.bottom).toBeLessThanOrEqual(geometry.parentBottom);
-  expect(geometry.clientWidth).toBeLessThan(geometry.offsetWidth);
-  expect(await list.evaluate((element) => element.scrollTop)).toBe(0);
-  await list.evaluate((element) => element.scrollTo({ top: 200 }));
-  expect(await list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-  await page.keyboard.press("Escape");
-  await expect(recent).toHaveCount(0);
+  expect(firstFiveFit).toBe(true);
+  expect(await wrap.evaluate((element) => element.scrollHeight)).toBeGreaterThan(clientHeight);
+  await wrap.evaluate((element) => element.scrollTo({ top: 200 }));
+  expect(await wrap.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  // Recent rows must never take the selected/active state from the project tree.
+  await expect(recent.locator(".project-session.active")).toHaveCount(0);
 });
 
 test("details jump is right-aligned in the slim metrics strip (#306)", async ({

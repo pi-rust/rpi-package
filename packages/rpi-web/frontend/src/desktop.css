@@ -1958,3 +1958,5 @@
   transition: opacity .4s cubic-bezier(.4, 0, .2, 1);
 }
 .recent-wrap.scrolling .scroll-thumb { opacity: 1; pointer-events: auto; }
+/* Recent rows intentionally match .project-session-link visually; the extra
+   class only gives tests and ARIA consumers a stable, scoped selector. */

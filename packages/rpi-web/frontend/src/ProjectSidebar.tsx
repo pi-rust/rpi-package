@@ -978,7 +978,7 @@ export function ProjectSidebar({
         }}
       >
         <button
-          className="project-session-link"
+          className={`project-session-link${recent ? " recent-session-link" : ""}`}
           onClick={() => onSelectSession(session)}
           title={title}
           aria-current={!recent && session.sessionId === sessionId ? "page" : undefined}
