@@ -81,7 +81,7 @@ fn shorthand_start_and_bare_status_do_not_break() {
 }
 
 #[test]
-fn pause_resume_stop_and_clear_route_through_the_goal() {
+fn pause_resume_complete_and_archive_route_through_the_goal() {
     let _guard = support::serial();
     support::install();
     support::fire(EventTag::SessionStart);
@@ -98,8 +98,18 @@ fn pause_resume_stop_and_clear_route_through_the_goal() {
     assert!(resumed["text"].as_str().unwrap().contains("Resumed"));
     assert_eq!(support::status(), "active");
 
+    // `complete` is the terminal-but-visible path (ZCode keeps a finished goal
+    // in place); `stop` is the archive verb.
+    let completed = support::command("complete");
+    assert!(completed["text"].as_str().unwrap().contains("Completed"));
+    assert_eq!(support::status(), "complete");
+    assert!(
+        support::active_goal().is_some(),
+        "a completed goal stays visible until it is replaced or archived"
+    );
+
     let stopped = support::command("stop");
-    assert!(stopped["text"].as_str().unwrap().contains("Completed"));
+    assert!(stopped["text"].as_str().unwrap().contains("Archived"));
     assert!(support::active_goal().is_none());
 
     support::command("Ship it again");

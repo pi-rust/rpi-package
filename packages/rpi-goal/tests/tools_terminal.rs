@@ -58,7 +58,12 @@ fn goal_complete_requires_the_current_goal_id_and_a_summary() {
         .as_str()
         .unwrap()
         .contains("Goal complete"));
-    assert!(support::active_goal().is_none());
+    assert_eq!(
+        support::status(),
+        "complete",
+        "a completed goal is terminal but stays visible until replaced"
+    );
+    assert!(support::active_goal().is_some());
 
     // The completion summary is persisted for the transcript.
     let notice = support::calls_named("AppendEntry")

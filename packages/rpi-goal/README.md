@@ -25,6 +25,12 @@ turn.
 - **Explicit stopping reasons.** `goal_complete`, `goal_blocked`, and `goal_wait`
   are separate tools, each guarded by the current goal id. Plain assistant text
   never completes a goal.
+- **Optional host-side completion verification.** A host can arm
+  `_verify-enable` and then decide after every settled run whether the goal is
+  done (`_verify-start` / `_verify-result`). While armed, no continuation starts
+  until the verdict arrives; a missed boundary or a lost verdict recovers with a
+  visible notice instead of stalling the goal. Standalone hosts are unaffected
+  (see [Completion verification](#completion-verification-host-bridge)).
 - **Stops are immediate.** `/goal pause` and every limit-driven stop cancel the
   in-flight run through the host's `Abort` action, so work ends now instead of
   after the current turn. A host without that action rejects the call with an
@@ -59,7 +65,8 @@ default limits exist because of that; they are not a dollar-cost cap.
 /goal status                show status
 /goal pause                 stop automatic work after the current run
 /goal resume                resume a paused, blocked, or limited goal
-/goal stop                  complete and archive (aliases: done, complete)
+/goal done | complete       mark the goal complete (stays visible until replaced)
+/goal stop                  archive the active goal
 /goal clear                 drop the goal and any legacy project file
 /goal turns <N>             turn budget (0 clears)
 /goal time <dur>            wall-clock budget, e.g. 30m / 2h / 1h30m (0 clears)
@@ -80,8 +87,8 @@ instructions.
 
 | Tool | Purpose |
 | --- | --- |
-| `goal` | `start`, `update`, `pause`, `resume`, `complete`, `limit`, `show`, `list`. Also reachable from `/goal`. |
-| `goal_complete` | Requires the exact current `goal_id` and an evidence-based `summary`. Renders the accepted summary as Markdown. |
+| `goal` | `start`, `update`, `pause`, `resume`, `complete`, `limit`, `show`, `list`. Also reachable from `/goal`. `complete` marks the goal complete in place (terminal but visible). |
+| `goal_complete` | Requires the exact current `goal_id` and an evidence-based `summary`. Renders the accepted summary as Markdown. The goal stays visible with status `complete`. |
 | `goal_blocked` | Requires the current `goal_id`, a reason, evidence, and `repeated_turns >= 3`. |
 | `goal_wait` | Requires the current `goal_id` and a reason; keeps the goal quiet. `resume_after_ms` is a safety wake, not a poll interval (values below 10000ms are clamped). |
 
@@ -94,15 +101,51 @@ not manage the parent's goal, and their turns are not counted against it.
 | State | Meaning | Continues automatically |
 | --- | --- | --- |
 | `active` | Working toward the objective | yes |
+| `verifying` | An armed host was asked for a completion verdict after a settled run | no (until the verdict) |
 | `waiting` | Quiet until an external event or a wait deadline | no |
 | `paused` | Stopped by the user, an abort, or a safety limit | no |
 | `blocked` | A repeated, evidenced external impasse | no |
 | `usage_limited` | The provider reported a usage/quota limit | no |
 | `budget_limited` | A turn, time, or token budget is exhausted | no |
-| `complete` | `goal_complete` (or `/goal stop`) accepted | no |
+| `complete` | `goal_complete`, `/goal complete`, or a `pass` verdict | no |
 
 `/goal resume` from any stopped state rotates the goal id and resets the safety
 epoch; resuming a waiting goal keeps its id.
+
+## Completion verification (host bridge)
+
+A host that owns a completion verifier (a separate model call that audits the
+work) arms the bridge once per session and then drives every settled boundary:
+
+```text
+/goal _verify-enable on                 arm the bridge (off restores the plain loop)
+/goal _verify-start [{"content":"…","status":"pending"}]
+/goal _verify-result {"outcome":"pass","reason":"…","nextAction":"…"}
+```
+
+- `_verify-start` is called at the run boundary with the run's todo snapshot. It
+  opens the iteration row, stores the snapshot (bounded), and flips the goal to
+  `verifying`. It is rejected unless the goal is `active`.
+- `_verify-result` applies one verdict:
+  - `pass` → status `complete` in place (terminal, visible);
+  - `notSatisfied` → status `active`; the next continuation prompt carries the
+    verifier's `reason` and `nextAction`;
+  - `failed` → `paused` with `safetyPauseCause: "verification_failed"`;
+  - `cancelled` → `paused` with `safetyPauseCause: "verification_cancelled"`.
+  It is rejected unless a boundary is open, so a late verdict cannot mutate a
+  different state.
+- While armed, the continuation worker withholds its dispatch until the verdict
+  arrives. Two recoveries keep a missing host from stalling the goal:
+  - if no boundary opens within `VERIFICATION_ARM_GRACE_MS` (2 minutes) after a
+    settle, the worker continues with a visible notice;
+  - if a boundary stays open without a verdict for `VERIFICATION_TIMEOUT_MS`
+    (5 minutes), the goal pauses with `safetyPauseCause: "verification_timeout"`.
+- Persisted verification state is bounded: 50 iteration rows, 50 verdicts, 100
+  items per row, and capped item/reason/next-action strings. Oldest rows are
+  dropped first.
+- Without `_verify-enable`, nothing changes: the plugin keeps its plain
+  `AgentSettled` continuation loop, so hosts that do not implement the bridge are
+  unaffected.
 
 ## Settings
 
@@ -194,8 +237,16 @@ Expired owners remain errors; they are not redirected to the latest session.
 
 - `goal-state` entries written by 0.2.x load unchanged; missing fields default to
   the new ones. An old entry has no goal id, so the terminal tools reject it until
-  the goal is restarted or resumed.
+  the goal is restarted or resumed. A goal entry that predates completion
+  verification still reaches `_verify-start` (the first boundary opens row 1).
 - The legacy `.rpi/goals.json` project file is no longer read as truth. `/goal
   clear` removes any leftover entry for the current working directory.
 - Automatic continuation is on by default (this is the behavior change), together
   with the 25/3 safety limits.
+- **`complete` is now terminal-but-visible.** `/goal complete`, `goal complete`,
+  and `goal_complete` keep the goal in the active slot with status `complete`
+  (ZCode keeps a finished target in place) instead of archiving it. `/goal stop`
+  is the archive verb; `/goal start` archives the previous goal either way, and
+  `/goal clear` drops it without archiving. Sessions written by 0.2.x/0.3.0 that
+  archived on complete keep loading: the archived entry is untouched, and the
+  status word `complete` means the same thing in both shapes.

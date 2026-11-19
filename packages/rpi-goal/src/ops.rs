@@ -4,7 +4,8 @@
 //! wakes the continuation worker. None of them sends a message directly.
 use crate::dispatch;
 use crate::inject;
-use crate::state::{self, Goal, Goals, Status};
+use crate::prompts;
+use crate::state::{self, Goal, GoalItem, GoalIteration, GoalVerification, Goals, Status};
 use crate::status;
 
 pub fn require_active(goals: &Goals) -> Result<Goal, String> {
@@ -166,10 +167,18 @@ fn apply_status(goal: &mut Goal, new_status: Status, now: i64) {
             }
             goal.status = Status::Active;
             goal.waiting = None;
+            goal.verify_iteration = None;
+            goal.verify_started_at = None;
+            // A resumed goal owes the next run (kickoff after a stop, or the
+            // continuation after a verdict); the worker consumes this flag.
+            goal.pending_dispatch = true;
             goal.start_clock(now);
         }
         _ => {
             goal.status = new_status;
+            goal.verify_iteration = None;
+            goal.verify_started_at = None;
+            goal.pending_dispatch = false;
             goal.stop_clock(now);
         }
     }
@@ -209,15 +218,20 @@ pub fn set_status(new_status: Status) -> Result<Goal, String> {
     result
 }
 
-/// Archive the active goal. Used by `/goal stop|done|complete` and by the
-/// legacy `goal` tool action; the model path is `goal_complete`.
-pub fn complete() -> Result<Goal, String> {
+/// Archive the active goal (`/goal stop`). The goal keeps its status in the
+/// archived list and the active slot is freed for a new objective.
+pub fn archive() -> Result<Goal, String> {
     let goal = {
         let _guard = state::lock();
         let mut goals = state::read()?;
         let mut goal = require_active(&goals)?;
         let now = state::now_ms();
-        goal.status = Status::Complete;
+        if !goal.status.is_stopped() {
+            goal.status = Status::Complete;
+        }
+        goal.pending_dispatch = false;
+        goal.verify_iteration = None;
+        goal.verify_started_at = None;
         goal.updated_at = now;
         goal.stop_clock(now);
         goal.waiting = None;
@@ -227,6 +241,54 @@ pub fn complete() -> Result<Goal, String> {
         goal
     };
     finish(&goal, None)
+}
+
+/// Mark the active goal `complete` **in place** (ZCode keeps a finished target
+/// visible): the goal stays the active slot's entry with the terminal status so
+/// a host panel can render it until the next `start` or `/goal clear`. Automatic
+/// continuation stops; archiving is `/goal stop`.
+pub fn complete() -> Result<Goal, String> {
+    let goal = complete_in_place(None)?;
+    finish(
+        &goal,
+        Some(prompts::completion_summary(
+            &goal,
+            "The goal was marked complete.",
+        )),
+    )
+}
+
+/// `goal_complete` / `/goal done|complete` with the model's evidence summary.
+pub fn complete_with(goal_id: &str, summary: &str) -> Result<Goal, String> {
+    let summary = bounded(summary, state::MAX_SUMMARY_CHARS, "completion summary")?;
+    let goal = complete_in_place(Some(goal_id))?;
+    finish(&goal, Some(prompts::completion_summary(&goal, &summary)))
+}
+
+fn complete_in_place(goal_id: Option<&str>) -> Result<Goal, String> {
+    let _guard = state::lock();
+    let goals = state::read()?;
+    let mut goal = match goal_id {
+        Some(goal_id) => require_current(goal_id, &goals)?,
+        None => require_active(&goals)?,
+    };
+    if goal.status.is_stopped() {
+        return Err(format!(
+            "the goal is {}; resume it before completing",
+            goal.status.as_str()
+        ));
+    }
+    let now = state::now_ms();
+    goal.status = Status::Complete;
+    goal.pending_dispatch = false;
+    goal.verify_iteration = None;
+    goal.verify_started_at = None;
+    goal.updated_at = now;
+    goal.last_outcome = Some("completed".into());
+    goal.stop_clock(now);
+    goal.waiting = None;
+    queue_active(&goals, &goal);
+    Ok(goal)
 }
 
 /// Drop the goal entirely without archiving it.
@@ -282,37 +344,6 @@ pub fn set_limits(
     finish(&goal, None)
 }
 
-/// `goal_complete`: the model's evidence-based termination. Requires the exact
-/// active goal id and a non-empty summary; stopped goals cannot complete.
-pub fn complete_with(goal_id: &str, summary: &str) -> Result<Goal, String> {
-    let summary = bounded(summary, state::MAX_SUMMARY_CHARS, "completion summary")?;
-    let goal = {
-        let _guard = state::lock();
-        let mut goals = state::read()?;
-        let mut goal = require_current(goal_id, &goals)?;
-        if goal.status.is_stopped() {
-            return Err(format!(
-                "the goal is {}; resume it before completing",
-                goal.status.as_str()
-            ));
-        }
-        let now = state::now_ms();
-        goal.status = Status::Complete;
-        goal.updated_at = now;
-        goal.stop_clock(now);
-        goal.waiting = None;
-        goal.last_outcome = Some("completed".into());
-        goals.archived.push(goal.clone());
-        goals.active = None;
-        state::queue(&goals);
-        goal
-    };
-    finish(
-        &goal,
-        Some(crate::prompts::completion_summary(&goal, &summary)),
-    )
-}
-
 /// `goal_blocked`: a repeated, evidenced impasse.
 pub fn block(
     goal_id: &str,
@@ -337,6 +368,9 @@ pub fn block(
         goal.updated_at = now;
         goal.stop_clock(now);
         goal.waiting = None;
+        goal.pending_dispatch = false;
+        goal.verify_iteration = None;
+        goal.verify_started_at = None;
         goals.archived.push(goal.clone());
         goals.active = None;
         state::queue(&goals);
@@ -351,6 +385,183 @@ pub fn block(
             repeated_turns,
         )),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Completion verification (host bridge)
+// ---------------------------------------------------------------------------
+
+/// Arm or disarm completion verification (`/goal _verify-enable on|off`).
+///
+/// Armed: the continuation worker refuses to start a goal-owned run until the
+/// host reports a verdict for the run that just settled (`_verify-start` /
+/// `_verify-result`). Disarmed: the plain v2 continuation loop. The flag lives
+/// in `Goals` so it applies to subsequent goals in the same branch.
+pub fn set_verification_armed(armed: bool) -> Result<bool, String> {
+    let changed = {
+        let _guard = state::lock();
+        let mut goals = state::read()?;
+        let changed = goals.verification != armed;
+        if changed {
+            goals.verification = armed;
+            state::queue(&goals);
+        }
+        changed
+    };
+    if changed {
+        state::flush();
+        // An armed goal may now be waiting for a verdict, or a disarmed one may
+        // be free to continue; let the worker re-evaluate either way.
+        dispatch::wake();
+    }
+    Ok(armed)
+}
+
+/// Open the verification boundary for the run that just settled. The host hands
+/// over the run's todo snapshot; the goal flips to `verifying` and no automatic
+/// continuation may start until `verify_result`.
+pub fn verify_start(items: Vec<GoalItem>) -> Result<Goal, String> {
+    let goal = {
+        let _guard = state::lock();
+        let goals = state::read()?;
+        let mut goal = require_active(&goals)?;
+        if !goal.status.is_active() {
+            return Err(format!(
+                "goal is {} — verification needs an active goal",
+                goal.status.as_str()
+            ));
+        }
+        let now = state::now_ms();
+        // The row number is the dispatch iteration that just settled; a goal
+        // that never dispatched (host without a worker) still gets row 1.
+        let iteration = goal.iteration.max(1);
+        goal.push_iteration(GoalIteration {
+            iteration,
+            items: state::bound_items(items),
+            updated_at: now,
+        });
+        goal.status = Status::Verifying;
+        goal.verify_iteration = Some(iteration);
+        goal.verify_started_at = Some(now);
+        goal.pending_dispatch = false;
+        goal.updated_at = now;
+        queue_active(&goals, &goal);
+        goal
+    };
+    state::flush();
+    status::publish(&goal);
+    Ok(goal)
+}
+
+/// Apply one completion-verifier verdict (`/goal _verify-result`).
+///
+/// * `pass` → `complete` in place (terminal, visible);
+/// * `not_satisfied` → `active` with the continuation owed again; the worker
+///   sends the next run with the verdict reason / next action in its prompt;
+/// * `failed` / `cancelled` → `paused` with a named `safety_pause_cause`.
+pub fn verify_result(
+    outcome: &str,
+    reason: Option<&str>,
+    next_action: Option<&str>,
+) -> Result<Goal, String> {
+    let outcome = match outcome.trim() {
+        "pass" => "pass",
+        "notSatisfied" | "not_satisfied" => "not_satisfied",
+        "failed" => "failed",
+        "cancelled" | "canceled" => "cancelled",
+        other => {
+            return Err(format!(
+                "outcome must be pass | notSatisfied | failed | cancelled (got `{other}`)"
+            ))
+        }
+    };
+    let reason = reason.map(|text| {
+        text.trim()
+            .chars()
+            .take(state::MAX_VERIFICATION_REASON_CHARS)
+            .collect::<String>()
+    });
+    let next_action = next_action.map(|text| {
+        text.trim()
+            .chars()
+            .take(state::MAX_VERIFICATION_NEXT_ACTION_CHARS)
+            .collect::<String>()
+    });
+    let (goal, notice) = {
+        let _guard = state::lock();
+        let goals = state::read()?;
+        let mut goal = require_active(&goals)?;
+        if !goal.status.is_verifying() {
+            return Err(format!(
+                "goal is {} — no verification is in flight",
+                goal.status.as_str()
+            ));
+        }
+        let now = state::now_ms();
+        let iteration = goal
+            .verify_iteration
+            .unwrap_or_else(|| goal.iteration.max(1));
+        let verdict = GoalVerification {
+            iteration,
+            outcome: outcome.to_string(),
+            at: now,
+            reason: reason.filter(|text| !text.is_empty()),
+            next_action: next_action.filter(|text| !text.is_empty()),
+        };
+        goal.push_verification(verdict.clone());
+        goal.verify_iteration = None;
+        goal.verify_started_at = None;
+        let notice = match outcome {
+            "pass" => {
+                goal.status = Status::Complete;
+                goal.pending_dispatch = false;
+                goal.last_outcome = Some("completed".into());
+                goal.stop_clock(now);
+                goal.waiting = None;
+                Some(prompts::verified_notice(&goal, &verdict))
+            }
+            "not_satisfied" => {
+                goal.status = Status::Active;
+                goal.pending_dispatch = true;
+                goal.last_outcome = Some("not_satisfied".into());
+                goal.start_clock(now);
+                None
+            }
+            "failed" => {
+                goal.status = Status::Paused;
+                goal.pending_dispatch = false;
+                goal.safety_pause_cause = Some("verification_failed".into());
+                goal.last_outcome = Some("verification_failed".into());
+                goal.stop_clock(now);
+                Some(prompts::stop_notice(
+                    &goal,
+                    &format!(
+                        "the completion verifier failed{}",
+                        verdict
+                            .reason
+                            .as_deref()
+                            .map(|reason| format!(": {reason}"))
+                            .unwrap_or_default()
+                    ),
+                ))
+            }
+            _ => {
+                goal.status = Status::Paused;
+                goal.pending_dispatch = false;
+                goal.safety_pause_cause = Some("verification_cancelled".into());
+                goal.last_outcome = Some("verification_cancelled".into());
+                goal.stop_clock(now);
+                Some(prompts::stop_notice(
+                    &goal,
+                    "no completion verdict was delivered",
+                ))
+            }
+        };
+        goal.updated_at = now;
+        queue_active(&goals, &goal);
+        (goal, notice)
+    };
+    finish(&goal, notice).map(|_| goal)
 }
 
 /// `goal_wait`: quiet the goal until an external wake or a safety deadline.

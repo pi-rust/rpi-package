@@ -221,6 +221,20 @@ fn evaluate(goals: Goals, settings: settings::Settings, tools_available: bool) -
     };
     let now = state::now_ms();
 
+    // Completion verification in flight: the host owes the verdict. A host that
+    // never reports one must not leave the goal stuck, so the boundary carries
+    // its own timeout and falls back to a named pause.
+    if goal.status.is_verifying() {
+        if policy::verification_timed_out(&goal, now) {
+            return Plan::Stop(
+                Status::Paused,
+                "the completion verifier did not report a verdict in time".into(),
+                Some("verification_timeout"),
+            );
+        }
+        return Plan::Idle;
+    }
+
     if !goal.status.is_active() {
         return Plan::Idle;
     }
@@ -257,6 +271,36 @@ fn evaluate(goals: Goals, settings: settings::Settings, tools_available: bool) -
             "goal_complete is not in the active tool set".into(),
             None,
         );
+    }
+
+    // Armed completion verification: the host decides whether the run that just
+    // settled is done. Withhold the continuation until `_verify-start` /
+    // `_verify-result` arrive; if the host never opens the boundary, continue
+    // with a visible notice instead of stalling the goal.
+    if goals.verification {
+        if policy::awaiting_verification(&goal, true) {
+            if !policy::verification_arm_expired(&goal, now) {
+                let deadline = goal
+                    .updated_at
+                    .saturating_add(state::VERIFICATION_ARM_GRACE_MS);
+                let remaining = Duration::from_millis((deadline - now).max(0) as u64);
+                return Plan::Wait(Instant::now() + remaining);
+            }
+            goal.pending_dispatch = true;
+            goal.updated_at = now;
+            crate::inject::queue(
+                &goal,
+                Some(format!(
+                    "⚠️ Completion verification is armed but the host did not open a boundary; continuing automatically. {}",
+                    goal.budget_summary(now)
+                )),
+            );
+        }
+        if !goal.pending_dispatch {
+            return Plan::Idle;
+        }
+        // This dispatch pays the debt: the next settled run is verified again.
+        goal.pending_dispatch = false;
     }
 
     // Never inject into a live run: wait for its settled boundary.
@@ -408,6 +452,11 @@ pub fn stop_current(expected_id: &str, status: Status, reason: &str, cause: Opti
         goal.status = status;
         goal.safety_pause_cause = cause.map(|c| c.to_string());
         goal.waiting = None;
+        // A stopped goal owes no verification and no continuation: a late
+        // verdict is rejected by `verify_result` instead of reviving work.
+        goal.verify_iteration = None;
+        goal.verify_started_at = None;
+        goal.pending_dispatch = false;
         goal.updated_at = now;
         goal.stop_clock(now);
         goals.active = Some(goal.clone());

@@ -30,12 +30,33 @@ pub const MAX_EVIDENCE_CHARS: usize = 4_000;
 pub const MIN_WAIT_MS: i64 = 10_000;
 pub const MAX_WAIT_MS: i64 = i32::MAX as i64;
 
+/// Persisted completion-verification snapshots are bounded so a goal that runs
+/// for weeks cannot grow its state entry without limit. Oldest rows are dropped
+/// first; the newest verdict and the newest iteration snapshot always survive.
+pub const MAX_ITERATION_ROWS: usize = 50;
+pub const MAX_VERIFICATIONS: usize = 50;
+pub const MAX_VERIFICATION_ITEMS: usize = 100;
+pub const MAX_VERIFICATION_ITEM_CHARS: usize = 4_000;
+pub const MAX_VERIFICATION_REASON_CHARS: usize = 2_000;
+pub const MAX_VERIFICATION_NEXT_ACTION_CHARS: usize = 2_000;
+/// A host verdict is expected within this window. The worker recovers the goal
+/// instead of leaving it in `verifying` forever when the host never answers.
+pub const VERIFICATION_TIMEOUT_MS: i64 = 300_000;
+/// Grace for an armed host to open a verification boundary after a run settled.
+/// When the host misses it, the worker continues the goal with a visible notice
+/// instead of stalling it.
+pub const VERIFICATION_ARM_GRACE_MS: i64 = 120_000;
+
 /// Terminal and stopped outcomes are distinct so the status line, the safety
 /// epoch, and the continuation policy can each key off one value.
+///
+/// `verifying` is the completion-verification boundary: an armed host opened it
+/// and no automatic continuation may start until the host reports a verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Active,
+    Verifying,
     Paused,
     Blocked,
     Waiting,
@@ -55,6 +76,7 @@ impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Verifying => "verifying",
             Self::Paused => "paused",
             Self::Blocked => "blocked",
             Self::Waiting => "waiting",
@@ -66,6 +88,12 @@ impl Status {
 
     pub fn is_active(self) -> bool {
         self == Self::Active
+    }
+
+    /// The completion-verification boundary: a live run settled, an armed host
+    /// was asked for a verdict, and no continuation may start until it arrives.
+    pub fn is_verifying(self) -> bool {
+        self == Self::Verifying
     }
 
     /// Stopped: work is preserved but nothing may continue automatically.
@@ -102,6 +130,85 @@ pub struct Waiting {
     /// Absolute epoch-ms safety wake. `None` waits for external input.
     #[serde(default)]
     pub deadline_ms: Option<i64>,
+}
+
+/// One todo item in an iteration snapshot. `status` is the host's todo state
+/// (`pending` / `in_progress` / `completed`) carried verbatim, so the panel can
+/// show the same word the agent saw.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalItem {
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// Per-run snapshot handed over at a verification boundary: what the run's todo
+/// list looked like when it settled. Verifier input, not model context.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalIteration {
+    pub iteration: u32,
+    #[serde(default)]
+    pub items: Vec<GoalItem>,
+    pub updated_at: i64,
+}
+
+/// One completion-verifier verdict.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalVerification {
+    pub iteration: u32,
+    /// `pass` | `not_satisfied` | `failed` | `cancelled`.
+    pub outcome: String,
+    pub at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+}
+
+/// Bound and normalize the todo snapshot the host hands over.
+pub fn bound_items(items: Vec<GoalItem>) -> Vec<GoalItem> {
+    let mut bounded: Vec<GoalItem> = items
+        .into_iter()
+        .take(MAX_VERIFICATION_ITEMS)
+        .map(|item| GoalItem {
+            content: item
+                .content
+                .chars()
+                .take(MAX_VERIFICATION_ITEM_CHARS)
+                .collect(),
+            status: item.status.trim().to_string(),
+        })
+        .collect();
+    if bounded.is_empty() {
+        bounded.shrink_to_fit();
+    }
+    bounded
+}
+
+impl Goal {
+    /// Open (or replace) the latest iteration snapshot, keeping the buffer
+    /// bounded. Called from the host-facing `_verify-start` boundary.
+    pub fn push_iteration(&mut self, row: GoalIteration) {
+        if self.iterations.last().map(|last| last.iteration) == Some(row.iteration) {
+            self.iterations.pop();
+        }
+        self.iterations.push(row);
+        while self.iterations.len() > MAX_ITERATION_ROWS {
+            self.iterations.remove(0);
+        }
+    }
+
+    /// Record one verdict, keeping the buffer bounded.
+    pub fn push_verification(&mut self, verdict: GoalVerification) {
+        self.verifications.push(verdict);
+        while self.verifications.len() > MAX_VERIFICATIONS {
+            self.verifications.remove(0);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -169,6 +276,26 @@ pub struct Goal {
     /// `completed` / `aborted` / `error` for the last finished run.
     #[serde(default, alias = "last_outcome")]
     pub last_outcome: Option<String>,
+    /// When an armed host is expected to decide before the next continuation:
+    /// set at `/goal start` (kickoff), on `notSatisfied`, and on resume. Cleared
+    /// when a continuation is dispatched. Without an armed host this field is
+    /// inert (v2 behavior dispatches at every settled boundary).
+    #[serde(default, alias = "pending_dispatch")]
+    pub pending_dispatch: bool,
+    /// The iteration row currently open for verification, if any.
+    #[serde(default, alias = "verify_iteration")]
+    pub verify_iteration: Option<u32>,
+    /// When `verifying` started (epoch ms); the recovery deadline is derived
+    /// from it instead of a separate persisted timer.
+    #[serde(default, alias = "verify_started_at")]
+    pub verify_started_at: Option<i64>,
+    /// Per-run todo snapshots handed over by the host at each verification
+    /// boundary (bounded).
+    #[serde(default)]
+    pub iterations: Vec<GoalIteration>,
+    /// Verdicts reported by the completion verifier (bounded).
+    #[serde(default)]
+    pub verifications: Vec<GoalVerification>,
 }
 
 impl Goal {
@@ -197,6 +324,11 @@ impl Goal {
             usage_seen: 0,
             usage_unavailable: false,
             last_outcome: None,
+            pending_dispatch: true,
+            verify_iteration: None,
+            verify_started_at: None,
+            iterations: Vec::new(),
+            verifications: Vec::new(),
         }
     }
 
@@ -281,6 +413,12 @@ pub struct Goals {
     /// run until that turn ends, so this is what proves a queued write landed.
     #[serde(default)]
     pub revision: u64,
+    /// Completion verification is armed by the host (`/goal _verify-enable`).
+    /// While armed, the continuation worker does not start a goal-owned run
+    /// until the host has reported a verdict for the run that just settled.
+    /// Default `false`: standalone hosts keep the plain v2 continuation loop.
+    #[serde(default)]
+    pub verification: bool,
     #[serde(default)]
     pub active: Option<Goal>,
     #[serde(default)]
@@ -702,5 +840,131 @@ mod tests {
         assert!(summary.contains("turns 3/20"), "{summary}");
         assert!(summary.contains("tokens 18.4k/100k"), "{summary}");
         assert!(summary.contains("time unlimited"), "{summary}");
+    }
+
+    #[test]
+    fn verification_state_round_trips_and_old_entries_default_it() {
+        let mut goal = Goal::new("t".into(), String::new(), 0);
+        assert!(
+            goal.pending_dispatch,
+            "a fresh goal must dispatch its kickoff"
+        );
+        goal.verify_iteration = Some(2);
+        goal.verify_started_at = Some(123);
+        goal.push_iteration(GoalIteration {
+            iteration: 2,
+            items: vec![GoalItem {
+                content: "fix it".into(),
+                status: "in_progress".into(),
+            }],
+            updated_at: 9,
+        });
+        goal.push_verification(GoalVerification {
+            iteration: 2,
+            outcome: "not_satisfied".into(),
+            at: 10,
+            reason: Some("missing evidence".into()),
+            next_action: Some("run the suite".into()),
+        });
+        let encoded = serde_json::to_value(&goal).unwrap();
+        assert_eq!(encoded["verifyIteration"], 2);
+        assert_eq!(
+            encoded["iterations"][0]["items"][0]["status"],
+            "in_progress"
+        );
+        assert_eq!(encoded["verifications"][0]["nextAction"], "run the suite");
+        let decoded: Goal = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.verifications[0].outcome, "not_satisfied");
+
+        // A v2 entry without the new fields loads with verification inert.
+        let old = json!({"title": "t", "status": "active"});
+        let old_goal: Goal = serde_json::from_value(old).unwrap();
+        assert!(old_goal.verify_iteration.is_none());
+        assert!(old_goal.iterations.is_empty());
+        assert!(old_goal.verifications.is_empty());
+    }
+
+    #[test]
+    fn verification_buffers_are_bounded_oldest_first() {
+        let mut goal = Goal::new("t".into(), String::new(), 0);
+        for iteration in 1..=(MAX_ITERATION_ROWS as u32 + 5) {
+            goal.push_iteration(GoalIteration {
+                iteration,
+                items: Vec::new(),
+                updated_at: iteration as i64,
+            });
+        }
+        assert_eq!(goal.iterations.len(), MAX_ITERATION_ROWS);
+        assert_eq!(
+            goal.iterations.first().map(|row| row.iteration),
+            Some(6),
+            "oldest rows are dropped first"
+        );
+        for iteration in 1..=(MAX_VERIFICATIONS as u32 + 3) {
+            goal.push_verification(GoalVerification {
+                iteration,
+                outcome: "pass".into(),
+                at: iteration as i64,
+                reason: None,
+                next_action: None,
+            });
+        }
+        assert_eq!(goal.verifications.len(), MAX_VERIFICATIONS);
+        assert_eq!(
+            goal.verifications.last().map(|row| row.iteration),
+            Some(MAX_VERIFICATIONS as u32 + 3),
+            "newest verdict survives"
+        );
+    }
+
+    #[test]
+    fn reapplying_the_same_iteration_replaces_its_snapshot() {
+        let mut goal = Goal::new("t".into(), String::new(), 0);
+        goal.push_iteration(GoalIteration {
+            iteration: 1,
+            items: vec![GoalItem {
+                content: "old".into(),
+                status: "pending".into(),
+            }],
+            updated_at: 1,
+        });
+        goal.push_iteration(GoalIteration {
+            iteration: 1,
+            items: vec![GoalItem {
+                content: "new".into(),
+                status: "completed".into(),
+            }],
+            updated_at: 2,
+        });
+        assert_eq!(goal.iterations.len(), 1);
+        assert_eq!(goal.iterations[0].items[0].content, "new");
+    }
+
+    #[test]
+    fn item_bounds_trim_content_and_count() {
+        let long = "x".repeat(MAX_VERIFICATION_ITEM_CHARS + 25);
+        let mut items: Vec<GoalItem> = (0..MAX_VERIFICATION_ITEMS + 10)
+            .map(|n| GoalItem {
+                content: format!("{long}{n}"),
+                status: "pending".into(),
+            })
+            .collect();
+        items.push(GoalItem {
+            content: "   ".into(),
+            status: " pending ".into(),
+        });
+        let bounded = bound_items(items);
+        assert_eq!(bounded.len(), MAX_VERIFICATION_ITEMS);
+        assert!(bounded
+            .iter()
+            .all(|item| item.content.chars().count() <= MAX_VERIFICATION_ITEM_CHARS));
+    }
+
+    #[test]
+    fn verifying_is_neither_active_nor_stopped() {
+        assert!(!Status::Verifying.is_active());
+        assert!(!Status::Verifying.is_stopped());
+        assert!(Status::Verifying.is_verifying());
+        assert_eq!(Status::Verifying.as_str(), "verifying");
     }
 }

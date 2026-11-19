@@ -1,0 +1,40 @@
+name: Goal extension checks
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-goal/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/goal-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  goal:
+    name: Goal mode (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      # Treat compiler warnings as CI failures for every build and test.
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt -p rpi-goal -- --check
+      - name: Test goal state machine, continuation, and the verification bridge
+        run: cargo test --locked -p rpi-goal
+      - name: Lint all extension targets
+        run: cargo clippy --locked -p rpi-goal --all-targets -- -D warnings
+      - name: Build native library
+        run: cargo build --locked -p rpi-goal

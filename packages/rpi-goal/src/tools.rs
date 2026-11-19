@@ -310,8 +310,7 @@ pub fn goal_schema() -> StableToolSchema {
         "type": "object", "additionalProperties": true,
         "description": "Arguments apply to the indicated actions.",
         "properties": {
-            "action": {"type": "string", "enum": ["start", "update", "pause", "resume", "complete", "limit", "show", "list"], "default": "show", "description": "Operation; omitted action shows the current goal."},
-            "title": {"type": "string", "pattern": "\\S", "description": "Required for start: the full objective, nonblank, at most 4000 Unicode scalar values. The previous goal is archived and replaced. Automatic continuation starts after the current turn settles."},
+            "action": {"type": "string", "enum": ["start", "update", "pause", "resume", "complete", "limit", "show", "list"], "default": "show", "description": "Operation; omitted action shows the current goal."},            "title": {"type": "string", "pattern": "\\S", "description": "Required for start: the full objective, nonblank, at most 4000 Unicode scalar values. The previous goal is archived and replaced. Automatic continuation starts after the current turn settles."},
             "notes": {"type": "string", "description": "start/update: trimmed notes, at most 20000 Unicode scalar values. Start defaults to empty; update replaces notes and an empty string clears them."},
             "status": {"type": "string", "enum": ["active", "paused"], "description": "update only: explicit status change. At least notes or status is required."},
             "maxTurns": {"type": "integer", "minimum": 1, "maximum": 4294967295u64, "description": "start/limit: total turn budget, not additional turns. Omitted on start means unlimited; omitted on limit preserves it. Clear with /goal turns 0."},
@@ -326,7 +325,7 @@ pub fn goal_schema() -> StableToolSchema {
     });
     schema(
         "goal",
-        "Record one persistent objective in the current native session branch and enable goal mode: work continues automatically after the agent settles until the goal completes, blocks, waits, or reaches a limit. start archives/replaces the current goal; update replaces notes and/or status; pause/resume/limit require an existing goal; complete is the manual archive path (prefer goal_complete); show/list read state. This tool does not spawn a nested agent run. Subagents must not manage the parent's goal.",
+        "Record one persistent objective in the current native session branch and enable goal mode: work continues automatically after the agent settles until the goal completes, blocks, waits, or reaches a limit. start archives/replaces the current goal; update replaces notes and/or status; pause/resume/limit require an existing goal; complete marks the goal complete in place (visible until the next start or /goal clear; prefer goal_complete); show/list read state. This tool does not spawn a nested agent run. Subagents must not manage the parent's goal.",
         parameters,
     )
 }
@@ -342,7 +341,7 @@ pub fn complete_schema() -> StableToolSchema {
     });
     schema(
         "goal_complete",
-        "Mark the active goal complete. Only call this when the current goal prompt says goal mode is active, you pass its exact goal_id, and authoritative evidence proves every requirement is satisfied. Never call it for partial progress, blockers, failures, or unverified work; plain assistant text never completes a goal.",
+        "Mark the active goal complete. Only call this when the current goal prompt says goal mode is active, you pass its exact goal_id, and authoritative evidence proves every requirement is satisfied. Never call it for partial progress, blockers, failures, or unverified work; plain assistant text never completes a goal. The completed goal stays visible until a new goal replaces it or /goal clear removes it.",
         parameters,
     )
 }

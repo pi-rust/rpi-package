@@ -275,6 +275,31 @@ pub fn may_continue(goal: &Goal) -> bool {
     goal.status == Status::Active && goal.waiting.is_none()
 }
 
+/// An armed host still owes a verdict: the run that just settled must be
+/// verified before another goal-owned run starts.
+pub fn awaiting_verification(goal: &Goal, armed: bool) -> bool {
+    armed && goal.status == Status::Active && !goal.pending_dispatch && goal.waiting.is_none()
+}
+
+/// The host opened `verifying` but never reported a verdict within the window.
+/// A `verifying` goal without a start timestamp counts as already expired: the
+/// host that opened it cannot prove when, so the goal must not hang on it.
+pub fn verification_timed_out(goal: &Goal, now: i64) -> bool {
+    goal.status == Status::Verifying
+        && goal
+            .verify_started_at
+            .map(|at| now >= at.saturating_add(crate::state::VERIFICATION_TIMEOUT_MS))
+            .unwrap_or(true)
+}
+
+/// The host missed the verification boundary after a run settled. The worker
+/// continues the goal with a visible notice instead of waiting forever.
+pub fn verification_arm_expired(goal: &Goal, now: i64) -> bool {
+    now >= goal
+        .updated_at
+        .saturating_add(crate::state::VERIFICATION_ARM_GRACE_MS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +439,43 @@ mod tests {
     fn waiting_reasons_are_bounded() {
         let reason = "x".repeat(2_000);
         assert_eq!(provider_waiting(&reason).reason.chars().count(), 1_000);
+    }
+
+    #[test]
+    fn armed_hosts_hold_continuations_until_a_verdict_arrives() {
+        let mut goal = goal();
+        assert!(!awaiting_verification(&goal, false));
+        // A freshly started armed goal owes its kickoff dispatch, not a verdict.
+        assert!(goal.pending_dispatch);
+        assert!(!awaiting_verification(&goal, true));
+        goal.pending_dispatch = false;
+        assert!(awaiting_verification(&goal, true));
+        goal.status = Status::Verifying;
+        assert!(!awaiting_verification(&goal, true));
+        goal.status = Status::Paused;
+        assert!(!awaiting_verification(&goal, true));
+        goal.status = Status::Active;
+        goal.waiting = Some(provider_waiting("boom"));
+        assert!(!awaiting_verification(&goal, true));
+    }
+
+    #[test]
+    fn verification_timeout_needs_a_live_verifying_status_and_a_start_time() {
+        let mut goal = goal();
+        assert!(!verification_timed_out(&goal, i64::MAX));
+        goal.status = Status::Verifying;
+        assert!(
+            verification_timed_out(&goal, 0),
+            "verifying without a start timestamp must not hang"
+        );
+        goal.verify_started_at = Some(1_000);
+        assert!(!verification_timed_out(
+            &goal,
+            1_000 + crate::state::VERIFICATION_TIMEOUT_MS - 1
+        ));
+        assert!(verification_timed_out(
+            &goal,
+            1_000 + crate::state::VERIFICATION_TIMEOUT_MS
+        ));
     }
 }

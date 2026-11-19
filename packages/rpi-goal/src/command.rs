@@ -15,7 +15,8 @@ const COMMAND_HELP: &str = "\
 /goal <objective>          start goal mode (shorthand for start)
 /goal start <objective>    start goal mode (--notes \"...\", --tokens 100k)
 /goal pause | resume       pause / resume the active goal
-/goal stop                 complete and archive the goal (aliases: done, complete)
+/goal done | complete      mark the goal complete (stays visible until replaced)
+/goal stop                 archive the active goal
 /goal clear                clear the goal and any leftover legacy file
 /goal turns <N>            max turns (0 clears)
 /goal time <dur>           max duration, e.g. 30m / 2h / 90s / 1h30m (0 clears)
@@ -153,8 +154,47 @@ pub fn run(args: &str) -> String {
             )
         }),
         "resume" => ops::resume().map(|goal| format!("▶️ Resumed: {}", goal.title)),
-        "stop" | "done" | "complete" => {
-            ops::complete().map(|goal| format!("✅ Completed: {}", goal.title))
+        "done" | "complete" => ops::complete().map(|goal| {
+            format!(
+                "✅ Completed: {} (the goal stays visible; `/goal start` replaces it, `/goal stop` archives it)",
+                goal.title
+            )
+        }),
+        "stop" => ops::archive().map(|goal| format!("🗄️ Archived: {}", goal.title)),
+        // Host-facing completion-verification bridge. Underscored so they never
+        // collide with user verbs; the host arms once and then reports one
+        // boundary + one verdict per settled run.
+        "_verify-enable" => {
+            let armed = match rest.trim() {
+                "on" | "true" | "1" | "yes" => true,
+                "off" | "false" | "0" | "no" => false,
+                _ => return "⚠️ _verify-enable expects `on` or `off`".to_string(),
+            };
+            ops::set_verification_armed(armed)
+                .map(|armed| format!("🔒 Completion verification armed: {armed}"))
+        }
+        "_verify-start" => match serde_json::from_str::<Vec<state::GoalItem>>(rest) {
+            Ok(items) => ops::verify_start(items).map(|goal| {
+                let iteration = goal.verify_iteration.unwrap_or(0);
+                format!("🔎 Verifying: {} (iteration {iteration})", goal.title)
+            }),
+            Err(error) => Err(format!("_verify-start expects a JSON array of items: {error}")),
+        },
+        "_verify-result" => {
+            let payload: Value = match serde_json::from_str(rest) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    return format!("⚠️ _verify-result expects a JSON object: {error}")
+                }
+            };
+            let outcome = payload.get("outcome").and_then(Value::as_str).unwrap_or("");
+            let reason = payload.get("reason").and_then(Value::as_str);
+            let next_action = payload
+                .get("nextAction")
+                .or_else(|| payload.get("next_action"))
+                .and_then(Value::as_str);
+            ops::verify_result(outcome, reason, next_action)
+                .map(|goal| format!("🛡️ Verdict applied: {} ({})", goal.title, goal.status.as_str()))
         }
         "clear" => ops::clear().map(|goal| match goal {
             Some(goal) => format!("🧹 Cleared: {}", goal.title),
@@ -284,5 +324,14 @@ mod tests {
         // No host runtime in unit tests: the file fallback returns no goal.
         let text = run("status");
         assert!(text.contains("No active goal"), "{text}");
+    }
+
+    #[test]
+    fn verification_verbs_require_valid_payloads() {
+        assert!(run("_verify-enable").contains("expects `on` or `off`"));
+        assert!(run("_verify-enable maybe").contains("expects `on` or `off`"));
+        assert!(run("_verify-start not-json").contains("expects a JSON array"));
+        assert!(run("_verify-result nope").contains("expects a JSON object"));
+        assert!(run("_verify-result {\"outcome\":\"bogus\"}").contains("outcome must be"));
     }
 }

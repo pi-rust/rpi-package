@@ -108,6 +108,10 @@ fn goal_summary_json(goal: &Goal) -> Value {
         "automaticTurns": goal.automatic_turns,
         "noProgressCount": goal.no_progress_count,
         "safetyPauseCause": goal.safety_pause_cause,
+        "pendingDispatch": goal.pending_dispatch,
+        "verifyIteration": goal.verify_iteration,
+        "iterations": goal.iterations,
+        "verifications": goal.verifications,
         "waiting": goal.waiting.as_ref().map(|waiting| json!({
             "reason": waiting.reason,
             "kind": format!("{:?}", waiting.kind).to_lowercase(),
@@ -206,6 +210,7 @@ pub fn completed_markdown(goal: &Goal) -> String {
 fn icon(status: Status) -> &'static str {
     match status {
         Status::Active => "🎯",
+        Status::Verifying => "🔎",
         Status::Paused => "⏸️",
         Status::Blocked => "⛔",
         Status::Waiting => "⏳",
@@ -238,6 +243,7 @@ mod tests {
         let goals = Goals {
             version: 2,
             revision: 1,
+            verification: false,
             active: Some(goal.clone()),
             archived: vec![],
         };
@@ -267,6 +273,7 @@ mod tests {
         let goals = Goals {
             version: 2,
             revision: 1,
+            verification: false,
             active: None,
             archived: vec![first, second],
         };
@@ -287,6 +294,7 @@ mod tests {
         let goals = Goals {
             version: 2,
             revision: 1,
+            verification: false,
             active: Some(goal),
             archived: vec![],
         };

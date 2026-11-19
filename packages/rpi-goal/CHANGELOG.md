@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not support it rejects the call and the stop applies at the next turn boundary
 - compaction re-injects the goal notice, and reload restores usage, safety counters,
   elapsed active time, and waiting state
+- completion verification host bridge: `/goal _verify-enable on|off` plus
+  `_verify-start` / `_verify-result` (host-facing, underscored). An armed host
+  decides after every settled run; `pass` completes in place, `notSatisfied`
+  continues with the verdict in the prompt, `failed`/`cancelled` pause with a
+  named cause. Per-run iteration snapshots and verdicts are persisted (bounded at
+  50 rows / 100 items / capped strings), and a missing boundary or verdict
+  recovers via a visible notice or a `verification_timeout` pause instead of
+  stalling the goal
+- goal state gains `verifying`, `pendingDispatch`, `verifyIteration`,
+  `verifyStartedAt`, `iterations[]`, and `verifications[]` (all defaulted, so old
+  entries load unchanged)
 
 ### Changed
 
@@ -33,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - provider usage limits stop the goal (`usage_limited`); other provider failures
   leave it active but quiet (`waiting`)
 - the legacy `.rpi/goals.json` project file is no longer a source of truth
+- `/goal complete`, the `goal complete` action, and `goal_complete` now keep the
+  goal visible with status `complete` instead of archiving it; `/goal stop` is the
+  archive verb and `/goal start` archives the previous goal. Command help, tool
+  descriptions, and the README agree on this split
+- continuation prompts carry the previous `notSatisfied` verdict's reason and next
+  action, so the next run knows what the verifier rejected
 
 ### Fixed
 

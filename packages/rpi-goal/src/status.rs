@@ -53,9 +53,16 @@ pub fn label(goal: &Goal) -> String {
             Some(WaitKind::Provider) => format!("provider wait · {automatic}"),
             _ => "waiting".to_string(),
         },
+        Status::Verifying => match goal.verify_iteration {
+            Some(iteration) => format!("verifying #{iteration} · {automatic}"),
+            None => format!("verifying · {automatic}"),
+        },
         Status::Paused => match goal.safety_pause_cause.as_deref() {
             Some("continuation_limit") => format!("paused · limit {automatic}"),
             Some("no_progress") => format!("paused · no progress · {automatic}"),
+            Some("verification_failed") => format!("paused · verifier failed · {automatic}"),
+            Some("verification_cancelled") => format!("paused · verifier cancelled · {automatic}"),
+            Some("verification_timeout") => format!("paused · verifier timeout · {automatic}"),
             _ => format!("paused · {automatic}"),
         },
         Status::Blocked => format!("blocked · {automatic}"),
