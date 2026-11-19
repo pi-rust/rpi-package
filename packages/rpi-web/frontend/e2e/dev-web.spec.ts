@@ -1088,16 +1088,20 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   await expect(rows).toHaveCount(15);
   await expect(recent.locator(".recent-session-link")).toHaveCount(15);
   const wrap = recent.locator(".recent-wrap");
-  const firstFiveFit = await wrap.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    return [...element.querySelectorAll(".recent-session-row")]
-      .slice(0, 5)
-      .every((row) => {
-        const rect = row.getBoundingClientRect();
-        return rect.top >= box.top - 0.5 && rect.bottom <= box.bottom + 0.5;
-      });
+  const geometry = await wrap.evaluate((element) => {
+    const list = element.querySelector(".recent-session-list") as HTMLElement;
+    const box = list.getBoundingClientRect();
+    const rows = [...list.querySelectorAll(".recent-session-row")];
+    const firstFiveFit = rows.slice(0, 5).every((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.top >= box.top - 0.5 && rect.bottom <= box.bottom + 0.5;
+    });
+    return { firstFiveFit, clientHeight: list.clientHeight, scrollHeight: list.scrollHeight };
   });
-  expect(firstFiveFit).toBe(true);
+  expect(geometry.firstFiveFit).toBe(true);
+  // Exactly five rows occupy the list; the rest scroll inside it.
+  expect(geometry.clientHeight).toBeLessThanOrEqual(160);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
   // Recent rows must never take the selected/active state from the project tree.
   await expect(recent.locator(".recent-session-row.active")).toHaveCount(0);
 });
