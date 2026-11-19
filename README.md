@@ -147,7 +147,9 @@ resources (`rpi://session/transcript`, `rpi://session/state`) with
 mapping. Native session lifecycle, prompt
 acceptance, settlement and child cleanup stay in `rpi-extcore`. The standalone
 bridge is the recommended integration because it owns its own stdin/stdout and
-therefore needs no host stdio arbitration.
+therefore needs no host stdio arbitration. The same bridge can serve MCP
+Streamable HTTP (`--http <addr>`, `POST /mcp`) for clients that cannot spawn a
+process, plus a private WebSocket channel (`GET /mcp/ws`) for our own clients.
 
 See the [MCP server package README](packages/rpi-mcp-server/README.md) for the
 tool catalog, limits and client configuration.

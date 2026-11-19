@@ -60,6 +60,12 @@ is not part of `rpi-mcp-core` and must not add server policy there:
 - Two entry points share one implementation: the `rpi-mcp-bridge` executable
   (owns its own stdin/stdout, needs no host change) and the `rpi --mcp` plugin
   entry, which claims `{"ownsStdio":true}` exactly like `--acp` and `--http`.
+- HTTP/WebSocket transports live in this adapter, not in `rpi-extcore`: Axum
+  routing, session headers, access checks, SSE framing and the WebSocket bridge
+  are wire concerns. All three transports drive the same transport-neutral
+  dispatcher, so tool, resource and cancellation semantics cannot drift. The
+  WebSocket endpoint (`GET /mcp/ws`) is a private extension, while MCP clients
+  must use stdio or Streamable HTTP.
 - In-process stdio has a single owner. `--mcp` is therefore mutually exclusive
   with `--acp`, `--http`, `--webserver`, `--web`, `--server` and `--webui`, and
   every one of those adapters rejects `--mcp` before claiming stdio. The

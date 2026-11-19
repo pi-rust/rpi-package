@@ -3,13 +3,18 @@
 Publish the rpi agent as an **MCP server**. This is the opposite direction of
 [`rpi-mcp-adapter`](../rpi-mcp-adapter/README.md), which consumes MCP servers.
 
-Two entry points share one implementation:
+Transports:
 
-- `rpi-mcp-bridge` — standalone MCP stdio server. **Recommended**: it owns its
-  own stdin/stdout, so it works with a stock `rpi` and never competes with
-  `--acp`, `--http` or `--webserver`.
-- `rpi --mcp` — in-process plugin entry, using the host's existing
-  `{"ownsStdio":true}` and `StdioLifecycle` ABI, the same contract `--acp` uses.
+| Transport | Entry point | Spec |
+| --- | --- | --- |
+| stdio | `rpi-mcp-bridge` (recommended) or `rpi --mcp` | MCP |
+| Streamable HTTP | `rpi-mcp-bridge --http <ADDR>` → `POST /mcp` | MCP |
+| WebSocket | `--http` listener → `GET /mcp/ws` | **private**, not an MCP transport |
+
+`rpi-mcp-bridge` is the recommended entry point: it owns its own stdin/stdout, so
+it works with a stock `rpi` and never competes with `--acp`, `--http` or
+`--webserver`. The `rpi --mcp` plugin entry uses the host's existing
+`{"ownsStdio":true}` and `StdioLifecycle` ABI, the same contract `--acp` uses.
 
 ```text
 MCP client -> MCP JSON-RPC over stdin/stdout -> rpi-mcp-bridge -> rpi --mode rpc
@@ -20,6 +25,36 @@ The adapter owns MCP framing, the tool catalog, resource exposure,
 `tools/call` concurrency and cancellation mapping. Native session lifecycle,
 prompt acceptance, settlement, cancellation and process-tree cleanup stay in
 `rpi-extcore`.
+
+## HTTP and WebSocket
+
+```bash
+rpi-mcp-bridge --http 127.0.0.1:8080 --cwd /path/to/workspace
+rpi-mcp-bridge --http 0.0.0.0:8080 --token "$TOKEN" --allow-origin https://ide.example
+```
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `POST /mcp` | JSON-RPC frames. Requests get one JSON response, or an SSE stream when the client sends `Accept: text/event-stream` **and** the body calls `rpi_prompt`. Notifications/responses only → `202`. |
+| `GET /mcp` | `405` with `Allow: POST, DELETE`: this server offers no standalone server stream. |
+| `DELETE /mcp` | Terminates the session (`204`), so later requests get `404`. |
+| `GET /mcp/ws` | Private WebSocket upgrade. First frame is `{"jsonrpc":"2.0","method":"rpi/session","params":{"sessionId":"…"}}`; reattach with `?session=<id>`. |
+
+Session rules: `initialize` without `Mcp-Session-Id` opens a session and returns
+the id in the response header; every later request must send it back. An unknown
+or deleted session is `404` — re-`initialize` to continue. `MCP-Protocol-Version`
+is validated when present. Sessions are capped (`--max-sessions`, default 8) and
+retired after 15 minutes of inactivity.
+
+Security: loopback binds only need nothing extra; **a non-loopback bind requires
+`--token`** and every request then needs `Authorization: Bearer <token>`.
+Cross-origin requests are rejected unless the `Origin`/`Host` is loopback or
+listed with `--allow-origin`. There is no TLS and no OAuth: put it behind a
+trusted proxy or keep it on loopback.
+
+`/mcp/ws` is a convenience channel for our own clients (one bidirectional socket
+on the same native session), not something an MCP client can use. It shares the
+access checks, session table and idle reaper with the HTTP transport.
 
 ## Tools
 
@@ -110,6 +145,8 @@ and workspace when a run must be allowed to use gated tools.
 
 - 16 MiB per input frame; oversized frames are rejected without dispatching.
 - At most 16 concurrent `tools/call` requests; excess calls fail with `-32603`.
+- 16 MiB per HTTP body and per WebSocket message; at most 8 HTTP sessions by
+  default.
 - 64 queued outbound frames of backpressure.
 - 256 KiB of model-visible text per tool result, truncated with
   `\n[truncated]`.
@@ -143,10 +180,16 @@ validation, prompt settlement, approval denial, resource reads and subscription
 notifications.
 It does not replace a run against a real `rpi` binary.
 
+`tests/http.rs` starts a loopback listener and covers the HTTP session lifecycle
+(initialize/session header, `tools/list`, `202`, `400`, `403`, `404`, `405`,
+`204`, token and protocol-version checks, SSE for `rpi_prompt`) plus the
+WebSocket bridge (session hello, initialize, tools/list, reattach, rejection).
+
 Live checks against `rpi 0.24.0` covered `initialize`, `tools/list`,
 `rpi_state`, `rpi_available_models`, `rpi_thinking_levels`,
-`rpi_set_thinking_level`, `resources/list`, `resources/read` (transcript and
-state), unknown-resource rejection and `notifications/cancelled` (the cancelled
+`rpi_set_thinking_level`, `rpi_compact`, `resources/list`, `resources/read`
+(transcript and state), unknown-resource rejection and
+`notifications/cancelled` (the cancelled
 prompt settled with `{"error":"prompt cancelled"}`). A full model round trip was
 **not** verified here: in this environment the native `rpi --mode rpc` child
 stalls after `message_start` with no adapter in the path, so the settle path is

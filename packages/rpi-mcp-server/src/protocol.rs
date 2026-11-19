@@ -17,6 +17,11 @@ use tokio::sync::{broadcast, mpsc, watch, Semaphore};
 use tokio::task::JoinSet;
 
 const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// Whether a client-requested MCP protocol version is one we negotiate.
+pub fn supports_protocol(version: &str) -> bool {
+    SUPPORTED_PROTOCOLS.contains(&version)
+}
 const SERVER_NAME: &str = "rpi-mcp-server";
 
 /// Transport frame bound. MCP has no length header, so a frame is one line.

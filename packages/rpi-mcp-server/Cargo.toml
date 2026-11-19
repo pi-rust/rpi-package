@@ -32,8 +32,12 @@ rpi-extcore = { path = "../rpi-extcore", version = "0.2.16" }
 rpi-plugin-sdk = { workspace = true, features = ["stdio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-util", "io-std", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-util", "io-std", "macros", "net", "signal"] }
+axum = { version = "0.8.9", features = ["ws"] }
+futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 rpi-extcore = { path = "../rpi-extcore", version = "0.2.16", features = ["test-support"] }
+reqwest = { workspace = true, features = ["json"] }
+tokio-tungstenite = "0.29"
