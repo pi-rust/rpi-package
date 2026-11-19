@@ -136,8 +136,10 @@ a `/optchat fit` or a model-written layout stable across a resume.
 - **Profiles attach, they do not merge live.** Memory is mirrored into
   `.rpi/optchat/<profile>.jsonl` (`RPI_OPTCHAT_STORE_DIR` moves that directory,
   for a read-only checkout); `/optchat recall` searches it and
-  `/optchat attach` copies it back in as imported notes. Upstream instead serves
-  one profile store as the live log.
+  `/optchat attach` copies it back in as imported notes. Reads and appends take
+  a per-profile OS file lock so separate `rpi` processes sharing the store do
+  not interleave JSONL lines. Upstream instead serves one profile store as the
+  live log.
 - **Compaction is opt-in and per session.** A line costs one child model call, so
   it stays off unless `/optchat compact on` or `RPI_OPTCHAT_COMPACT=auto`.
 - **Imports are one-way and bounded.** A source-specific parser is only promised
@@ -188,7 +190,7 @@ because that is the ABI; a `{"error":…}` body with `rc == 0` is a success.
 The unit tests cover the log/tree/view invariants (bounded lines, collapsing,
 tiling, paging with stable ids, UTF-8-safe clipping, search paging), the
 compaction child (a stub executable that answers, fails, or times out), the
-profile store (name safety, append/read, malformed lines), the importers
+profile store (name safety, locked concurrent append/read, malformed lines), the importers
 (Claude, ChatGPT mapping order, generic JSONL, text), the entry renderer
 (entry and summary envelopes, foreign types declined) and the command/schema
 surface. End-to-end checks against a running host are described in the pull

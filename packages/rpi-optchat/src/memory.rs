@@ -424,6 +424,15 @@ impl Memory {
         let dropped = self.entries.len() - cap;
         self.entries.drain(..dropped);
         self.base += dropped as u64;
+        // Model-written lines for blocks that no longer fit entirely in the
+        // retained window cannot be applied again; drop them so the cache
+        // stays bounded by the same window as the log.
+        let base = self.base;
+        let end = self.end();
+        self.nodes.retain(|&(l, i), _| {
+            let part = Part { l, i };
+            part.start() >= base && part.end() <= end
+        });
         self.rebuild();
         dropped
     }
@@ -994,6 +1003,22 @@ mod tests {
         assert_eq!(next.i, 10);
         assert_eq!(m.append_prepared(next).unwrap().i, 10);
         assert_eq!(m.end(), 11);
+    }
+
+    #[test]
+    fn trim_drops_model_nodes_outside_the_window() {
+        let mut m = Memory::new();
+        for i in 0..4 {
+            m.record(Kind::User, format!("m{i}"), iso8601(i * 1000), None, None);
+        }
+        assert!(m.install_node(0, 0, "old".into()));
+        assert!(m.install_node(1, 1, "kept".into()));
+
+        m.trim_to(2);
+
+        assert_eq!(m.base(), 2);
+        assert!(!m.has_node(Part { l: 0, i: 0 }));
+        assert!(m.has_node(Part { l: 1, i: 1 }));
     }
 
     #[test]

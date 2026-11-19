@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `/optchat` footer is cleared when the session ends or moves to another
   branch, instead of leaving a stale count behind.
 
+### Fixed
+
+- `/optchat import` and `/optchat attach` preserve the source day in the entry
+  date instead of stamping imported history with the current time.
+- Profile-store JSONL reads and appends take OS file locks, so two processes
+  sharing a profile cannot observe a half-written line or interleave appends.
+- Trimming the retained log also drops model-written summary nodes that no
+  longer fit inside the retained window.
+
 ## [0.1.0]
 
 ### Added

@@ -155,6 +155,6 @@ to the project (or to the agent dir), with the host owning atomicity and
 concurrency. Acceptance: two `rpi` processes on one project can read and append
 without the plugin implementing a lock file.
 
-Workaround shipped here: single-writer-by-convention file store with
-`tmp`+rename, bounded reads, and the session entry as the source of truth for the
+Workaround shipped here: a per-profile OS file lock around JSONL reads and
+appends, bounded reads, and the session entry as the source of truth for the
 active branch.
