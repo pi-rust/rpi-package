@@ -253,9 +253,13 @@
   width: 0;
   height: 0;
 }
-.recent-session-list .project-session {
-  margin-left: 3px;
-  margin-right: 3px;
+.recent-session-list .recent-session-row {
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  margin: 1px 3px 1px 17px;
+  min-height: 31px;
+  padding-right: 2px;
 }
 .project-tree {
   flex: 1;
@@ -269,7 +273,8 @@
 }
 .project-group,
 .project-group-header,
-.project-session {
+.project-session,
+.recent-session-row {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -348,10 +353,12 @@
   padding-right: 2px;
 }
 .project-session:hover,
-.project-session.active {
+.project-session.active,
+.recent-session-row:hover {
   background: var(--hover);
 }
-.project-session-link {
+.project-session-link,
+.recent-session-link {
   width: auto;
   max-width: 100%;
   overflow: hidden;
@@ -367,7 +374,8 @@
   color: var(--text);
   gap: 7px;
 }
-.project-session-link > svg {
+.project-session-link > svg,
+.recent-session-link > svg {
   flex: 0 0 11px;
   color: var(--muted);
 }
@@ -379,7 +387,8 @@
   flex: 1;
   text-align: left;
 }
-.project-session-link > time {
+.project-session-link > time,
+.recent-session-link > time {
   flex: 0 0 auto;
   white-space: nowrap;
   color: var(--muted);
@@ -391,6 +400,13 @@
   background: var(--yellow-soft, var(--soft));
   color: var(--yellow-text, var(--muted));
   font-size: 9px;
+}
+.recent-session-title::before {
+  content: attr(data-title);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .recent-project-tag-unused {
   flex: 0 1 auto;

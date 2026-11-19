@@ -965,7 +965,7 @@ export function ProjectSidebar({
     const running = ["running", "starting"].includes(session.status);
     return (
       <div
-        className={`project-session${recent ? "" : session.sessionId === sessionId ? " active" : ""}`}
+        className={recent ? "recent-session-row" : `project-session${session.sessionId === sessionId ? " active" : ""}`}
         key={session.sessionId}
         onContextMenu={(event) => {
           if (recent || (!canManage && !canFork)) return;
@@ -978,10 +978,12 @@ export function ProjectSidebar({
         }}
       >
         <button
-          className={`project-session-link${recent ? " recent-session-link" : ""}`}
+          className={recent ? "recent-session-link" : "project-session-link"}
           onClick={() => onSelectSession(session)}
           title={title}
           aria-current={!recent && session.sessionId === sessionId ? "page" : undefined}
+          aria-hidden={recent ? true : undefined}
+          tabIndex={recent ? -1 : undefined}
         >
           {awaitingAnswer ? (
             <span className="session-answer-dot" title={translate(language, "sessionAwaitingAnswer")} aria-hidden="true" />
@@ -1012,12 +1014,15 @@ export function ProjectSidebar({
               {relationKind === "clone" ? <GitBranch size={12} /> : <GitFork size={12} />}
             </span>
           )}
-          <span className="session-title">
-            {title}
+          <span
+            className={`session-title${recent ? " recent-session-title" : ""}`}
+            data-title={recent ? title : undefined}
+          >
+            {!recent && title}
           </span>
-          <SessionAnswerBadge session={session} language={language} />
-          <SessionIssueBadge session={session} language={language} />
-          {draftSessionIds.has(session.sessionId) && (
+          {!recent && <SessionAnswerBadge session={session} language={language} />}
+          {!recent && <SessionIssueBadge session={session} language={language} />}
+          {!recent && draftSessionIds.has(session.sessionId) && (
             <span
               className="session-draft"
               title={translate(language, "draft")}

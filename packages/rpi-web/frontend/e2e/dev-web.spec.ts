@@ -1084,14 +1084,14 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   await page.goto("/");
   const recent = page.getByRole("region", { name: "Recent chats" });
   await expect(recent).toBeVisible();
-  const rows = recent.locator(".project-session-link.recent-session-link");
+  const rows = recent.locator(".recent-session-link");
   await expect(rows).toHaveCount(15);
-  await expect(recent.locator(".project-session-link")).toHaveCount(15);
+  await expect(recent.locator(".recent-session-link")).toHaveCount(15);
   const wrap = recent.locator(".recent-wrap");
   const clientHeight = await wrap.evaluate((element) => element.clientHeight);
   const firstFiveFit = await wrap.evaluate((element) => {
     const box = element.getBoundingClientRect();
-    return [...element.querySelectorAll(".project-session")]
+    return [...element.querySelectorAll(".recent-session-row")]
       .slice(0, 5)
       .every((row) => {
         const rect = row.getBoundingClientRect();
@@ -1103,7 +1103,7 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   await wrap.evaluate((element) => element.scrollTo({ top: 200 }));
   expect(await wrap.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   // Recent rows must never take the selected/active state from the project tree.
-  await expect(recent.locator(".project-session.active")).toHaveCount(0);
+  await expect(recent.locator(".recent-session-row.active")).toHaveCount(0);
 });
 
 test("details jump is right-aligned in the slim metrics strip (#306)", async ({
