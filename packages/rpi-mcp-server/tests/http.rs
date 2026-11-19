@@ -1,7 +1,7 @@
 //! Loopback tests for the Streamable HTTP and WebSocket transports.
 
 use rpi_extcore::host::HostSession;
-use rpi_mcp_server::http::{serve_listener, HttpOptions, SessionFactory};
+use rpi_mcp_server::http::{serve_listener, serve_listener_until, HttpOptions, SessionFactory};
 use rpi_mcp_server::McpServer;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -85,6 +85,40 @@ async fn open_session(base: &str) -> String {
         .to_str()
         .unwrap()
         .to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_cap_and_graceful_shutdown() {
+    let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let factory = recording_factory(Arc::new(Mutex::new(Vec::new())));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let mut options = HttpOptions::new(address.to_string());
+    options.max_sessions = 1;
+    let serving = tokio::spawn(async move {
+        serve_listener_until(listener, options, factory, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+    let base = format!("http://{address}");
+
+    open_session(&base).await;
+    let status = client()
+        .post(format!("{base}/mcp"))
+        .json(&initialize_body(2))
+        .send()
+        .await
+        .expect("second session")
+        .status();
+    assert_eq!(status, 429);
+
+    shutdown.send(()).expect("signal shutdown");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), serving)
+        .await
+        .expect("shutdown is bounded")
+        .expect("listener task");
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

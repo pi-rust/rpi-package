@@ -46,8 +46,9 @@ the id in the response header; every later request must send it back. An unknown
 or deleted session is `404` — re-`initialize` to continue. Re-initializing an
 already-open session is `400` (delete it first) so a second native child is never
 started behind a live session. `MCP-Protocol-Version`
-is validated when present. Sessions are capped (`--max-sessions`, default 8) and
-retired after 15 minutes of inactivity.
+is validated when present. Sessions are capped (`--max-sessions`, default 8, excess `initialize` → `429`) and
+retired after 15 minutes of inactivity. `Ctrl+C`/`SIGTERM` stops the listener,
+shuts every session's native child down, and exits `0`.
 
 Security: loopback binds only need nothing extra; **a non-loopback bind requires
 `--token`** and every request then needs `Authorization: Bearer <token>`.
@@ -187,9 +188,10 @@ It does not replace a run against a real `rpi` binary.
 
 `tests/http.rs` starts a loopback listener and covers the HTTP session lifecycle
 (initialize/session header, `tools/list`, `202`, `400`, `403`, `404`, `405`,
-`204`, re-initialize rejection, token and protocol-version checks, CORS
-preflight, cancellation reaching the native host, SSE for `rpi_prompt`) plus the
-WebSocket bridge (session hello, initialize, tools/list, reattach, rejection).
+`204`, re-initialize rejection, session cap `429`, graceful shutdown, token and
+protocol-version checks, CORS preflight, cancellation reaching the native host,
+SSE for `rpi_prompt`) plus the WebSocket bridge (session hello, initialize,
+tools/list, reattach, rejection).
 
 Live checks against `rpi 0.24.0` covered `initialize`, `tools/list`,
 `rpi_state`, `rpi_available_models`, `rpi_thinking_levels`,

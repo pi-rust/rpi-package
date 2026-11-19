@@ -1,4 +1,4 @@
-use rpi_mcp_server::{run, serve_http, HttpOptions, ServerOptions};
+use rpi_mcp_server::{run, serve_http_until, HttpOptions, ServerOptions};
 use rpi_plugin_sdk::stdio::{InputLine, StdinLines};
 use std::path::PathBuf;
 use tokio::sync::watch;
@@ -52,7 +52,7 @@ async fn main() {
         }
     };
     let code = match cli.http {
-        Some(http) => match serve_http(http, cli.server).await {
+        Some(http) => match serve_http_until(http, cli.server, shutdown_signal()).await {
             Ok(()) => 0,
             Err(error) => {
                 eprintln!("[rpi-mcp] {error}");
@@ -62,6 +62,29 @@ async fn main() {
         None => serve_stdio(cli.server).await,
     };
     std::process::exit(code);
+}
+
+/// Ctrl+C (or SIGTERM on Unix) stops the listener and its native sessions.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(stream) => stream,
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 struct Cli {

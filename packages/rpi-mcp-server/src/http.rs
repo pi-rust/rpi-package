@@ -774,6 +774,19 @@ pub async fn serve_listener(
     options: HttpOptions,
     factory: SessionFactory,
 ) -> Result<(), String> {
+    serve_listener_until(listener, options, factory, std::future::pending()).await
+}
+
+/// Serve until `shutdown` resolves, then stop every session before returning.
+pub async fn serve_listener_until<S>(
+    listener: TcpListener,
+    options: HttpOptions,
+    factory: SessionFactory,
+    shutdown: S,
+) -> Result<(), String>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let state = AppState {
         sessions: Arc::new(Mutex::new(HashMap::new())),
         factory,
@@ -782,27 +795,62 @@ pub async fn serve_listener(
         max_sessions: options.max_sessions.max(1),
     };
     let reaper = tokio::spawn(reap_idle(state.clone()));
-    let result = axum::serve(listener, router(state.clone()))
-        .await
-        .map_err(|error| error.to_string());
+    let app = router(state.clone());
+    let mut serving = tokio::spawn(async move { axum::serve(listener, app).await });
+    let result = tokio::select! {
+        joined = &mut serving => match joined {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(error) => Err(format!("listener task failed: {error}")),
+        },
+        _ = shutdown => {
+            eprintln!("[rpi-mcp] stopping MCP HTTP");
+            serving.abort();
+            Ok(())
+        }
+    };
     reaper.abort();
+    // Sessions own native children, so they are stopped before we return.
     state.shutdown_all().await;
     result
 }
 
 /// Bind `options.bind` and serve until the task is dropped.
 pub async fn serve(options: HttpOptions, server: ServerOptions) -> Result<(), String> {
+    serve_until(options, server, std::future::pending()).await
+}
+
+/// Bind and serve until `shutdown` resolves.
+pub async fn serve_until<S>(
+    options: HttpOptions,
+    server: ServerOptions,
+    shutdown: S,
+) -> Result<(), String>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let factory: SessionFactory = Arc::new(move || {
         let server = server.clone();
         Box::pin(async move { McpServer::open(server).await })
     });
-    serve_with_factory(options, factory).await
+    serve_with_factory_until(options, factory, shutdown).await
 }
 
 pub async fn serve_with_factory(
     options: HttpOptions,
     factory: SessionFactory,
 ) -> Result<(), String> {
+    serve_with_factory_until(options, factory, std::future::pending()).await
+}
+
+pub async fn serve_with_factory_until<S>(
+    options: HttpOptions,
+    factory: SessionFactory,
+    shutdown: S,
+) -> Result<(), String>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let address: SocketAddr = options.bind.parse().map_err(|_| {
         format!(
             "invalid --http address `{}`; expected host:port",
@@ -821,7 +869,7 @@ pub async fn serve_with_factory(
         .local_addr()
         .map_err(|error| format!("cannot read the bound address: {error}"))?;
     eprintln!("[rpi-mcp] MCP HTTP listening on http://{local}{ENDPOINT}");
-    serve_listener(listener, options, factory).await
+    serve_listener_until(listener, options, factory, shutdown).await
 }
 
 #[cfg(test)]
