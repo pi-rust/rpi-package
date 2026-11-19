@@ -913,7 +913,6 @@ export default function App() {
   const [queueDraft, setQueueDraft] = useState("");
   const queueInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
-  const [queueKind, setQueueKind] = useState("steer");
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   function updateDraft(
@@ -1475,11 +1474,6 @@ export default function App() {
   const localSlash =
     attachments.length === 0 &&
     LOCAL_SLASH_COMMANDS.has(draft.trim().split(/\s+/, 1)[0]);
-  // Submitting while a run is active queues the message instead of prompting.
-  // The delivery selector lives in the composer because the Inspector is
-  // collapsed by default, which otherwise hides the only way to pick `steer`.
-  const composerQueues =
-    (busy || Boolean(queueEditId)) && supported.has("queue_message");
   const t = useCallback(
     (key: MessageKey, values?: Record<string, string | number>) =>
       translate(language, key, values),
@@ -3271,14 +3265,14 @@ export default function App() {
         const queued = await api.queueMessage(
           targetSession,
           submissionMessage,
-          queueKind,
+          "followUp",
         );
         if (navigation === navigationRevision.current) {
           setQueueItems((previous) => [
             ...previous.filter((item) => item.entryId !== editingQueueId),
             {
               entryId: queued.entryId,
-              queue: queued.queue || queueKind,
+              queue: queued.queue || "followUp",
               text: submissionMessage,
               status: "queued",
             },
@@ -3659,32 +3653,53 @@ export default function App() {
     const item = pendingQueueItems.find((queued) => queued.entryId === entryId);
     if (
       !targetSession ||
-      busy ||
+      (busy && !runActive) ||
       queueRunning ||
       !item?.text?.trim() ||
-      !supported.has("prompt") ||
       !supported.has("cancel_queued") ||
       queueRunSubmission.current.has(targetSession)
     )
       return;
+    // A running task takes this text as steering, so "send now" changes course
+    // in the current run; an idle session has nothing to steer and starts a run.
+    const running = runActive;
+    if (!running && !supported.has("prompt")) return;
     const navigation = navigationRevision.current;
     const priorStatus = status;
     const priorActive = runActive;
     queueRunSubmission.current.add(targetSession);
     setQueueRunning(true);
-    setStatus("starting");
-    setRunActive(true);
+    if (!running) {
+      setStatus("starting");
+      setRunActive(true);
+    }
     setInterrupted(false);
     setError("");
     try {
-      // The host owns queue delivery. Send only the selected item now and
-      // leave all other queue entries in their existing durable order.
+      // Enqueue the steering copy before cancelling the waiting one, so a
+      // rejected delivery never loses the message. Other entries keep order.
+      const steered = running
+        ? await api.queueMessage(targetSession, item.text.trim(), "steer")
+        : null;
       await api.cancelQueued(targetSession, item.entryId);
       if (navigation !== navigationRevision.current) return;
-      setQueueItems((current) =>
-        current.filter((queued) => queued.entryId !== item.entryId),
-      );
-      await commandData(targetSession, "prompt", { message: item.text.trim() });
+      setQueueItems((current) => [
+        ...current.filter((queued) => queued.entryId !== item.entryId),
+        ...(steered
+          ? [
+              {
+                entryId: steered.entryId,
+                queue: steered.queue || "steer",
+                text: item.text.trim(),
+                status: "queued",
+              },
+            ]
+          : []),
+      ]);
+      if (!running)
+        await commandData(targetSession, "prompt", {
+          message: item.text.trim(),
+        });
       if (navigation === navigationRevision.current) {
         setQueueOpen(true);
         await refreshDiagnostics(targetSession);
@@ -3714,13 +3729,13 @@ export default function App() {
     const navigation = navigationRevision.current;
     try {
       if (editingId) await api.cancelQueued(sessionId, editingId);
-      const queued = await api.queueMessage(sessionId, message, queueKind);
+      const queued = await api.queueMessage(sessionId, message, "followUp");
       if (navigation !== navigationRevision.current) return;
       setQueueItems((previous) => [
         ...previous.filter((item) => item.entryId !== editingId),
         {
           entryId: queued.entryId,
-          queue: queued.queue || queueKind,
+          queue: queued.queue || "followUp",
           text: message,
           status: "queued",
         },
@@ -3767,7 +3782,6 @@ export default function App() {
       items.filter((queued) => queued.entryId !== item.entryId),
     );
     updateDraft(item.text);
-    setQueueKind(deliverAs);
     setQueueOpen(false);
     setPanel(false);
     requestAnimationFrame(() => composerInputRef.current?.focus());
@@ -4459,7 +4473,6 @@ export default function App() {
               {isEditableQueueItem(item) && (
                 <span className="queue-item-actions">
                   {item.text?.trim() &&
-                    !busy &&
                     supported.has("prompt") &&
                     supported.has("cancel_queued") && (
                       <button
@@ -4513,16 +4526,6 @@ export default function App() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void queuePrompt();
                 }}
-              />
-              <MenuSelect
-                label={t("queueKind")}
-                value={queueKind}
-                onChange={setQueueKind}
-                options={[
-                  { value: "followUp", label: t("followUp") },
-                  { value: "steer", label: t("steer") },
-                  { value: "nextTurn", label: t("nextTurn") },
-                ]}
               />
               <button
                 type="button"
@@ -5746,7 +5749,6 @@ export default function App() {
                         {isEditableQueueItem(item) && (
                           <span className="queue-item-actions">
                             {item.text?.trim() &&
-                              !busy &&
                               supported.has("prompt") &&
                               supported.has("cancel_queued") && (
                                 <button
@@ -5920,19 +5922,6 @@ export default function App() {
                         />
                       )}
                     </div>
-                    {composerQueues && (
-                      <MenuSelect
-                        className="composer-queue-kind"
-                        label={t("queueKind")}
-                        value={queueKind}
-                        onChange={setQueueKind}
-                        options={[
-                          { value: "followUp", label: t("followUp") },
-                          { value: "steer", label: t("steer") },
-                          { value: "nextTurn", label: t("nextTurn") },
-                        ]}
-                      />
-                    )}
                     {queueEditId && (
                       <button
                         type="button"

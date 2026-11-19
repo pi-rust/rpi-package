@@ -22,7 +22,8 @@ const messages = {
     closeMessageSearch: "Close message search",
     messageSearchLoading: "Searching messages…",
     messageSearchNoResults: "No matching messages.",
-    messageSearchLoadedOnly: "Only loaded messages can be searched on this older backend.",
+    messageSearchLoadedOnly:
+      "Only loaded messages can be searched on this older backend.",
     messageSearchResults: "message results",
     searchChats: "Search chats",
     recentChats: "Recent chats",
@@ -112,7 +113,6 @@ const messages = {
     cancelQueueEdit: "Cancel editing",
     saveQueueEdit: "Update queued message",
     queuePlaceholder: "Queue a follow-up…",
-    queueKind: "Queue type",
     queueKindNotResubmittable:
       "This {kind} queued message cannot be re-queued; copy its text before cancelling it.",
     followUp: "follow-up",
@@ -144,7 +144,8 @@ const messages = {
     mermaidViewDiagram: "View diagram",
     mermaidDiagram: "Mermaid diagram",
     mermaidLoading: "Rendering diagram…",
-    mermaidError: "Unable to render this diagram. The syntax may be incomplete or unsupported; source is shown below.",
+    mermaidError:
+      "Unable to render this diagram. The syntax may be incomplete or unsupported; source is shown below.",
     code: "Code",
     copied: "Copied",
     plan: "Plan",
@@ -154,9 +155,11 @@ const messages = {
     todoDone: "{done}/{total} tasks completed",
     todoCallDone: "Todo operation completed",
     todoEarlierUpdates: "{count} earlier updates",
-    todoListed: "This result lists {shown} of {total} tasks. Progress includes the entire list.",
+    todoListed:
+      "This result lists {shown} of {total} tasks. Progress includes the entire list.",
     todoEmpty: "No tasks.",
-    todoSummaryOnly: "This result contains only a progress summary; task details were not returned.",
+    todoSummaryOnly:
+      "This result contains only a progress summary; task details were not returned.",
     todoCompleted: "Task completed",
     todoInProgress: "Task in progress",
     todoPending: "Task pending",
@@ -167,7 +170,8 @@ const messages = {
     askDeclined: "Declined",
     askCancelled: "Question cancelled",
     askWaiting: "Waiting for your answer…",
-    askNoAnswer: "No structured answer recorded. See the result or raw data for details.",
+    askNoAnswer:
+      "No structured answer recorded. See the result or raw data for details.",
     askRaw: "Raw data",
     delegateTask: "Delegated task",
     delegateTaskLabel: "Task",
@@ -211,14 +215,17 @@ const messages = {
     interruptedRun:
       "An interrupted run is waiting on this branch. Continuing spends the tokens that run never did.",
     sessionInterrupted: "Interrupted",
-    sessionInterruptedHint: "This session reported an error or failed run. Open it to review and retry.",
+    sessionInterruptedHint:
+      "This session reported an error or failed run. Open it to review and retry.",
     sessionNeedsResume: "Needs resume",
-    sessionNeedsResumeHint: "This session has an interrupted run waiting to be resumed.",
+    sessionNeedsResumeHint:
+      "This session has an interrupted run waiting to be resumed.",
     continue: "Continue",
     continueTaskPrompt: "Continue the previous unfinished task.",
     dismiss: "Dismiss",
     loadEarlier: "Load earlier messages",
-    scrollForEarlier: "Scroll up to load earlier messages automatically; click to retry",
+    scrollForEarlier:
+      "Scroll up to load earlier messages automatically; click to retry",
     loadingEarlierMessages: "Loading earlier messages…",
     toolRead: "Read",
     toolReading: "Reading",
@@ -235,7 +242,8 @@ const messages = {
     toolRan: "Ran",
     toolRunningCommand: "Running",
     workedFor: "Worked for {duration}",
-    runElapsedSource: "Total elapsed time from the native run start and finish, including tools and waiting.",
+    runElapsedSource:
+      "Total elapsed time from the native run start and finish, including tools and waiting.",
     toolRunAborted: "Stopped",
     toolRunFailed: "Failed",
     toolRunDeclined: "Declined",
@@ -283,13 +291,15 @@ const messages = {
     timelineGoToMessage: "Go to message {index}: {preview}",
     timelineImageMessage: "Image message",
     historyContextTitle: "Earlier messages",
-    historyContextScope: "Read-only · 48 messages per window. The live conversation is unchanged.",
+    historyContextScope:
+      "Read-only · 48 messages per window. The live conversation is unchanged.",
     historyContextPagination: "Historical context pagination",
     historyContextEarlier: "Earlier page",
     historyContextLater: "Later page",
     historyContextRetry: "Retry",
     historyContextEmpty: "No messages in this window.",
-    timelineSummaryScope: "User questions · 10 summaries per page. Click to locate a question in the conversation.",
+    timelineSummaryScope:
+      "User questions · 10 summaries per page. Click to locate a question in the conversation.",
     timelineLoadEarlier: "Show earlier messages in timeline",
     timelineScrollHint:
       "Up to ten ticks stay visible. Scroll to browse; drag to switch, or use Up/Down to preview and Enter to jump.",
@@ -321,7 +331,8 @@ const messages = {
     file: "File",
     viewAttachmentPath: "View file path",
     copyAttachmentPath: "Copy file path",
-    attachmentCopyFailed: "Could not copy. Select the path to copy it manually.",
+    attachmentCopyFailed:
+      "Could not copy. Select the path to copy it manually.",
     copyAbsolutePath: "Copy path",
     copyRelativePath: "Copy relative path",
     absolutePathCopied: "Absolute path copied",
@@ -347,7 +358,8 @@ const messages = {
     offline: "offline",
     awaiting_input: "waiting for answer",
     sessionAwaitingAnswer: "Waiting for answer",
-    sessionAwaitingAnswerHint: "This session needs your answer or permission. Open it to respond.",
+    sessionAwaitingAnswerHint:
+      "This session needs your answer or permission. Open it to respond.",
     sessionNotifications: "Session notifications",
     sessionCompleted: "Session completed",
     sessionFailed: "Session failed",
@@ -427,7 +439,8 @@ const messages = {
     refreshSessions: "刷新会话",
     refreshResources: "刷新资源",
     resources: "资源",
-    resourcesRestartHint: "修改 skills、提示词或 context 文件后，需要重启原生主机才会生效。",
+    resourcesRestartHint:
+      "修改 skills、提示词或 context 文件后，需要重启原生主机才会生效。",
     resourceGlobal: "全局",
     resourceProject: "项目",
     resourcesEmpty: "未找到资源。",
@@ -485,7 +498,6 @@ const messages = {
     cancelQueueEdit: "取消编辑",
     saveQueueEdit: "更新排队消息",
     queuePlaceholder: "添加后续消息…",
-    queueKind: "队列类型",
     queueKindNotResubmittable:
       "这条{kind}排队消息无法重新入队；请先复制内容再取消。",
     followUp: "后续消息",
@@ -517,7 +529,8 @@ const messages = {
     mermaidViewDiagram: "查看图表",
     mermaidDiagram: "Mermaid 流程图",
     mermaidLoading: "图表正在渲染…",
-    mermaidError: "暂时无法渲染此图表，语法可能尚未完整或不受支持，已保留源码。",
+    mermaidError:
+      "暂时无法渲染此图表，语法可能尚未完整或不受支持，已保留源码。",
     code: "代码",
     copied: "已复制",
     plan: "计划",
@@ -583,7 +596,8 @@ const messages = {
     confirmRewind: "将当前分支回退到所选记录？",
     interruptedRun: "此分支有一个中断的任务，继续后将从中断处恢复执行。",
     sessionInterrupted: "异常中断",
-    sessionInterruptedHint: "此会话报告了错误或执行失败，打开后可查看详情并重试。",
+    sessionInterruptedHint:
+      "此会话报告了错误或执行失败，打开后可查看详情并重试。",
     sessionNeedsResume: "待恢复",
     sessionNeedsResumeHint: "此会话有中断的任务等待恢复，可打开后继续执行。",
     continue: "继续",
@@ -660,11 +674,13 @@ const messages = {
     historyContextLater: "下一页",
     historyContextRetry: "重试",
     historyContextEmpty: "此窗口没有消息。",
-    timelineSummaryScope: "用户问题 · 每页 10 个摘要。点击直接定位到对话中的对应问题。",
+    timelineSummaryScope:
+      "用户问题 · 每页 10 个摘要。点击直接定位到对话中的对应问题。",
     timelineLoadEarlier: "在时间线中显示更早的消息",
     timelineScrollHint:
       "最多常显十个刻度，更多可滚动查看。按住上下滑动切换消息；上下方向键预览，回车跳转。",
-    timelineLoadedOnly: "仅显示已加载的消息，向上滑到时间线较早边缘可加载一页，或点击↑。",
+    timelineLoadedOnly:
+      "仅显示已加载的消息，向上滑到时间线较早边缘可加载一页，或点击↑。",
     nativeToolNames: "原生名称",
     mappedToolNames: "映射名称",
     english: "English",

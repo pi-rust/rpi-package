@@ -591,6 +591,15 @@ test("a stopped session can send a selected queued message now", async ({
   );
   await page.goto("/");
   await openRuntimePanel(page);
+  await writeFile(
+    "/tmp/dbg-queue.json",
+    JSON.stringify({
+      inspector: await page.locator(".inspector").count(),
+      items: await page.locator(".queue-item").count(),
+      panel: await page.locator(".composer-queue-panel").count(),
+      text: (await page.locator("body").innerText()).slice(0, 600),
+    }),
+  );
   await page
     .locator(".inspector .queue-item")
     .getByRole("button", { name: "Send now: pending", exact: true })
@@ -733,7 +742,7 @@ for (const width of [1440, 1100, 1024, 390]) {
   });
 }
 
-test("editing a next-run queued message re-enqueues it as nextTurn", async ({
+test("editing a queued message re-enqueues it as a follow-up", async ({
   page,
 }) => {
   await mockHost(page);
@@ -744,7 +753,7 @@ test("editing a next-run queued message re-enqueues it as nextTurn", async ({
   }> = [];
   // Editing a queued message returns its text to the composer and cancels the
   // entry. A run is still active, so re-submitting it goes back through
-  // `queue_message` with the restored kind instead of a new prompt.
+  // `queue_message`; without a kind selector the default follow-up applies.
   await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) =>
     route.fulfill({
       contentType: "text/event-stream",
@@ -806,7 +815,7 @@ test("editing a next-run queued message re-enqueues it as nextTurn", async ({
     .poll(() => commands.map((entry) => [entry.type, entry.deliverAs]))
     .toEqual([
       ["cancel_queued", undefined],
-      ["queue_message", "nextTurn"],
+      ["queue_message", "followUp"],
     ]);
 });
 
@@ -1588,7 +1597,7 @@ test("messages sent during a run default to steering the current task", async ({
   await expect(input).toHaveValue("");
 });
 
-test("the composer can steer into a running task without opening the inspector", async ({
+test("a message typed during a run queues as a follow-up without a kind selector", async ({
   page,
 }) => {
   await mockHost(page);
@@ -1614,10 +1623,12 @@ test("the composer can steer into a running task without opening the inspector",
   await expect(
     page.getByRole("button", { name: "Abort", exact: true }),
   ).toBeEnabled();
-  // The Inspector stays collapsed: the delivery selector has to be reachable
-  // from the composer, where the interjection is actually typed.
+  // The Inspector stays collapsed and there is no delivery selector: typing
+  // during a run always queues the durable follow-up kind.
   await expect(page.locator(".inspector")).toHaveCount(0);
-  await chooseMenuOption(page, "Queue type", "steer");
+  await expect(
+    page.locator(".composer-queue-kind, .queue-compose .select-menu"),
+  ).toHaveCount(0);
   const input = page.getByRole("textbox", {
     name: "Send a prompt, or type / for commands…",
   });
@@ -1625,7 +1636,72 @@ test("the composer can steer into a running task without opening the inspector",
   await input.press("Enter");
   await expect
     .poll(() => queued)
-    .toEqual([{ message: "Change course now", deliverAs: "steer" }]);
+    .toEqual([{ message: "Change course now", deliverAs: "followUp" }]);
+});
+
+test("send now steers a waiting message into the running task", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const commands: Array<{
+    type: string;
+    message?: string;
+    deliverAs?: string;
+    entryId?: string;
+  }> = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (!["queue_message", "cancel_queued", "prompt"].includes(body.type))
+        return route.fallback();
+      commands.push({
+        type: body.type,
+        message: body.message,
+        deliverAs: body.deliverAs,
+        entryId: body.entryId,
+      });
+      return route.fulfill({
+        json: response(
+          body.type === "queue_message"
+            ? { accepted: true, entryId: "steered-now", queue: "steer" }
+            : { accepted: true },
+          body.type,
+        ),
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Abort", exact: true }),
+  ).toBeEnabled();
+  await openRuntimePanel(page);
+  await page
+    .locator(".inspector .queue-item")
+    .getByRole("button", { name: "Send now: pending", exact: true })
+    .click();
+  await expect
+    .poll(() => commands)
+    .toEqual([
+      {
+        type: "queue_message",
+        message: "pending",
+        deliverAs: "steer",
+        entryId: undefined,
+      },
+      {
+        type: "cancel_queued",
+        message: undefined,
+        deliverAs: undefined,
+        entryId: "queue-2",
+      },
+    ]);
 });
 
 test("an event replay gap reloads the native snapshot", async ({ page }) => {
@@ -13345,15 +13421,13 @@ test.describe("conversation timeline", () => {
       "location",
     );
     await page.mouse.up({ button: "right" });
-    await nodes(page)
-      .nth(1)
-      .dispatchEvent("pointerdown", {
-        pointerId: 99,
-        pointerType: "touch",
-        isPrimary: false,
-        button: 0,
-        clientY: start.y,
-      });
+    await nodes(page).nth(1).dispatchEvent("pointerdown", {
+      pointerId: 99,
+      pointerType: "touch",
+      isPrimary: false,
+      button: 0,
+      clientY: start.y,
+    });
     await list.dispatchEvent("pointermove", {
       pointerId: 99,
       pointerType: "touch",

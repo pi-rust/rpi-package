@@ -315,7 +315,7 @@ Model API keys and the Web login password serve different purposes: API keys aut
 1. Select a project in the sidebar and click its **New session** action.
 2. Click the model name in the toolbar or open **Runtime settings** to choose the model, thinking level, and tools. Use **Provider auth** to configure an API key; OAuth controls appear only when the host supports them.
 3. Enter a request and press Enter to send, or Shift+Enter for a newline. Replies, thinking, and tool results stream into the conversation. Interactive tools display the corresponding dialogs.
-4. Use the stop button to cancel a running task. Ordinary messages sent during a run enter the follow-up queue; inspect or cancel pending messages in the queue panel.
+4. Use the stop button to cancel a running task. Ordinary messages sent during a run enter the follow-up queue, and the queue panel shows them with edit, cancel and **Send now / 立即发送** actions. Sending now re-delivers that text as a steering message so the current run sees it at its next tool boundary; when nothing is running it starts a run instead. There is no queue-type selector: queued messages are follow-ups, and sending now is the one action that steers.
 5. Open the file panel to inspect project files and Git changes. These panels provide read-only previews; the agent can modify project files through its tools when requested.
 6. Open settings to choose English / Simplified Chinese and light / dark appearance. Language selection is also available on the login screen.
 
@@ -525,9 +525,10 @@ It deliberately leaves history deletion/editing and full parity unfinished.
   use sequence pagination, inspect branch/leaf ids and token/cost stats, and keep
   settlement outcomes visible after reload
 - view operation counts by type plus the active provider/model in the Stats panel
-- queue follow-ups, steer messages, and next-turn messages; inspect pending or
-  completed queue entries with lifecycle status, then cancel individual entries
-  or clear the pending queue
+- queue follow-ups (the default for anything typed during a run), steer a waiting
+  message into the current run with **Send now**, or start a run from it when
+  idle; inspect pending or completed queue entries with lifecycle status, then
+  cancel individual entries or clear the pending queue
 - fork or clone a session with a custom name; the sidebar persists parent/child
   relation metadata as a compact branch tree, and sessions can be renamed
 - configure provider API keys without returning or logging secret material; run

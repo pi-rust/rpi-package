@@ -154,6 +154,50 @@
 .file-preview-markdown .markdown-table table {
   font-size: 15px;
 }
+/* Reading rhythm: a document gets room between blocks, a quiet first line and
+   list spacing that does not collapse into the following paragraph. */
+.file-preview-markdown .markdown-body > :first-child {
+  margin-top: 6px;
+}
+.file-preview-markdown .markdown-body :is(p, ul, ol, pre, blockquote),
+.file-preview-markdown .markdown-body .markdown-table {
+  margin: 0 0 16px;
+}
+.file-preview-markdown .markdown-body :is(h1, h2, h3, h4, h5, h6) {
+  margin: 26px 0 12px;
+}
+.file-preview-markdown .markdown-body li {
+  margin: 6px 0;
+}
+.file-preview-markdown .markdown-body li > :is(ul, ol) {
+  margin: 6px 0 0;
+}
+.file-preview-markdown .markdown-body hr {
+  height: 0;
+  margin: 26px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.file-preview-markdown .markdown-body blockquote {
+  margin-inline: 0;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+.file-preview-markdown .markdown-body .markdown-table table {
+  font-size: 15px;
+}
+.file-preview-markdown .markdown-body :is(th, td) {
+  padding: 10px 14px;
+}
+.file-preview-markdown .markdown-body pre {
+  padding: 16px 18px;
+  border-radius: 8px;
+  line-height: 1.7;
+}
+.file-preview-markdown .markdown-body .markdown-code-block {
+  margin: 0 0 16px;
+}
 .file-preview-path {
   overflow-wrap: anywhere;
   font: 13px var(--mono);
