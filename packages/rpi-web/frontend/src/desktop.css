@@ -73,8 +73,12 @@
 .sidebar-primary-actions {
   display: flex;
   flex-direction: column;
-  gap: -3px;
+  gap: 2px;
   padding: 0 3px;
+}
+.sidebar-primary-actions > .sidebar-new-chat:first-child,
+.sidebar-primary-actions > .sidebar-new-chat:nth-child(2) {
+  margin-bottom: -5px;
 }
 .sidebar-new-chat,
 .sidebar-search {
@@ -241,7 +245,7 @@
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
 .recent-session-list {
-  max-height: 160px;
+  max-height: min(360px, 40dvh);
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
