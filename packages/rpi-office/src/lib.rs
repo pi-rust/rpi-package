@@ -23,8 +23,12 @@
 // the door. The entrypoint the macro below emits takes a raw `*const PluginApi`
 // by ABI definition, which is why the pointer-deref lint is allowed here; the
 // dereference itself happens inside the SDK's macro.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+// `unsafe` lives in `src/abi.rs` only (one documented fallback for a macro the
+// pinned SDK release does not ship yet); `deny` lets that one module opt in.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
+
+mod abi;
 
 pub mod active_tools;
 pub mod bridge;
@@ -32,6 +36,7 @@ pub mod catalog;
 pub mod commands;
 pub mod config;
 pub mod lifecycle;
+pub mod mentions;
 pub mod pane_replies;
 pub mod protocol;
 pub mod server;
@@ -42,8 +47,8 @@ use bridge::{HealthMeta, Pane};
 use lifecycle::{BridgeSnapshot, Controller};
 use pane_replies::{format_document_tag, PanePromptEntry, PanePromptTracker};
 use rpi_plugin_sdk::{
-    BeforeAgentStartFn, CommandHandlerFn, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
-    RuntimeActionId, StbStringRef,
+    AutocompleteProviderFn, BeforeAgentStartFn, CommandArgumentCompletionFn, CommandHandlerFn,
+    EventHandlerFn, EventTag, FreeStringFn, PluginApi, RuntimeActionId, StbStringRef,
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;
@@ -85,9 +90,7 @@ fn api(owner: *mut c_void) -> Option<PluginApi> {
 
 fn call_action(api: PluginApi, action: RuntimeActionId, args: Value) -> Result<Value, String> {
     let encoded = args.to_string();
-    // `call_action!` owns the allocate / call / read / free sequence, so this
-    // crate never touches a raw ABI pointer for a runtime action.
-    let (rc, text) = rpi_plugin_sdk::call_action!(api, action, &encoded);
+    let (rc, text) = abi::action_text(api, action, &encoded);
     if rc != 0 {
         return Err(if text.trim().is_empty() {
             format!("runtime action {action:?} failed")
@@ -1038,6 +1041,46 @@ fn office_tools_command(_input, out, owner) {
 }
 }
 
+/* ── editor + command completion (SDK 0.26 slots) ──────────────────── */
+
+// Prompt-editor autocomplete: offer attached documents for a `#` mention.
+rpi_plugin_sdk::string_handler! {
+fn document_mentions(input, out, _owner) {
+    let query: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let Some(line_prefix) = query["linePrefix"].as_str() else {
+        return 1;
+    };
+    let Some(needle) = mentions::mention_needle(line_prefix) else {
+        return 1;
+    };
+    let panes = panes_lookup();
+    if panes.is_empty() {
+        return 1;
+    }
+    let items = mentions::document_items(&panes, needle);
+    if items.is_empty() {
+        return 1;
+    }
+    out.write(json!({"items": items}).to_string());
+    0
+}
+}
+
+// `/office` argument completions.
+rpi_plugin_sdk::string_handler! {
+fn office_command_arguments(input, out, _owner) {
+    let query: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let prefix = query["argumentPrefix"].as_str().unwrap_or_default();
+    match commands::office_argument_completions_json(prefix) {
+        Some(body) => {
+            out.write(body);
+            0
+        }
+        None => 1,
+    }
+}
+}
+
 /* ── registration ──────────────────────────────────────────────────── */
 
 fn register(api: &PluginApi) -> i32 {
@@ -1078,6 +1121,26 @@ fn register(api: &PluginApi) -> i32 {
         office_tools_command as CommandHandlerFn,
     );
     if rc != 0 {
+        return rc;
+    }
+
+    // Completion slots (SDK 0.26). An older host reports -1 here; that is not a
+    // registration failure, it just means no `#`/argument completion.
+    let rc = rpi_plugin_sdk::register_autocomplete_provider(
+        api,
+        document_mentions as AutocompleteProviderFn,
+        api.user_data,
+    );
+    if rc != 0 && rc != -1 {
+        return rc;
+    }
+    let rc = rpi_plugin_sdk::register_command_completions(
+        api,
+        "office",
+        office_command_arguments as CommandArgumentCompletionFn,
+        api.user_data,
+    );
+    if rc != 0 && rc != -1 {
         return rc;
     }
 

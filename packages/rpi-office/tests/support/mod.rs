@@ -8,10 +8,10 @@
 #![allow(dead_code)]
 
 use rpi_plugin_sdk::{
-    BeforeAgentStartFn, CommandHandlerFn, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
-    PluginBeginShutdownFn, PluginFinishShutdownFn, RuntimeActionId, StablePluginEvent,
-    StableToolSchema, StbString, StbStringRef, ToolCancelFn, ToolDestroyFn, ToolExecuteFn,
-    ToolPollFn,
+    AutocompleteProviderFn, BeforeAgentStartFn, CommandArgumentCompletionFn, CommandHandlerFn,
+    EventHandlerFn, EventTag, FreeStringFn, PluginApi, PluginBeginShutdownFn,
+    PluginFinishShutdownFn, RuntimeActionId, StablePluginEvent, StableToolSchema, StbString,
+    StbStringRef, ToolCancelFn, ToolDestroyFn, ToolExecuteFn, ToolPollFn,
 };
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,6 +39,15 @@ static SENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static PROMPTS: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
 static LIFECYCLE: Mutex<Option<(PluginBeginShutdownFn, PluginFinishShutdownFn)>> = Mutex::new(None);
 static ABORTS: AtomicU64 = AtomicU64::new(0);
+static AUTOCOMPLETE: Mutex<Option<AutocompleteProviderFn>> = Mutex::new(None);
+static COMMAND_COMPLETIONS: Mutex<Vec<(String, CommandArgumentCompletionFn)>> =
+    Mutex::new(Vec::new());
+
+/// Copy a host-owned string lent to a registration callback.
+fn borrowed_text(value: &StbString) -> String {
+    // SAFETY: the host keeps the schema strings alive for this call.
+    unsafe { value.to_string_lossy() }
+}
 
 extern "C" fn register_tool(
     schema: *const StableToolSchema,
@@ -52,10 +61,10 @@ extern "C" fn register_tool(
     // pointer the plugin just handed over. Nothing else here needs `unsafe`:
     // the strings are copied out with the SDK's own reading macro.
     let schema = unsafe { &*schema };
-    let name = rpi_plugin_sdk::stb_text!(schema.name);
-    let description = rpi_plugin_sdk::stb_text!(schema.description);
-    let parameters: Value = serde_json::from_str(&rpi_plugin_sdk::stb_text!(schema.parameters))
-        .expect("valid tool schema");
+    let name = borrowed_text(&schema.name);
+    let description = borrowed_text(&schema.description);
+    let parameters: Value =
+        serde_json::from_str(&borrowed_text(&schema.parameters)).expect("valid tool schema");
     TOOLS.lock().unwrap().push((
         name.clone(),
         description,
@@ -118,6 +127,29 @@ extern "C" fn register_plugin_lifecycle(
     _user_data: *mut std::ffi::c_void,
 ) -> i32 {
     *LIFECYCLE.lock().unwrap() = Some((begin, finish));
+    0
+}
+
+extern "C" fn register_autocomplete_provider(
+    handler: AutocompleteProviderFn,
+    _free: FreeStringFn,
+    _user_data: *mut std::ffi::c_void,
+) -> i32 {
+    *AUTOCOMPLETE.lock().unwrap() = Some(handler);
+    0
+}
+
+extern "C" fn register_command_completions(
+    name: StbStringRef,
+    handler: CommandArgumentCompletionFn,
+    _free: FreeStringFn,
+    _user_data: *mut std::ffi::c_void,
+) -> i32 {
+    // SAFETY: the host owns the string for the duration of the call.
+    COMMAND_COMPLETIONS
+        .lock()
+        .unwrap()
+        .push((unsafe { name.as_str() }.to_string(), handler));
     0
 }
 
@@ -204,8 +236,8 @@ pub fn api() -> PluginApi {
         register_tool_prompt: Some(register_tool_prompt),
         register_oauth_provider_cancellable: None,
         register_tool_result: None,
-        register_autocomplete_provider: None,
-        register_command_completions: None,
+        register_autocomplete_provider: Some(register_autocomplete_provider),
+        register_command_completions: Some(register_command_completions),
         register_argument_suggester: None,
     }
 }
@@ -255,6 +287,70 @@ pub fn prompts() -> Vec<(String, Value)> {
 
 pub fn lifecycle_hooks() -> Option<(PluginBeginShutdownFn, PluginFinishShutdownFn)> {
     *LIFECYCLE.lock().unwrap()
+}
+
+/// Whether an autocomplete provider was registered.
+pub fn autocomplete_registered() -> bool {
+    AUTOCOMPLETE.lock().unwrap().is_some()
+}
+
+/// Registered `(command name, handler)` argument-completion pairs.
+pub fn command_completions() -> Vec<(String, CommandArgumentCompletionFn)> {
+    COMMAND_COMPLETIONS.lock().unwrap().clone()
+}
+
+/// Invoke the autocomplete provider with a fake editor query; returns `None`
+/// when the provider declined (return code 1 / empty output).
+pub fn run_autocomplete(text: &str, line_prefix: &str) -> Option<Value> {
+    let handler = AUTOCOMPLETE
+        .lock()
+        .unwrap()
+        .expect("autocomplete registered");
+    let query = json!({
+        "text": text,
+        "cursor": line_prefix.len(),
+        "line": line_prefix,
+        "linePrefix": line_prefix,
+    })
+    .to_string();
+    let mut out = StbString::empty();
+    let rc = handler(
+        StbStringRef::from_str(&query),
+        &mut out,
+        std::ptr::null_mut(),
+    );
+    // SAFETY: the provider produced `out`; read then free it exactly once.
+    let text = unsafe { out.to_string_lossy() };
+    unsafe { rpi_plugin_sdk::callbacks::free_string(out) };
+    if rc != 0 || text.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str(&text).ok()
+}
+
+/// Invoke a command's argument completions; returns `None` when it declines.
+pub fn run_command_completions(command: &str, prefix: &str) -> Option<Value> {
+    let handler = COMMAND_COMPLETIONS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, _)| name == command)
+        .map(|(_, handler)| *handler)
+        .unwrap_or_else(|| panic!("no argument completions for /{command}"));
+    let args = json!({"argumentPrefix": prefix}).to_string();
+    let mut out = StbString::empty();
+    let rc = handler(
+        StbStringRef::from_str(&args),
+        &mut out,
+        std::ptr::null_mut(),
+    );
+    // SAFETY: the handler produced `out`; read then free it exactly once.
+    let text = unsafe { out.to_string_lossy() };
+    unsafe { rpi_plugin_sdk::callbacks::free_string(out) };
+    if rc != 0 || text.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str(&text).ok()
 }
 
 /// How many `RuntimeActionId::Abort` calls the plugin made.

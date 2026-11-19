@@ -41,19 +41,19 @@
 | `register_tool_prompt` 槽位 | 无 | 无 | 有 | 有 |
 | `register_tool_with_wake` 槽位 | 无 | 有 | 有 | 有 |
 | `EditorChange` 带文本 | 无 | 无 | 无 | 无 |
-| `GetEditorText = 32` | 无 | 无 | 无 | 有（pi-rust#366） |
-| `register_autocomplete_provider` 槽位 | 无 | 无 | 无 | 有（pi-rust#366） |
-| `register_command_completions` 槽位 | 无 | 无 | 无 | 有（pi-rust#366） |
+| `GetEditorText = 32` | 无 | 无 | **有** | 有（pi-rust#366） |
+| `register_autocomplete_provider` 槽位 | 无 | 无 | **有** | 有（pi-rust#366） |
+| `register_command_completions` 槽位 | 无 | 无 | **有** | 有（pi-rust#366） |
 
 证据位置（宿主 `main`）：`crates/rpi-plugin-sdk/src/lib.rs` 的 `RuntimeActionId`/`EventTag`/`PluginApi`；`crates/rpi-extensions/src/actions.rs` 的 action 分发；`crates/rpi-extensions/src/loader.rs` 的 `PluginKeepalive`/`begin_shutdown`；`crates/rpi-cli/src/session.rs` 的 reload 路径（`old_session.begin_shutdown()`）。
 
-## 第三轮：宿主侧 H3/H7 已实现（未发版）
+## 第三轮：宿主侧 H3/H7 已实现（0.26.0 发布后可用）
 
 `pi-rust` PR #366（合并提交 `bd08af3`）把上游 Pi 的 `ui.getEditorText()`、`ui.addAutocompleteProvider()`、`RegisteredCommand.getArgumentCompletions` 对应能力合入宿主 `main`：`RuntimeActionId::GetEditorText = 32`、`PluginApi::register_autocomplete_provider`、`PluginApi::register_command_completions`，全部追加在 vtable 尾部、ABI 版本不变。同一 PR 还补了 `register_plugin_lifecycle` 的文档（H2 的答案）。
 
 因此剩余的真实宿主缺口收缩到 **3 条**：H6（`__rpi.toolName`）、H5（单工具作用域）、H8（surface / 回环服务注册表）。H1/H2/H3/H4/H7 都已变成「升 pin + 改本扩展」的工作。
 
-> 阻塞点：`rpi-plugin-sdk` 尚未发布含新槽位的版本（0.3.20 / 0.8.3 / 0.25.0 都没有 `GetEditorText` 与两个 completion 槽位），本扩展要动 H3/H7 得先等一次 SDK 发布。
+> 阻塞点已于 `rpi-plugin-sdk 0.26.0` 解除（该版本带上 `GetEditorText` 与两个 completion 槽位）；本扩展已升 pin 并在本轮接入 H3/H7。
 
 ## 第四轮：真机探针实测（`rpi 0.24.0` + SDK 0.25.0）
 
@@ -125,11 +125,11 @@ rpi --local-only --extensions-dir /tmp/probe-ext --provider openai --model gpt-6
 | --- | --- | --- | --- | --- |
 | H1 | P0 | 中止当前 run 的 runtime action | 已实现（`5da3f47`） | 窗格 Stop 无效；`client-abort` 无法宣告 |
 | H2 | P0 | 插件卸载/重载契约（unload 钩子 + DLL 保活） | 已实现（`5da3f47`） | 桥开着时 reload 可能 dlclose 后线程仍在跑 |
-| H3 | P1 | 输入框草稿文本（或补全 provider 槽位） | 宿主已实现（未发版） | 无法实现 `#文档` 补全 |
+| H3 | P1 | 输入框草稿文本（或补全 provider 槽位） | 已实现（SDK 0.26） | — |
 | H4 | P1 | `register_tool_prompt` | 已实现（`5da3f47`） | 33 个工具只有 description，无 snippet/guidelines |
 | H5 | P2 | per-tool / per-plugin 活动工具作用域 | 缺 | `SetActiveTools` 全局替换，与 plan-mode 等有竞态 |
 | H6 | P2 | `__rpi.toolName` | 缺 | 目录驱动插件必须为每个工具生成一个 trampoline |
-| H7 | P3 | 命令参数补全回调 | 宿主已实现（未发版） | `/office con<Tab>` 无法补全 |
+| H7 | P3 | 命令参数补全回调 | 已实现（SDK 0.26） | — |
 | H8 | P3 | 回环服务注册表 / 前台标识 | 缺 | rpi-web 无法发现桥；`/health` 的 owner 无法区分界面 |
 
 ---
@@ -189,7 +189,7 @@ Abort = 27,   args: {}
 
 ---
 
-## H3（P1）草稿文本 / 补全 provider —— 宿主已实现，等发版
+## H3（P1）草稿文本 / 补全 provider —— 已实现（本轮，SDK 0.26.0）
 
 **现状（第三轮，pi-rust#366 已合入 main）**：宿主按上游 Pi 的形状补齐了两条通道。`EventTag::EditorChange` 仍然**不携带**草稿文本，这是有意的，不是缺口。
 
@@ -199,11 +199,11 @@ Abort = 27,   args: {}
 
 两个槽位都追加在 vtable 尾部、ABI 版本不变；旧宿主留 `None` 时插件跳过即可。
 
-**阻塞点**：`rpi-plugin-sdk` 还没发布含这些槽位的版本（0.3.20 / 0.8.3 / 0.25.0 都没有 `GetEditorText` 和两个 completion 槽位），本扩展现在拿不到。
+**阻塞点已解除**：`rpi-plugin-sdk 0.26.0` 发布了这些槽位（`GetEditorText = 32`、`register_autocomplete_provider`、`register_command_completions`），本扩展已升 pin 并接入。
 
-**后果**：上游的 `#` 文档选择器（多文档时还能按 id 区分同文档多窗口）无法实现。本扩展的降级：改用 `office_list_documents` 工具或 `document` 参数，并在 README 标注。
+**已实现的形状**：`src/mentions.rs` 注册 autocomplete provider，把 pane 列表（host/name/id/focused/windows）作为候选；只看 `linePrefix` 里最后一个 `#` 之后的片段（`#` 必须在行首或空白之后，`a#b`/`C#` 不触发），插入 `#<name>`，同名不同文档时插入 `#<id>`，并带 `insertSpace:false`；最多 20 条；无窗格/无匹配/无 `#` 时返回 `1` 让宿主回落内置 provider。
 
-**本扩展要做的改动**（SDK 发版后）：新增 `src/mentions.rs`，注册一个 autocomplete provider，把 pane 列表（host/name/id/focused/windows）作为候选；只看 `linePrefix` 里最后一个 `#` 之后的片段，插入文本为 `#<name>` 或 `#<id>` 且带 `insertSpace:false`。需要按需读草稿时用 `GetEditorText`，不必再考虑给 `EditorChange` 加尾串的方案。
+**降级**：宿主 vtable 不含该槽位时（如 `rpi 0.24.0`）注册 helper 返回 `-1`，本扩展跳过注册，退回 `office_list_documents` 或 `document` 参数。
 
 **验收**：输入 `#` 时列出已连文档并可用 Tab/Enter 选中；无窗格时不弹候选；补全不修改既有输入文本。
 
@@ -245,11 +245,11 @@ Abort = 27,   args: {}
 
 ---
 
-## H7（P3）命令参数补全 —— 宿主已实现，等发版
+## H7（P3）命令参数补全 —— 已实现（本轮，SDK 0.26.0）
 
 **现状（第三轮，pi-rust#366 已合入 main）**：新增 `PluginApi::register_command_completions(name, handler, user_data)`，把 Pi 的 `getArgumentCompletions` 挂到**已注册**的命令上。handler 收到 `{"argumentPrefix":"con"}`（命令名与首个空格之后的全部文本），返回 `{"items":[{"text","description"?}]}`；返回 `0` 成功、`1` 该命令不属于本插件、`-1` 不在注册期或旧宿主无该槽位。
 
-宿主一次 Tab 的询问顺序是：命令参数 → 草稿 provider → 内置 provider。本扩展仍需先 `register_command` 再挂补全，同样等 SDK 发版。
+宿主一次 Tab 的询问顺序是：命令参数 → 草稿 provider → 内置 provider。本扩展在 `register_command("office", …)` 之后挂上补全，`commands::office_argument_completions` 只补子命令词（`status/connect/close/restart/help`），带端口等第二段文本时返回「无意见」。`rpi 0.24.0` 没有该槽位时 helper 返回 `-1`，补全自动缺席。
 
 **验收**：`/office <prefix>` 时列出 `status/connect/close/restart/help`，选中后补齐参数。
 
@@ -309,10 +309,10 @@ Abort = 27,   args: {}
 | --- | --- | --- |
 | 窗格 Stop 中止 run（`client-abort` 已宣告） | H1 | 已实现 |
 | reload 与常驻桥线程 | H2 | 已实现（lifecycle 钩子 + join 桥线程） |
-| 无 `#文档` 补全 | H3 | 宿主已实现（未发版） |
+| 无 `#文档` 补全 | H3 | 已实现（需含 0.26 槽位的宿主） |
 | 工具 snippet/guidelines | H4 | 已实现（元数据取自共享目录） |
 | 33 个 trampoline（因 `execute` 无工具名） | H6 | 宿主仍缺 `__rpi.toolName` |
-| `/office` 无参数补全 | H7 | 宿主已实现（未发版） |
+| `/office` 无参数补全 | H7 | 已实现（需含 0.26 槽位的宿主） |
 | `/health` 的 `owner.client` 恒为 `cli`；无文档面板 | H8 | 宿主仍缺 surface/注册表 |
 | 审批弹窗留在终端而不是窗格 | N1 | 宿主已有 `RelayUiDialog`，未接 |
 | 窗格只有一个 Stop | N2 | 宿主已有 `StopRound`，未接 |
@@ -323,9 +323,9 @@ Abort = 27,   args: {}
 2. ~~H2 卸载钩子~~ — 已完成（`begin_shutdown` 关窗格后非阻塞退出，`finish_shutdown` join 桥线程与 worker，返回 0 允许卸载）。
 3. ~~H1 中止语义~~ — 已完成（`client-abort` 重新宣告；Stop 先解除本地回复绑定再请求宿主 `Abort`，`aborted` 仅记录日志）。
 4. ~~H4 提示词元数据~~ — 已完成（33 个工具的 snippet/guidelines 取自共享目录）。
-5. **N1 审批中继**：`RelayUiDialog` + 新 `ui_prompt` 帧。
-6. **第 2 步之后即可做（宿主已实现，等 SDK 发版）**：H3（`#文档` 补全）、H7（`/office con<Tab>`）。
-7. **仍等宿主**：H6（`__rpi.toolName`，收益最大）、H5（单工具作用域）、H8（surface / 服务注册表）。
+5. ~~H3 `#文档` 补全 + H7 `/office <Tab>`~~ — 已完成（升 pin 到 `=0.26.0` 并接入两个 completion 槽位）。
+6. **N1 审批中继**：`RelayUiDialog` + 新 `ui_prompt` 帧。
+7. **仍等宿主**：H6（`__rpi.toolName`，收益最大）、H5（单工具作用域）、H8（surface / 服务注册表），以及 `call_action!`/`stb_text!`/`stb_take!` 的正式发版（当前 `src/abi.rs` 是它们的占位）。
 
 ## 文档缺口（非宿主代码）
 
