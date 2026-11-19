@@ -36,19 +36,50 @@
 .file-preview::backdrop {
   background: #0008;
 }
-.file-preview-header,
-.file-preview-actions {
+.file-preview-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-}
-.file-preview-header {
-  justify-content: space-between;
 }
 .file-preview h2 {
   margin: 0;
   font-size: 16px;
+}
+/* Copy, view, fullscreen and close stay a compact icon strip: this dialog is
+   for reading a file, not for a row of labelled buttons above it. */
+.file-preview-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.file-preview-note {
+  margin-right: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.file-preview button.file-preview-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+.file-preview button.file-preview-icon:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.file-preview button.file-preview-icon[aria-pressed="true"] {
+  background: var(--soft);
+  color: var(--text);
 }
 .file-preview button {
   min-height: 44px;
@@ -66,12 +97,21 @@
   cursor: default;
   opacity: 0.5;
 }
+.file-preview[data-fullscreen] {
+  width: 100vw;
+  height: 100dvh;
+  border: 0;
+  border-radius: 0;
+}
+.file-preview-markdown {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 4px 24px;
+}
 .file-preview-path {
   overflow-wrap: anywhere;
   font: 13px var(--mono);
-}
-.file-preview-actions [role="status"] {
-  font-size: 12px;
 }
 .file-preview-status {
   overflow: auto;

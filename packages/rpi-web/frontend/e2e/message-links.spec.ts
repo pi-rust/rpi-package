@@ -144,9 +144,7 @@ test("linked worktree paths preview from their own checkout", () => {
   // Agents create sibling worktrees (`git worktree add ../name`) and write
   // there; the absolute path names the checkout, so the link must carry it.
   const worktrees = { ...project, worktrees: ["/workspace/links-wt"] };
-  expect(
-    projectFileLink("/workspace/links-wt/src/a.ts:7", worktrees),
-  ).toEqual({
+  expect(projectFileLink("/workspace/links-wt/src/a.ts:7", worktrees)).toEqual({
     root: "/workspace/links-wt",
     path: "src/a.ts",
     line: 7,
@@ -226,6 +224,8 @@ async function host(
     header: string | undefined;
   }> = [];
   let imageMode: "ok" | "error" | "mime" | "decode" = "ok";
+  // Per-path text so a Markdown document can be previewed as written.
+  const files: Record<string, string> = {};
   const unexpected: string[] = [];
   let fail = false;
   let held: (() => void) | null = null;
@@ -326,7 +326,9 @@ async function host(
         });
       return json({
         path: url.searchParams.get("path"),
-        content: "// preview\nconst answer = 42;\nconsole.log(answer);\n// end",
+        content:
+          files[url.searchParams.get("path") ?? ""] ??
+          "// preview\nconst answer = 42;\nconsole.log(answer);\n// end",
       });
     }
     if (path === "/api/v1/sessions")
@@ -408,6 +410,7 @@ async function host(
   });
   return {
     reads,
+    files,
     imageReads,
     imageMode: (mode: typeof imageMode) => {
       imageMode = mode;
@@ -471,9 +474,7 @@ for (const width of [1280, 390])
     await expect(
       page.locator("code").filter({ hasText: ".rpi/uploads/notes.md" }),
     ).toHaveCount(1);
-    await expect(
-      page.getByText("Hidden", { exact: true }),
-    ).toHaveCount(1);
+    await expect(page.getByText("Hidden", { exact: true })).toHaveCount(1);
     await expect(
       page.locator(".markdown-code-block .message-file-link"),
     ).toHaveCount(0);
@@ -949,5 +950,106 @@ test("all raster extensions select image reads case-insensitively", async ({
   }
   expect(mock.imageReads).toHaveLength(extensions.length);
   expect(mock.reads).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+const notesDoc = [
+  "# 需求文档",
+  "",
+  "| 项 | 内容 |",
+  "| --- | --- |",
+  "| 版本 | V1.0 |",
+  "",
+  "- 第一项",
+  "- 第二项",
+].join("\n");
+
+for (const width of [1280, 390])
+  test(`markdown preview reads rendered text, source and icon tools at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const mock = await host(page, "[Docs](docs/notes.md)", project.path, "zh");
+    mock.files["docs/notes.md"] = notesDoc;
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator.clipboard, "writeText", {
+        value: async (text: string) => {
+          (window as unknown as { copiedText: string }).copiedText = text;
+        },
+      });
+    });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const dialog = page.getByRole("dialog", { name: "文件预览", exact: true });
+    await page.getByRole("button", { name: "Docs", exact: true }).click();
+    await expect(dialog.locator(".file-preview-markdown")).toBeVisible();
+    await expect(dialog.locator(".file-preview-markdown h1")).toHaveText(
+      "需求文档",
+    );
+    await expect(dialog.locator(".file-preview-markdown table")).toBeVisible();
+    await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+    await page.screenshot({
+      path: test.info().outputPath(`markdown-preview-${width}.png`),
+    });
+    // Copy stays a compact icon strip instead of three labelled buttons.
+    const tools = dialog.locator(".file-preview-tools button");
+    for (const label of [
+      "复制路径",
+      "复制相对路径",
+      "复制代码",
+      "全屏查看",
+      "关闭",
+    ]) {
+      const button = dialog.getByRole("button", { name: label, exact: true });
+      await expect(button).toBeVisible();
+      const box = (await button.boundingBox())!;
+      expect(box.width).toBeLessThanOrEqual(34);
+      expect(box.height).toBeLessThanOrEqual(34);
+    }
+    expect(await tools.count()).toBeGreaterThanOrEqual(6);
+    await dialog.getByRole("button", { name: "复制路径", exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { copiedText: string }).copiedText,
+        ),
+      )
+      .toBe("/workspace/links/docs/notes.md");
+    await dialog.getByRole("button", { name: "查看源码", exact: true }).click();
+    await expect(dialog.locator(".file-preview-code")).toBeVisible();
+    await expect(dialog.locator('[data-line="1"]')).toContainText("# 需求文档");
+    await dialog.getByRole("button", { name: "预览排版", exact: true }).click();
+    await expect(dialog.locator(".file-preview-markdown")).toBeVisible();
+    const normal = (await dialog.boundingBox())!;
+    await dialog.getByRole("button", { name: "全屏查看", exact: true }).click();
+    const full = (await dialog.boundingBox())!;
+    expect(full.width).toBeGreaterThanOrEqual(width - 1);
+    expect(full.height).toBeGreaterThanOrEqual(844 - 1);
+    expect(full.width).toBeGreaterThan(normal.width);
+    await dialog.getByRole("button", { name: "退出全屏", exact: true }).click();
+    const restored = (await dialog.boundingBox())!;
+    expect(restored.width).toBeLessThanOrEqual(normal.width + 1);
+    await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(mock.reads).toEqual([
+      { project: project.id, path: "docs/notes.md", root: null },
+    ]);
+    expect(mock.unexpected).toEqual([]);
+  });
+
+test("source-first preview keeps a line deep link and offers rendered Markdown", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Docs](docs/notes.md:3)", project.path);
+  mock.files["docs/notes.md"] = notesDoc;
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Docs", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-code")).toBeVisible();
+  await expect(dialog.locator('[data-highlighted="true"]')).toHaveCount(1);
+  await dialog
+    .getByRole("button", { name: "Rendered view", exact: true })
+    .click();
+  await expect(dialog.locator(".file-preview-markdown")).toBeVisible();
+  await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
   expect(mock.unexpected).toEqual([]);
 });

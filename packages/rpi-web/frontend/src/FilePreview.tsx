@@ -1,13 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import hljs from "highlight.js/lib/common";
+import {
+  Code2,
+  Copy,
+  Eye,
+  FileCode2,
+  Link2,
+  Maximize2,
+  Minimize2,
+  X,
+} from "lucide-react";
 import { api, type Project } from "./api";
 import { translate, type Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
-import { isProjectImagePath } from "./projectImages";
+import { MarkdownBody } from "./MarkdownBody";
+import { isProjectImagePath, ProjectImageContext } from "./projectImages";
 import { absoluteProjectPath } from "./projectPaths";
 import { ZoomableImage } from "./ZoomableImage";
 import "./file-preview.css";
+
+/** Rendered Markdown is the default reading view; other files stay source-only. */
+function isMarkdownPath(path: string) {
+  return /\.(?:md|markdown|mdx)$/i.test(path);
+}
 
 /** Mounted only by an explicit click. The deferred effect avoids StrictMode's probe I/O. */
 export function FilePreview({
@@ -36,8 +52,13 @@ export function FilePreview({
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const image = isProjectImagePath(file.path);
+  const markdown = isMarkdownPath(file.path);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
+  // A line deep link is only visible in the numbered source, so it wins over
+  // the rendered reading view the first time the preview opens.
+  const [source, setSource] = useState(!markdown || !!file.line);
+  const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => {
     const previousFocus = document.activeElement;
     const dialog = dialogRef.current!;
@@ -55,6 +76,7 @@ export function FilePreview({
     setImageUrl(null);
     setError("");
     setCopied("");
+    setSource(!markdown || !!file.line);
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
@@ -84,7 +106,16 @@ export function FilePreview({
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [project.id, project.path, file.path, file.root, image, attempt]);
+  }, [
+    project.id,
+    project.path,
+    file.path,
+    file.root,
+    image,
+    markdown,
+    file.line,
+    attempt,
+  ]);
   const lines = useMemo(() => {
     if (content === null) return [];
     const extension = file.path.split(".").pop()?.toLowerCase() ?? "";
@@ -128,6 +159,7 @@ export function FilePreview({
     <dialog
       ref={dialogRef}
       className="file-preview"
+      data-fullscreen={fullscreen || undefined}
       aria-label={zh ? "文件预览" : "File preview"}
       onCancel={(event) => {
         event.preventDefault();
@@ -142,42 +174,121 @@ export function FilePreview({
     >
       <header className="file-preview-header">
         <h2>{zh ? "文件预览（只读）" : "File preview (read-only)"}</h2>
-        <button type="button" onClick={onClose}>
-          {zh ? "关闭" : "Close"}
-        </button>
+        <div className="file-preview-tools">
+          <span className="file-preview-note" role="status">
+            {copied && <>{copied}</>}
+          </span>
+          <button
+            type="button"
+            className="file-preview-icon"
+            disabled={!absolutePath}
+            aria-label={t("copyAbsolutePath")}
+            title={t("copyAbsolutePath")}
+            onClick={() => void copy(absolutePath, t("absolutePathCopied"))}
+          >
+            <Copy size={15} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="file-preview-icon"
+            aria-label={t("copyRelativePath")}
+            title={t("copyRelativePath")}
+            onClick={() => void copy(file.path, t("relativePathCopied"))}
+          >
+            <Link2 size={15} aria-hidden="true" />
+          </button>
+          {!image && (
+            <button
+              type="button"
+              className="file-preview-icon"
+              disabled={content === null}
+              aria-label={zh ? "复制代码" : "Copy code"}
+              title={zh ? "复制代码" : "Copy code"}
+              onClick={() =>
+                void copy(content!, zh ? "已复制代码" : "Code copied")
+              }
+            >
+              <FileCode2 size={15} aria-hidden="true" />
+            </button>
+          )}
+          {markdown && (
+            <button
+              type="button"
+              className="file-preview-icon"
+              aria-pressed={!source}
+              aria-label={
+                source
+                  ? zh
+                    ? "预览排版"
+                    : "Rendered view"
+                  : zh
+                    ? "查看源码"
+                    : "View source"
+              }
+              title={
+                source
+                  ? zh
+                    ? "预览排版"
+                    : "Rendered view"
+                  : zh
+                    ? "查看源码"
+                    : "View source"
+              }
+              onClick={() => setSource((value) => !value)}
+            >
+              {source ? (
+                <Eye size={15} aria-hidden="true" />
+              ) : (
+                <Code2 size={15} aria-hidden="true" />
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            className="file-preview-icon"
+            aria-pressed={fullscreen}
+            aria-label={
+              fullscreen
+                ? zh
+                  ? "退出全屏"
+                  : "Exit fullscreen"
+                : zh
+                  ? "全屏查看"
+                  : "Fullscreen"
+            }
+            title={
+              fullscreen
+                ? zh
+                  ? "退出全屏"
+                  : "Exit fullscreen"
+                : zh
+                  ? "全屏查看"
+                  : "Fullscreen"
+            }
+            onClick={() => setFullscreen((value) => !value)}
+          >
+            {fullscreen ? (
+              <Minimize2 size={15} aria-hidden="true" />
+            ) : (
+              <Maximize2 size={15} aria-hidden="true" />
+            )}
+          </button>
+          <button
+            type="button"
+            className="file-preview-icon file-preview-close"
+            aria-label={zh ? "关闭" : "Close"}
+            title={zh ? "关闭" : "Close"}
+            onClick={onClose}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
       </header>
       <div className="file-preview-path">
         {absolutePath || `${project.name}: ${file.path}`}
         {file.line
           ? `:${file.line}${file.endLine !== file.line ? `-${file.endLine}` : ""}`
           : ""}
-      </div>
-      <div className="file-preview-actions">
-        <button
-          type="button"
-          disabled={!absolutePath}
-          onClick={() => void copy(absolutePath, t("absolutePathCopied"))}
-        >
-          {t("copyAbsolutePath")}
-        </button>
-        <button
-          type="button"
-          onClick={() => void copy(file.path, t("relativePathCopied"))}
-        >
-          {t("copyRelativePath")}
-        </button>
-        {!image && (
-          <button
-            type="button"
-            disabled={content === null}
-            onClick={() =>
-              void copy(content!, zh ? "已复制代码" : "Code copied")
-            }
-          >
-            {zh ? "复制代码" : "Copy code"}
-          </button>
-        )}
-        <span role="status">{copied}</span>
       </div>
       {error ? (
         <div className="file-preview-status" role="alert">
@@ -211,6 +322,12 @@ export function FilePreview({
         <p className="file-preview-status" role="status">
           {zh ? "正在加载…" : "Loading…"}
         </p>
+      ) : markdown && !source ? (
+        <div className="file-preview-markdown" tabIndex={0}>
+          <ProjectImageContext.Provider value={project}>
+            <MarkdownBody text={content} language={language} />
+          </ProjectImageContext.Provider>
+        </div>
       ) : (
         <pre
           className="file-preview-code"
