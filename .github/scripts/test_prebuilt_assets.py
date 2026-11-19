@@ -41,13 +41,16 @@ class PrebuiltAssetsTests(unittest.TestCase):
                 continue
             bundle = self.root / f"bundle-{target}.zip"
             bridge = self.root / f"bridge-{target}.zip"
+            mcp_bridge = self.root / f"mcp-bridge-{target}.zip"
             bundle.write_bytes(b"bundle")
             bridge.write_bytes(b"bridge")
+            mcp_bridge.write_bytes(b"mcp-bridge")
             assets.write_json(self.root / f"bundle.{target}.json", {
                 "schema_version": 1, "target": target, "source_commit": self.args.source_ref,
                 "tag": self.args.bundle_tag, "packages": [],
                 "archive": assets.asset(bundle, self.args.repository, self.args.bundle_tag),
                 "acp_bridge": assets.asset(bridge, self.args.repository, self.args.bundle_tag),
+                "mcp_bridge": assets.asset(mcp_bridge, self.args.repository, self.args.bundle_tag),
             })
 
     def edit_fragment(self, **changes):

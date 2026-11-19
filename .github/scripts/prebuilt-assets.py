@@ -204,15 +204,17 @@ def build(args):
     platform = platform_slug(args.target)
     bundle = pathlib.Path("dist") / f"rpi-packages-{platform}.{archive_extension}"
     bridge = pathlib.Path("dist") / f"rpi-acp-{platform}.{archive_extension}"
-    # The installer has already produced the bundle and standalone ACP bridge.
+    mcp_bridge = pathlib.Path("dist") / f"rpi-mcp-{platform}.{archive_extension}"
+    # The installer has already produced the bundle and both standalone bridges.
     import shutil
-    for source in (bundle, bridge):
+    for source in (bundle, bridge, mcp_bridge):
         shutil.copy2(source, output / source.name)
     write_json(output / f"bundle.{args.target}.json", {
         "schema_version": 1, "repository": f"https://github.com/{args.repository}",
         "tag": args.bundle_tag, "source_commit": revision, "target": args.target,
         "archive": asset(output / bundle.name, args.repository, args.bundle_tag),
         "acp_bridge": asset(output / bridge.name, args.repository, args.bundle_tag),
+        "mcp_bridge": asset(output / mcp_bridge.name, args.repository, args.bundle_tag),
         "packages": packages,
     })
 
@@ -319,7 +321,7 @@ def mirror_files(root, tags, bundle_tag=None):
         if manifest.get("tag") != bundle_tag:
             raise ValueError("Bundle manifest tag does not match mirror tag")
         for target in manifest.get("targets", {}).values():
-            for name in ("archive", "acp_bridge"):
+            for name in ("archive", "acp_bridge", "mcp_bridge"):
                 files.extend((bundle_tag, path) for path in _distribution_files(root, target[name]))
         files.append((bundle_tag, manifest_path))
     return files
@@ -499,13 +501,13 @@ def publish(args):
     bundle_manifest = {
         "schema_version": 1, "repository": f"https://github.com/{args.repository}",
         "tag": args.bundle_tag, "source_commit": args.source_ref,
-        "targets": {fragment["target"]: {key: fragment[key] for key in ("archive", "acp_bridge", "packages")} for fragment in bundles},
+        "targets": {fragment["target"]: {key: fragment[key] for key in ("archive", "acp_bridge", "mcp_bridge", "packages")} for fragment in bundles},
     }
     bundle_paths = []
     for fragment in bundles:
         if fragment["tag"] != args.bundle_tag:
             raise ValueError("Bundle tags differ between platforms")
-        bundle_paths.extend(checked_archive(root, fragment[key]) for key in ("archive", "acp_bridge"))
+        bundle_paths.extend(checked_archive(root, fragment[key]) for key in ("archive", "acp_bridge", "mcp_bridge"))
     bundle_manifest_path = root / "rpi-packages.json"
     write_json(bundle_manifest_path, bundle_manifest)
 

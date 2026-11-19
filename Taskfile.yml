@@ -113,6 +113,12 @@ tasks:
       - cargo build --release -p rpi-acp --bin rpi-acp-bridge
       - cargo run --release -p rpi-package-install -- pack-acp
 
+  pack-mcp:
+    desc: Package the standalone rpi-mcp bridge binary for MCP clients
+    cmds:
+      - cargo build --release -p rpi-mcp-server --bin rpi-mcp-bridge
+      - cargo run --release -p rpi-package-install -- pack-mcp
+
   smoke:
     desc: Load all built packages through the pi-rust extension loader
     deps: [build]

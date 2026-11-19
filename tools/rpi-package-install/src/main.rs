@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use rpi_package_install::{acp, install, metadata, pack, platform};
+use rpi_package_install::{acp, install, mcp, metadata, pack, platform};
 
 const USAGE: &str = "\
 rpi-package-install - install/pack the rpi extension cdylibs (cross-platform)
@@ -12,12 +12,14 @@ USAGE:
     rpi-package-install install  [OPTIONS]
     rpi-package-install pack     [OPTIONS]
     rpi-package-install pack-acp [OPTIONS]
+    rpi-package-install pack-mcp [OPTIONS]
     rpi-package-install bundle   --archive <FILE> [OPTIONS]
 
 COMMANDS:
     install   Copy the built extension libraries into the rpi extension dir
     pack      Stage a distributable bundle under dist/ and archive it
     pack-acp  Package the standalone rpi-acp bridge binary for the ACP Registry
+    pack-mcp  Package the standalone rpi-mcp bridge binary for MCP clients
     bundle    Install from a bundle produced by `pack`
 
 OPTIONS:
@@ -29,7 +31,7 @@ OPTIONS:
     --out <DIR>              Output directory for pack (default: dist/)
     --exclude <NAME>         Skip a package (repeatable, comma-separated allowed)
     --all                    Ignore catalog/packages.json and take every cdylib
-    --no-archive             pack/pack-acp: stop after staging, do not archive
+    --no-archive             pack/pack-acp/pack-mcp: stop after staging, do not archive
     -n, --dry-run            Show what would be copied, write nothing
     -q, --quiet              Only report errors
     -h, --help               Show this help
@@ -128,6 +130,17 @@ fn run() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("`bundle` requires --archive <FILE>"))?;
             let installed = pack::install_bundle(&archive, args.target_dir.clone())?;
             println!("installed {} extension(s)", installed.len());
+            Ok(())
+        }
+        "pack-mcp" => {
+            let manifest = resolve_manifest(&args)?.ok_or_else(|| {
+                anyhow::anyhow!("`pack-mcp` must run inside the rpi-package workspace")
+            })?;
+            mcp::run(&mcp::Options {
+                manifest: Some(manifest),
+                out_dir: args.out.clone(),
+                skip_archive: args.no_archive,
+            })?;
             Ok(())
         }
         "pack-acp" => {

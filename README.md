@@ -152,11 +152,11 @@ Streamable HTTP (`--http <addr>`, `POST /mcp`) for clients that cannot spawn a
 process, plus a private WebSocket channel (`GET /mcp/ws`) for our own clients.
 
 `rpi install rpi-mcp-server` installs the extension (`rpi --mcp`). The
-recommended entry point, the `rpi-mcp-bridge` executable, is built from source
-until a release archive exists:
+recommended entry point, the `rpi-mcp-bridge` executable, ships as a standalone
+per-platform archive next to the ACP bridge:
 
 ```bash
-cargo build --release -p rpi-mcp-server --bin rpi-mcp-bridge
+task pack-mcp   # dist/rpi-mcp-<platform>.tar.gz with the binary at the root
 ```
 
 See the [MCP server package README](packages/rpi-mcp-server/README.md) for the

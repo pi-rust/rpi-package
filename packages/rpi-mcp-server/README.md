@@ -115,16 +115,21 @@ text and the transcript is capped at the newest 200 messages.
 
 The crate ships the `rpi-mcp-server` extension (cdylib) and the `rpi-mcp-bridge`
 executable. `rpi install rpi-mcp-server` installs the extension, so `rpi --mcp`
-works. **No release archive ships the bridge binary yet**; build it from source:
+works.
+
+The bridge is packaged as a standalone per-platform archive:
 
 ```bash
-cargo build --release -p rpi-mcp-server --bin rpi-mcp-bridge
-# or
-cargo install --path packages/rpi-mcp-server --bin rpi-mcp-bridge
+task pack-mcp
+# or: cargo build --release -p rpi-mcp-server --bin rpi-mcp-bridge
+#     cargo run --release -p rpi-package-install -- pack-mcp
 ```
 
-Track `rpi-package-install pack-mcp` (the ACP bridge has `pack-acp`) before
-documenting a downloadable bridge.
+That stages `dist/rpi-mcp-<platform>/` (binary + this README) and archives it
+flat, so `<binary>` sits at the archive root and a client can launch
+`./rpi-mcp-bridge` directly. Release bundles publish the same archive as
+`rpi-mcp-<platform>.tar.gz` and record it as `mcp_bridge` in the bundle manifest,
+next to the ACP bridge and the extension bundle.
 
 ## Client configuration
 
@@ -138,6 +143,8 @@ documenting a downloadable bridge.
   }
 }
 ```
+
+`pack-mcp` prints this snippet with the archive name it just produced.
 
 Bridge options:
 

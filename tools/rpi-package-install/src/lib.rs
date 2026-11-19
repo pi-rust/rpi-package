@@ -15,6 +15,8 @@ pub mod acp;
 pub mod archive;
 pub mod catalog;
 pub mod install;
+pub mod mcp;
 pub mod metadata;
 pub mod pack;
 pub mod platform;
+pub mod standalone;
