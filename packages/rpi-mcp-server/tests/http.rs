@@ -777,6 +777,8 @@ mod resumption {
         assert_eq!(final_event["result"]["isError"], false, "{final_event:#?}");
 
         // The resumed POST replays the stream; it must never start a second run.
+        // Give a wrongly forwarded body time to reach the native host first.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let prompts = commands
             .lock()
             .unwrap()
