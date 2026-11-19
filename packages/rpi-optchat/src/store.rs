@@ -9,8 +9,8 @@
 //! it back in as imported notes.
 
 use crate::memory::Entry;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// Refuse to read a store larger than this; a memory file that big is a bug.
@@ -74,20 +74,34 @@ pub(crate) fn read_in(base: &Path, profile: &str) -> Result<Vec<Entry>, String> 
     let Some(path) = path_in(base, profile) else {
         return Err(format!("`{profile}` is not a usable profile name"));
     };
-    let metadata = match fs::metadata(&path) {
-        Ok(metadata) => metadata,
+    let mut file = match File::open(&path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
     };
+    // A reader takes a shared lock so it cannot observe a half-written JSONL
+    // line from another process (append takes the exclusive lock).
+    fs2::FileExt::lock_shared(&file)
+        .map_err(|error| format!("cannot lock {}: {error}", path.display()))?;
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let _ = fs2::FileExt::unlock(&file);
+            return Err(format!("cannot stat {}: {error}", path.display()));
+        }
+    };
     if metadata.len() > MAX_BYTES {
+        let _ = fs2::FileExt::unlock(&file);
         return Err(format!(
             "{} is larger than {} MiB; split it first",
             path.display(),
             MAX_BYTES / (1024 * 1024)
         ));
     }
-    let text = fs::read_to_string(&path)
-        .map_err(|error| format!("{} is not readable UTF-8: {error}", path.display()))?;
+    let mut text = String::new();
+    let read = file.read_to_string(&mut text);
+    let _ = fs2::FileExt::unlock(&file);
+    read.map_err(|error| format!("{} is not readable UTF-8: {error}", path.display()))?;
     let mut entries: Vec<Entry> = text
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -121,7 +135,12 @@ fn append_in(base: &Path, profile: &str, entry: &Entry) -> Result<(), String> {
         .append(true)
         .open(&path)
         .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-    writeln!(file, "{line}").map_err(|error| format!("cannot write {}: {error}", path.display()))
+    fs2::FileExt::lock_exclusive(&file)
+        .map_err(|error| format!("cannot lock {}: {error}", path.display()))?;
+    let result = writeln!(file, "{line}")
+        .map_err(|error| format!("cannot write {}: {error}", path.display()));
+    let _ = fs2::FileExt::unlock(&file);
+    result
 }
 
 /// Append into an explicit base directory; tests only.
@@ -201,6 +220,36 @@ mod tests {
         assert_eq!(entries[0].text, "first");
         assert_eq!(entries[1].text, "second");
         assert!(path_in(&base, "work").expect("path").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_appends_keep_complete_jsonl_lines() {
+        let dir = std::env::temp_dir().join(format!("optchat-concurrent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let base = dir.join(".rpi").join("optchat");
+        let mut workers = Vec::new();
+        for worker in 0..4u64 {
+            let base = base.clone();
+            workers.push(std::thread::spawn(move || {
+                for offset in 0..25u64 {
+                    let i = worker * 25 + offset;
+                    append_in(
+                        &base,
+                        "shared",
+                        &entry(i, &format!("worker-{worker}-{offset}")),
+                    )
+                    .expect("append");
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("worker");
+        }
+        let entries = read_in(&base, "shared").expect("read");
+        assert_eq!(entries.len(), 100);
+        assert_eq!(entries.first().map(|entry| entry.i), Some(0));
+        assert_eq!(entries.last().map(|entry| entry.i), Some(99));
         let _ = fs::remove_dir_all(&dir);
     }
 
