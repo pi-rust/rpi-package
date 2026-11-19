@@ -1,11 +1,12 @@
 # rpi-server
 
-TCP JSONL server for rpi with streaming subscriptions — 基于 **Transport trait** 抽象，支持多种传输协议。
+TCP JSONL / WebSocket server for rpi with streaming subscriptions — 基于 **Transport trait** 抽象，两种传输共用同一套 JSON-RPC 语义。
 
 ## 特性
 
 - ✅ **TCP JSONL 协议** — 简单、高效、易于调试
-- ✅ **Transport trait 抽象** — 可扩展 WebSocket/Unix Socket 等传输方式
+- ✅ **WebSocket 传输** — 一个 JSON 帧一个文本帧，适合浏览器/网关客户端
+- ✅ **Transport trait 抽象** — 可继续扩展 Unix Socket 等传输方式
 - ✅ **流式订阅** — 通过 `subscribe` 方法订阅实时事件流
 - ✅ **会话管理** — 支持多个 rpi 会话并行
 - ✅ **连接管理** — 内置重试、心跳、延迟检测、在线状态追踪
@@ -24,9 +25,15 @@ rpi --server --port 8080
 
 # 指定绑定地址
 rpi --server --bind 0.0.0.0 --port 9800
+
+# 改用 WebSocket 传输（同样的方法、认证与结果）
+rpi --server --server-ws --port 9800
 ```
 
-rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动 TCP 服务器。
+rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动服务器；加上
+`--server-ws` 时改用 WebSocket。`rpc_server` 工具的 `transport` 参数
+（`"tcp"` 默认 / `"ws"`）可以在会话内选择传输，返回结果里的 `transport`
+字段就是实际使用的传输。`rpc_client` 会按监听器记录的传输自动选择客户端。
 
 ### 在 rpi 会话中管理
 
@@ -253,7 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `send` | 必须 `sessionId`、`command`；将原生 JSON 命令写到该子进程 stdin；sent 不表示执行完成 |
 | `stop_session` | 必须 `sessionId`；从会话表移除并 kill/wait 子进程 |
 | `list_sessions` | 忽略 params；列出会话快照，不是历史记录 |
-| `server_status` | 忽略 params；服务状态，包含明文 token，必须保密 |
+| `server_status` | 忽略 params；服务状态（含 `transport`），包含明文 token，必须保密 |
 | `subscribe` | 必须有效 `sessionId`；订阅当前连接上的后续事件，工具收集还需 `subscribe:true` |
 | `ping` | 忽略 params；返回 pong，不保证模型或子进程健康 |
 
@@ -286,7 +293,7 @@ cargo test --locked -p rpi-server registered_schemas
 ```
 Transport trait (抽象层)
     ↓
-TcpTransport (已实现) / WebSocketTransport (未来)
+TcpTransport (已实现) / WebSocketTransport (已实现)
     ↓
 ManagedConnection (连接管理)
     - 自动重试 (10次)
@@ -299,29 +306,30 @@ AppState + Sessions (业务逻辑)
 
 ## Transport trait 扩展
 
-要添加新的传输协议（如 WebSocket），只需实现 `Transport` 和 `Connection` trait：
+`WebSocketTransport` 就是按这个方式实现的参考（单帧一个 JSON，服务端做
+`accept_async`，客户端连 `ws://host:port/`）。添加新传输只需实现同样的两个 trait：
 
 ```rust
 use async_trait::async_trait;
 use rpi_server::transport::{Transport, Connection};
 
-pub struct WebSocketTransport {
+pub struct UnixSocketTransport {
     // ...
 }
 
 #[async_trait]
-impl Transport for WebSocketTransport {
-    type Connection = WebSocketConnection;
+impl Transport for UnixSocketTransport {
+    type Connection = UnixSocketConnection;
     
     async fn listen(&self, addr: &str) -> Result<(), String> {
         // 实现 WebSocket 监听
     }
     
-    async fn accept(&self) -> Result<WebSocketConnection, String> {
+    async fn accept(&self) -> Result<UnixSocketConnection, String> {
         // 实现接受连接
     }
     
-    async fn connect(&self, addr: &str) -> Result<WebSocketConnection, String> {
+    async fn connect(&self, addr: &str) -> Result<UnixSocketConnection, String> {
         // 实现客户端连接
     }
     
@@ -330,12 +338,12 @@ impl Transport for WebSocketTransport {
     }
 }
 
-pub struct WebSocketConnection {
+pub struct UnixSocketConnection {
     // ...
 }
 
 #[async_trait]
-impl Connection for WebSocketConnection {
+impl Connection for UnixSocketConnection {
     async fn send(&mut self, msg: serde_json::Value) -> Result<(), String> {
         // 实现发送
     }
@@ -404,7 +412,8 @@ println!("messages received: {}", status.messages_received);
 | 特性 | TCP JSONL | WebSocket |
 |------|-----------|-----------|
 | 协议开销 | 低（仅 `\n` 分隔） | 中（帧协议） |
-| 浏览器支持 | ❌ 需要代理 | ✅ 原生支持 |
+| 浏览器支持 | ❌ 需要代理 | ✅ 原生支持（`ws://host:port/`） |
+| 认证/方法/结果 | 相同 | 相同（`authenticate` 仍在最前） |
 | 调试难度 | 低（nc/telnet） | 中（需要工具） |
 | 心跳检测 | 应用层实现 | 协议自带 |
 | 适用场景 | 服务间通信 | Web 客户端 |

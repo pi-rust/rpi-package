@@ -1,10 +1,13 @@
 use async_trait::async_trait;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 
 /// 传输层 trait - 抽象底层协议
 #[async_trait]
@@ -242,6 +245,12 @@ impl TcpTransport {
     }
 }
 
+impl Default for TcpTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Transport for TcpTransport {
     type Connection = TcpConnection;
@@ -334,5 +343,212 @@ impl Connection for TcpConnection {
             .shutdown()
             .await
             .map_err(|e| format!("close failed: {e}"))
+    }
+}
+
+// ── WebSocket 实现 ────────────────────────────────────────────────────────────
+
+/// 每条 JSON 消息占一个 WebSocket 文本帧；协议与 TCP JSONL 一致。
+pub struct WebSocketTransport {
+    listener: Mutex<Option<TcpListener>>,
+}
+
+impl WebSocketTransport {
+    pub fn new() -> Self {
+        Self {
+            listener: Mutex::new(None),
+        }
+    }
+
+    /// 客户端使用的完整 URL。`addr` 是 `host:port`。
+    fn url(addr: &str) -> String {
+        if addr.starts_with("ws://") || addr.starts_with("wss://") {
+            addr.to_string()
+        } else {
+            format!("ws://{addr}/")
+        }
+    }
+}
+
+impl Default for WebSocketTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Transport for WebSocketTransport {
+    type Connection = WebSocketConnection;
+
+    async fn listen(&self, addr: &str) -> Result<(), String> {
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|e| format!("bind failed: {e}"))?;
+        *self.listener.lock().await = Some(listener);
+        Ok(())
+    }
+
+    async fn accept(&self) -> Result<WebSocketConnection, String> {
+        let listener = self.listener.lock().await;
+        let listener = listener.as_ref().ok_or("not listening")?;
+        let (stream, addr) = listener
+            .accept()
+            .await
+            .map_err(|e| format!("accept failed: {e}"))?;
+        // Handshake on the same stream type the client side uses, so one
+        // connection type serves both directions.
+        let socket = accept_async(MaybeTlsStream::Plain(stream))
+            .await
+            .map_err(|e| format!("websocket handshake failed: {e}"))?;
+        Ok(WebSocketConnection::new(socket, format!("ws-{addr}")))
+    }
+
+    async fn connect(&self, addr: &str) -> Result<WebSocketConnection, String> {
+        let (socket, _) = connect_async(Self::url(addr))
+            .await
+            .map_err(|e| format!("websocket connect failed: {e}"))?;
+        Ok(WebSocketConnection::new(
+            socket,
+            format!("ws-client-{addr}"),
+        ))
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        *self.listener.lock().await = None;
+        Ok(())
+    }
+}
+
+pub struct WebSocketConnection {
+    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    id: String,
+}
+
+impl WebSocketConnection {
+    pub fn new(socket: WebSocketStream<MaybeTlsStream<TcpStream>>, id: String) -> Self {
+        Self { socket, id }
+    }
+}
+
+#[async_trait]
+impl Connection for WebSocketConnection {
+    async fn send(&mut self, msg: Value) -> Result<(), String> {
+        let text = serde_json::to_string(&msg).map_err(|e| format!("serialize failed: {e}"))?;
+        self.socket
+            .send(Message::Text(text.into()))
+            .await
+            .map_err(|e| format!("write failed: {e}"))?;
+        self.socket
+            .flush()
+            .await
+            .map_err(|e| format!("flush failed: {e}"))
+    }
+
+    async fn recv(&mut self) -> Result<Option<Value>, String> {
+        loop {
+            let message = match self.socket.next().await {
+                Some(Ok(message)) => message,
+                Some(Err(error)) => return Err(format!("read failed: {error}")),
+                None => return Ok(None),
+            };
+            match message {
+                Message::Text(text) => {
+                    return serde_json::from_str(text.as_str())
+                        .map(Some)
+                        .map_err(|e| format!("parse failed: {e}"));
+                }
+                Message::Binary(bytes) => {
+                    let text = String::from_utf8(bytes.to_vec())
+                        .map_err(|_| "binary frame is not UTF-8".to_string())?;
+                    return serde_json::from_str(&text)
+                        .map(Some)
+                        .map_err(|e| format!("parse failed: {e}"));
+                }
+                Message::Ping(payload) => {
+                    // tungstenite answers pings on read, but reply explicitly so a
+                    // peer that only sends pings sees a pong before the next message.
+                    let _ = self.socket.send(Message::Pong(payload)).await;
+                }
+                Message::Pong(_) | Message::Frame(_) => {}
+                Message::Close(_) => return Ok(None),
+            }
+        }
+    }
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn close(&mut self) -> Result<(), String> {
+        self.socket
+            .close(None)
+            .await
+            .map_err(|e| format!("close failed: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod websocket_tests {
+    use super::*;
+
+    fn free_addr() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("free port");
+        listener.local_addr().expect("address").to_string()
+    }
+
+    #[tokio::test]
+    async fn round_trips_json_frames_in_both_directions() {
+        let addr = free_addr();
+        let server = Arc::new(WebSocketTransport::new());
+        server.listen(&addr).await.expect("listen");
+
+        let accepting = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.accept().await })
+        };
+        let mut client = WebSocketTransport::new()
+            .connect(&addr)
+            .await
+            .expect("connect");
+        let mut peer = accepting.await.expect("accept task").expect("peer");
+
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}))
+            .await
+            .expect("client send");
+        let received = peer.recv().await.expect("peer recv").expect("frame");
+        assert_eq!(received["method"], "ping");
+
+        peer.send(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"pong":true}}))
+            .await
+            .expect("peer send");
+        let reply = client.recv().await.expect("client recv").expect("frame");
+        assert_eq!(reply["result"]["pong"], true);
+
+        client.close().await.expect("client close");
+        assert_eq!(peer.recv().await.expect("peer sees close"), None);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn connects_accept_ws_urls_and_bare_addresses() {
+        assert_eq!(
+            WebSocketTransport::url("127.0.0.1:9800"),
+            "ws://127.0.0.1:9800/"
+        );
+        assert_eq!(
+            WebSocketTransport::url("ws://example.test/rpi"),
+            "ws://example.test/rpi"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepting_without_listening_fails_closed() {
+        let error = WebSocketTransport::new()
+            .accept()
+            .await
+            .err()
+            .expect("must fail");
+        assert!(error.contains("not listening"), "{error}");
     }
 }

@@ -36,7 +36,7 @@ parameter schemas, and regression checks.
 | [rpi-run-stats](packages/rpi-run-stats/README.md) | Display live usage, timing and cost in the TUI |
 | [rpi-langfuse](packages/rpi-langfuse/README.md) | Export traces and manage scores and prompts with Langfuse |
 | [rpi-providers](packages/rpi-providers/README.md) | Add DeepSeek, OpenRouter, llama.cpp and Proxy providers |
-| [rpi-server](packages/rpi-server/README.md) | Serve TCP JSONL requests and streaming subscriptions with `--server` |
+| [rpi-server](packages/rpi-server/README.md) | Serve TCP JSONL or WebSocket requests and streaming subscriptions with `--server` (`--server-ws`) |
 | [rpi-acp](packages/rpi-acp/README.md) | Connect ACP clients, including Zed and Open WebUI Computer |
 | [rpi-ui-adapter](packages/rpi-ui-adapter/README.md) | Connect Open WebUI directly through `--webui=openwebui` |
 | [rpi-node-core](packages/rpi-node-core/README.md) | Protocol-neutral node identity, discovery and capability contracts |

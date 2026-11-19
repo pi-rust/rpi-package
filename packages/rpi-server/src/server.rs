@@ -26,6 +26,7 @@ pub struct SessionInfo {
 pub struct ServerInfo {
     pub id: String,
     pub address: String,
+    pub transport: &'static str,
     pub token: String,
     pub state: String,
     pub sessions: Vec<SessionInfo>,
@@ -59,6 +60,7 @@ pub struct AppState {
     pub sessions: TokioMutex<HashMap<String, Arc<TokioMutex<Session>>>>,
     pub executable: PathBuf,
     pub default_args: Vec<String>,
+    pub transport: &'static str,
     pub token: String,
     pub server_id: String,
     pub bound_address: TokioMutex<String>,
@@ -69,6 +71,7 @@ impl AppState {
     pub fn new(
         executable: PathBuf,
         default_args: Vec<String>,
+        transport: &'static str,
         token: String,
         server_id: String,
     ) -> Self {
@@ -76,6 +79,7 @@ impl AppState {
             sessions: TokioMutex::new(HashMap::new()),
             executable,
             default_args,
+            transport,
             token,
             server_id,
             bound_address: TokioMutex::new(String::new()),
@@ -96,6 +100,7 @@ impl AppState {
         ServerInfo {
             id: self.server_id.clone(),
             address: address.to_string(),
+            transport: self.transport,
             token: self.token.clone(),
             state: state.to_string(),
             sessions,
@@ -650,6 +655,8 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
 pub struct TcpServerHandle {
     pub id: String,
     pub address: String,
+    /// Wire transport actually carrying JSON frames: `tcp` or `ws`.
+    pub transport: &'static str,
     pub token: String,
     pub state: Arc<AppState>,
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -688,6 +695,7 @@ impl TcpServerHandle {
 /// Run the TCP server — accepts connections and spawns handlers.
 pub async fn run_server<T: Transport>(
     transport: Arc<T>,
+    transport_name: &'static str,
     bind: &str,
     port: u16,
     token: String,
@@ -701,6 +709,7 @@ pub async fn run_server<T: Transport>(
     let state = Arc::new(AppState::new(
         executable,
         args,
+        transport_name,
         token.clone(),
         server_id.clone(),
     ));
@@ -711,6 +720,7 @@ pub async fn run_server<T: Transport>(
     let handle = Arc::new(TcpServerHandle {
         id: server_id,
         address: addr.clone(),
+        transport: transport_name,
         token,
         state: Arc::clone(&state),
         shutdown_tx,
@@ -752,4 +762,94 @@ pub async fn run_server<T: Transport>(
     });
 
     Ok(handle)
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use crate::transport::{Connection, WebSocketTransport};
+
+    fn free_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("free port");
+        listener.local_addr().expect("address").port()
+    }
+
+    /// Read until the response with `id` arrives, skipping notifications.
+    async fn response_for(conn: &mut impl Connection, id: u64) -> serde_json::Value {
+        for _ in 0..20 {
+            let frame = conn.recv().await.expect("recv").expect("frame");
+            if frame["id"] == id {
+                return frame;
+            }
+        }
+        panic!("no response for id {id}");
+    }
+
+    #[tokio::test]
+    async fn serves_jsonrpc_over_websocket_and_reports_its_transport() {
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(WebSocketTransport::new()),
+            "ws",
+            "127.0.0.1",
+            port,
+            "test-token".to_string(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start ws server");
+
+        let mut client = WebSocketTransport::new()
+            .connect(&format!("127.0.0.1:{port}"))
+            .await
+            .expect("ws connect");
+
+        // Unauthenticated requests are refused, exactly like the TCP transport.
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}))
+            .await
+            .expect("send");
+        let refused = response_for(&mut client, 1).await;
+        assert!(refused.get("error").is_some(), "{refused}");
+
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":2,"method":"authenticate","params":{"token":"test-token"}}))
+            .await
+            .expect("send");
+        let authenticated = response_for(&mut client, 2).await;
+        assert_eq!(authenticated["result"]["authenticated"], true);
+
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":3,"method":"ping"}))
+            .await
+            .expect("send");
+        let pong = response_for(&mut client, 3).await;
+        assert!(pong.get("result").is_some(), "{pong}");
+
+        assert_eq!(handle.transport, "ws");
+        let info = handle.info().await;
+        assert_eq!(info.address, format!("127.0.0.1:{port}"));
+
+        client.close().await.expect("close");
+        handle.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn tcp_servers_keep_reporting_tcp() {
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(crate::transport::TcpTransport::new()),
+            "tcp",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start tcp server");
+        assert_eq!(handle.transport, "tcp");
+        handle.stop().await.expect("stop");
+    }
 }

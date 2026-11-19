@@ -1,4 +1,7 @@
 #![forbid(unsafe_code)]
+// The SDK's `export_plugin!` macro expands to a raw-pointer entrypoint and
+// clippy attributes the generated deref here; the ABI signature is fixed.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod server;
 pub mod transport;
@@ -16,7 +19,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use transport::{ManagedConnection, TcpTransport};
+use transport::{ManagedConnection, TcpTransport, WebSocketTransport};
 
 const DEFAULT_TIMEOUT: u64 = 30;
 
@@ -113,6 +116,107 @@ fn timeout_param(params: &Value) -> Result<Duration, String> {
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
 
+/// One request/response exchange over an already-created managed connection.
+async fn run_client<T: transport::Transport>(
+    managed: ManagedConnection<T>,
+    server: &Arc<TcpServerHandle>,
+    request: Value,
+    subscribe: bool,
+    wait: Duration,
+    cancelled: Arc<AtomicBool>,
+) -> Result<String, String> {
+    managed
+        .connect_with_retry(&server.address)
+        .await
+        .map_err(|e| format!("failed to connect: {e}"))?;
+
+    // Authenticate when the server requires a token.
+    if !server.token.is_empty() {
+        let auth = json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "authenticate",
+            "params": {"token": server.token},
+        });
+        managed
+            .send(auth)
+            .await
+            .map_err(|e| format!("auth send failed: {e}"))?;
+        match tokio::time::timeout(Duration::from_secs(5), managed.recv()).await {
+            Ok(Ok(Some(response))) => {
+                if let Some(error) = response.get("error") {
+                    return Err(format!("authentication failed: {error}"));
+                }
+            }
+            Ok(Ok(None)) => return Err("authentication failed: connection closed".into()),
+            Ok(Err(e)) => return Err(format!("authentication failed: {e}")),
+            Err(_) => return Err("authentication failed: timed out".into()),
+        }
+    }
+
+    let method = request["method"].as_str().unwrap_or_default().to_string();
+    let server_id = server.id.clone();
+    managed
+        .send(request)
+        .await
+        .map_err(|e| format!("send failed: {e}"))?;
+
+    if subscribe {
+        let mut events = Vec::new();
+        let deadline = Instant::now() + wait;
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            match tokio::time::timeout(Duration::from_millis(100), managed.recv()).await {
+                Ok(Ok(Some(event))) => {
+                    let is_end = event.get("type").and_then(Value::as_str) == Some("session_end");
+                    events.push(event);
+                    if is_end {
+                        break;
+                    }
+                }
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => return Err(format!("recv error: {e}")),
+                Err(_) => continue,
+            }
+        }
+        return Ok(json!({
+            "serverId": server_id,
+            "method": method,
+            "events": events,
+            "eventCount": events.len(),
+        })
+        .to_string());
+    }
+
+    let deadline = Instant::now() + wait;
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("request cancelled".into());
+        }
+        if Instant::now() >= deadline {
+            return Err("request timed out".into());
+        }
+        match tokio::time::timeout(Duration::from_millis(100), managed.recv()).await {
+            Ok(Ok(Some(response))) => {
+                return Ok(json!({
+                    "serverId": server_id,
+                    "method": method,
+                    "result": response,
+                })
+                .to_string());
+            }
+            Ok(Ok(None)) => return Err("connection closed".into()),
+            Ok(Err(e)) => return Err(format!("recv error: {e}")),
+            Err(_) => continue,
+        }
+    }
+}
+
 fn do_start(params: &Value) -> Result<String, String> {
     let bind_addr = optional_string(params, "bind")?.unwrap_or_else(|| "127.0.0.1".into());
     let port: u16 = match params.get("port") {
@@ -122,6 +226,17 @@ fn do_start(params: &Value) -> Result<String, String> {
             .ok_or("port must be an integer 0–65535")?,
         None => 9800,
         Some(_) => return Err("port must be an integer".into()),
+    };
+
+    // Wire transport: TCP JSONL (default) or one JSON frame per WebSocket text frame.
+    let transport_name: &'static str = match params.get("transport") {
+        None | Some(Value::Null) => "tcp",
+        Some(Value::String(name)) if name.eq_ignore_ascii_case("tcp") => "tcp",
+        Some(Value::String(name)) if name.eq_ignore_ascii_case("ws") => "ws",
+        Some(Value::String(other)) => {
+            return Err(format!("transport must be \"tcp\" or \"ws\" (got {other})"))
+        }
+        Some(_) => return Err("transport must be a string".into()),
     };
 
     let (executable, args) = launch_args(params)?;
@@ -161,16 +276,29 @@ fn do_start(params: &Value) -> Result<String, String> {
         };
 
         let result = runtime.block_on(async {
-            let transport = Arc::new(TcpTransport::new());
-            run_server(
-                transport,
-                &bind_clone,
-                port,
-                token_clone,
-                exec_clone,
-                args_clone,
-            )
-            .await
+            if transport_name == "ws" {
+                run_server(
+                    Arc::new(WebSocketTransport::new()),
+                    transport_name,
+                    &bind_clone,
+                    port,
+                    token_clone,
+                    exec_clone,
+                    args_clone,
+                )
+                .await
+            } else {
+                run_server(
+                    Arc::new(TcpTransport::new()),
+                    transport_name,
+                    &bind_clone,
+                    port,
+                    token_clone,
+                    exec_clone,
+                    args_clone,
+                )
+                .await
+            }
         });
 
         match result {
@@ -204,7 +332,7 @@ fn do_start(params: &Value) -> Result<String, String> {
         "token": token,
         "state": "running",
         "protocol": "jsonl",
-        "transport": "tcp",
+        "transport": server.transport,
     })
     .to_string())
 }
@@ -242,7 +370,7 @@ async fn server_status(server: &Arc<TcpServerHandle>) -> Result<Value, String> {
         "token": info.token,
         "state": info.state,
         "protocol": "jsonl",
-        "transport": "tcp",
+        "transport": info.transport,
         "sessions": info.sessions,
     }))
 }
@@ -344,7 +472,11 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
         _ => "127.0.0.1".to_string(),
     };
 
-    eprintln!("[rpi-server] --server detected, starting TCP server on {bind}:{port}");
+    // `--server-ws` serves the same JSON-RPC frames over WebSocket instead of
+    // TCP JSONL, for clients that cannot speak a raw line protocol.
+    let websocket = flag_is_on(get_cli_flag("server-ws").as_ref());
+    let transport = if websocket { "ws" } else { "tcp" };
+    eprintln!("[rpi-server] --server detected, starting {transport} server on {bind}:{port}");
 
     let token = match get_cli_flag("token") {
         Some(Value::String(s)) if !s.is_empty() => Some(s),
@@ -357,10 +489,11 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
         "port": port,
         "token": token,
         "noToken": no_token,
+        "transport": transport,
     });
 
     match do_start(&params) {
-        Ok(info) => eprintln!("[rpi-server] TCP server started: {info}"),
+        Ok(info) => eprintln!("[rpi-server] {transport} server started: {info}"),
         Err(e) => eprintln!("[rpi-server] failed to start: {e}"),
     }
 
@@ -402,112 +535,33 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
             .unwrap();
 
         let result = runtime.block_on(async {
-            let transport = Arc::new(TcpTransport::new());
-            let managed = ManagedConnection::new(transport);
-
-            // Connect with retry
-            managed
-                .connect_with_retry(&server.address)
-                .await
-                .map_err(|e| format!("failed to connect: {e}"))?;
-
-            // Authenticate when the server requires a token.
-            if !server.token.is_empty() {
-                let auth = json!({
-                    "jsonrpc": "2.0",
-                    "id": 0,
-                    "method": "authenticate",
-                    "params": {"token": server.token},
-                });
-                managed
-                    .send(auth)
-                    .await
-                    .map_err(|e| format!("auth send failed: {e}"))?;
-                match tokio::time::timeout(Duration::from_secs(5), managed.recv()).await {
-                    Ok(Ok(Some(response))) => {
-                        if let Some(error) = response.get("error") {
-                            return Err(format!("authentication failed: {error}"));
-                        }
-                    }
-                    Ok(Ok(None)) => return Err("authentication failed: connection closed".into()),
-                    Ok(Err(e)) => return Err(format!("authentication failed: {e}")),
-                    Err(_) => return Err("authentication failed: timed out".into()),
-                }
-            }
-
-            // Send request
+            // The listener records its wire transport, so the client follows it.
             let request = json!({
                 "jsonrpc": "2.0",
                 "method": method,
                 "params": rpc_params,
                 "id": 1,
             });
-            managed
-                .send(request)
+            if server.transport == "ws" {
+                run_client(
+                    ManagedConnection::new(Arc::new(WebSocketTransport::new())),
+                    &server,
+                    request,
+                    subscribe,
+                    wait,
+                    cancelled_inner,
+                )
                 .await
-                .map_err(|e| format!("send failed: {e}"))?;
-
-            if subscribe {
-                // Collect streaming events
-                let mut events = Vec::new();
-                let deadline = Instant::now() + wait;
-
-                loop {
-                    if cancelled_inner.load(Ordering::Acquire) {
-                        break;
-                    }
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-
-                    match tokio::time::timeout(Duration::from_millis(100), managed.recv()).await {
-                        Ok(Ok(Some(event))) => {
-                            // Check for session_end before pushing
-                            let is_end =
-                                event.get("type").and_then(Value::as_str) == Some("session_end");
-                            events.push(event);
-                            if is_end {
-                                break;
-                            }
-                        }
-                        Ok(Ok(None)) => break,
-                        Ok(Err(e)) => return Err(format!("recv error: {e}")),
-                        Err(_) => continue, // timeout, loop again
-                    }
-                }
-
-                Ok(json!({
-                    "serverId": server_id,
-                    "method": method,
-                    "events": events,
-                    "eventCount": events.len(),
-                })
-                .to_string())
             } else {
-                // Wait for response
-                let deadline = Instant::now() + wait;
-                loop {
-                    if cancelled_inner.load(Ordering::Acquire) {
-                        return Err("request cancelled".into());
-                    }
-                    if Instant::now() >= deadline {
-                        return Err("request timed out".into());
-                    }
-
-                    match tokio::time::timeout(Duration::from_millis(100), managed.recv()).await {
-                        Ok(Ok(Some(response))) => {
-                            return Ok(json!({
-                                "serverId": server_id,
-                                "method": method,
-                                "result": response,
-                            })
-                            .to_string());
-                        }
-                        Ok(Ok(None)) => return Err("connection closed".into()),
-                        Ok(Err(e)) => return Err(format!("recv error: {e}")),
-                        Err(_) => continue, // timeout, loop again
-                    }
-                }
+                run_client(
+                    ManagedConnection::new(Arc::new(TcpTransport::new())),
+                    &server,
+                    request,
+                    subscribe,
+                    wait,
+                    cancelled_inner,
+                )
+                .await
             }
         });
 
@@ -647,7 +701,7 @@ use rpi_plugin_sdk::callbacks::free_string;
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
-const SERVER_DESCRIPTION: &str = "Manage extension-local TCP JSONL listeners, not HTTP. Default start opens a listener and stores child launch defaults; status/stop require id. Child sessions start separately through rpc_client. Default is loopback with token authentication; non-loopback binds expose session control over unencrypted TCP. Results/logs contain secret tokens: do not publish them. Stop requests listener shutdown and terminates tracked children; session shutdown attempts cleanup. Timeout/cancellation does not undo side effects; inspect state before retrying. Explicitly stop sessions/listeners you create.";
+const SERVER_DESCRIPTION: &str = "Manage extension-local TCP JSONL or WebSocket listeners, not HTTP. Default start opens a listener and stores child launch defaults; status/stop require id. Child sessions start separately through rpc_client. Default is loopback with token authentication; non-loopback binds expose session control over unencrypted TCP. Results/logs contain secret tokens: do not publish them. Stop requests listener shutdown and terminates tracked children; session shutdown attempts cleanup. Timeout/cancellation does not undo side effects; inspect state before retrying. Explicitly stop sessions/listeners you create.";
 const CLIENT_DESCRIPTION: &str = "Send JSON-RPC to a running server using its extension-local serverId; authentication is automatic. start_session creates a child, send writes a native command, stop_session terminates a child. method=subscribe with subscribe=true collects live events, not history. Results contain raw JSON-RPC responses: inspect nested errors even when the tool succeeds. Timeout/cancellation does not cancel remote work or imply rollback: do not blindly retry side-effecting methods. Clean up sessions with stop_session and listeners with rpc_server stop. Responses/events may contain secrets; redact before sharing.";
 
 const SERVER_PARAMETERS: &str = r#"{
@@ -655,8 +709,9 @@ const SERVER_PARAMETERS: &str = r#"{
   "properties":{
     "action":{"type":"string","enum":["start","stop","status","list"],"default":"start","description":"Optional; defaults to start. start opens a listener; status reads one server; stop removes/stops one server and kills tracked children; list returns all registered server snapshots. Only start reads launch/network fields; stop/status require id."},
     "id":{"type":"string","description":"Non-blank extension-local server id returned by start/list; required only for stop/status. Not a child session id. No default; ignored for start/list."},
+    "transport":{"type":"string","enum":["tcp","ws"],"default":"tcp","description":"Start only. Wire transport: tcp keeps newline-delimited JSON, ws sends one JSON frame per WebSocket text frame. Omitted/null defaults to tcp. Authentication, methods and results are identical on both; neither has TLS."},
     "bind":{"type":"string","default":"127.0.0.1","description":"Start only. Non-blank TCP bind host; omitted/null defaults to 127.0.0.1. 0.0.0.0 exposes all IPv4 interfaces; TCP has no TLS. Prefer loopback; not an HTTP URL."},
-    "port":{"type":"integer","minimum":0,"maximum":65535,"default":9800,"description":"Start only. TCP port, default 9800; 0 requests an OS-assigned port, but returned/stored address currently retains :0 and cannot be used by rpc_client to discover that port. Use a known available port for client calls. null is invalid."},
+    "port":{"type":"integer","minimum":0,"maximum":65535,"default":9800,"description":"Start only. Listener port, default 9800; 0 requests an OS-assigned port, but returned/stored address currently retains :0 and cannot be used by rpc_client to discover that port. Use a known available port for client calls. null is invalid."},
     "token":{"type":"string","description":"Start only. Secret authentication token; omitted/empty generates one. noToken=true overrides it. Included in status/results and server logs: do not echo, commit or share. Authentication does not encrypt TCP traffic."},
     "noToken":{"type":"boolean","default":false,"description":"Start only. Default false requires connection authentication; true disables it and ignores token, allowing any reachable client to control sessions/children. Use only on trusted local networks, preferably loopback."},
     "provider":{"type":"string","description":"Start only. Non-blank value forwarded as --provider to future children. Omitted/null: no flag, child CLI/config defaults apply (not necessarily the parent session's selection)."},
@@ -693,7 +748,7 @@ const SERVER_PARAMETERS: &str = r#"{
 const CLIENT_PARAMETERS: &str = r#"{
   "type":"object",
   "properties":{
-    "serverId":{"type":"string","description":"Required non-blank id from rpc_server start/list in this extension process. Must still be running. Not a TCP address or child session id; no default. Connection and token authentication use its stored metadata."},
+    "serverId":{"type":"string","description":"Required non-blank id from rpc_server start/list in this extension process. Must still be running. Not a listener address or child session id; no default. Connection and token authentication use its stored metadata."},
     "method":{"type":"string","description":"Required non-blank JSON-RPC method, no default. start_session spawns current executable using server launch defaults (params ignored); send writes params.command to child stdin (acknowledgement is not completion); stop_session kills/waits for a child. list_sessions, server_status, ping read state (server_status includes secret token). subscribe requires params.sessionId; use subscribe=true to collect events. Unknown methods return nested JSON-RPC errors, not necessarily tool errors."},
     "params":{"type":"object","default":{},"description":"Method-specific payload, default {}. send requires string sessionId (live child handle returned by start_session) and command (native JSON command); stop_session/subscribe require sessionId. start_session/list_sessions/server_status/ping ignore payload. Forwarded without command validation; send may cause file/process/network side effects under child privileges. Do not put the server token here; authentication is automatic."},
     "subscribe":{"type":"boolean","default":false,"description":"Default false returns the first full JSON-RPC response under result; inspect its error field. true collects responses/live notifications under events/eventCount. Use with method=subscribe and params.sessionId; this flag alone does not subscribe. No history/replay or completeness guarantee. Collection is time-limited, not count/byte-limited; timeout may return an error rather than partial events."},
@@ -766,6 +821,13 @@ rpi_plugin_sdk::export_plugin!(|api| {
     } else {
         second
     };
+
+    if let Some(register_flag) = api.register_flag {
+        let _ = register_flag(
+            StbStringRef::from_str("server-ws"),
+            StbStringRef::from_str("Serve --server over WebSocket instead of TCP JSONL"),
+        );
+    }
 
     // Register SessionStart handler to auto-start server when --server flag is passed
     let fourth = if third == 0 {

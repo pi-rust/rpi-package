@@ -2854,10 +2854,12 @@ name = "rpi-server"
 version = "0.3.11"
 dependencies = [
  "async-trait",
+ "futures-util",
  "rpi-plugin-sdk 0.3.20",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.29.0",
 ]
 
 [[package]]
