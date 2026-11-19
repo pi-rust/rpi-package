@@ -2770,7 +2770,10 @@ export default function App() {
 
   /**
    * Slash commands are a browser-side affordance over the same RPC commands the
-   * Runtime panel uses; nothing here reaches the model as a prompt.
+   * Runtime panel uses; nothing here reaches the model as a prompt. Callers
+   * route only known commands here (`submit` checks the first word against
+   * `slashCommands` first) so an unknown slash-prefixed message falls through
+   * to the normal prompt path instead of an "Unknown command" error.
    */
   async function runSlash(raw: string) {
     if (!sessionId) return;
@@ -2781,6 +2784,7 @@ export default function App() {
     const priorActive = runActive;
     const [name = "", ...rest] = raw.trim().split(/\s+/);
     const arg = rest.join(" ").trim();
+    if (!slashCommands.some((command) => command.name === name)) return;
     if ((loadingSession || connectionFailed) && !LOCAL_SLASH_COMMANDS.has(name)) return;
     updateDraft("");
     setError("");
@@ -2978,8 +2982,14 @@ export default function App() {
     )
       return;
     if (message.startsWith("/") && attachments.length === 0) {
-      void runSlash(message);
-      return;
+      // Route only known commands to the browser-side slash handler; an
+      // unknown first word (for example a "/path/to/file" question) is not a
+      // command and is sent as a normal prompt, like the terminal UI does.
+      const firstToken = message.split(/\s+/, 1)[0] ?? "";
+      if (slashCommands.some((command) => command.name === firstToken)) {
+        void runSlash(message);
+        return;
+      }
     }
     if (loadingSession || connectionFailed || !supported.has("prompt")) return;
     const attachedText = attachments.length
