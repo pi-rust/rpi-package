@@ -128,7 +128,14 @@ test("file resolver contains paths, decodes once and validates line ranges", () 
     "src/environment.ts",
   );
   expect(inlineFileLink("identifier", project)).toBeNull();
-  expect(inlineFileLink("README.md", project)?.path).toBe("README.md");
+  // A bare filename or a git ref has no directory of its own; joining it onto
+  // the project root would open a path the agent never wrote.
+  expect(inlineFileLink("README.md", project)).toBeNull();
+  expect(inlineFileLink("message-links.spec.ts", project)).toBeNull();
+  expect(inlineFileLink("origin/main", project)).toBeNull();
+  expect(inlineFileLink("src/main.ts:2", project)?.line).toBe(2);
+  expect(inlineFileLink("./src/main.ts", project)?.path).toBe("src/main.ts");
+  expect(inlineFileLink("src/Makefile", project)).toBeNull();
   // The image endpoint shares the file endpoint's hidden-component rule.
   expect(projectImageSource(".rpi/uploads/shot.png", project)).toBe("");
   expect(projectImageSource("node_modules/pkg/logo.png", project)).toBe("");
@@ -196,6 +203,7 @@ test("linked worktree paths preview from their own checkout", () => {
 const markdown = [
   "[Source](src/main.ts#L2-L3) [中文](src/%E4%B8%AD%E6%96%87%20%E6%96%87%E4%BB%B6.ts:2)",
   "`src/main.ts:2` and `identifier`",
+  "`message-links.spec.ts` and `origin/main` stay plain code",
   "`.rpi/uploads/notes.md` [Hidden](.rpi/uploads/notes.md)",
   "https://example.com/docs [Mail](mailto:dev@example.com)",
   "[Unsafe](javascript:alert%281%29) [OS](file:///workspace/links/main.ts) [Escape](../secret.ts)",
@@ -474,6 +482,20 @@ for (const width of [1280, 390])
     await expect(
       page.locator("code").filter({ hasText: ".rpi/uploads/notes.md" }),
     ).toHaveCount(1);
+    // A bare filename and a git ref have no project directory: no preview that
+    // could only concatenate a wrong path, and no hyperlink styling.
+    for (const bare of ["message-links.spec.ts", "origin/main"]) {
+      await expect(
+        page.locator(".message-file-link").filter({ hasText: bare }),
+      ).toHaveCount(0);
+      const code = page.locator("code").filter({ hasText: bare });
+      await expect(code).toHaveCount(1);
+      expect(
+        await code.evaluate(
+          (node) => getComputedStyle(node.parentElement!).textDecorationLine,
+        ),
+      ).not.toContain("underline");
+    }
     await expect(page.getByText("Hidden", { exact: true })).toHaveCount(1);
     await expect(
       page.locator(".markdown-code-block .message-file-link"),

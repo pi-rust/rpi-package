@@ -62,17 +62,22 @@ export function projectFileLink(
   return root ? { path, root, line, endLine } : { path, line, endLine };
 }
 
-/** Inline code needs a recognizable filename/path, not an arbitrary identifier. */
+/**
+ * Inline code needs a recognizable path, not an arbitrary identifier.
+ *
+ * A bare filename (`message-links.spec.ts`) or a git ref (`origin/main`) has no
+ * directory of its own, so joining it onto the project root invents a path the
+ * agent never wrote. Both stay plain code; only `dir/.../name.ext` links.
+ */
 export function inlineFileLink(
   source: string,
   project?: Project,
 ): ProjectFileLink | null {
   const link = projectFileLink(source, project);
   if (!link) return null;
-  return /[/\\]|(?:^|\/)\.?[^\s/]+\.[\p{L}\d_-]+(?:[:#].*)?$/u.test(source) ||
-    /^\.[\w-]+$/.test(source)
-    ? link
-    : null;
+  // Judge the normalized path: a `:12`/`#L12` suffix must not hide the name.
+  const name = link.path.split("/").pop() ?? "";
+  return link.path.includes("/") && /\.[\p{L}\d_-]+$/u.test(name) ? link : null;
 }
 
 export function browserLink(source: string): "web" | "mail" | null {

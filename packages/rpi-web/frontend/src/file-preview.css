@@ -10,6 +10,26 @@
   cursor: pointer;
   overflow-wrap: anywhere;
 }
+/* An inline-code path is a readable chip, not an underlined hyperlink: it is a
+   convenience, and the preview may still be a path this checkout lacks. */
+.markdown-body button.message-file-link {
+  display: inline;
+  border-radius: 4px;
+  color: var(--text);
+  text-decoration: none;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.markdown-body button.message-file-link > code {
+  padding: 2px 5px;
+  background: transparent;
+  box-shadow: none;
+}
+.markdown-body button.message-file-link:hover > code {
+  color: var(--text);
+}
+.markdown-body button.message-file-link:hover {
+  background: var(--hover);
+}
 .message-file-link:focus-visible,
 .file-preview button:focus-visible {
   outline: 2px solid var(--blue);
@@ -108,6 +128,28 @@
   min-height: 0;
   overflow: auto;
   padding: 2px 4px 24px;
+}
+/* A preview is a reading surface, so it runs slightly larger than the compact
+   transcript it was opened from. */
+.file-preview-markdown .markdown-body {
+  font-size: 15px;
+  line-height: 1.8;
+}
+.file-preview-markdown .markdown-body h1 {
+  font-size: 26px;
+}
+.file-preview-markdown .markdown-body h2 {
+  font-size: 22px;
+}
+.file-preview-markdown .markdown-body h3 {
+  font-size: 19px;
+}
+.file-preview-markdown .markdown-body h4 {
+  font-size: 16px;
+}
+.file-preview-markdown .markdown-body pre,
+.file-preview-markdown .markdown-table table {
+  font-size: 14px;
 }
 .file-preview-path {
   overflow-wrap: anywhere;
