@@ -16,19 +16,15 @@
 //! slots, so the plugin degrades instead of failing: no `client-abort`, no
 //! prompt snippets, no reload-safe join, and no editor/command completions.
 //
-// ABI inputs and outputs use the SDK's `event_handler!`, `string_handler!` and
-// `execute_handler!` macros where available. The one remaining raw runtime-action
-// output is isolated in `src/abi.rs`, where each function carries an explicit
-// `#[expect(unsafe_code)]`; the crate root keeps `#![deny(unsafe_code)]` so new
-// unsafe cannot spread silently. The entrypoint emitted by `export_plugin!`
-// takes a raw `*const PluginApi` by ABI definition, which is why the
-// pointer-deref lint is allowed here; the dereference itself stays in the SDK.
-#![deny(unsafe_code)]
-// `unsafe` lives in `src/abi.rs` only, on the two functions with explicit
-// expectations below; `deny` (not `forbid`) lets those expectations apply.
+// Every ABI shape this extension touches goes through an SDK macro
+// (`event_handler!`, `string_handler!`, `execute_handler!`, `call_action!`,
+// `stb_text!`), which keeps the raw-pointer contract inside the SDK. `forbid`
+// rather than `deny` so a future `#[allow(unsafe_code)]` cannot quietly reopen
+// the door. The entrypoint emitted by `export_plugin!` takes a raw
+// `*const PluginApi` by ABI definition, which is why the pointer-deref lint is
+// allowed here; the dereference itself happens inside the SDK's macro.
+#![forbid(unsafe_code)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
-
-mod abi;
 
 pub mod active_tools;
 pub mod bridge;
@@ -90,7 +86,9 @@ fn api(owner: *mut c_void) -> Option<PluginApi> {
 
 fn call_action(api: PluginApi, action: RuntimeActionId, args: Value) -> Result<Value, String> {
     let encoded = args.to_string();
-    let (rc, text) = abi::action_text(api, action, &encoded);
+    // `call_action!` owns the allocate / call / read / free sequence, so this
+    // crate never touches a raw ABI pointer for a runtime action.
+    let (rc, text) = rpi_plugin_sdk::call_action!(api, action, &encoded);
     if rc != 0 {
         return Err(if text.trim().is_empty() {
             format!("runtime action {action:?} failed")

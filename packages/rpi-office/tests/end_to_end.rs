@@ -4,6 +4,10 @@
 //! This is the path the add-in actually uses, exercised through the registered
 //! ABI callbacks (`execute`/`poll`) and the host event handlers.
 
+// The harness plays the host here; `take_step!` keeps the union-arm read and the
+// reclaim inside the SDK, so this file needs no `unsafe` of its own.
+#![deny(unsafe_code)]
+
 mod support;
 
 use futures_util::{SinkExt, StreamExt};
@@ -74,27 +78,13 @@ fn run_tool(name: &str, params: Value) -> Result<Value, String> {
             _ => break result,
         }
     };
-    let (callbacks_destroy, payload) = (callbacks.destroy, result);
-    callbacks_destroy(handle);
-    match payload.tag {
-        StepResultTag::Done => {
-            // SAFETY: the tag selects the live union arm; the plugin produced
-            // the string, so the host frees it through the SDK callback.
-            let stb = unsafe { payload.done_payload().result };
-            // SAFETY: the plugin produced this string; the host frees it once.
-            let text = unsafe { stb.to_string_lossy() };
-            unsafe { rpi_plugin_sdk::callbacks::free_string(stb) };
+    (callbacks.destroy)(handle);
+    match rpi_plugin_sdk::take_step!(result) {
+        rpi_plugin_sdk::callbacks::Step::Done(text) => {
             serde_json::from_str(&text).map_err(|error| format!("invalid result JSON: {error}"))
         }
-        StepResultTag::Err => {
-            // SAFETY: as above, for the Err arm.
-            let stb = unsafe { payload.err_payload().message };
-            // SAFETY: as above, for the Err arm.
-            let text = unsafe { stb.to_string_lossy() };
-            unsafe { rpi_plugin_sdk::callbacks::free_string(stb) };
-            Err(text)
-        }
-        StepResultTag::Pending => unreachable!(),
+        rpi_plugin_sdk::callbacks::Step::Err(message) => Err(message),
+        rpi_plugin_sdk::callbacks::Step::Pending(_) => unreachable!(),
     }
 }
 
@@ -181,11 +171,9 @@ async fn pane_drives_a_tool_and_receives_streamed_replies() {
     };
     (callbacks.destroy)(handle);
     assert_eq!(result.tag, StepResultTag::Done);
-    // SAFETY: Done selects the live union arm; the host frees the string once.
-    let stb = unsafe { result.done_payload().result };
-    // SAFETY: Done selects the live union arm; the host frees the string once.
-    let text = unsafe { stb.to_string_lossy() };
-    unsafe { rpi_plugin_sdk::callbacks::free_string(stb) };
+    let rpi_plugin_sdk::callbacks::Step::Done(text) = rpi_plugin_sdk::take_step!(result) else {
+        panic!("the office tool must finish with Done");
+    };
     let value: Value = serde_json::from_str(&text).expect("tool result JSON");
     assert_eq!(value["content"][0]["type"], json!("text"));
     assert_eq!(value["content"][0]["text"], json!("A1=1 B1=2"));
