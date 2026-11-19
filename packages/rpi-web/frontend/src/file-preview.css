@@ -132,24 +132,27 @@
 /* A preview is a reading surface, so it runs slightly larger than the compact
    transcript it was opened from. */
 .file-preview-markdown .markdown-body {
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: 16px;
+  line-height: 1.85;
 }
 .file-preview-markdown .markdown-body h1 {
-  font-size: 26px;
+  font-size: 29px;
 }
 .file-preview-markdown .markdown-body h2 {
-  font-size: 22px;
+  font-size: 25px;
 }
 .file-preview-markdown .markdown-body h3 {
-  font-size: 19px;
+  font-size: 21px;
 }
 .file-preview-markdown .markdown-body h4 {
+  font-size: 18px;
+}
+.file-preview-markdown .markdown-body :is(h5, h6) {
   font-size: 16px;
 }
 .file-preview-markdown .markdown-body pre,
 .file-preview-markdown .markdown-table table {
-  font-size: 14px;
+  font-size: 15px;
 }
 .file-preview-path {
   overflow-wrap: anywhere;
