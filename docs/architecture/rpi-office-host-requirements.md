@@ -55,6 +55,59 @@
 
 > 阻塞点：`rpi-plugin-sdk` 尚未发布含新槽位的版本（0.3.20 / 0.8.3 / 0.25.0 都没有 `GetEditorText` 与两个 completion 槽位），本扩展要动 H3/H7 得先等一次 SDK 发布。
 
+## 第四轮：真机探针实测（`rpi 0.24.0` + SDK 0.25.0）
+
+前三轮是源码核对；这一轮用**一次性探针插件**（不入库，`/tmp/probe`，`cdylib`，依赖 crates.io `rpi-plugin-sdk 0.25.0`）在真机跑了一遍：`register` 阶段记录 `abi_version`/`struct_size` 与每个槽位是否 `Some`，`SessionStart`（空闲态）与 `BeforeAgentStart`（run 已存在）各跑一次相同 action 电池。
+
+要分两种模式跑，因为 **`SessionStart` 在 `--print` / `--list-models` 下不会派发**（那里只有 `AgentStart`/`TurnStart`/`BeforeAgentStart`）：
+
+```sh
+# 空闲态：RPC 模式会派发 BeforeTuiStart + SessionStart，且不需要真实模型
+printf '{"type":"get_state","id":"1"}\n' | rpi --local-only --extensions-dir /tmp/probe-ext \
+    --mode rpc --provider openai --model gpt-6-astra --api-key dummy \
+    --base-url http://127.0.0.1:9 --no-session
+
+# run 活动态：--print 会派发 BeforeAgentStart；provider 打不通不影响插件侧调用
+rpi --local-only --extensions-dir /tmp/probe-ext --provider openai --model gpt-6-astra \
+    --api-key dummy --base-url http://127.0.0.1:9 --timeout 3 --print "x"
+# → extensions: loaded 1 plugin(s) (0 tool(s))
+```
+
+### 实测结果
+
+| 项 | 空闲（`SessionStart`） | run 活动态（`BeforeAgentStart`） |
+| --- | --- | --- |
+| `abi_version` / `struct_size` | `4` / **`192`**，与 SDK 0.25.0 的 `size_of::<PluginApi>()` **完全相等** | 同上（注册期即固定） |
+| 可选槽位 | `register_plugin_lifecycle`、`register_tool_prompt`、`register_tool_with_wake`、`register_streaming_provider`、`register_tool_result`、`register_oauth_provider_cancellable` **全部 `Some`** | — |
+| `Abort(27)` | `{"aborted":false,"runId":null,"steer":[],"followUp":[]}` | `{"aborted":true,"runId":"01a1f307-c54b-…","steer":[],"followUp":[]}`；**连调两次得到同一 runId 且都为 `true`** |
+| `StopRound(29)` | `{"requested":true}` | 同上 |
+| `ListCommands(26)` | 36 条（35 builtin + 探针注册的 `/probe-cmd`） | 同上 |
+| `GetExecutionContext(23)` | `sessionId:"ephemeral"`（`--no-session`）、`cwd` 真实、`childAgent:true` | `sessionId` 是真实 UUID |
+| `ToolProgram(30)` | `rc=1`，`"ToolProgram requires an authenticated executing invocation"` | 同上 |
+| `RPI_SURFACE` / `RPI_DESKTOP_SESSION_ID` / `PI_DESKTOP_SESSION_ID` | 全部未设置 | 全部未设置 |
+
+### 结论
+
+1. **`struct_size` 相等**：`rpi 0.24.0` 宿主的 vtable 与 `0.25.0` SDK 完全一致，不存在“0.24.0 是残缺宿主”。H1/H2/H4 只要把 pin 升到 `=0.25.0` 就能直接用；`GetExecutionContext(23)` 这类“文档没写给插件用”的 action 也能用注册期 `user_data` 正常调用。
+2. **H1 契约成立，但要区分两种状态**（本轮初稿只在 `SessionStart` 探过一次，把“run 已存在”误读成“空闲也返回 `true`”）：
+   - 真正空闲（无 run）→ `{"aborted":false,"runId":null}`，符合宿主文档；
+   - run 已存在 → `{"aborted":true,"runId":…}`，且对该 run **幂等**（重复调用同一 runId、仍 `true`），直到 run 结算。
+   - 所以窗格 Stop 可以放心用 `aborted`/`runId` 判断“宿主是否真的取消了某个 run”；本地回复绑定仍以 pane 自己的活动 prompt 为准，两者不冲突。
+3. **`ListCommands(26)` 是真实的命令发现面**：它把插件通过 `register_command` 注册的命令一起列出（带 `source`），`rpi-acp` / `rpi-web` 想枚举 `/office`、`/office-tools` 不必再读注册表。
+4. **H8 部分收窄**：`/health` 的 `owner.sessionId` / `owner.cwd` 今天就能填（ephemeral 会话的 `"ephemeral"` 需归一化为 `null`）；真正缺的只剩 **surface 标识**与**回环服务注册表**。
+
+### SDK 人机工程缺口（本轮副产品）
+
+写这个探针本身暴露了一个 SDK 层面的缺口：`StbString` / `StepResult` 的**读取与释放全是 unsafe API**，因此在 0.25.0 上不可能写出“零 unsafe”的 out-param 处理器。
+
+| 形状 | 必须写的 unsafe |
+| --- | --- |
+| 读入参 `StbString`/`StbStringRef` | `StbString::to_string_lossy()`、`StbStringRef::as_str()`、`OwnedString::from_raw()` |
+| 写 out 参数（command / 补全 handler） | `callbacks::Output::from_raw(*mut StbString)`（之后 `write`/`clear` 是安全的） |
+| 返回工具步骤 | `callbacks::take_step_result()` / `take_step_result_with()`、`StepResult::pending_payload()` |
+
+事件侧有 `event_handler!` 宏把 unsafe 收进 SDK，其余三种形状没有对应宏——于是每个插件都要手写并由自己承担 SAFETY 契约。建议 SDK 补 `command_handler!` / `step_fn!` 一类的宏（或提供接受原始指针的安全构造器），并把每种形状的 SAFETY 说明写进文档。
+
 ## 已验证的现状
 
 - 本扩展作为 Rust cdylib 加载进真实 `rpi 0.24.0` 成功：33 个工具（32 目录 op + 发现工具）、2 个 slash 命令、8 个事件、`before_agent_start` 与 2 个 flag 全部注册返回 0，进程无告警退出（`rpi --local-only --extensions-dir <dir> --list-models`）。
@@ -101,10 +154,12 @@ Abort = 27,   args: {}
 
 **补完后本扩展的改动**：
 1. `Cargo.toml` 的 `rpi-plugin-sdk` 从 `=0.3.20` 升到 `=0.25.0`（顺带解锁 H2/H4 的槽位）；
-2. `on_abort_request` 调用 `RuntimeActionId::Abort`（按 `aborted` 字段决定本地回复绑定是否解除），把 `steer`/`followUp` 按需回灌；
+2. `on_abort_request` 调用 `RuntimeActionId::Abort`，用返回的 `aborted`/`runId` 记录“宿主是否真的取消了某个 run”（空闲时是 `false`+`null`，见第四轮实测），本地回复绑定仍按活动 pane prompt 决定，把 `steer`/`followUp` 按需回灌；
 3. `protocol::CAPABILITIES` 加回 `client-abort`；
 4. 可选：窗格双按钮（Stop / 答完停），后者走 `StopRound`；
 5. `tests/bridge_interop.rs` 的能力断言与 README 差异表同步更新。
+
+**真机实测**（见第四轮）：`Abort(27)`、`StopRound(29)` 在 `0.24.0` 上都能调用并返回预期体；连续两次 `Abort` 返回同一 `runId` 且都是 `aborted: true`，所以**不要用 `aborted` 字段做逻辑分支**，按本地是否存在活动 pane prompt 决定清理即可。
 
 **验收**：窗格按 Stop 后正在流式输出的回合停止，宿主发出 `AgentSettled{outcome:"aborted"}`；pending 的 `office_*` 工具调用收到 `cancel` 并被拒绝；窗格不再收到该回合的 delta/final；空闲时按 Stop 不报错。
 
@@ -202,6 +257,8 @@ Abort = 27,   args: {}
 
 **现状（0.25.0 复核未变）**：本扩展的 `GET /health` 已暴露 `service/serverVersion/port/protocolVersion/catalogVersion/owner/panes`，`owner.pid` 真实、`owner.client` 硬编码 `"cli"`、`owner.sessionId` 为 `null`。宿主没有 `RPI_SURFACE` 之类的界面标识，也没有回环服务注册表。`GetExecutionContext(23)` 只回 model/thinkingLevel/tools/cwd/sessionId，不含界面。
 
+**部分已可用**（第四轮实测）：`GetExecutionContext(23)` 现在就能提供 `sessionId`/`cwd`，`/health` 的 owner 不必等宿主；ephemeral 会话返回 `"ephemeral"`，需归一化为 `null`。
+
 **两个小需求**：
 1. **前台标识**：宿主提供 `RPI_SURFACE=cli|desktop|web`（或等价 env），让 `/health` 能区分界面；`sessionId`/`cwd` 用 `GetExecutionContext(23)` 已可取得，不需要新能力。
 2. **回环服务注册表**（可选）：插件注册 `{purpose:"office-bridge", port, healthPath}`，宿主/`rpi-web` 据此列出“已连接文档”面板。这是上游 Pi Desktop 的 Documents rail 在 rpi 侧的唯一合理落点；不提供的话，只能靠用户自己 `curl /health`。
@@ -275,3 +332,4 @@ Abort = 27,   args: {}
 - `docs/extensions/lifecycle.md` 应写 `register_plugin_lifecycle`：`begin`（幂等、非阻塞、取消在飞工作）与 `finish`（blocking 清理线程、返回非 0 = 宿主永久保留 library 与上下文）、reload/new/shutdown 三条路径都会调用、`finish` 内禁止回调宿主。**这一条是本轮复核中唯一被误解成“宿主缺口”的文档空白。**
 - `docs/extensions/authoring.md` 应把 `Abort` / `StopRound` / `RelayUiDialog` 三个 action 与它们的返回形状写进 action 清单，并提醒 `abort` 的 `steer`/`followUp` 回收语义——否则停按钮的实现者会重复发明一套本地撤销。
 - 建议在 SDK 文档里给一张“能力 → 引入版本”表（本文的“版本事实”表可直接搬用）。当前最大的坑是：**`RuntimeActionId` 的枚举长度取决于插件 pin 的 SDK 版本，而它看起来像宿主能力清单。**
+- SDK 应为 out-param 处理器与工具步骤返回补安全包装（见第四轮“SDK 人机工程缺口”）：`StbString` 的读取/释放与 `take_step_result` 目前全是 `unsafe fn`，事件侧有 `event_handler!` 宏兜住，命令/补全/步骤三种形状没有，插件绕不开手写 `unsafe`。
