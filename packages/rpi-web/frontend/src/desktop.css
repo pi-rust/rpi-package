@@ -241,7 +241,10 @@
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
 .recent-session-list {
-  max-height: min(360px, 40dvh);
+  /* Five project-tree rows (5 x 31px) plus their 1px gaps: only these five
+     rows occupy permanent sidebar space; the remaining recent sessions are
+     reachable by scrolling inside this capped list. */
+  max-height: 160px;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
