@@ -203,6 +203,7 @@
 .slim-chat-search-list {
   display: grid;
   gap: 1px;
+  min-height: 0;
   padding: 5px;
   overflow-y: auto;
   scrollbar-width: thin;
@@ -327,7 +328,10 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-weight: 550;
+  /* Same weight as an unselected model row in this menu (#302). The entry is
+     already separated by the divider and the trailing hint, so it does not
+     need weight to stand out from the provider groups. */
+  font-weight: 400;
 }
 .slim-model-runtime-hint {
   color: var(--muted);
@@ -383,4 +387,26 @@
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+/* Keep the floating-list scrollbar visible and space-reserved in Chromium.
+   `scrollbar-width: thin` alone is rendered as an overlay scrollbar that only
+   appears while scrolling, so users perceive the list as having no scrollbar. */
+.slim-recent-list,
+.slim-chat-search-list {
+  scrollbar-gutter: stable;
+}
+.slim-recent-list::-webkit-scrollbar,
+.slim-chat-search-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.slim-recent-list::-webkit-scrollbar-thumb,
+.slim-chat-search-list::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  background: var(--line);
+}
+.slim-recent-list::-webkit-scrollbar-track,
+.slim-chat-search-list::-webkit-scrollbar-track {
+  background: transparent;
 }

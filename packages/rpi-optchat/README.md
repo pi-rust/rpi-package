@@ -12,14 +12,24 @@ port keeps OptChat's memory and exposes it to the host instead:
 - the current session branch's messages and tool activity are logged as
   `optchat-entry` custom entries through the `AppendEntry` runtime action;
 - the log is folded into a summary tree whose view stays inside a 128 KB budget;
+- summary lines can be rewritten by a model (`/optchat compact on`), stored as
+  `optchat-node` entries and falling back to extractive cuts when unavailable;
+- the view shape (its parts and merge batch) is stored as `optchat-view`, so a
+  resumed session shows the same lines instead of re-folding the log;
+- memory mirrors into a per-profile project store (`.rpi/optchat/<profile>.jsonl`)
+  so another session can attach it, and Claude Code / ChatGPT / JSONL / text
+  history can be imported;
 - the model reads it with the `zoom` and `search` tools;
-- the user reads it with `/optchat view`, `/optchat zoom`, `/optchat search`;
+- the user reads it with `/optchat view`, `/optchat zoom`, `/optchat search`, and
+  hosts that dispatch entry renderers show each logged message inline as
+  `OptChat <kind> · <head>`;
 - `register_before_agent_start` appends one short pointer line to the system
   prompt so the model knows the memory exists.
 
 Storage is the session branch itself: memory follows a fork, disappears with a
-discarded branch, and reloads with a resumed session. No project file, no
-background worker, no model call, no durable-scheduler state.
+discarded branch, and reloads with a resumed session. The summary lines and the
+cross-session profile live beside it; there is no background worker, no
+durable-scheduler state, and no model call unless compaction is switched on.
 
 ## Install
 
@@ -54,16 +64,29 @@ Both tools read the current session branch only; both return text plus
 /optchat zoom <id> [n]   open message id, or the block of n messages from id
 /optchat search <text>   find logged messages by content
 /optchat note <text>     append a durable note to memory
-/optchat import <file>   append a text/markdown/JSONL file as imported notes
+/optchat import <file> [--format claude|chatgpt|jsonl|text]
+/optchat profile [name]  show or switch the cross-session profile
+/optchat recall <text>   search the profile store, beyond the retained window
+/optchat attach [name]   copy a profile store into this session
+/optchat compact on|off  rewrite summary lines with a child model
 /optchat fit             merge the view as far as the tree allows
 /optchat help            the command list
 ```
 
-`import` reads UTF-8 text up to 4 MiB, at most 2000 messages. Each non-empty
-line becomes a `note` entry whose head reads `[IMP <day>] note`, so a later
-reader can tell imported history from this session's own turns. A line that is
-a JSON object is unwrapped through `text`/`message`/`content`/`body` when those
-hold a string or content blocks; markdown headings lose their `#` markers.
+`import` reads UTF-8 text up to 4 MiB, at most 2000 messages, and detects the
+format from the file name and content (override it with `--format`):
+
+| source | shape |
+| --- | --- |
+| Claude Code | `{"type":"user"\|"assistant","message":{…},"timestamp":…}` lines |
+| ChatGPT | a `conversations.json` export, walked through its `mapping` and ordered by `create_time` |
+| JSONL / Codex / OMP | any JSON document, or per-line objects carrying a role and text |
+| text / markdown | one note per non-empty line; headings lose their `#` markers |
+
+Each imported message keeps the day it was written and an origin, so the view
+head reads `[IMP <day>] note` and a later reader can tell imported history from
+this session's own turns. Nothing is resumed: an imported request is a record,
+not a new one.
 
 ## What is captured
 
@@ -86,40 +109,60 @@ search echo of memory inside memory is noise. One message delivered twice within
 Subagent processes (`RPI_ORCHESTRATOR_SUBAGENT`,
 `LANGFUSE_PI_PARENT_TRACE_ID`) never write into the parent's memory.
 
-## Summary lines are extractive
+## Summary lines: extractive by default, model-written on request
 
 Upstream asks a model to compress every leaf and every merge into at most 512
-bytes. A plugin must not block a turn on a nested model call, so this port uses
-the deterministic fallback upstream itself uses when a compressor refuses: a
-leaf keeps the head of its message (`kind: text`), and a merge keeps the head of
-both halves joined by `⋯`, cut at 512 bytes on a character boundary. The log
-keeps every message whole, so `zoom(id, 1)` is always the way to read the
-original; the view is a navigation summary, not a lossy archive.
+bytes. A plugin has no model entrypoint, so `/optchat compact on` spawns an
+ephemeral child — `rpi -p --no-session --no-extensions --no-tools` — with the
+session's provider and model, and stores the answer as an `optchat-node` entry.
+It is off unless asked for, because every line costs a call; a failed, slow, or
+unavailable call leaves the extractive cut in place.
+
+Without compaction the view uses the deterministic fallback upstream itself uses
+when a compressor refuses: a leaf keeps the head of its message (`kind: text`),
+and a merge keeps the head of both halves joined by `⋯`, cut at 512 bytes on a
+character boundary. The log keeps every message whole, so `zoom(id, 1)` is
+always the way to read the original; the view is a navigation summary, not a
+lossy archive.
 
 The view grows one line per message and, once it passes 128 KB, merges its most
 due sibling pairs down to 64 KB (`/optchat fit` merges as far as the tree
-allows). Nothing about the view is persisted: the merge order is a pure function
-of the log, so a resumed session rebuilds the identical tree from its entries.
+allows). The merge order is a pure function of the log, so it can always be
+rebuilt; the shape is also saved as an `optchat-view` entry, which is what keeps
+a `/optchat fit` or a model-written layout stable across a resume.
 
 ## Known limitations
 
-- **Session scope, not profiles.** Upstream keeps several profiles with durable
-  stores across chats; this port is scoped to one session branch. Cross-session
-  memory would need a project store and a separate configuration surface.
-- **No model compression.** Summary lines are extractive, so an old line is a
-  truncated head rather than a written summary. The log and `zoom` keep the
-  original text.
-- **No Claude Code/Codex/OMP importers.** `/optchat import` reads generic
-  text/markdown/JSONL; format-specific parsers are not implemented.
+- **Profiles attach, they do not merge live.** Memory is mirrored into
+  `.rpi/optchat/<profile>.jsonl` (`RPI_OPTCHAT_STORE_DIR` moves that directory,
+  for a read-only checkout); `/optchat recall` searches it and
+  `/optchat attach` copies it back in as imported notes. Upstream instead serves
+  one profile store as the live log.
+- **Compaction is opt-in and per session.** A line costs one child model call, so
+  it stays off unless `/optchat compact on` or `RPI_OPTCHAT_COMPACT=auto`.
+- **Imports are one-way and bounded.** A source-specific parser is only promised
+  for Claude Code and ChatGPT; other exports are read by the tolerant JSON reader.
 - **No background agents or UI panels.** rpi already provides child agents
-  (`rpi-subagents`, `rpi-orchestrator`) and renders commands as messages.
+  (`rpi-subagents`, `rpi-orchestrator`) and renders commands as messages; the
+  footer count is published through `SetStatus`.
+- **Inline rows need a host that dispatches entry renderers.** The plugin
+  registers one (`OptChat <kind> · <head>`), but a host that does not invoke it
+  simply renders the raw entry, and `/optchat view` remains the full view.
 - **Tool activity depends on host event dispatch.** rpi 0.24.0 dispatches
   `tool_execution_start`/`tool_execution_end` to plugins during interactive and
   `--mode rpc` runs, but not in `--print` runs; user and reply capture still
-  works there.
-- **The log is bounded at 20000 messages.** Capture stops there instead of
-  growing without limit; existing messages stay readable through `zoom` and
-  `search`.
+  works there. `packages/rpi-optchat/HOST-REQUIREMENTS.md` carries the open
+  request.
+- **Branch switches are read from lifecycle events when the host sends them.**
+  `SessionBeforeTree`/`SessionTree`/`SessionBeforeSwitch`/`SessionBeforeFork`
+  drop the cache before the branch changes; on a host that does not dispatch them
+  the plugin falls back to a `GetSessionBranch(limit: 1, newestFirst)` watermark,
+  which costs one call per turn boundary.
+- **The session log keeps a 20000-message window; the profile store does not.**
+  Past the cap the oldest messages leave the view and `zoom`, in batches, and
+  their ids are never reused, so a printed summary keeps naming the same message.
+  They are still in `.rpi/optchat/<profile>.jsonl`: `recall` searches it, and a
+  `zoom` past the window says so instead of failing silently.
 - **Capture is best effort.** A failed `AppendEntry` never fails the turn and the
   entry is not committed to the in-memory log, so a later capture can retry
   without creating a phantom message. `/optchat note` reports the persistence
@@ -128,16 +171,33 @@ of the log, so a resumed session rebuilds the identical tree from its entries.
 ## Verification
 
 ```sh
-cargo test -p rpi-optchat
+cargo test -p rpi-optchat            # unit tests + the host-facing suite
 cargo clippy -p rpi-optchat --all-targets
 ```
 
+`tests/host.rs` drives the plugin through its ABI with a fake host that answers
+`GetSessionBranch`, `AppendEntry`, `SetStatus` and `GetExecutionContext` the way
+`rpi` does, and covers what only shows up against a host: the `filtered: true`
+refusal (an unfiltered branch is never read as memory), `afterSeq` paging,
+reloading when another writer added a message, `SessionBeforeTree`/`SessionTree`
+dropping the cache, persist-before-commit with a host that rejects the append, the
+duplicate window, the footer being published and cleared, and the entry renderer
+declining foreign types. The fake returns a non-zero rc when it rejects a write,
+because that is the ABI; a `{"error":…}` body with `rc == 0` is a success.
+
 The unit tests cover the log/tree/view invariants (bounded lines, collapsing,
-tiling, paging, UTF-8-safe clipping, search paging) and the command/schema
+tiling, paging with stable ids, UTF-8-safe clipping, search paging), the
+compaction child (a stub executable that answers, fails, or times out), the
+profile store (name safety, append/read, malformed lines), the importers
+(Claude, ChatGPT mapping order, generic JSONL, text), the entry renderer
+(entry and summary envelopes, foreign types declined) and the command/schema
 surface. End-to-end checks against a running host are described in the pull
 request: `/optchat note` writes `optchat-entry` entries, a second process
 resuming the session hydrates them, the `search` tool executes through the ABI,
 and a `before_agent_start` run shows the pointer line in the provider request.
+Against a host that dispatches the session-tree events, `RPI_OPTCHAT_DEBUG=1`
+prints `[optchat] SessionBeforeTree` / `[optchat] SessionTree` around an RPC
+`navigate`, and the memory rehydrates on the branch the host selected.
 
 ## Attribution
 

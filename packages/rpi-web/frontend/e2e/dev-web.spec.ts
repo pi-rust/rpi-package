@@ -1080,7 +1080,7 @@ test("fork is available from a session context menu", async ({ page }) => {
 test("recent chats open as a floating window without moving the project tree", async ({
   page,
 }) => {
-  await mockHost(page, { additionalSessions: 10 });
+  await mockHost(page, { additionalSessions: 40 });
   await page.goto("/");
   const tree = page.locator(".project-tree");
   const treeBox = async () =>
@@ -1094,13 +1094,37 @@ test("recent chats open as a floating window without moving the project tree", a
   await expect(recent).toBeVisible();
   // Cross-project recency is the one thing the tree cannot express; the window
   // lists every non-archived chat and tags each row with its project.
-  await expect(recent.locator(".slim-recent-option")).toHaveCount(11);
+  await expect(recent.locator(".slim-recent-option")).toHaveCount(41);
   await expect(recent.locator(".slim-recent-project").first()).toHaveText(
     "rpi-package",
   );
   // The floating window costs no permanent vertical space: the tree keeps its
   // full height and position while it is open.
   expect(await treeBox()).toEqual(before);
+  // The list must scroll *inside* the capped window and show a real, space-
+  // reserving scrollbar. With only `scrollbar-width: thin` Chromium renders an
+  // overlay bar that is invisible until interaction: clientWidth == offsetWidth.
+  // An always-visible bar reduces clientWidth; assert both facts so the probe
+  // fails when the bar regresses to overlay-only.
+  const list = recent.locator(".slim-recent-list");
+  const geometry = await list.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const parent = element.parentElement!.getBoundingClientRect();
+    return {
+      bottom: box.bottom,
+      parentBottom: parent.bottom,
+      client: element.clientHeight,
+      scroll: element.scrollHeight,
+      clientWidth: element.clientWidth,
+      offsetWidth: element.offsetWidth,
+    };
+  });
+  expect(geometry.scroll).toBeGreaterThan(geometry.client);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.parentBottom);
+  expect(geometry.clientWidth).toBeLessThan(geometry.offsetWidth);
+  expect(await list.evaluate((element) => element.scrollTop)).toBe(0);
+  await list.evaluate((element) => element.scrollTo({ top: 200 }));
+  expect(await list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await page.keyboard.press("Escape");
   await expect(recent).toHaveCount(0);
 });
@@ -2809,6 +2833,102 @@ test("the working indicator does not resize the transcript", async ({
   const withoutIndicator = await transcript.evaluate((node) => node.scrollHeight);
   expect(withoutIndicator).toBe(busyHeight);
   hold();
+});
+
+test("streaming thinking does not resize the transcript", async ({ page }) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          {
+            role: "user",
+            entryId: "thinking-jitter-user",
+            content: "Check the streamed reasoning",
+          },
+        ],
+      },
+    }),
+  );
+  let streams = 0;
+  let releaseUpdate!: () => void;
+  const readyForUpdate = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  const shortThinking = "**检查思路**\n\n- 确认段落";
+  const longThinking = `**检查思路**\n\n- 确认段落\n\n\`\`\`typescript\nconst line = "${"long_line_".repeat(60)}";\n\`\`\`\n`;
+  const message = (text: string) =>
+    JSON.stringify({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: text }],
+      },
+    });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      streams++;
+      if (streams === 1)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+          headers: { "cache-control": "no-store" },
+        });
+      if (streams === 2)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            'id: 6\nevent: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n' +
+            `id: 7\nevent: message_update\ndata: ${message(shortThinking)}\n\n`,
+          headers: { "cache-control": "no-store" },
+        });
+      await readyForUpdate;
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: `id: 8\nevent: message_update\ndata: ${message(longThinking)}\n\n`,
+        headers: { "cache-control": "no-store" },
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toContainText("Check the streamed reasoning");
+  await expect(page.locator(".transcript")).not.toHaveAttribute("data-history-window", "true");
+  const transcript = page.locator(".transcript");
+  const row = page.locator(".thinking-row-streaming");
+  await expect(row).toBeVisible();
+  await expect(row.locator(".thinking-row-viewport")).toHaveCSS(
+    "overflow-y",
+    "auto",
+  );
+  const firstHeight = await transcript.evaluate(
+    (node) => node.scrollHeight,
+  );
+  const viewportHeight = await row
+    .locator(".thinking-row-viewport")
+    .evaluate((node) => node.clientHeight);
+  releaseUpdate();
+  await expect(row.locator(".thinking-row-viewport strong")).toHaveText(
+    "检查思路",
+  );
+  const secondHeight = await transcript.evaluate(
+    (node) => node.scrollHeight,
+  );
+  expect(secondHeight).toBe(firstHeight);
+  expect(
+    await row
+      .locator(".thinking-row-viewport")
+      .evaluate((node) => node.clientHeight),
+  ).toBe(viewportHeight);
+  expect(
+    await row
+      .locator(".thinking-row-viewport")
+      .evaluate((node) => node.scrollHeight > node.clientHeight),
+  ).toBe(true);
 });
 
 // The indicator is out of flow, so the only thing keeping it off the transcript
@@ -6413,6 +6533,61 @@ test("composer model picker groups by provider and applies the selection", async
   await expect(page.locator(".composer-model")).toContainText("Model Beta");
 });
 
+test("model menu runtime entry uses the weight of an unselected model row", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const catalog = [
+    { id: "alpha-id", name: "Model Alpha", provider: "alpha" },
+    { id: "beta-id", name: "Model Beta", provider: "beta" },
+  ];
+  await page.route("**/api/v1/capabilities", (route) =>
+    route.fulfill({
+      json: {
+        ...capabilities,
+        supportedCommands: [
+          ...capabilities.supportedCommands,
+          "get_available_models",
+          "set_model",
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/v1/sessions/*/commands", (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type === "get_available_models")
+      return route.fulfill({ json: response({ models: catalog }, body.type) });
+    if (body.type === "get_state")
+      return route.fulfill({
+        json: response({ modelId: "alpha-id", provider: "alpha" }, body.type),
+      });
+    return route.fallback();
+  });
+  await page.goto("/");
+  await page.locator(".composer-model").click();
+  const entry = page.locator(".dropdown-popover .slim-model-runtime");
+  await expect(entry).toBeVisible();
+
+  // #302: the runtime entry is supporting navigation, not an emphasised
+  // choice. Its label must match an unselected model row (the menu inherits
+  // font-weight 400 from the document) and stay lighter than the selected
+  // row, which keeps its own emphasis.
+  const weight = (target: typeof entry) =>
+    target.evaluate((node) => Number(window.getComputedStyle(node).fontWeight));
+  const runtimeLabel = entry.locator(".slim-model-runtime-label");
+  const unselected = page
+    .locator(".dropdown-popover .dropdown-item")
+    .filter({ hasText: "Model Beta" });
+  const selected = page.locator(
+    ".dropdown-popover .dropdown-item[aria-selected='true']",
+  );
+
+  const runtimeWeight = await weight(runtimeLabel);
+  expect(runtimeWeight).toBe(await weight(unselected));
+  expect(runtimeWeight).toBeLessThanOrEqual(500);
+  expect(await weight(selected)).toBeGreaterThan(runtimeWeight);
+});
+
 test("edit tool renders a file diff and powershell renders as a terminal", async ({
   page,
 }) => {
@@ -7982,8 +8157,13 @@ test.describe("attachment cards", () => {
     const fileRequests: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
+      // The app's own bundle assets (the brand logo now ships under /assets)
+      // are not attachment fetches; the copy path must fetch no document.
+      const ownAsset =
+        url.pathname === "/favicon.svg" ||
+        url.pathname.startsWith("/assets/");
       if (
-        (request.resourceType() === "image" && url.pathname !== "/favicon.svg") ||
+        (request.resourceType() === "image" && !ownAsset) ||
         /\.docx$/i.test(url.pathname) ||
         url.pathname.includes("/uploads/") ||
         /\/projects\/[^/]+\/file$/.test(url.pathname)

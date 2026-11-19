@@ -62,8 +62,12 @@ sent automatically.
 Web automatically releases an **idle native host** after 30 minutes without a
 request for that session. This closes the child process but preserves the
 session registry entry and native transcript; opening the chat again restores
-it. A running operation, pending dialog, queued work, or uncertain native idle
-state is never interrupted. Set `"sessionTimeoutSeconds": 0` in `.rpi/web.json`
+it. A running operation, queued work, or uncertain native idle state is never
+interrupted. A session left waiting on an unanswered dialog (`awaiting_input`)
+is also not killed mid-run: after the same idle budget without any request the
+reaper cancels the pending dialog through the ordinary response path, which lets
+the tool call settle; the host is then closed on a later pass once it is idle.
+Set `"sessionTimeoutSeconds": 0` in `.rpi/web.json`
 to disable the reaper, or choose another positive number of seconds. The
 command-line override is `--session-timeout SECONDS` (use `0` to disable).
 This is a resource cleanup timeout, not permanent session deletion.
