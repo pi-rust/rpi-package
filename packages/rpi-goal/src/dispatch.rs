@@ -160,7 +160,7 @@ fn run() {
 enum Plan {
     Idle,
     Wait(Instant),
-    Send(Box<Goal>),
+    Send(Box<Goal>, u64),
     Stop(Status, String, Option<&'static str>),
 }
 
@@ -170,9 +170,23 @@ fn step() -> Option<Instant> {
     if runtime::snapshot().is_none() || crate::is_subagent() {
         return None;
     }
+    // Read host-backed state and settings before taking the mutation lock. A
+    // mutation that lands while we are reading (or before the lock below) makes
+    // this snapshot stale; the next wake will retry from fresh state.
+    let before = state::revision();
+    let goals = state::read_lenient();
+    let after = state::revision();
+    if before != after {
+        return None;
+    }
+    let settings = settings::load();
+    let tools_available = required_tools_available();
     let plan = {
         let _guard = state::lock();
-        evaluate()
+        if state::revision() != after {
+            return None;
+        }
+        evaluate(goals, settings, tools_available)
     };
     match plan {
         Plan::Idle => None,
@@ -181,19 +195,27 @@ fn step() -> Option<Instant> {
             stop(status, &reason, cause);
             None
         }
-        Plan::Send(goal) => {
+        Plan::Send(goal, revision) => {
+            // A pause or replacement may have committed after `evaluate`
+            // released the state lock. Check again before touching the host so
+            // a stale plan cannot start a run for a stopped or replaced goal.
+            if !dispatch_is_current(&goal, revision) {
+                return None;
+            }
             state::flush();
             inject::flush();
-            dispatch(&goal);
+            if !dispatch_is_current(&goal, revision) {
+                return None;
+            }
+            dispatch(&goal, revision);
             None
         }
     }
 }
 
-/// Decide what to do next. Runs under the state lock and never performs a host
-/// call: it only reads, mutates in memory, and queues the write.
-fn evaluate() -> Plan {
-    let goals = state::read_lenient();
+/// Decide what to do next from a snapshot read before the state lock. It only
+/// mutates the in-memory snapshot and queues the write; host calls stay outside.
+fn evaluate(goals: Goals, settings: settings::Settings, tools_available: bool) -> Plan {
     let Some(mut goal) = goals.active.clone() else {
         return Plan::Idle;
     };
@@ -220,7 +242,6 @@ fn evaluate() -> Plan {
         return Plan::Stop(Status::BudgetLimited, reason, None);
     }
 
-    let settings = settings::load();
     if let Some(reason) = policy::safety_pause(&goal, &settings) {
         let cause = if reason.starts_with("no progress") {
             "no_progress"
@@ -230,7 +251,7 @@ fn evaluate() -> Plan {
         return Plan::Stop(Status::Paused, reason, Some(cause));
     }
 
-    if !required_tools_available() {
+    if !tools_available {
         return Plan::Stop(
             Status::Paused,
             "goal_complete is not in the active tool set".into(),
@@ -252,13 +273,29 @@ fn evaluate() -> Plan {
     }
     let mut next = goals.clone();
     next.active = Some(goal.clone());
-    state::queue(&next);
-    Plan::Send(Box::new(goal))
+    let revision = state::queue(&next);
+    Plan::Send(Box::new(goal), revision)
+}
+
+/// Whether a plan created by `evaluate` is still the current intent. The
+/// revision check distinguishes a pause/replacement from the state snapshot
+/// that produced the plan; the id/status check keeps a stale plan harmless when
+/// a host read only exposes committed state.
+fn dispatch_is_current(goal: &Goal, revision: u64) -> bool {
+    let goals = state::read_lenient();
+    goals
+        .active
+        .as_ref()
+        .is_some_and(|active| active.id == goal.id && active.status == Status::Active)
+        && goals.revision == revision
 }
 
 /// Send one continuation and fold the outcome back into state. The call blocks
 /// until the run ends, so the settlement that follows is already queued.
-fn dispatch(goal: &Goal) {
+fn dispatch(goal: &Goal, revision: u64) {
+    if !dispatch_is_current(goal, revision) {
+        return;
+    }
     let first = goal.iteration <= 1;
     let prompt = if first {
         prompts::kickoff(goal)

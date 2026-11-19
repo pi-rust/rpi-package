@@ -325,10 +325,12 @@ fn desired() -> &'static Mutex<Option<Goals>> {
 /// Queue a state write for the next safe boundary. Writing immediately from a
 /// tool would insert a custom entry between an `assistant(tool_calls)` message
 /// and its `toolResult`, which strict providers reject.
-pub fn queue(goals: &Goals) {
+pub fn queue(goals: &Goals) -> u64 {
     let mut goals = goals.clone();
-    goals.revision = next_revision();
+    let revision = next_revision();
+    goals.revision = revision;
     *desired().lock().unwrap_or_else(|p| p.into_inner()) = Some(goals);
+    revision
 }
 
 /// Forget the local intent: a session switch or teardown means the queued state
@@ -429,7 +431,7 @@ pub fn write(goals: &Goals) -> Result<(), String> {
 /// Queue a state write. Callers must hold [`lock`] so the queued snapshot cannot
 /// be replaced by a stale read-modify-write from another thread.
 pub fn queue_locked(goals: &Goals) {
-    queue(goals);
+    let _ = queue(goals);
 }
 
 /// Persist immediately, making queued state visible before the next prompt.
