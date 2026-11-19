@@ -462,6 +462,12 @@ for (const width of [1280, 390])
     await expect(source).toBeVisible();
     await page.waitForTimeout(150);
     expect(mock.reads).toEqual([]);
+    await page
+      .locator(".message.assistant")
+      .first()
+      .screenshot({
+        path: test.info().outputPath(`message-links-${width}.png`),
+      });
     const web = page.getByRole("link", {
       name: "https://example.com/docs",
       exact: true,
