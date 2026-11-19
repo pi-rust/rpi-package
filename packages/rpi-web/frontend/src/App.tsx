@@ -97,6 +97,7 @@ import {
   type MessageKey,
 } from "./i18n";
 import { Splitter, useStoredNumber, Workbench } from "./Workbench";
+import { WEB_VERSION } from "./version";
 import { MenuSelect } from "./MenuSelect";
 import { LoginScreen } from "./LoginScreen";
 import { ProjectContext } from "./ProjectContext";
@@ -108,7 +109,10 @@ import { useRunTimings, timingByRow } from "./useRunTimings";
 import { groupTodoUpdates, isTodoTool } from "./todoGroups";
 import { RunElapsed } from "./RunElapsed";
 import { ExecutionTrace } from "./ExecutionTracePanel";
-import { ToolProgramChildren, ToolProgramProvider } from "./ToolProgramChildren";
+import {
+  ToolProgramChildren,
+  ToolProgramProvider,
+} from "./ToolProgramChildren";
 import { parentToolCallId } from "./toolProgram";
 import { useExecutionTrace } from "./useExecutionTrace";
 import { traceView } from "./executionTrace";
@@ -327,14 +331,21 @@ const FAST_SNAPSHOT_OPTIONS = {
  */
 async function snapshotOf(
   sessionId: string,
-  options: { limit?: number; includeHistory?: boolean; signal?: AbortSignal } = FAST_SNAPSHOT_OPTIONS,
+  options: {
+    limit?: number;
+    includeHistory?: boolean;
+    signal?: AbortSignal;
+  } = FAST_SNAPSHOT_OPTIONS,
 ) {
   try {
     return await api.snapshot(sessionId, options);
   } catch (cause) {
     // Aborting a superseded read must not reopen its old session. Authentication
     // failures also belong to the access boundary, not the host lifecycle.
-    if (options.signal?.aborted || (cause instanceof ApiError && cause.status === 401))
+    if (
+      options.signal?.aborted ||
+      (cause instanceof ApiError && cause.status === 401)
+    )
       throw cause;
     await api.openSession(sessionId, options.signal);
     return api.snapshot(sessionId, options);
@@ -611,24 +622,37 @@ function sessionLifecycleError(cause: unknown, language: Language) {
   const zh = language === "zh";
   switch (cause.code) {
     case "session_busy":
-      return zh ? "会话仍在运行，请先停止并等待结束后再操作。" : "Session is running. Stop it and wait for it to settle before trying again.";
+      return zh
+        ? "会话仍在运行，请先停止并等待结束后再操作。"
+        : "Session is running. Stop it and wait for it to settle before trying again.";
     case "session_idle_unknown":
-      return zh ? "暂时无法确认会话是否空闲，请稍后重试。" : "Cannot confirm the session is idle. Try again later.";
+      return zh
+        ? "暂时无法确认会话是否空闲，请稍后重试。"
+        : "Cannot confirm the session is idle. Try again later.";
     case "session_deleting":
-      return zh ? "会话正在删除，无法打开或操作。请在会话操作菜单中重试永久删除。" : "Session deletion is incomplete. Retry permanent deletion from Session actions before opening or using it.";
+      return zh
+        ? "会话正在删除，无法打开或操作。请在会话操作菜单中重试永久删除。"
+        : "Session deletion is incomplete. Retry permanent deletion from Session actions before opening or using it.";
     case "session_archived":
-      return zh ? "请先恢复会话再打开（会话操作 → 恢复会话）。" : "Restore the chat before opening it (Session actions → Restore chat).";
+      return zh
+        ? "请先恢复会话再打开（会话操作 → 恢复会话）。"
+        : "Restore the chat before opening it (Session actions → Restore chat).";
     default:
       // Never display remote deletion diagnostics (which may contain private paths).
       if (cause.code?.includes("delet"))
-        return zh ? "永久删除未完成。请检查会话状态后手动重试。" : "Permanent deletion did not complete. Check the session state, then retry manually.";
+        return zh
+          ? "永久删除未完成。请检查会话状态后手动重试。"
+          : "Permanent deletion did not complete. Check the session state, then retry manually.";
       return null;
   }
 }
 
 function sessionSelectionError(session?: SessionSummary) {
-  return session?.deleting ? new ApiError("", 409, "session_deleting")
-    : session?.archived ? new ApiError("", 409, "session_archived") : null;
+  return session?.deleting
+    ? new ApiError("", 409, "session_deleting")
+    : session?.archived
+      ? new ApiError("", 409, "session_archived")
+      : null;
 }
 
 type SessionCompletionNotification = {
@@ -670,13 +694,23 @@ function normalizeLevel(value: unknown) {
 
 export default function App() {
   function errorText(cause: unknown) {
-    return sessionLifecycleError(cause, language) ?? (cause instanceof Error ? cause.message : String(cause));
+    return (
+      sessionLifecycleError(cause, language) ??
+      (cause instanceof Error ? cause.message : String(cause))
+    );
   }
 
   function retirementError(cause: unknown, deleting = false) {
-    return sessionLifecycleError(cause, language) ?? (language === "zh"
-      ? deleting ? "永久删除未完成。请检查会话状态后手动重试。" : "无法更新会话，请稍后重试。"
-      : deleting ? "Permanent deletion did not complete. Check the session state, then retry manually." : "Could not update the chat. Try again later.");
+    return (
+      sessionLifecycleError(cause, language) ??
+      (language === "zh"
+        ? deleting
+          ? "永久删除未完成。请检查会话状态后手动重试。"
+          : "无法更新会话，请稍后重试。"
+        : deleting
+          ? "Permanent deletion did not complete. Check the session state, then retry manually."
+          : "Could not update the chat. Try again later.")
+    );
   }
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [nativeMessageQueries, setNativeMessageQueries] = useState(false);
@@ -719,7 +753,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toolNameMode, setToolNameMode] = useState<ToolNameMode>(() => {
     try {
-      return localStorage.getItem(TOOL_NAME_MODE_KEY) === "mapped" ? "mapped" : "native";
+      return localStorage.getItem(TOOL_NAME_MODE_KEY) === "mapped"
+        ? "mapped"
+        : "native";
     } catch {
       return "native";
     }
@@ -776,22 +812,25 @@ export default function App() {
       settlement: SettlementIdentity | null | undefined,
       fallbackSeq?: number,
     ) => {
-      const identity = settlementKey(settlement, fallbackSeq) ??
+      const identity =
+        settlementKey(settlement, fallbackSeq) ??
         (fallbackSeq != null ? `seq:${fallbackSeq}` : null);
       if (!identity) return;
       const id = `${sessionId}:${identity}`;
       if (notifiedSettlements.current.has(id)) return;
       notifiedSettlements.current.add(id);
-      setSessionNotifications((previous) => [
-        ...previous,
-        {
-          id,
-          sessionId,
-          title: title?.trim() || "",
-          outcome: settlement?.outcome || "completed",
-          error: shortReason(settlement?.error),
-        },
-      ].slice(-8));
+      setSessionNotifications((previous) =>
+        [
+          ...previous,
+          {
+            id,
+            sessionId,
+            title: title?.trim() || "",
+            outcome: settlement?.outcome || "completed",
+            error: shortReason(settlement?.error),
+          },
+        ].slice(-8),
+      );
     },
     [],
   );
@@ -877,7 +916,10 @@ export default function App() {
   const [queueKind, setQueueKind] = useState("steer");
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  function updateDraft(value: string, targetSession = activeSessionRef.current) {
+  function updateDraft(
+    value: string,
+    targetSession = activeSessionRef.current,
+  ) {
     setDraft(value);
     if (!targetSession) return;
     if (value.length > 0) draftBySession.current.set(targetSession, value);
@@ -983,7 +1025,9 @@ export default function App() {
   const displayedRows = historical.active ? historical.rows : rows;
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [messageSearchQuery, setMessageSearchQuery] = useState("");
-  const [messageSearchHistory, setMessageSearchHistory] = useState<MessageSearchResult[]>([]);
+  const [messageSearchHistory, setMessageSearchHistory] = useState<
+    MessageSearchResult[]
+  >([]);
   const [messageSearchLoading, setMessageSearchLoading] = useState(false);
   const [messageSearchIndex, setMessageSearchIndex] = useState(0);
   const messageSearchAbort = useRef<AbortController | null>(null);
@@ -998,21 +1042,37 @@ export default function App() {
     );
   }, [messageSearchHistory, messageSearchLoaded]);
   const runTimings = useRunTimings(
-    sessionId, rows, `${connectionRevision}:${navigationRevision.current}`,
-    !loadingSession && Boolean(capabilities), settleTick,
+    sessionId,
+    rows,
+    `${connectionRevision}:${navigationRevision.current}`,
+    !loadingSession && Boolean(capabilities),
+    settleTick,
   );
   const historicalRunTimings = useRunTimings(
-    sessionId, historical.rows, `${connectionRevision}:${navigationRevision.current}`,
-    historical.active && !loadingSession && Boolean(capabilities), settleTick,
+    sessionId,
+    historical.rows,
+    `${connectionRevision}:${navigationRevision.current}`,
+    historical.active && !loadingSession && Boolean(capabilities),
+    settleTick,
   );
-  const displayedTimings = historical.active ? historicalRunTimings : runTimings;
-  const runFooters = useMemo(() => timingByRow(displayedRows, displayedTimings), [displayedRows, displayedTimings]);
+  const displayedTimings = historical.active
+    ? historicalRunTimings
+    : runTimings;
+  const runFooters = useMemo(
+    () => timingByRow(displayedRows, displayedTimings),
+    [displayedRows, displayedTimings],
+  );
   useEffect(() => {
     messageSearchAbort.current?.abort();
     setMessageSearchHistory([]);
     setMessageSearchIndex(0);
     const query = messageSearchQuery.trim();
-    if (!messageSearchOpen || query.length < 2 || !nativeMessageQueries || !sessionId) {
+    if (
+      !messageSearchOpen ||
+      query.length < 2 ||
+      !nativeMessageQueries ||
+      !sessionId
+    ) {
       setMessageSearchLoading(false);
       return;
     }
@@ -1030,11 +1090,20 @@ export default function App() {
               { beforeId, leafId, limit: 100 },
               controller.signal,
             );
-            matches.push(...summaryMatches(page.messages, query, page.leafId ?? leafId));
-            if (matches.length >= 100 || !page.hasMore || !page.nextBeforeId || page.nextBeforeId === beforeId) break;
+            matches.push(
+              ...summaryMatches(page.messages, query, page.leafId ?? leafId),
+            );
+            if (
+              matches.length >= 100 ||
+              !page.hasMore ||
+              !page.nextBeforeId ||
+              page.nextBeforeId === beforeId
+            )
+              break;
             beforeId = page.nextBeforeId;
           }
-          if (!controller.signal.aborted) setMessageSearchHistory(matches.slice(0, 100));
+          if (!controller.signal.aborted)
+            setMessageSearchHistory(matches.slice(0, 100));
         } catch (cause) {
           if (!controller.signal.aborted) {
             setMessageSearchHistory([]);
@@ -1048,36 +1117,55 @@ export default function App() {
     return () => {
       window.clearTimeout(timer);
       controller.abort();
-      if (messageSearchAbort.current === controller) messageSearchAbort.current = null;
+      if (messageSearchAbort.current === controller)
+        messageSearchAbort.current = null;
     };
-  }, [leafId, messageSearchOpen, messageSearchQuery, nativeMessageQueries, sessionId]);
+  }, [
+    leafId,
+    messageSearchOpen,
+    messageSearchQuery,
+    nativeMessageQueries,
+    sessionId,
+  ]);
   useEffect(() => {
     setMessageSearchOpen(false);
     setMessageSearchQuery("");
     setMessageSearchHistory([]);
   }, [sessionId]);
-  const selectMessageSearch = useCallback((index: number) => {
-    const result = messageSearchResults[index];
-    if (!result) return;
-    setMessageSearchIndex(index);
-    const target = result.rowId
-      ? Array.from(document.querySelectorAll<HTMLElement>("[data-transcript-row]"))
-          .find((element) => element.dataset.transcriptRow === result.rowId)
-      : null;
-    if (target && transcriptRef.current) {
-      followingRef.current = false;
-      setFollowing(false);
-      transcriptRef.current.scrollTop +=
-        target.getBoundingClientRect().top -
-        transcriptRef.current.getBoundingClientRect().top -
-        12;
-      return;
-    }
-    if (result.leafId) historical.open({ entryId: result.entryId, leafId: result.leafId });
-  }, [historical, messageSearchResults]);
-  const { state: traceState, snapshot: traceSnapshot, event: traceEvent, clear: clearTrace } =
-    useExecutionTrace(traceBinding);
-  const executionTrace = useMemo(() => traceView(traceState, runTimings), [traceState, runTimings]);
+  const selectMessageSearch = useCallback(
+    (index: number) => {
+      const result = messageSearchResults[index];
+      if (!result) return;
+      setMessageSearchIndex(index);
+      const target = result.rowId
+        ? Array.from(
+            document.querySelectorAll<HTMLElement>("[data-transcript-row]"),
+          ).find((element) => element.dataset.transcriptRow === result.rowId)
+        : null;
+      if (target && transcriptRef.current) {
+        followingRef.current = false;
+        setFollowing(false);
+        transcriptRef.current.scrollTop +=
+          target.getBoundingClientRect().top -
+          transcriptRef.current.getBoundingClientRect().top -
+          12;
+        return;
+      }
+      if (result.leafId)
+        historical.open({ entryId: result.entryId, leafId: result.leafId });
+    },
+    [historical, messageSearchResults],
+  );
+  const {
+    state: traceState,
+    snapshot: traceSnapshot,
+    event: traceEvent,
+    clear: clearTrace,
+  } = useExecutionTrace(traceBinding);
+  const executionTrace = useMemo(
+    () => traceView(traceState, runTimings),
+    [traceState, runTimings],
+  );
   const todoOwners = useRef<{
     sessionId: string;
     ids: ReadonlySet<string>;
@@ -1114,15 +1202,26 @@ export default function App() {
   useLayoutEffect(() => {
     const node = transcriptRef.current;
     if (!node || !historical.page) return;
-    const anchorId = historical.cursor && "anchorId" in historical.cursor ? historical.cursor.anchorId : null;
-    const row = historical.rows.find(row => row.entryId === anchorId);
-    const target = row && Array.from(node.querySelectorAll<HTMLElement>("[data-transcript-row]"))
-      .find(element => element.dataset.transcriptRow === row.id);
+    const anchorId =
+      historical.cursor && "anchorId" in historical.cursor
+        ? historical.cursor.anchorId
+        : null;
+    const row = historical.rows.find((row) => row.entryId === anchorId);
+    const target =
+      row &&
+      Array.from(
+        node.querySelectorAll<HTMLElement>("[data-transcript-row]"),
+      ).find((element) => element.dataset.transcriptRow === row.id);
     followingRef.current = false;
     setFollowing(false);
     node.scrollTop = target
-      ? node.scrollTop + target.getBoundingClientRect().top - node.getBoundingClientRect().top - 12
-      : historical.cursor && "beforeId" in historical.cursor ? node.scrollHeight : 0;
+      ? node.scrollTop +
+        target.getBoundingClientRect().top -
+        node.getBoundingClientRect().top -
+        12
+      : historical.cursor && "beforeId" in historical.cursor
+        ? node.scrollHeight
+        : 0;
     rememberTranscriptPosition();
   }, [historical.page, historical.rows, rememberTranscriptPosition]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1166,7 +1265,11 @@ export default function App() {
   const [thinkingPending, setThinkingPending] = useState(false);
   const [language, setLanguage] = useState<Language>(() => detectLanguage());
   const [autoRead, setAutoRead] = useState(() => {
-    try { return localStorage.getItem("rpi-auto-read") === "1"; } catch { return false; }
+    try {
+      return localStorage.getItem("rpi-auto-read") === "1";
+    } catch {
+      return false;
+    }
   });
   const [readingRowId, setReadingRowId] = useState<string | null>(null);
   const ttsAudio = useRef<HTMLAudioElement | null>(null);
@@ -1183,33 +1286,41 @@ export default function App() {
     ttsUrl.current = null;
     setReadingRowId(null);
   }, []);
-  const speakMessage = useCallback(async (rowId: string, text: string) => {
-    if (readingRowId === rowId) {
+  const speakMessage = useCallback(
+    async (rowId: string, text: string) => {
+      if (readingRowId === rowId) {
+        stopReading();
+        return;
+      }
       stopReading();
-      return;
-    }
-    stopReading();
-    const controller = new AbortController();
-    ttsAbort.current = controller;
-    try {
-      const voice = language === "zh" ? "zh-CN-XiaoxiaoNeural" : "en-US-AriaNeural";
-      const blob = await api.tts(text, voice, controller.signal);
-      if (controller.signal.aborted) return;
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      ttsUrl.current = url;
-      ttsAudio.current = audio;
-      setReadingRowId(rowId);
-      audio.onended = stopReading;
-      audio.onerror = stopReading;
-      await audio.play();
-    } catch (cause) {
-      if (!controller.signal.aborted) setError(errorText(cause));
-      stopReading();
-    }
-  }, [language, readingRowId, stopReading]);
+      const controller = new AbortController();
+      ttsAbort.current = controller;
+      try {
+        const voice =
+          language === "zh" ? "zh-CN-XiaoxiaoNeural" : "en-US-AriaNeural";
+        const blob = await api.tts(text, voice, controller.signal);
+        if (controller.signal.aborted) return;
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        ttsUrl.current = url;
+        ttsAudio.current = audio;
+        setReadingRowId(rowId);
+        audio.onended = stopReading;
+        audio.onerror = stopReading;
+        await audio.play();
+      } catch (cause) {
+        if (!controller.signal.aborted) setError(errorText(cause));
+        stopReading();
+      }
+    },
+    [language, readingRowId, stopReading],
+  );
   useEffect(() => {
-    try { localStorage.setItem("rpi-auto-read", autoRead ? "1" : "0"); } catch { /* optional browser persistence */ }
+    try {
+      localStorage.setItem("rpi-auto-read", autoRead ? "1" : "0");
+    } catch {
+      /* optional browser persistence */
+    }
   }, [autoRead]);
   useEffect(() => {
     stopReading();
@@ -1219,27 +1330,49 @@ export default function App() {
   useEffect(() => () => stopReading(), [stopReading]);
   useEffect(() => {
     if (!sessionHydrated || historical.active || !sessionId) return;
-    const row = [...displayedRows].reverse().find(
-      (candidate): candidate is Extract<Row, { kind: "text" }> =>
-        candidate.kind === "text" && candidate.role === "assistant" && Boolean(candidate.text.trim()),
-    );
+    const row = [...displayedRows]
+      .reverse()
+      .find(
+        (candidate): candidate is Extract<Row, { kind: "text" }> =>
+          candidate.kind === "text" &&
+          candidate.role === "assistant" &&
+          Boolean(candidate.text.trim()),
+      );
     if (row) autoReadLast.current = `${sessionId}:${row.id}`;
     autoReadSettlement.current = settleTick;
   }, [historical.active, sessionHydrated, sessionId]);
   useEffect(() => {
-    if (!autoRead || !sessionHydrated || historical.active || !sessionId || settleTick === 0) return;
+    if (
+      !autoRead ||
+      !sessionHydrated ||
+      historical.active ||
+      !sessionId ||
+      settleTick === 0
+    )
+      return;
     if (autoReadSettlement.current === settleTick) return;
     autoReadSettlement.current = settleTick;
-    const row = [...displayedRows].reverse().find(
-      (candidate): candidate is Extract<Row, { kind: "text" }> =>
-        candidate.kind === "text" && candidate.role === "assistant" && Boolean(candidate.text.trim()),
-    );
+    const row = [...displayedRows]
+      .reverse()
+      .find(
+        (candidate): candidate is Extract<Row, { kind: "text" }> =>
+          candidate.kind === "text" &&
+          candidate.role === "assistant" &&
+          Boolean(candidate.text.trim()),
+      );
     if (!row) return;
     const key = `${sessionId}:${row.id}`;
     if (autoReadLast.current === key) return;
     autoReadLast.current = key;
     void speakMessage(row.id, row.text);
-  }, [autoRead, displayedRows, historical.active, sessionId, settleTick, speakMessage]);
+  }, [
+    autoRead,
+    displayedRows,
+    historical.active,
+    sessionId,
+    settleTick,
+    speakMessage,
+  ]);
   const [dialog, setDialog] = useState<UiDialog | null>(null);
   const dialogRequests = useRef(new Map<string, UiDialog>());
   const dialogEventSeq = useRef(0);
@@ -1252,7 +1385,12 @@ export default function App() {
   );
 
   useLayoutEffect(() => {
-    const scope = { sessionId, projectId, controller: new AbortController(), pending: 0 };
+    const scope = {
+      sessionId,
+      projectId,
+      controller: new AbortController(),
+      pending: 0,
+    };
     uploadScope.current = scope;
     uploadQueue.current = Promise.resolve();
     setUploading(false);
@@ -1260,7 +1398,7 @@ export default function App() {
     return () => {
       scope.controller.abort();
       if (uploadScope.current === scope) uploadScope.current = null;
-      attachmentPreviews.current.forEach(url => URL.revokeObjectURL(url));
+      attachmentPreviews.current.forEach((url) => URL.revokeObjectURL(url));
       attachmentPreviews.current.clear();
     };
   }, [sessionId, projectId]);
@@ -1324,10 +1462,19 @@ export default function App() {
     if (previouslyBusy.current && !busy) void refreshProjectRoots();
     previouslyBusy.current = busy;
   }, [busy, refreshProjectRoots]);
-  const composerAbort = busy && supported.has("abort") && !loadingSession && !connectionFailed;
-  const composerContinue = !busy && status !== "closed" && !queueEditId && !draft.trim() && attachments.length === 0 &&
-    ((interrupted && supported.has("resume_pending")) || (failedRun && supported.has("prompt")));
-  const localSlash = attachments.length === 0 && LOCAL_SLASH_COMMANDS.has(draft.trim().split(/\s+/, 1)[0]);
+  const composerAbort =
+    busy && supported.has("abort") && !loadingSession && !connectionFailed;
+  const composerContinue =
+    !busy &&
+    status !== "closed" &&
+    !queueEditId &&
+    !draft.trim() &&
+    attachments.length === 0 &&
+    ((interrupted && supported.has("resume_pending")) ||
+      (failedRun && supported.has("prompt")));
+  const localSlash =
+    attachments.length === 0 &&
+    LOCAL_SLASH_COMMANDS.has(draft.trim().split(/\s+/, 1)[0]);
   // Submitting while a run is active queues the message instead of prompting.
   // The delivery selector lives in the composer because the Inspector is
   // collapsed by default, which otherwise hides the only way to pick `steer`.
@@ -1462,13 +1609,20 @@ export default function App() {
       const freshDialogEvent = !seq || seq > dialogEventSeq.current;
       if (
         freshDialogEvent &&
-        ["ui_dialog_request", "ui_dialog_closed", "agent_settled", "host_closed"].includes(event.type)
+        [
+          "ui_dialog_request",
+          "ui_dialog_closed",
+          "agent_settled",
+          "host_closed",
+        ].includes(event.type)
       )
         dialogEventSeq.current = seq;
       switch (event.type) {
         case "agent_start":
         case "operation_accepted":
-          setRows((previous) => previous.filter((row) => row.id !== "retry-note"));
+          setRows((previous) =>
+            previous.filter((row) => row.id !== "retry-note"),
+          );
           setRunActive(true);
           setStatus("running");
           setInterrupted(false);
@@ -1502,13 +1656,10 @@ export default function App() {
           );
           const aborted =
             event.aborted && outcome !== "aborted" ? " · aborted" : "";
-          const failure = [
-            "failed",
-            "error",
-            "interrupted",
-            "aborted",
-            "stopped",
-          ].includes(outcome) || event.aborted === true;
+          const failure =
+            ["failed", "error", "interrupted", "aborted", "stopped"].includes(
+              outcome,
+            ) || event.aborted === true;
           setFailedRun(failure);
           const errorReason = shortReason(event.error);
           const reason = errorReason ? ` · ${errorReason}` : "";
@@ -1704,7 +1855,10 @@ export default function App() {
         case "tool_execution_start":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
-              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
+              nativeToolCallId:
+                typeof event.toolCallId === "string"
+                  ? event.toolCallId
+                  : undefined,
               name: String(event.toolName ?? "tool"),
               args: event.args,
               timing: toolTiming(event.webTiming),
@@ -1715,7 +1869,10 @@ export default function App() {
         case "tool_execution_update":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
-              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
+              nativeToolCallId:
+                typeof event.toolCallId === "string"
+                  ? event.toolCallId
+                  : undefined,
               name: String(event.toolName ?? "tool"),
               args: event.args,
               result: event.partialResult,
@@ -1728,7 +1885,10 @@ export default function App() {
         case "tool_execution_end":
           setRows((previous) =>
             upsertTool(previous, String(event.toolCallId ?? seq), {
-              nativeToolCallId: typeof event.toolCallId === "string" ? event.toolCallId : undefined,
+              nativeToolCallId:
+                typeof event.toolCallId === "string"
+                  ? event.toolCallId
+                  : undefined,
               name: String(event.toolName ?? "tool"),
               result: event.result,
               images: imageBlocksOf(event.result),
@@ -1851,11 +2011,14 @@ export default function App() {
                   entry.lastSeq,
                 );
                 if (currentKey)
-                  notifiedSettlements.current.add(`${entry.sessionId}:${currentKey}`);
+                  notifiedSettlements.current.add(
+                    `${entry.sessionId}:${currentKey}`,
+                  );
               }
             }
             for (const entry of list) {
-              if (entry.title) sessionTitles.current.set(entry.sessionId, entry.title);
+              if (entry.title)
+                sessionTitles.current.set(entry.sessionId, entry.title);
             }
             sessionListInitialized.current = true;
             sessionListValue.current = list;
@@ -1896,7 +2059,9 @@ export default function App() {
         // A failure must not discard the newly-created, reachable session.
         if (preference) {
           try {
-            await commandData(created.sessionId, "set_model", { ...preference });
+            await commandData(created.sessionId, "set_model", {
+              ...preference,
+            });
           } catch {
             setModelPreferenceFailures((previous) => ({
               ...previous,
@@ -1995,7 +2160,10 @@ export default function App() {
       if (document.hidden) return;
       void api.getSession(sessionId).catch(() => {});
     };
-    const interval = Math.max(1000, Math.floor((idleTimeoutSeconds * 1000) / 3));
+    const interval = Math.max(
+      1000,
+      Math.floor((idleTimeoutSeconds * 1000) / 3),
+    );
     const timer = window.setInterval(probe, interval);
     // A backgrounded tab stops being a reliable keeper: probe as soon as it is
     // visible again so a retirement that happened while hidden is observed by
@@ -2005,13 +2173,7 @@ export default function App() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", probe);
     };
-  }, [
-    sessionId,
-    idleTimeoutSeconds,
-    authChecked,
-    authRequired,
-    authenticated,
-  ]);
+  }, [sessionId, idleTimeoutSeconds, authChecked, authRequired, authenticated]);
 
   useEffect(() => {
     saveLanguage(language);
@@ -2070,25 +2232,36 @@ export default function App() {
         const list = await refreshSessions();
         if (cancelled || !list) return;
         const requested = new URLSearchParams(location.search).get("session");
-        const requestedSession = list.find((session) => session.sessionId === requested);
+        const requestedSession = list.find(
+          (session) => session.sessionId === requested,
+        );
         const blockedRequest = sessionSelectionError(requestedSession);
         const reusable = list.filter(
           (session) =>
             session.status !== "closed" &&
-            !session.archived && !session.deleting &&
+            !session.archived &&
+            !session.deleting &&
             (!session.projectId ||
-              availableProjects.some((project) =>
-                project.id === session.projectId && !project.archived,
+              availableProjects.some(
+                (project) =>
+                  project.id === session.projectId && !project.archived,
               )),
         );
         const match =
           (blockedRequest ? undefined : requestedSession) ??
-          reusable.find((session) => session.sessionId === activeSessionRef.current) ??
+          reusable.find(
+            (session) => session.sessionId === activeSessionRef.current,
+          ) ??
           reusable.sort((a, b) => b.updatedAt - a.updatedAt)[0];
-        const blocked = blockedRequest ?? (!match
-          ? sessionSelectionError(list.find((session) => session.archived || session.deleting))
-          : null);
-        const selectionChanges = match && match.sessionId !== activeSessionRef.current;
+        const blocked =
+          blockedRequest ??
+          (!match
+            ? sessionSelectionError(
+                list.find((session) => session.archived || session.deleting),
+              )
+            : null);
+        const selectionChanges =
+          match && match.sessionId !== activeSessionRef.current;
         if (match) select(match.sessionId, match.projectId);
         else if (blocked) {
           select("");
@@ -2187,8 +2360,10 @@ export default function App() {
     const requests = new AbortController();
     sessionReadsAbort.current = requests;
     const isCurrent = () =>
-      !cancelled && !requests.signal.aborted &&
-      activeSessionRef.current === sessionId && sessionReadsAbort.current === requests;
+      !cancelled &&
+      !requests.signal.aborted &&
+      activeSessionRef.current === sessionId &&
+      sessionReadsAbort.current === requests;
     let stream: EventSource | null = null;
     let refreshingTranscript = false;
     let bufferedEvents: MessageEvent[] = [];
@@ -2209,7 +2384,11 @@ export default function App() {
       snapshot: Awaited<ReturnType<typeof snapshotOf>>,
       preserveDialogs = false,
     ) => {
-      setNativeMessageQueries(["get_message_summaries", "get_message_window"].every((command) => snapshot.supportedCommands?.includes(command)));
+      setNativeMessageQueries(
+        ["get_message_summaries", "get_message_window"].every((command) =>
+          snapshot.supportedCommands?.includes(command),
+        ),
+      );
       setMessageStats({
         sessionId,
         stats: latestMessageStats(snapshot.messages),
@@ -2263,7 +2442,11 @@ export default function App() {
         setPersistedHistory(snapshot.history ?? null);
         setLeafId(snapshot.leafId ?? "");
         setInterrupted(Boolean(snapshot.pendingResume));
-        setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(String(snapshot.latestSettlement?.outcome ?? "")) || snapshot.latestSettlement?.aborted === true);
+        setFailedRun(
+          ["failed", "error", "interrupted", "aborted", "stopped"].includes(
+            String(snapshot.latestSettlement?.outcome ?? ""),
+          ) || snapshot.latestSettlement?.aborted === true,
+        );
         const snapshotError = shortReason(snapshot.latestSettlement?.error);
         if (snapshotError) setError(snapshotError);
         setRecoveryNoticeDismissed(false);
@@ -2407,7 +2590,9 @@ export default function App() {
         if (isCurrent()) {
           // A settlement or user action may already have refreshed metadata.
           // This initial read fills missing fields, not newer authoritative data.
-          setRuntime((previous) => previous ? { ...state, ...previous } : state);
+          setRuntime((previous) =>
+            previous ? { ...state, ...previous } : state,
+          );
         }
         return state;
       };
@@ -2431,7 +2616,11 @@ export default function App() {
           setPersistedHistory(snapshot.history ?? null);
           setLeafId(snapshot.leafId ?? "");
           setInterrupted(Boolean(snapshot.pendingResume));
-          setFailedRun(["failed", "error", "interrupted", "aborted", "stopped"].includes(String(snapshot.latestSettlement?.outcome ?? "")) || snapshot.latestSettlement?.aborted === true);
+          setFailedRun(
+            ["failed", "error", "interrupted", "aborted", "stopped"].includes(
+              String(snapshot.latestSettlement?.outcome ?? ""),
+            ) || snapshot.latestSettlement?.aborted === true,
+          );
           const snapshotError = shortReason(snapshot.latestSettlement?.error);
           if (snapshotError) setError(snapshotError);
           setRecoveryNoticeDismissed(false);
@@ -2489,7 +2678,9 @@ export default function App() {
           if (isCurrent()) setModels(data.models ?? []);
         });
       }
-      if (capabilities.supportedCommands.includes("get_available_thinking_levels")) {
+      if (
+        capabilities.supportedCommands.includes("get_available_thinking_levels")
+      ) {
         warmups.push(async () => {
           const data = await api.thinkingLevels(sessionId, requests.signal);
           if (isCurrent()) setLevels(data.levels ?? []);
@@ -2513,7 +2704,8 @@ export default function App() {
     return () => {
       cancelled = true;
       requests.abort();
-      if (sessionReadsAbort.current === requests) sessionReadsAbort.current = null;
+      if (sessionReadsAbort.current === requests)
+        sessionReadsAbort.current = null;
       diagnosticsAbort.current?.abort();
       stream?.close();
       if (source.current === stream) source.current = null;
@@ -2556,7 +2748,11 @@ export default function App() {
       const jobs: Array<() => Promise<void>> = [];
       if (supported.has("get_queue")) {
         jobs.push(async () => {
-          const value = await api.queue(id, showQueueHistory, controller.signal);
+          const value = await api.queue(
+            id,
+            showQueueHistory,
+            controller.signal,
+          );
           if (!current()) return;
           const items = value.items ?? [];
           setQueueItems((previous) =>
@@ -2572,7 +2768,10 @@ export default function App() {
           const rawStats = await api.stats(id, controller.signal);
           if (!current()) return;
           const stats = normalizeRuntimeStats(rawStats);
-          if (stats) setRuntime((previous) => previous ? { ...previous, stats } : { stats });
+          if (stats)
+            setRuntime((previous) =>
+              previous ? { ...previous, stats } : { stats },
+            );
         });
       }
       if (supported.has("get_history")) {
@@ -2601,14 +2800,19 @@ export default function App() {
         for (const job of jobs) {
           if (!current()) break;
           await job().catch((cause) => {
-            if (current() && cause instanceof ApiError && cause.status === 401) {
+            if (
+              current() &&
+              cause instanceof ApiError &&
+              cause.status === 401
+            ) {
               controller.abort();
               clearAccess();
             }
           });
         }
       } finally {
-        if (diagnosticsAbort.current === controller) diagnosticsAbort.current = null;
+        if (diagnosticsAbort.current === controller)
+          diagnosticsAbort.current = null;
       }
     },
     [supported, actions, showQueueHistory, clearAccess, runActive],
@@ -2623,7 +2827,13 @@ export default function App() {
       window.clearTimeout(timer);
       diagnosticsAbort.current?.abort();
     };
-  }, [refreshDiagnostics, sessionId, settleTick, loadingSession, sessionHydrated]);
+  }, [
+    refreshDiagnostics,
+    sessionId,
+    settleTick,
+    loadingSession,
+    sessionHydrated,
+  ]);
 
   function persistedSettlementRows(value: HistoryResponse | null): Row[] {
     if (!value) return [];
@@ -2704,7 +2914,10 @@ export default function App() {
     void api
       .runtimeState(sessionId, controller.signal)
       .then((state) => {
-        if (!controller.signal.aborted && activeSessionRef.current === sessionId)
+        if (
+          !controller.signal.aborted &&
+          activeSessionRef.current === sessionId
+        )
           setRuntime(state);
       })
       .catch(() => {});
@@ -2781,7 +2994,8 @@ export default function App() {
     const priorActive = runActive;
     const [name = "", ...rest] = raw.trim().split(/\s+/);
     const arg = rest.join(" ").trim();
-    if ((loadingSession || connectionFailed) && !LOCAL_SLASH_COMMANDS.has(name)) return;
+    if ((loadingSession || connectionFailed) && !LOCAL_SLASH_COMMANDS.has(name))
+      return;
     updateDraft("");
     setError("");
     try {
@@ -2916,25 +3130,43 @@ export default function App() {
   async function uploadFiles(files: FileList | File[] | null) {
     const batch = Array.from(files ?? []);
     const scope = uploadScope.current;
-    if (!batch.length || !projectId || !sessionId || !scope ||
-        scope.sessionId !== sessionId || scope.projectId !== projectId) return;
+    if (
+      !batch.length ||
+      !projectId ||
+      !sessionId ||
+      !scope ||
+      scope.sessionId !== sessionId ||
+      scope.projectId !== projectId
+    )
+      return;
     scope.pending++;
     setUploading(true);
     setError("");
-    const current = () => uploadScope.current === scope && !scope.controller.signal.aborted;
+    const current = () =>
+      uploadScope.current === scope && !scope.controller.signal.aborted;
     // Snapshot clipboard/input files immediately, then serialize batches so a
     // second paste neither disappears nor clears another batch's busy state.
     uploadQueue.current = uploadQueue.current.then(async () => {
       try {
         if (!current()) return;
         for (const file of batch) {
-          const result = await api.upload(projectId, file, scope.controller.signal);
+          const result = await api.upload(
+            projectId,
+            file,
+            scope.controller.signal,
+          );
           if (!current()) return;
-          const previewUrl = isImageAttachment(file.name, file.type) || isImageAttachment(result.name)
-            ? URL.createObjectURL(file) : undefined;
+          const previewUrl =
+            isImageAttachment(file.name, file.type) ||
+            isImageAttachment(result.name)
+              ? URL.createObjectURL(file)
+              : undefined;
           if (previewUrl) attachmentPreviews.current.add(previewUrl);
           // Keep successful files even if a later file in the batch fails.
-          setAttachments(previous => [...previous, { ...result, previewUrl }]);
+          setAttachments((previous) => [
+            ...previous,
+            { ...result, previewUrl },
+          ]);
         }
       } catch (cause) {
         if (current()) setError(`${t("uploadFailed")}: ${errorText(cause)}`);
@@ -2963,7 +3195,14 @@ export default function App() {
     event?.preventDefault();
     if (uploadScope.current?.pending) return;
     if (composerContinue) {
-      if (loadingSession || connectionFailed || status === "closed" || !sessionId || sendingRef.current) return;
+      if (
+        loadingSession ||
+        connectionFailed ||
+        status === "closed" ||
+        !sessionId ||
+        sendingRef.current
+      )
+        return;
       if (interrupted && supported.has("resume_pending")) {
         await resumePending();
         return;
@@ -3004,7 +3243,9 @@ export default function App() {
       });
       // An acknowledgement must not clear files pasted after this submission,
       // including attachments belonging to a newly selected session.
-      setAttachments(current => current.filter(file => !attachments.includes(file)));
+      setAttachments((current) =>
+        current.filter((file) => !attachments.includes(file)),
+      );
     };
     sendingRef.current = true;
     setSending(true);
@@ -3060,7 +3301,11 @@ export default function App() {
           setInterrupted(priorInterrupted);
           setFailedRun(priorFailed);
         }
-        if (!wasBusy && !editingQueueId && (!continuing || cursor === lastSeq.current)) {
+        if (
+          !wasBusy &&
+          !editingQueueId &&
+          (!continuing || cursor === lastSeq.current)
+        ) {
           setStatus((current) =>
             current === "reconnecting" ? current : "ready",
           );
@@ -3078,8 +3323,16 @@ export default function App() {
   }
 
   async function resumePending() {
-    if (!sessionId || !supported.has("resume_pending") || busy || sendingRef.current ||
-      loadingSession || connectionFailed || status === "closed") return;
+    if (
+      !sessionId ||
+      !supported.has("resume_pending") ||
+      busy ||
+      sendingRef.current ||
+      loadingSession ||
+      connectionFailed ||
+      status === "closed"
+    )
+      return;
     const submission = ++sendingRevision.current;
     sendingRef.current = true;
     setSending(true);
@@ -3172,7 +3425,10 @@ export default function App() {
    * current first row. The bridge forwards `get_messages` unchanged, so this is
    * the same native projection the first snapshot used. */
   const loadEarlier = useCallback(
-    async (automatic = false, source: "transcript" | "timeline" = "transcript") => {
+    async (
+      automatic = false,
+      source: "transcript" | "timeline" = "transcript",
+    ) => {
       const navigation = navigationRevision.current;
       if (
         !sessionId ||
@@ -3507,7 +3763,9 @@ export default function App() {
     queueDraftRevision.current++;
     setQueueEditId(null);
     setQueueDraft("");
-    setQueueItems((items) => items.filter((queued) => queued.entryId !== item.entryId));
+    setQueueItems((items) =>
+      items.filter((queued) => queued.entryId !== item.entryId),
+    );
     updateDraft(item.text);
     setQueueKind(deliverAs);
     setQueueOpen(false);
@@ -3515,7 +3773,8 @@ export default function App() {
     requestAnimationFrame(() => composerInputRef.current?.focus());
     try {
       await api.cancelQueued(sessionId, item.entryId);
-      if (navigation === navigationRevision.current) await refreshSessionDiagnostics();
+      if (navigation === navigationRevision.current)
+        await refreshSessionDiagnostics();
     } catch (cause) {
       if (navigation !== navigationRevision.current) return;
       setQueueItems(previous);
@@ -3552,7 +3811,8 @@ export default function App() {
     source: Pick<SessionSummary, "sessionId" | "title">,
     entryId?: string,
   ) {
-    if (!source.sessionId || !actions.has("fork") || forkInFlight.current) return;
+    if (!source.sessionId || !actions.has("fork") || forkInFlight.current)
+      return;
     const sourceSessionId = source.sessionId;
     const navigation = navigationRevision.current;
     forkInFlight.current = true;
@@ -3582,10 +3842,7 @@ export default function App() {
 
   async function forkCurrent(entryId?: string) {
     if (!sessionId) return;
-    await forkSession(
-      { sessionId, title: current?.title ?? null },
-      entryId,
-    );
+    await forkSession({ sessionId, title: current?.title ?? null }, entryId);
   }
 
   async function cloneCurrent() {
@@ -3718,7 +3975,9 @@ export default function App() {
     pendingNotificationContinue.current = null;
     // refreshSessions publishes this ref before React renders: URL initialization
     // and post-mutation fallbacks must guard against that latest list too.
-    const known = (sessionListValue.current ?? sessions).find((entry) => entry.sessionId === id);
+    const known = (sessionListValue.current ?? sessions).find(
+      (entry) => entry.sessionId === id,
+    );
     const blocked = sessionSelectionError(known);
     if (blocked) {
       setError(errorText(blocked));
@@ -3726,7 +3985,10 @@ export default function App() {
       return;
     }
     const nextProject = selectedProjectId ?? known?.projectId;
-    if (activeSessionRef.current === id && (!nextProject || projectRef.current === nextProject)) {
+    if (
+      activeSessionRef.current === id &&
+      (!nextProject || projectRef.current === nextProject)
+    ) {
       setPanel(false);
       if (window.innerWidth < 768) setSidebar(false);
       return;
@@ -3779,8 +4041,10 @@ export default function App() {
   }
 
   function retirementBusy(session: SessionSummary) {
-    const state = session.sessionId === activeSessionRef.current ? status : session.status;
-    if (!["running", "starting", "awaiting_input"].includes(state)) return false;
+    const state =
+      session.sessionId === activeSessionRef.current ? status : session.status;
+    if (!["running", "starting", "awaiting_input"].includes(state))
+      return false;
     setError(errorText(new ApiError("", 409, "session_busy")));
     if (window.innerWidth < 768) setSidebar(false);
     return true;
@@ -3811,7 +4075,9 @@ export default function App() {
           ) {
             const next = list.find(
               (entry) =>
-                entry.projectId === session.projectId && !entry.archived && !entry.deleting,
+                entry.projectId === session.projectId &&
+                !entry.archived &&
+                !entry.deleting,
             );
             select(next?.sessionId ?? "", next?.projectId ?? session.projectId);
           }
@@ -3821,7 +4087,11 @@ export default function App() {
             navigation === navigationRevision.current
           )
             setError(retirementError(cause));
-          if (navigation === navigationRevision.current && window.innerWidth < 768) setSidebar(false);
+          if (
+            navigation === navigationRevision.current &&
+            window.innerWidth < 768
+          )
+            setSidebar(false);
         }
       },
     );
@@ -3846,11 +4116,22 @@ export default function App() {
       draftBySession.current.delete(id);
       saveDrafts(draftBySession.current);
       rowsBySession.current.delete(id);
-      setSessions((previous) => previous.filter((entry) => entry.sessionId !== id));
+      setSessions((previous) =>
+        previous.filter((entry) => entry.sessionId !== id),
+      );
       const list = await refreshSessions();
-      if (!wasActive || navigation !== navigationRevision.current || activeSessionRef.current !== id) return;
+      if (
+        !wasActive ||
+        navigation !== navigationRevision.current ||
+        activeSessionRef.current !== id
+      )
+        return;
       const next = list?.find(
-        (entry) => entry.sessionId !== id && entry.projectId === session.projectId && !entry.archived && !entry.deleting,
+        (entry) =>
+          entry.sessionId !== id &&
+          entry.projectId === session.projectId &&
+          !entry.archived &&
+          !entry.deleting,
       );
       select(next?.sessionId ?? "", next?.projectId ?? session.projectId);
     } catch (cause) {
@@ -4346,8 +4627,8 @@ export default function App() {
                           typeof record.error === "object" && (
                             <span className="error-text">
                               {String(
-                                (record.error as { message?: unknown }).message ??
-                                  "error",
+                                (record.error as { message?: unknown })
+                                  .message ?? "error",
                               )}
                             </span>
                           )}
@@ -4443,10 +4724,7 @@ export default function App() {
                       <span>{statusLabel}</span>
                       <span>
                         {t("sessionCompletedOutcome", {
-                          outcome: valueLabel(
-                            language,
-                            notification.outcome,
-                          ),
+                          outcome: valueLabel(language, notification.outcome),
                         })}
                       </span>
                       {notification.error && <span>{notification.error}</span>}
@@ -4519,7 +4797,9 @@ export default function App() {
       {deleteTarget && (
         <ConfirmDialog
           language={language}
-          title={language === "zh" ? "永久删除会话" : "Delete session permanently"}
+          title={
+            language === "zh" ? "永久删除会话" : "Delete session permanently"
+          }
           message={
             language === "zh"
               ? `确定要永久删除“${deleteTarget.title || "新会话"}”吗？此操作将删除会话历史记录并释放 RPC 连接，不会删除项目文件，且无法撤销。运行中的会话请先停止并等待结束。`
@@ -4596,7 +4876,11 @@ export default function App() {
         >
           <div className="project-form workspace-preferences">
             <label>{language === "zh" ? "外观" : "Appearance"}</label>
-            <div className="project-mode" role="group" aria-label={language === "zh" ? "外观" : "Appearance"}>
+            <div
+              className="project-mode"
+              role="group"
+              aria-label={language === "zh" ? "外观" : "Appearance"}
+            >
               <button
                 aria-pressed={themePreference === "system"}
                 onClick={() => setThemePreference("system")}
@@ -4629,7 +4913,11 @@ export default function App() {
               ]}
             />
             <label>{t("toolNames")}</label>
-            <div className="project-mode" role="group" aria-label={t("toolNames")}>
+            <div
+              className="project-mode"
+              role="group"
+              aria-label={t("toolNames")}
+            >
               <button
                 type="button"
                 aria-pressed={toolNameMode === "native"}
@@ -4685,6 +4973,18 @@ export default function App() {
             <div className="sidebar-brand">
               <Mark /> <span>rpi</span>{" "}
               <span className="brand-caption">{t("workspace")}</span>
+              {WEB_VERSION && (
+                <span
+                  className="brand-version"
+                  title={
+                    language === "zh"
+                      ? `当前版本 v${WEB_VERSION}`
+                      : `Version v${WEB_VERSION}`
+                  }
+                >
+                  v{WEB_VERSION}
+                </span>
+              )}
               <button
                 className="icon-button mobile-only"
                 aria-label={t("closeSidebar")}
@@ -4714,7 +5014,8 @@ export default function App() {
               onProjectMetadata={updateProjectMetadata}
               onEditTags={setTagsTarget}
               onDelete={(session) => {
-                if (!deleteInFlight.current && !retirementBusy(session)) setDeleteTarget(session);
+                if (!deleteInFlight.current && !retirementBusy(session))
+                  setDeleteTarget(session);
               }}
               onMetadata={updateSessionMetadata}
             />
@@ -4793,8 +5094,15 @@ export default function App() {
                 <small>{project?.name ?? "rpi"}</small>
                 <strong>{current?.title ?? t("newSession")}</strong>
                 {activeSessionRunning && (
-                  <small className={`mobile-session-status${activeSession?.status === "awaiting_input" ? " awaiting-input" : ""}`}>
-                    <span className="status-dot" /> {t(activeSession?.status === "awaiting_input" ? "sessionAwaitingAnswer" : "running")}
+                  <small
+                    className={`mobile-session-status${activeSession?.status === "awaiting_input" ? " awaiting-input" : ""}`}
+                  >
+                    <span className="status-dot" />{" "}
+                    {t(
+                      activeSession?.status === "awaiting_input"
+                        ? "sessionAwaitingAnswer"
+                        : "running",
+                    )}
                   </small>
                 )}
               </span>
@@ -4942,8 +5250,11 @@ export default function App() {
                       (item) => item.id === entry.projectId,
                     );
                     const selected = entry.sessionId === sessionId;
-                    const entryAwaitingAnswer = entry.status === "awaiting_input";
-                    const entryRunning = ["running", "starting"].includes(entry.status ?? "");
+                    const entryAwaitingAnswer =
+                      entry.status === "awaiting_input";
+                    const entryRunning = ["running", "starting"].includes(
+                      entry.status ?? "",
+                    );
                     return (
                       <button
                         type="button"
@@ -4964,8 +5275,14 @@ export default function App() {
                             {entryRunning && ` · ${t("running")}`}
                           </small>
                         </span>
-                        <SessionAnswerBadge session={entry} language={language} />
-                        <SessionIssueBadge session={entry} language={language} />
+                        <SessionAnswerBadge
+                          session={entry}
+                          language={language}
+                        />
+                        <SessionIssueBadge
+                          session={entry}
+                          language={language}
+                        />
                         {selected && <Check size={15} />}
                       </button>
                     );
@@ -5004,7 +5321,10 @@ export default function App() {
             </span>
             <button
               className="banner-action"
-              onClick={() => { setTraceOpen(false); setPanel(true); }}
+              onClick={() => {
+                setTraceOpen(false);
+                setPanel(true);
+              }}
             >
               {language === "zh" ? "运行时设置" : "Runtime settings"}
             </button>
@@ -5037,275 +5357,320 @@ export default function App() {
             className={`conversation-column ${!historical.active && rows.length === 0 && !loadingSession && !creatingSession ? "empty-conversation" : ""}`}
           >
             <div className="transcript-frame">
-            <div
-              className="transcript"
-              ref={transcriptRef}
-              data-history-window={historical.active ? "true" : undefined}
-              aria-busy={historical.active && historical.loading}
-              onClickCapture={(event) => {
-                if (
-                  !(event.target instanceof Element) ||
-                  !event.target.closest(
-                    ".tool-card > summary, .message-attachment > summary",
+              <div
+                className="transcript"
+                ref={transcriptRef}
+                data-history-window={historical.active ? "true" : undefined}
+                aria-busy={historical.active && historical.loading}
+                onClickCapture={(event) => {
+                  if (
+                    !(event.target instanceof Element) ||
+                    !event.target.closest(
+                      ".tool-card > summary, .message-attachment > summary",
+                    )
                   )
-                )
-                  return;
-                // Opening details is a reading action, not a request to follow
-                // output growth to the bottom. Capture before the native toggle.
-                followingRef.current = false;
-                setFollowing(false);
-                rememberTranscriptPosition();
-              }}
-              onScroll={(event) => {
-                const node = event.currentTarget;
-                if (historical.active) {
+                    return;
+                  // Opening details is a reading action, not a request to follow
+                  // output growth to the bottom. Capture before the native toggle.
                   followingRef.current = false;
                   setFollowing(false);
                   rememberTranscriptPosition();
-                  return;
-                }
-                const nearBottom =
-                  node.scrollHeight - node.scrollTop - node.clientHeight < 80;
-                followingRef.current = nearBottom;
-                setFollowing(nearBottom);
-                rememberTranscriptPosition();
-                if (node.scrollTop > 160) {
-                  autoEarlierCursor.current = null;
-                } else if (!nearBottom && !loadingSession && !connectionFailed) {
-                  const cursor = `${navigationRevision.current}:${sessionId}:${firstId}`;
-                  if (autoEarlierCursor.current !== cursor)
-                    void loadEarlier(true);
-                }
-              }}
-            >
-              <div className="message-list">
-                {historical.active && (
-                  <div className="history-window-status">
-                    <nav aria-label={t("historyContextPagination")}>
-                      <button
-                        type="button"
-                        onClick={historical.earlier}
-                        disabled={historical.loading || !historical.page?.hasMoreBefore || !historical.page.nextBeforeId}
-                      >
-                        {t("historyContextEarlier")}
-                      </button>
-                      <span>{t("historyContextTitle")}</span>
-                      <button
-                        type="button"
-                        onClick={historical.later}
-                        disabled={historical.loading || !historical.page?.hasMoreAfter || !historical.page.nextAfterId}
-                      >
-                        {t("historyContextLater")}
-                      </button>
-                    </nav>
-                    {historical.loading && <p role="status">{t("loadingEarlierMessages")}</p>}
-                    {historical.error && (
-                      <p role="alert">
-                        {historical.error}{" "}
-                        <button type="button" onClick={historical.retry}>{t("historyContextRetry")}</button>
-                      </p>
-                    )}
-                    {historical.page && !historical.rows.length && <p>{t("historyContextEmpty")}</p>}
-                  </div>
-                )}
-                {!historical.active && hasMore && (
-                  <div className="load-earlier" aria-busy={loadingEarlier}>
-                    <button
-                      type="button"
-                      title={t("scrollForEarlier")}
-                      onClick={() => void loadEarlier()}
-                      disabled={loadingEarlier}
-                    >
-                      <Loader2
-                        size={13}
-                        className={loadingEarlier ? "spin" : undefined}
-                      />
-                      {t("loadEarlier")}
-                    </button>
-                    {loadingEarlier && (
-                      <span className="sr-only" role="status">
-                        {t("loadingEarlierMessages")}
-                      </span>
-                    )}
-                  </div>
-                )}
-
-                {loadingSession && rows.length === 0 && (
-                  <div
-                    className="session-loading"
-                    role="status"
-                    aria-label={t("loadingConversation")}
-                  >
-                    <span className="sr-only">{t("loadingConversation")}</span>
-                    <div className="session-skeleton" aria-hidden="true">
-                      <div className="skeleton-message skeleton-assistant">
-                        <div className="skeleton-heading">
-                          <span className="skeleton-avatar" />
-                          <span className="skeleton-line skeleton-name" />
-                        </div>
-                        <div className="skeleton-body">
-                          <span className="skeleton-line skeleton-wide" />
-                          <span className="skeleton-line skeleton-medium" />
-                          <span className="skeleton-line skeleton-short" />
-                        </div>
-                      </div>
-                      <div className="skeleton-message skeleton-user">
-                        <div className="skeleton-heading">
-                          <span className="skeleton-line skeleton-user-name" />
-                          <span className="skeleton-avatar" />
-                        </div>
-                        <div className="skeleton-user-bubble">
-                          <span className="skeleton-line skeleton-medium" />
-                        </div>
-                      </div>
-                      <div className="skeleton-message skeleton-assistant">
-                        <div className="skeleton-heading">
-                          <span className="skeleton-avatar" />
-                          <span className="skeleton-line skeleton-name" />
-                        </div>
-                        <div className="skeleton-body">
-                          <span className="skeleton-line skeleton-wide" />
-                          <span className="skeleton-line skeleton-wide" />
-                          <span className="skeleton-line skeleton-medium" />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {!historical.active && rows.length === 0 && !loadingSession && !creatingSession && (
-                  <div className="welcome">
-                    <div className="welcome-symbol">
-                      <Mark large />
-                      <span>{project?.name ?? "rpi workspace"}</span>
-                    </div>
-                    <h2>{t("welcomeTitle")}</h2>
-                    <p>{t("welcomeDescription")}</p>
-                    {!sessionId && (
-                      <button
-                        className="start-project-chat"
-                        disabled={creatingSession}
-                        onClick={() => void createSession()}
-                      >
-                        {creatingSession ? (
-                          <Loader2 className="spin" size={15} />
-                        ) : (
-                          <ArrowUp size={15} />
-                        )}
-                        {language === "zh"
-                          ? "在此项目中开始会话"
-                          : "Start a chat in this project"}
-                      </button>
-                    )}
-                    <div className="suggestions">
-                      <button
-                        onClick={() =>
-                          updateDraft(t("explainProjectPrompt"))
-                        }
-                      >
-                        <Sparkles size={17} /> {t("explainProject")}
-                      </button>
-                      <button
-                        onClick={() =>
-                          updateDraft(t("reviewChangesPrompt"))
-                        }
-                      >
-                        <Code2 size={17} /> {t("reviewChanges")}
-                      </button>
-                      <button
-                        onClick={() => updateDraft(t("findTodoPrompt"))}
-                      >
-                        <Bot size={17} /> {t("findTodo")}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                <ProjectImageContext.Provider value={project}>
-                  <ToolNameModeContext.Provider value={toolNameMode}>
-                    <ToolProgramProvider key={`${traceBinding}:${historical.active}:${historical.target?.entryId ?? ""}:${historical.page?.firstId ?? ""}`} sessionId={sessionId} enabled={!loadingSession && !connectionFailed}>
-                    {displayedRows.map((row) => {
-                      // A historical window may begin mid-run, without all run
-                      // boundaries. Keep every update visible instead of folding
-                      // separate executions into an apparently current todo card.
-                      const group = historical.active ? undefined : todoGroups.get(row.id);
-                      return (
-                        <div
-                          className="transcript-row"
-                          data-transcript-row={row.id}
-                          key={row.id}
+                }}
+                onScroll={(event) => {
+                  const node = event.currentTarget;
+                  if (historical.active) {
+                    followingRef.current = false;
+                    setFollowing(false);
+                    rememberTranscriptPosition();
+                    return;
+                  }
+                  const nearBottom =
+                    node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+                  followingRef.current = nearBottom;
+                  setFollowing(nearBottom);
+                  rememberTranscriptPosition();
+                  if (node.scrollTop > 160) {
+                    autoEarlierCursor.current = null;
+                  } else if (
+                    !nearBottom &&
+                    !loadingSession &&
+                    !connectionFailed
+                  ) {
+                    const cursor = `${navigationRevision.current}:${sessionId}:${firstId}`;
+                    if (autoEarlierCursor.current !== cursor)
+                      void loadEarlier(true);
+                  }
+                }}
+              >
+                <div className="message-list">
+                  {historical.active && (
+                    <div className="history-window-status">
+                      <nav aria-label={t("historyContextPagination")}>
+                        <button
+                          type="button"
+                          onClick={historical.earlier}
+                          disabled={
+                            historical.loading ||
+                            !historical.page?.hasMoreBefore ||
+                            !historical.page.nextBeforeId
+                          }
                         >
-                          {group !== null && (
-                            <RowView
-                              row={group?.latest ?? row}
-                              todoHistory={group?.previous}
-                              language={language}
-                              onSpeak={speakMessage}
-                              readingRowId={readingRowId}
-                              thinkingStreaming={
-                                !historical.active &&
-                                streamingAssistant.current !== null &&
-                                row.id.startsWith(
-                                  `${streamingAssistant.current}:`,
-                                )
-                              }
-                            />
-                          )}
-                          {group !== null && row.kind === "tool" && parentToolCallId(row) && (
-                            <ToolProgramChildren rootCallId={parentToolCallId(row)!} rootToolName={row.name} language={language} />
-                          )}
-                          {runFooters.get(row.id)?.map((timing) => (
-                            <RunElapsed key={timing.runId} timing={timing} language={language} />
-                          ))}
-                        </div>
-                      );
-                    })}
-                    </ToolProgramProvider>
-                  </ToolNameModeContext.Provider>
-                </ProjectImageContext.Provider>
+                          {t("historyContextEarlier")}
+                        </button>
+                        <span>{t("historyContextTitle")}</span>
+                        <button
+                          type="button"
+                          onClick={historical.later}
+                          disabled={
+                            historical.loading ||
+                            !historical.page?.hasMoreAfter ||
+                            !historical.page.nextAfterId
+                          }
+                        >
+                          {t("historyContextLater")}
+                        </button>
+                      </nav>
+                      {historical.loading && (
+                        <p role="status">{t("loadingEarlierMessages")}</p>
+                      )}
+                      {historical.error && (
+                        <p role="alert">
+                          {historical.error}{" "}
+                          <button type="button" onClick={historical.retry}>
+                            {t("historyContextRetry")}
+                          </button>
+                        </p>
+                      )}
+                      {historical.page && !historical.rows.length && (
+                        <p>{t("historyContextEmpty")}</p>
+                      )}
+                    </div>
+                  )}
+                  {!historical.active && hasMore && (
+                    <div className="load-earlier" aria-busy={loadingEarlier}>
+                      <button
+                        type="button"
+                        title={t("scrollForEarlier")}
+                        onClick={() => void loadEarlier()}
+                        disabled={loadingEarlier}
+                      >
+                        <Loader2
+                          size={13}
+                          className={loadingEarlier ? "spin" : undefined}
+                        />
+                        {t("loadEarlier")}
+                      </button>
+                      {loadingEarlier && (
+                        <span className="sr-only" role="status">
+                          {t("loadingEarlierMessages")}
+                        </span>
+                      )}
+                    </div>
+                  )}
 
-                {!historical.active && busy && rows.length > 0 && (
-                  <div className="working-indicator">
-                    <Loader2 size={14} className="spin" />{" "}
-                    {dialog ? t("waitingForAnswer") : t("waiting")}
-                  </div>
-                )}
+                  {loadingSession && rows.length === 0 && (
+                    <div
+                      className="session-loading"
+                      role="status"
+                      aria-label={t("loadingConversation")}
+                    >
+                      <span className="sr-only">
+                        {t("loadingConversation")}
+                      </span>
+                      <div className="session-skeleton" aria-hidden="true">
+                        <div className="skeleton-message skeleton-assistant">
+                          <div className="skeleton-heading">
+                            <span className="skeleton-avatar" />
+                            <span className="skeleton-line skeleton-name" />
+                          </div>
+                          <div className="skeleton-body">
+                            <span className="skeleton-line skeleton-wide" />
+                            <span className="skeleton-line skeleton-medium" />
+                            <span className="skeleton-line skeleton-short" />
+                          </div>
+                        </div>
+                        <div className="skeleton-message skeleton-user">
+                          <div className="skeleton-heading">
+                            <span className="skeleton-line skeleton-user-name" />
+                            <span className="skeleton-avatar" />
+                          </div>
+                          <div className="skeleton-user-bubble">
+                            <span className="skeleton-line skeleton-medium" />
+                          </div>
+                        </div>
+                        <div className="skeleton-message skeleton-assistant">
+                          <div className="skeleton-heading">
+                            <span className="skeleton-avatar" />
+                            <span className="skeleton-line skeleton-name" />
+                          </div>
+                          <div className="skeleton-body">
+                            <span className="skeleton-line skeleton-wide" />
+                            <span className="skeleton-line skeleton-wide" />
+                            <span className="skeleton-line skeleton-medium" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {!historical.active &&
+                    rows.length === 0 &&
+                    !loadingSession &&
+                    !creatingSession && (
+                      <div className="welcome">
+                        <div className="welcome-symbol">
+                          <Mark large />
+                          <span>{project?.name ?? "rpi workspace"}</span>
+                        </div>
+                        <h2>{t("welcomeTitle")}</h2>
+                        <p>{t("welcomeDescription")}</p>
+                        {!sessionId && (
+                          <button
+                            className="start-project-chat"
+                            disabled={creatingSession}
+                            onClick={() => void createSession()}
+                          >
+                            {creatingSession ? (
+                              <Loader2 className="spin" size={15} />
+                            ) : (
+                              <ArrowUp size={15} />
+                            )}
+                            {language === "zh"
+                              ? "在此项目中开始会话"
+                              : "Start a chat in this project"}
+                          </button>
+                        )}
+                        <div className="suggestions">
+                          <button
+                            onClick={() =>
+                              updateDraft(t("explainProjectPrompt"))
+                            }
+                          >
+                            <Sparkles size={17} /> {t("explainProject")}
+                          </button>
+                          <button
+                            onClick={() =>
+                              updateDraft(t("reviewChangesPrompt"))
+                            }
+                          >
+                            <Code2 size={17} /> {t("reviewChanges")}
+                          </button>
+                          <button
+                            onClick={() => updateDraft(t("findTodoPrompt"))}
+                          >
+                            <Bot size={17} /> {t("findTodo")}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                  <ProjectImageContext.Provider value={project}>
+                    <ToolNameModeContext.Provider value={toolNameMode}>
+                      <ToolProgramProvider
+                        key={`${traceBinding}:${historical.active}:${historical.target?.entryId ?? ""}:${historical.page?.firstId ?? ""}`}
+                        sessionId={sessionId}
+                        enabled={!loadingSession && !connectionFailed}
+                      >
+                        {displayedRows.map((row) => {
+                          // A historical window may begin mid-run, without all run
+                          // boundaries. Keep every update visible instead of folding
+                          // separate executions into an apparently current todo card.
+                          const group = historical.active
+                            ? undefined
+                            : todoGroups.get(row.id);
+                          return (
+                            <div
+                              className="transcript-row"
+                              data-transcript-row={row.id}
+                              key={row.id}
+                            >
+                              {group !== null && (
+                                <RowView
+                                  row={group?.latest ?? row}
+                                  todoHistory={group?.previous}
+                                  language={language}
+                                  onSpeak={speakMessage}
+                                  readingRowId={readingRowId}
+                                  thinkingStreaming={
+                                    !historical.active &&
+                                    streamingAssistant.current !== null &&
+                                    row.id.startsWith(
+                                      `${streamingAssistant.current}:`,
+                                    )
+                                  }
+                                />
+                              )}
+                              {group !== null &&
+                                row.kind === "tool" &&
+                                parentToolCallId(row) && (
+                                  <ToolProgramChildren
+                                    rootCallId={parentToolCallId(row)!}
+                                    rootToolName={row.name}
+                                    language={language}
+                                  />
+                                )}
+                              {runFooters.get(row.id)?.map((timing) => (
+                                <RunElapsed
+                                  key={timing.runId}
+                                  timing={timing}
+                                  language={language}
+                                />
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </ToolProgramProvider>
+                    </ToolNameModeContext.Provider>
+                  </ProjectImageContext.Provider>
+
+                  {!historical.active && busy && rows.length > 0 && (
+                    <div className="working-indicator">
+                      <Loader2 size={14} className="spin" />{" "}
+                      {dialog ? t("waitingForAnswer") : t("waiting")}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-            {timelineOpen && (!loadingSession || rows.length > 0) && (
-              <ConversationTimeline
-                key={`${sessionId}:${connectionRevision}:${navigationRevision.current}`}
-                sessionId={sessionId}
-                nativeQueries={nativeMessageQueries}
-                snapshotLeafId={leafId}
-                onHistoryNavigate={(target) => {
-                  followingRef.current = false;
-                  setFollowing(false);
-                  continueEarlier.current = null;
-                  historical.open(target);
-                }}
-                rows={displayedRows}
-                transcript={transcriptRef}
-                language={language}
-                hasMore={hasMore}
-                historyCursor={firstId}
-                loadingEarlier={loadingEarlier || loadingSession || mutationPending}
-                onLoadEarlier={() => loadEarlier(false, "timeline")}
-                onNavigate={(target) => {
-                  const node = transcriptRef.current;
-                  if (!node || !node.contains(target)) return;
-                  if (historical.active && historical.loading) historical.cancelPending();
-                  followingRef.current = false;
-                  setFollowing(false);
-                  // Scrubbing to the first tick is navigation, not a transcript
-                  // paging gesture. The timeline owns its bounded edge load.
-                  autoEarlierCursor.current = `${navigationRevision.current}:${sessionId}:${firstId}`;
-                  continueEarlier.current = null;
-                  node.scrollTop += target.getBoundingClientRect().top - node.getBoundingClientRect().top - 12;
-                  rememberTranscriptPosition();
-                }}
-              />
-            )}
+              {timelineOpen && (!loadingSession || rows.length > 0) && (
+                <ConversationTimeline
+                  key={`${sessionId}:${connectionRevision}:${navigationRevision.current}`}
+                  sessionId={sessionId}
+                  nativeQueries={nativeMessageQueries}
+                  snapshotLeafId={leafId}
+                  onHistoryNavigate={(target) => {
+                    followingRef.current = false;
+                    setFollowing(false);
+                    continueEarlier.current = null;
+                    historical.open(target);
+                  }}
+                  rows={displayedRows}
+                  transcript={transcriptRef}
+                  language={language}
+                  hasMore={hasMore}
+                  historyCursor={firstId}
+                  loadingEarlier={
+                    loadingEarlier || loadingSession || mutationPending
+                  }
+                  onLoadEarlier={() => loadEarlier(false, "timeline")}
+                  onNavigate={(target) => {
+                    const node = transcriptRef.current;
+                    if (!node || !node.contains(target)) return;
+                    if (historical.active && historical.loading)
+                      historical.cancelPending();
+                    followingRef.current = false;
+                    setFollowing(false);
+                    // Scrubbing to the first tick is navigation, not a transcript
+                    // paging gesture. The timeline owns its bounded edge load.
+                    autoEarlierCursor.current = `${navigationRevision.current}:${sessionId}:${firstId}`;
+                    continueEarlier.current = null;
+                    node.scrollTop +=
+                      target.getBoundingClientRect().top -
+                      node.getBoundingClientRect().top -
+                      12;
+                    rememberTranscriptPosition();
+                  }}
+                />
+              )}
             </div>
             {(historical.active || (!following && rows.length > 0)) && (
               <button
@@ -5316,10 +5681,11 @@ export default function App() {
                   historical.close();
                   followingRef.current = true;
                   setFollowing(true);
-                  if (!historical.active) transcriptRef.current?.scrollTo({
-                    top: transcriptRef.current.scrollHeight,
-                    behavior: "smooth",
-                  });
+                  if (!historical.active)
+                    transcriptRef.current?.scrollTo({
+                      top: transcriptRef.current.scrollHeight,
+                      behavior: "smooth",
+                    });
                   // History and live are different bounded windows, not adjacent
                   // rows. The viewport hook aligns the committed live DOM below.
                 }}
@@ -5337,7 +5703,11 @@ export default function App() {
                       type="button"
                       key={command.name}
                       className="slash-item"
-                      disabled={!command.enabled || ((loadingSession || connectionFailed) && !LOCAL_SLASH_COMMANDS.has(command.name))}
+                      disabled={
+                        !command.enabled ||
+                        ((loadingSession || connectionFailed) &&
+                          !LOCAL_SLASH_COMMANDS.has(command.name))
+                      }
                       onClick={() => void runSlash(command.name)}
                     >
                       <code>{command.usage}</code>
@@ -5370,55 +5740,55 @@ export default function App() {
                     <ChevronDown size={14} aria-hidden="true" />
                   </button>
                   <div className="composer-queue-list">
-                      {pendingQueueItems.map((item) => (
-                        <div className="composer-queue-item" key={item.entryId}>
-                          <span>{item.text || t("nonTextMessage")}</span>
-                          {isEditableQueueItem(item) && (
-                            <span className="queue-item-actions">
-                              {item.text?.trim() &&
-                                !busy &&
-                                supported.has("prompt") &&
-                                supported.has("cancel_queued") && (
-                                  <button
-                                    type="button"
-                                    className="icon-button queue-send-now"
-                                    aria-label={`${t("sendNow")}: ${item.text}`}
-                                    title={t("sendNow")}
-                                    onClick={() =>
-                                      void sendQueuedNow(item.entryId)
-                                    }
-                                    disabled={queueRunning}
-                                  >
-                                    {queueRunning ? (
-                                      <Loader2 size={13} className="spin" />
-                                    ) : (
-                                      <Play size={13} />
-                                    )}
-                                  </button>
-                                )}
-                              <button
-                                type="button"
-                                className="icon-button"
-                                aria-label={t("editQueued")}
-                                title={t("editQueued")}
-                                onClick={() => editQueued(item)}
-                              >
-                                <SquarePen size={13} />
-                              </button>
-                              <button
-                                type="button"
-                                className="icon-button"
-                                aria-label={t("cancelQueued")}
-                                title={t("cancelQueued")}
-                                onClick={() => void cancelQueued(item.entryId)}
-                              >
-                                <X size={13} />
-                              </button>
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
+                    {pendingQueueItems.map((item) => (
+                      <div className="composer-queue-item" key={item.entryId}>
+                        <span>{item.text || t("nonTextMessage")}</span>
+                        {isEditableQueueItem(item) && (
+                          <span className="queue-item-actions">
+                            {item.text?.trim() &&
+                              !busy &&
+                              supported.has("prompt") &&
+                              supported.has("cancel_queued") && (
+                                <button
+                                  type="button"
+                                  className="icon-button queue-send-now"
+                                  aria-label={`${t("sendNow")}: ${item.text}`}
+                                  title={t("sendNow")}
+                                  onClick={() =>
+                                    void sendQueuedNow(item.entryId)
+                                  }
+                                  disabled={queueRunning}
+                                >
+                                  {queueRunning ? (
+                                    <Loader2 size={13} className="spin" />
+                                  ) : (
+                                    <Play size={13} />
+                                  )}
+                                </button>
+                              )}
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={t("editQueued")}
+                              title={t("editQueued")}
+                              onClick={() => editQueued(item)}
+                            >
+                              <SquarePen size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={t("cancelQueued")}
+                              title={t("cancelQueued")}
+                              onClick={() => void cancelQueued(item.entryId)}
+                            >
+                              <X size={13} />
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
               <div className="composer">
@@ -5578,14 +5948,29 @@ export default function App() {
                     <button
                       type={composerAbort ? "button" : "submit"}
                       className={`send-button${composerAbort ? " composer-action-stop" : composerContinue ? " composer-action-continue" : ""}`}
-                      aria-label={composerAbort ? t("abort") : composerContinue ? t("continue") : t("send")}
-                      title={composerAbort ? t("abort") : composerContinue ? t("continue") : t("send")}
+                      aria-label={
+                        composerAbort
+                          ? t("abort")
+                          : composerContinue
+                            ? t("continue")
+                            : t("send")
+                      }
+                      title={
+                        composerAbort
+                          ? t("abort")
+                          : composerContinue
+                            ? t("continue")
+                            : t("send")
+                      }
                       disabled={
                         (!localSlash && (loadingSession || connectionFailed)) ||
-                        (!composerAbort && (
-                          (!composerContinue && !draft.trim() && attachments.length === 0) ||
-                          !sessionId || sending || uploading
-                        ))
+                        (!composerAbort &&
+                          ((!composerContinue &&
+                            !draft.trim() &&
+                            attachments.length === 0) ||
+                            !sessionId ||
+                            sending ||
+                            uploading))
                       }
                       onClick={composerAbort ? () => void abort() : undefined}
                     >
@@ -5655,18 +6040,15 @@ export default function App() {
               onChange={setWorkbenchWidth}
             />
           )}
-          {workbenchOpen &&
-            project &&
-            actions.has("files") &&
-            !panel && (
-              <Workbench
-                key={project.id}
-                project={project}
-                language={language}
-                tick={settleTick}
-                onClose={() => setWorkbenchOpen(false)}
-              />
-            )}
+          {workbenchOpen && project && actions.has("files") && !panel && (
+            <Workbench
+              key={project.id}
+              project={project}
+              language={language}
+              tick={settleTick}
+              onClose={() => setWorkbenchOpen(false)}
+            />
+          )}
           {panel && sessionId && (
             <RuntimePanel
               key={`${sessionId}:${navigationRevision.current}`}
@@ -5701,7 +6083,6 @@ export default function App() {
               }}
             />
           )}
-
         </main>
       </section>
     </div>
@@ -6194,7 +6575,13 @@ const RowView = memo(function RowView({
     const isRunStatus =
       row.translation?.key === "liveRun" ||
       row.translation?.key === "restoredRun";
-    if (isRunStatus && values?.outcome === "completed" && !values.aborted && !values.reason) return null;
+    if (
+      isRunStatus &&
+      values?.outcome === "completed" &&
+      !values.aborted &&
+      !values.reason
+    )
+      return null;
     return (
       <p className={`transcript-note muted${isRunStatus ? " run-status" : ""}`}>
         {row.translation
@@ -6282,7 +6669,9 @@ function ToolRowView({
       onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
     >
       <summary>
-        {translate(language, "todoEarlierUpdates", { count: todoHistory.length })}
+        {translate(language, "todoEarlierUpdates", {
+          count: todoHistory.length,
+        })}
       </summary>
       {todoHistory.map((previous) => (
         <ToolRowView key={previous.id} row={previous} language={language} />
@@ -6556,7 +6945,9 @@ function TodoCard({
           </p>
         )}
         {items.length === 0 && (
-          <p className={`muted ${total > 0 ? "todo-summary-only" : "todo-empty"}`}>
+          <p
+            className={`muted ${total > 0 ? "todo-summary-only" : "todo-empty"}`}
+          >
             {t(total > 0 ? "todoSummaryOnly" : "todoEmpty")}
           </p>
         )}
@@ -6963,21 +7354,22 @@ function RuntimePanel({
     </div>
   );
 
-  if (providersOpen) return (
-    <aside className="inspector">
-      {heading}
-      <ProviderManager
-        sessionId={sessionId}
-        language={language}
-        supported={supported}
-        canAuth={canAuth}
-        runtime={runtime}
-        onModelSelected={onModelSelected}
-        onChange={onChange}
-        onBack={() => setProvidersOpen(false)}
-      />
-    </aside>
-  );
+  if (providersOpen)
+    return (
+      <aside className="inspector">
+        {heading}
+        <ProviderManager
+          sessionId={sessionId}
+          language={language}
+          supported={supported}
+          canAuth={canAuth}
+          runtime={runtime}
+          onModelSelected={onModelSelected}
+          onChange={onChange}
+          onBack={() => setProvidersOpen(false)}
+        />
+      </aside>
+    );
 
   return (
     <aside className="inspector">
@@ -6996,16 +7388,24 @@ function RuntimePanel({
         disabled={pending !== ""}
         onClick={() => setProvidersOpen(true)}
       >
-        <ShieldCheck size={14} aria-hidden="true" /> {zh ? "管理供应商" : "Manage providers"}
+        <ShieldCheck size={14} aria-hidden="true" />{" "}
+        {zh ? "管理供应商" : "Manage providers"}
       </button>
       <p className="muted">
         {zh
           ? "成功选择的模型会在此浏览器中按项目记住，仅用于未来新会话；已有会话不变。"
           : "Successful model choices are remembered in this browser per project for future new sessions only; existing sessions are unchanged."}
-        {preference && <> {preference.provider}/{preference.modelId}</>}
+        {preference && (
+          <>
+            {" "}
+            {preference.provider}/{preference.modelId}
+          </>
+        )}
       </p>
       <button type="button" disabled={!preference} onClick={onClearPreference}>
-        {zh ? "清除模型偏好（未来使用原生默认值）" : "Clear model preference (future native defaults)"}
+        {zh
+          ? "清除模型偏好（未来使用原生默认值）"
+          : "Clear model preference (future native defaults)"}
       </button>
       <label htmlFor="model">{zh ? "模型" : "Model"}</label>
       <MenuSelect

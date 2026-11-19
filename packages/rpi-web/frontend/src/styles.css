@@ -219,8 +219,15 @@ code {
   justify-content: center;
   flex-shrink: 0;
 }
-.rpi-logo { display: block; flex-shrink: 0; }
-.brand-mark .rpi-logo, .login-mark .rpi-logo { width: 100%; height: 100%; }
+.rpi-logo {
+  display: block;
+  flex-shrink: 0;
+}
+.brand-mark .rpi-logo,
+.login-mark .rpi-logo {
+  width: 100%;
+  height: 100%;
+}
 .brand-mark.large {
   height: 58px;
   width: 58px;
@@ -365,6 +372,17 @@ code {
   font-size: 18px;
   font-weight: 650;
   letter-spacing: -0.6px;
+}
+.brand-version {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 .brand-caption {
   font-size: 13px;
