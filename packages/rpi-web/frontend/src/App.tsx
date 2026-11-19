@@ -62,6 +62,11 @@ import {
   type ModelPreference,
   type ModelSelected,
 } from "./modelPreference";
+import {
+  readSessionRuntimePreference,
+  writeSessionRuntimePreference,
+  type SessionRuntimeChoice,
+} from "./sessionRuntimePreference";
 import { ResourcePanel } from "./ResourcePanel";
 import { useTheme } from "./useTheme";
 import { useHistoricalMessages } from "./useHistoricalMessages";
@@ -1146,7 +1151,19 @@ export default function App() {
     const session = activeSessionRef.current;
     const navigation = navigationRevision.current;
     return () => {
+      // Preserve a remembered thinking level: the model choice must not erase
+      // an independently recorded thinking preference for future sessions.
+      const previous = readModelPreference(project);
       writeModelPreference(project, {
+        provider: model.provider,
+        modelId: model.id,
+        ...(previous?.thinkingLevel
+          ? { thinkingLevel: previous.thinkingLevel }
+          : {}),
+      });
+      // The completion runs only after set_model succeeded; fold the choice
+      // into the session's "last used" memory for later restoration.
+      rememberSessionRuntime(session, {
         provider: model.provider,
         modelId: model.id,
       });
@@ -1178,6 +1195,9 @@ export default function App() {
         : {}),
       thinkingLevel: level,
     });
+    // Runs only after set_thinking_level succeeded; fold the level into the
+    // session's "last used" memory for later restoration.
+    rememberSessionRuntime(session, { thinkingLevel: level });
     if (
       session === activeSessionRef.current &&
       project === projectRef.current &&
@@ -1192,6 +1212,109 @@ export default function App() {
     }
   };
   const [thinkingPending, setThinkingPending] = useState(false);
+  // Per-session "last used" memory: merged on every explicit successful
+  // choice and reconciled on session entry (see restoreSessionRuntime).
+  const [sessionRuntimeFailures, setSessionRuntimeFailures] = useState<
+    Record<string, SessionRuntimeChoice>
+  >({});
+  const rememberSessionRuntime = (
+    session: string,
+    choice: SessionRuntimeChoice,
+  ) => {
+    if (!session) return;
+    const previous = readSessionRuntimePreference(session) ?? {};
+    writeSessionRuntimePreference(session, {
+      provider: choice.provider ?? previous.provider,
+      modelId: choice.modelId ?? previous.modelId,
+      thinkingLevel: choice.thinkingLevel ?? previous.thinkingLevel,
+    });
+  };
+  // Entering a session must present the model/thinking its last round used,
+  // not the startup default. A reopened native host (idle retirement, crash)
+  // restarts with CLI defaults, so compare the freshly read state against the
+  // remembered choice and re-apply what drifted. Failures keep the session
+  // reachable and latch a banner; the preference is kept for the next entry.
+  const restoreSessionRuntime = async (session: string) => {
+    const remembered = readSessionRuntimePreference(session);
+    if (!session || !remembered) return;
+    if (
+      !capabilities?.supportedCommands?.includes("get_state") ||
+      (!remembered.thinkingLevel && !(remembered.provider && remembered.modelId))
+    )
+      return;
+    try {
+      const state = await api.runtimeState(session);
+      const needsModel =
+        Boolean(remembered.provider && remembered.modelId) &&
+        (state.provider !== remembered.provider ||
+          state.modelId !== remembered.modelId);
+      const needsThinking =
+        Boolean(remembered.thinkingLevel) &&
+        state.thinkingLevel !== remembered.thinkingLevel;
+      if (!needsModel && !needsThinking) {
+        setSessionRuntimeFailures((previous) => {
+          if (!previous[session]) return previous;
+          const next = { ...previous };
+          delete next[session];
+          return next;
+        });
+        return;
+      }
+      const failures: SessionRuntimeChoice = {};
+      if (needsModel && capabilities?.supportedCommands?.includes("set_model")) {
+        try {
+          await commandData(session, "set_model", {
+            provider: remembered.provider,
+            modelId: remembered.modelId,
+          });
+        } catch {
+          failures.provider = remembered.provider;
+          failures.modelId = remembered.modelId;
+        }
+      }
+      if (
+        needsThinking &&
+        capabilities?.supportedCommands?.includes("set_thinking_level")
+      ) {
+        try {
+          await commandData(session, "set_thinking_level", {
+            level: remembered.thinkingLevel,
+          });
+        } catch {
+          failures.thinkingLevel = remembered.thinkingLevel;
+        }
+      }
+      if (Object.keys(failures).length)
+        setSessionRuntimeFailures((previous) => ({
+          ...previous,
+          [session]: failures,
+        }));
+      else
+        setSessionRuntimeFailures((previous) => {
+          if (!previous[session]) return previous;
+          const next = { ...previous };
+          delete next[session];
+          return next;
+        });
+      if (activeSessionRef.current === session) {
+        const refreshed = await api.runtimeState(session);
+        if (activeSessionRef.current === session)
+          setRuntime((previous) =>
+            previous
+              ? {
+                  ...previous,
+                  provider: refreshed.provider,
+                  modelId: refreshed.modelId,
+                  thinkingLevel: refreshed.thinkingLevel,
+                }
+              : refreshed,
+          );
+      }
+    } catch {
+      /* A failed probe leaves the host defaults in place; the next session
+         entry (or explicit choice) reconciles again. */
+    }
+  };
   const [language, setLanguage] = useState<Language>(() => detectLanguage());
   const [autoRead, setAutoRead] = useState(() => {
     try { return localStorage.getItem("rpi-auto-read") === "1"; } catch { return false; }
@@ -1896,6 +2019,9 @@ export default function App() {
               await commandData(created.sessionId, "set_thinking_level", {
                 level: thinkingLevel,
               });
+              rememberSessionRuntime(created.sessionId, {
+                thinkingLevel,
+              });
             } catch {
               setThinkingPreferenceFailures((previous) => ({
                 ...previous,
@@ -1906,6 +2032,10 @@ export default function App() {
           if (hasModel) {
             try {
               await commandData(created.sessionId, "set_model", { ...model });
+              rememberSessionRuntime(created.sessionId, {
+                provider: model.provider,
+                modelId: model.modelId,
+              });
             } catch {
               setModelPreferenceFailures((previous) => ({
                 ...previous,
@@ -2470,6 +2600,15 @@ export default function App() {
           setError(errorText(cause));
         }
       }
+      // Restore the last round's model/thinking for a historical session
+      // before the composer opens: a reopened native host starts on CLI
+      // defaults, and prompts sent before the repair would run on them.
+      try {
+        await restoreSessionRuntime(sessionId);
+      } catch {
+        /* restoreSessionRuntime reports its own failures via the banner. */
+      }
+      if (!isCurrent()) return;
       // Warm slash-command catalogs sequentially, only after the primary reads.
       const warmups: Array<() => Promise<void>> = [];
       if (capabilities.supportedCommands.includes("get_available_models")) {
@@ -2960,13 +3099,6 @@ export default function App() {
   async function submit(event?: FormEvent, forceContinue = false) {
     event?.preventDefault();
     if (uploadScope.current?.pending) return;
-    if (composerContinue) {
-      if (loadingSession || connectionFailed || status === "closed" || !sessionId || sendingRef.current) return;
-      if (interrupted && supported.has("resume_pending")) {
-        await resumePending();
-        return;
-      }
-    }
     const continuing = forceContinue || composerContinue;
     const message = continuing ? t("continueTaskPrompt") : draft.trim();
     if (
@@ -2975,9 +3107,20 @@ export default function App() {
       sendingRef.current
     )
       return;
+    // Slash commands stay interactive while the session is still hydrating
+    // (their feedback must be visible during a held snapshot); real prompts
+    // wait for hydration so the restored model/thinking precedes them.
     if (message.startsWith("/") && attachments.length === 0) {
       void runSlash(message);
       return;
+    }
+    if (!forceContinue && !sessionHydrated) return;
+    if (composerContinue) {
+      if (loadingSession || connectionFailed || status === "closed" || !sessionId || sendingRef.current) return;
+      if (interrupted && supported.has("resume_pending")) {
+        await resumePending();
+        return;
+      }
     }
     if (loadingSession || connectionFailed || !supported.has("prompt")) return;
     const attachedText = attachments.length
@@ -4988,6 +5131,37 @@ export default function App() {
               onClick={() => setRecoveryNoticeDismissed(true)}
             >
               <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {sessionRuntimeFailures[sessionId] && (
+          <div className="error-banner" role="alert">
+            <AlertTriangle size={14} />
+            <span>
+              {language === "zh"
+                ? `未能恢复本会话上次使用的模型或思考深度（${[
+                    sessionRuntimeFailures[sessionId].provider &&
+                    sessionRuntimeFailures[sessionId].modelId &&
+                    `${sessionRuntimeFailures[sessionId].provider}/${sessionRuntimeFailures[sessionId].modelId}`,
+                    sessionRuntimeFailures[sessionId].thinkingLevel,
+                  ]
+                    .filter(Boolean)
+                    .join("、")}）。请在运行时设置中选择可用项后再发送。`
+                : `Could not restore this session's last model or thinking level (${[
+                    sessionRuntimeFailures[sessionId].provider &&
+                    sessionRuntimeFailures[sessionId].modelId &&
+                    `${sessionRuntimeFailures[sessionId].provider}/${sessionRuntimeFailures[sessionId].modelId}`,
+                    sessionRuntimeFailures[sessionId].thinkingLevel,
+                  ]
+                    .filter(Boolean)
+                    .join(", ")}). Select available ones in Runtime settings before sending.`}
+            </span>
+            <button
+              className="banner-action"
+              onClick={() => { setTraceOpen(false); setPanel(true); }}
+            >
+              {language === "zh" ? "运行时设置" : "Runtime settings"}
             </button>
           </div>
         )}
