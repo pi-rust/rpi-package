@@ -59,3 +59,261 @@
   color: var(--text);
 }
 
+/* Chat search: finds *sessions* across projects. Same popover chrome family as
+   the recent-chats window. */
+.slim-chat-search {
+  position: fixed;
+  top: 136px;
+  left: calc(var(--sidebar-width, 248px) + 8px);
+  z-index: 100;
+  display: flex;
+  width: 360px;
+  max-height: min(460px, calc(100dvh - 150px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.slim-chat-search-field {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 6px 8px 11px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+.slim-chat-search-field input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.slim-chat-search-field input:focus,
+.slim-chat-search-field input:focus-visible {
+  outline: none !important;
+  box-shadow: none;
+  border: 0;
+}
+.slim-chat-search-field:focus-within {
+  border-bottom-color: var(--muted);
+}
+.slim-chat-search-field .icon-button {
+  width: 24px;
+  height: 24px;
+}
+.slim-chat-search-list {
+  display: grid;
+  gap: 1px;
+  min-height: 0;
+  padding: 5px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.slim-chat-search-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.slim-chat-search-option.selected {
+  background: var(--hover);
+}
+.slim-chat-search-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+.slim-chat-search-copy strong {
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slim-chat-search-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slim-chat-search-tag {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 9px;
+}
+.slim-chat-search-option > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+.slim-chat-search-empty {
+  margin: 0;
+  padding: 16px;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: center;
+}
+.slim-chat-search-foot {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 6px 11px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 9.5px;
+}
+.slim-chat-search-foot kbd {
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 9px;
+}
+
+/* Composer: two readouts with their original icons, plus the jump into the
+   runtime panel that explains them. */
+.slim-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 6px 2px 1px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.slim-metrics .composer-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.slim-metrics-more {
+  margin-left: auto;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+.slim-metrics-more:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* The runtime entry sits at the top of the model menu, separated from the
+   provider groups by the stock .dropdown-group divider. */
+.slim-model-runtime {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  border-radius: 5px 5px 0 0;
+}
+.slim-model-runtime-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  /* Same weight as an unselected model row in this menu (#302). The entry is
+     already separated by the divider and the trailing hint, so it does not
+     need weight to stand out from the provider groups. */
+  font-weight: 400;
+}
+.slim-model-runtime-hint {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   Fix: hover-revealed row actions must not (a) stay visible after the click
+   that revealed them, or (b) be clickable while invisible.
+
+   The stock rule uses `opacity: 0` plus `:hover` / `:focus-within`.
+     - opacity does not remove a control from the hit-test tree, so an invisible
+       "+" still creates a session when clicked;
+     - clicking the collapse chevron leaves focus inside
+       `.project-group-header`, so `:focus-within` keeps the "+" visible with
+       the pointer nowhere near it.
+
+   Hidden controls get `pointer-events: none`, and keyboard reveal keys off
+   `:focus-visible` instead of `:focus-within`. A mouse click does not match
+   `:focus-visible`, so nothing is pinned; tabbing into the row still reveals
+   the actions.
+   --------------------------------------------------------------------------- */
+.workspace .project-group-header .project-new-session,
+.workspace .project-session .session-menu-trigger {
+  opacity: 0;
+  pointer-events: none;
+}
+.workspace .project-group-header:hover .project-new-session,
+.workspace .project-group-header:hover .project-menu-trigger,
+.workspace .project-group-header:has(:focus-visible) .project-new-session,
+.workspace .project-group-header:has(:focus-visible) .project-menu-trigger,
+.workspace .project-group-header .project-menu-trigger[aria-expanded="true"],
+.workspace .project-session:hover .session-menu-trigger,
+.workspace .project-session:has(:focus-visible) .session-menu-trigger,
+.workspace .project-session .session-menu-trigger[aria-expanded="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Phones: the floating windows use the viewport instead of the sidebar offset,
+   and the always-visible row actions stay clickable. */
+@media (max-width: 767px) {
+  .slim-chat-search,
+  .slim-recent {
+    top: 64px;
+    left: 8px;
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 96px);
+  }
+  .workspace .sidebar .project-new-session,
+  .workspace .project-session .session-menu-trigger {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* Keep the floating-list scrollbar visible and space-reserved in Chromium.
+   `scrollbar-width: thin` alone is rendered as an overlay scrollbar that only
+   appears while scrolling, so users perceive the list as having no scrollbar. */
+.slim-recent-list,
+.slim-chat-search-list {
+  scrollbar-gutter: stable;
+}
+.slim-recent-list::-webkit-scrollbar,
+.slim-chat-search-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.slim-recent-list::-webkit-scrollbar-thumb,
+.slim-chat-search-list::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  background: var(--line);
+}
+.slim-recent-list::-webkit-scrollbar-track,
+.slim-chat-search-list::-webkit-scrollbar-track {
+  background: transparent;
+}
