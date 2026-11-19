@@ -38,8 +38,16 @@ pub fn status_text(goals: &Goals) -> String {
     } else {
         ""
     };
+    let verdicts = match goal.verifications.last() {
+        Some(last) => format!(
+            "\nverifier: {} recorded, last {}",
+            goal.verifications.len(),
+            last.outcome_str()
+        ),
+        None => String::new(),
+    };
     format!(
-        "🎯 {}\nstatus: {}\nid: {}\nnotes: {}\n{}{usage}",
+        "🎯 {}\nstatus: {}\nid: {}\nnotes: {}\n{}{verdicts}{usage}",
         goal.title,
         status_line(goal),
         goal.id,
@@ -291,5 +299,30 @@ mod tests {
             archived: vec![],
         };
         assert!(status_text(&goals).contains("review monitor"));
+    }
+
+    #[test]
+    fn status_reports_recorded_verdicts() {
+        let mut goal = goal();
+        goal.push_verification(state::GoalVerification {
+            outcome: state::VerdictOutcome::NotSatisfied,
+            reason: None,
+            next_action: None,
+            at_ms: 0,
+        });
+        goal.push_verification(state::GoalVerification {
+            outcome: state::VerdictOutcome::Pass,
+            reason: None,
+            next_action: None,
+            at_ms: 1,
+        });
+        let goals = Goals {
+            version: 2,
+            revision: 1,
+            active: Some(goal),
+            archived: vec![],
+        };
+        let text = status_text(&goals);
+        assert!(text.contains("verifier: 2 recorded, last pass"), "{text}");
     }
 }

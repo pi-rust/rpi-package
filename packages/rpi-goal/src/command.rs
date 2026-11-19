@@ -5,10 +5,10 @@
 //! message is not sent from the TUI thread.
 use serde_json::{json, Value};
 
-use crate::ops;
+use crate::ops::{self, VerdictInput};
 use crate::render;
 use crate::runtime;
-use crate::state::{self, parse_duration_ms, parse_token_budget};
+use crate::state::{self, parse_duration_ms, parse_token_budget, VerdictOutcome};
 
 const COMMAND_HELP: &str = "\
 /goal                      show status
@@ -132,6 +132,70 @@ fn start(args: StartArgs) -> String {
     }
 }
 
+/// Host bridge verb (kept out of `COMMAND_HELP`; embedding hosts only).
+///
+/// Payload contract, pinned by `tests/verdicts.rs`:
+///
+/// ```json
+/// {"goalId": "16-hex", "outcome": "pass", "reason": "optional"}
+/// {"goalId": "16-hex", "outcome": "notSatisfied",
+///  "reason": "optional", "nextAction": "required, dispatched as the next run"}
+/// ```
+///
+/// The outcome accepts `pass` / `notSatisfied` in snake, kebab, or camel case.
+/// A `notSatisfied` verdict records the verdict, reopens an archived
+/// (complete/blocked) goal with a fresh id, and queues `nextAction`; the
+/// continuation worker dispatches it at the next wake, never into a live run.
+/// A `pass` verdict records only.
+fn parse_verify_result(rest: &str) -> Result<VerdictInput, String> {
+    let value: Value = serde_json::from_str(rest)
+        .map_err(|error| format!("_verify-result takes a JSON object: {error}"))?;
+    if !value.is_object() {
+        return Err("_verify-result takes a JSON object".into());
+    }
+    let outcome_raw = value
+        .get("outcome")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase()
+        .replace(['_', '-'], "");
+    let outcome = match outcome_raw.as_str() {
+        "pass" | "passed" => VerdictOutcome::Pass,
+        "notsatisfied" | "rejected" => VerdictOutcome::NotSatisfied,
+        other => {
+            return Err(format!(
+                "outcome must be \"pass\" or \"notSatisfied\", got \"{other}\""
+            ))
+        }
+    };
+    let next_action = value
+        .get("nextAction")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    // A pass with a next action is a malformed call, not a silent ignore
+    // (`ops` re-checks this for direct callers).
+    if outcome == VerdictOutcome::Pass
+        && next_action.as_deref().is_some_and(|a| !a.trim().is_empty())
+    {
+        return Err(
+            "next_action belongs to a notSatisfied verdict; a pass records nothing to run".into(),
+        );
+    }
+    Ok(VerdictInput {
+        goal_id: value
+            .get("goalId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        outcome,
+        reason: value
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        next_action,
+    })
+}
+
 /// Route one `/goal` invocation. Returns the text the TUI renders.
 pub fn run(args: &str) -> String {
     let args = args.trim();
@@ -145,6 +209,17 @@ pub fn run(args: &str) -> String {
         "list" => state::read().map(|goals| render::list_text(&goals)),
         "help" => Ok(COMMAND_HELP.to_string()),
         "settings" => Ok(render::settings_text()),
+        "_verify-result" => parse_verify_result(rest).and_then(|input| {
+            ops::record_verification(input).map(|goal| {
+                let last = goal.verifications.last();
+                let outcome = last.map(|v| v.outcome_str()).unwrap_or("recorded");
+                let count = goal.verifications.len();
+                format!(
+                    "🧪 Verification recorded: {outcome} — {} ({count} verdicts, goal `{}`)",
+                    goal.title, goal.id
+                )
+            })
+        }),
         "start" => parse_start_args(rest).map(start),
         "pause" => ops::pause().map(|goal| {
             format!(
@@ -284,5 +359,27 @@ mod tests {
         // No host runtime in unit tests: the file fallback returns no goal.
         let text = run("status");
         assert!(text.contains("No active goal"), "{text}");
+    }
+
+    #[test]
+    fn verify_result_payload_parsing_is_strict() {
+        let input = parse_verify_result(
+            r#"{"goalId":"abc","outcome":"not_satisfied","reason":"r","nextAction":"run tests"}"#,
+        )
+        .unwrap();
+        assert_eq!(input.outcome, VerdictOutcome::NotSatisfied);
+        assert_eq!(input.goal_id.as_deref(), Some("abc"));
+        assert_eq!(input.next_action.as_deref(), Some("run tests"));
+
+        let pass = parse_verify_result(r#"{"outcome":"Pass"}"#).unwrap();
+        assert_eq!(pass.outcome, VerdictOutcome::Pass);
+
+        assert!(parse_verify_result("not json").is_err());
+        assert!(parse_verify_result(r#"{"outcome":"maybe"}"#).is_err());
+        // A pass with a next action is a malformed call, not a silent ignore.
+        assert!(parse_verify_result(r#"{"outcome":"pass","nextAction":"x"}"#).is_err());
+        // A rejection without a next action parses; `ops` rejects it so the
+        // goal cannot be reopened with nothing to run.
+        assert!(parse_verify_result(r#"{"outcome":"notSatisfied"}"#).is_ok());
     }
 }

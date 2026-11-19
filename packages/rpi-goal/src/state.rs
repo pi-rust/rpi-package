@@ -26,6 +26,10 @@ pub const MAX_NOTES_CHARS: usize = 20_000;
 pub const MAX_SUMMARY_CHARS: usize = 4_000;
 pub const MAX_REASON_CHARS: usize = 1_000;
 pub const MAX_EVIDENCE_CHARS: usize = 4_000;
+/// Verifier verdicts recorded by an embedding host. Rows and field sizes are
+/// bounded so a goal cannot grow its persisted state without limit.
+pub const MAX_VERIFICATIONS: usize = 50;
+pub const MAX_VERIFICATION_CHARS: usize = 2_000;
 /// `goal_wait` deadlines below this are clamped up: a shorter wait is a poll.
 pub const MIN_WAIT_MS: i64 = 10_000;
 pub const MAX_WAIT_MS: i64 = i32::MAX as i64;
@@ -104,6 +108,38 @@ pub struct Waiting {
     pub deadline_ms: Option<i64>,
 }
 
+/// One completion-verification verdict recorded by an embedding host through
+/// `/goal _verify-result`. Purely a record: the seven statuses are untouched,
+/// so a rejection is expressed by re-queueing [`Goal::pending_next_action`],
+/// not by inventing a state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerdictOutcome {
+    Pass,
+    NotSatisfied,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalVerification {
+    pub outcome: VerdictOutcome,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub next_action: Option<String>,
+    #[serde(default)]
+    pub at_ms: i64,
+}
+
+impl GoalVerification {
+    pub fn outcome_str(&self) -> &'static str {
+        match self.outcome {
+            VerdictOutcome::Pass => "pass",
+            VerdictOutcome::NotSatisfied => "not satisfied",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Goal {
@@ -169,6 +205,15 @@ pub struct Goal {
     /// `completed` / `aborted` / `error` for the last finished run.
     #[serde(default, alias = "last_outcome")]
     pub last_outcome: Option<String>,
+    /// Verifier verdicts recorded by the host, oldest first, bounded at
+    /// [`MAX_VERIFICATIONS`].
+    #[serde(default)]
+    pub verifications: Vec<GoalVerification>,
+    /// Verifier-directed next action awaiting dispatch by the continuation
+    /// worker. Cleared when its run is dispatched; a verdict that arrives while
+    /// the goal is stopped keeps it queued for `/goal resume`.
+    #[serde(default)]
+    pub pending_next_action: Option<String>,
 }
 
 impl Goal {
@@ -197,6 +242,8 @@ impl Goal {
             usage_seen: 0,
             usage_unavailable: false,
             last_outcome: None,
+            verifications: Vec::new(),
+            pending_next_action: None,
         }
     }
 
@@ -217,6 +264,14 @@ impl Goal {
     pub fn start_clock(&mut self, now: i64) {
         self.stop_clock(now);
         self.active_since = Some(now);
+    }
+
+    /// Append a verdict, evicting the oldest row past [`MAX_VERIFICATIONS`].
+    pub fn push_verification(&mut self, verdict: GoalVerification) {
+        if self.verifications.len() >= MAX_VERIFICATIONS {
+            self.verifications.remove(0);
+        }
+        self.verifications.push(verdict);
     }
 
     /// Human-readable budget line, e.g. `turns 3/20 · time 12m0s left`.
@@ -702,5 +757,49 @@ mod tests {
         assert!(summary.contains("turns 3/20"), "{summary}");
         assert!(summary.contains("tokens 18.4k/100k"), "{summary}");
         assert!(summary.contains("time unlimited"), "{summary}");
+    }
+
+    #[test]
+    fn verdict_rows_are_bounded_and_legacy_entries_default_to_empty() {
+        let mut goal = Goal::new("t".into(), String::new(), 0);
+        for i in 0..(MAX_VERIFICATIONS + 5) {
+            goal.push_verification(GoalVerification {
+                outcome: if i % 2 == 0 {
+                    VerdictOutcome::Pass
+                } else {
+                    VerdictOutcome::NotSatisfied
+                },
+                reason: None,
+                next_action: None,
+                at_ms: i as i64,
+            });
+        }
+        assert_eq!(goal.verifications.len(), MAX_VERIFICATIONS);
+        assert_eq!(goal.verifications[0].at_ms, 5, "oldest rows are evicted");
+        assert_eq!(
+            goal.verifications[MAX_VERIFICATIONS - 1].at_ms,
+            (MAX_VERIFICATIONS + 4) as i64
+        );
+
+        let legacy: Goal =
+            serde_json::from_value(json!({"title": "t", "status": "active"})).unwrap();
+        assert!(legacy.verifications.is_empty());
+        assert!(legacy.pending_next_action.is_none());
+    }
+
+    #[test]
+    fn verdict_outcomes_round_trip_through_the_host_json_shape() {
+        let verdict: GoalVerification = serde_json::from_value(json!({
+            "outcome": "notSatisfied",
+            "reason": "tests not run",
+            "nextAction": "run the tests",
+            "atMs": 12
+        }))
+        .unwrap();
+        assert_eq!(verdict.outcome, VerdictOutcome::NotSatisfied);
+        assert_eq!(verdict.next_action.as_deref(), Some("run the tests"));
+        let serialized = serde_json::to_value(&verdict).unwrap();
+        assert_eq!(serialized["outcome"], json!("notSatisfied"));
+        assert_eq!(serialized["nextAction"], json!("run the tests"));
     }
 }

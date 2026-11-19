@@ -4,7 +4,7 @@
 //! wakes the continuation worker. None of them sends a message directly.
 use crate::dispatch;
 use crate::inject;
-use crate::state::{self, Goal, Goals, Status};
+use crate::state::{self, Goal, GoalVerification, Goals, Status, VerdictOutcome};
 use crate::status;
 
 pub fn require_active(goals: &Goals) -> Result<Goal, String> {
@@ -380,6 +380,139 @@ pub fn wait(goal_id: &str, reason: &str, resume_after_ms: Option<i64>) -> Result
         queue_active(&goals, &goal);
         let notice = crate::prompts::waiting_notice(&goal, &waiting);
         (goal, notice)
+    };
+    finish(&goal, Some(notice))
+}
+
+/// Host-facing completion verification. The plugin only *records* the verdict
+/// and queues the verifier's next action; the seven statuses stay untouched.
+/// A rejected goal that was archived (complete/blocked) is reopened: it moves
+/// back to the active slot with a fresh id, and the existing continuation
+/// worker dispatches the next action at the next wake — never into a live run.
+pub struct VerdictInput {
+    pub goal_id: Option<String>,
+    pub outcome: VerdictOutcome,
+    pub reason: Option<String>,
+    pub next_action: Option<String>,
+}
+
+fn bounded_optional(text: &Option<String>, field: &str) -> Result<Option<String>, String> {
+    match text.as_deref() {
+        None => Ok(None),
+        Some(text) if text.trim().is_empty() => Ok(None),
+        Some(text) => Ok(Some(bounded(text, state::MAX_VERIFICATION_CHARS, field)?)),
+    }
+}
+
+pub fn record_verification(input: VerdictInput) -> Result<Goal, String> {
+    let reason = bounded_optional(&input.reason, "verification reason")?;
+    let next_action = match input.outcome {
+        VerdictOutcome::Pass => {
+            if input
+                .next_action
+                .as_deref()
+                .is_some_and(|a| !a.trim().is_empty())
+            {
+                return Err(
+                    "next_action belongs to a notSatisfied verdict; a pass records nothing to run"
+                        .into(),
+                );
+            }
+            None
+        }
+        VerdictOutcome::NotSatisfied => Some(bounded(
+            input.next_action.as_deref().unwrap_or(""),
+            state::MAX_VERIFICATION_CHARS,
+            "next_action",
+        )?),
+    };
+    let goal_id = input
+        .goal_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+
+    let (goal, notice) = {
+        let _guard = state::lock();
+        let mut goals = state::read()?;
+        let now = state::now_ms();
+        let verdict = GoalVerification {
+            outcome: input.outcome,
+            reason,
+            next_action: next_action.clone(),
+            at_ms: now,
+        };
+
+        // Resolve the goal under review. An active goal is validated against
+        // goal_id when the host passes one; an archived goal (the model
+        // completed or blocked it) is reopened by removing it from the archive.
+        if let Some(active) = goals.active.clone() {
+            if let Some(id) = &goal_id {
+                if active.id != *id {
+                    return Err(format!(
+                        "stale goal_id `{id}`: it does not match the current active goal; read `/goal status`"
+                    ));
+                }
+            }
+            let mut goal = active;
+            goal.push_verification(verdict.clone());
+            match input.outcome {
+                VerdictOutcome::Pass => {
+                    // A pass supersedes any queued rejection direction.
+                    goal.pending_next_action = None;
+                }
+                VerdictOutcome::NotSatisfied => {
+                    goal.pending_next_action = next_action;
+                    if goal.status == Status::Waiting {
+                        // The verdict *is* the external input the goal waited for.
+                        goal.status = Status::Active;
+                        goal.waiting = None;
+                        goal.start_clock(now);
+                    }
+                }
+            }
+            goal.updated_at = now;
+            let notice = crate::prompts::verdict_notice(&goal, &verdict);
+            queue_active(&goals, &goal);
+            (goal, notice)
+        } else {
+            let Some(id) = &goal_id else {
+                return Err("no active goal — pass the goal_id of the goal under review".into());
+            };
+            let Some(position) = goals.archived.iter().rposition(|goal| &goal.id == id) else {
+                return Err(format!("no goal matches goal_id `{id}`"));
+            };
+            let mut goal = goals.archived.remove(position);
+            goal.push_verification(verdict.clone());
+            match input.outcome {
+                VerdictOutcome::Pass => {
+                    // Stay archived; the completion claim is accepted.
+                    goal.updated_at = now;
+                    goals.archived.push(goal.clone());
+                    let notice = crate::prompts::verdict_notice(&goal, &verdict);
+                    state::queue(&goals);
+                    (goal, notice)
+                }
+                VerdictOutcome::NotSatisfied => {
+                    // Reopen: fresh id (stale terminal tools and stale verdicts
+                    // for the old id are rejected), counters reset like a resume.
+                    goal.status = Status::Active;
+                    goal.id = state::new_goal_id();
+                    goal.automatic_turns = 0;
+                    goal.no_progress_count = 0;
+                    goal.last_output_fingerprint = None;
+                    goal.safety_pause_cause = None;
+                    goal.waiting = None;
+                    goal.pending_next_action = next_action;
+                    goal.updated_at = now;
+                    goal.start_clock(now);
+                    let notice = crate::prompts::verdict_notice(&goal, &verdict);
+                    queue_active(&goals, &goal);
+                    (goal, notice)
+                }
+            }
+        }
     };
     finish(&goal, Some(notice))
 }

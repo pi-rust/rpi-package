@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `/goal _verify-result` host bridge: embedding hosts record completion-verification
+  verdicts (`pass` / `notSatisfied` with a bounded `verifications` row); a rejected
+  goal queues the verifier's `nextAction` and the existing continuation worker
+  dispatches it at the next wake (reopening an archived goal with a fresh id). The
+  seven states are untouched — a verdict is a record plus a queued direction
 - automatic continuation from the settled boundary: one goal-owned run per
   `AgentSettled` through the blocking `SendMessage` action, serialized by a single
   continuation worker

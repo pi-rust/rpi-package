@@ -160,7 +160,9 @@ fn run() {
 enum Plan {
     Idle,
     Wait(Instant),
-    Send(Box<Goal>, u64),
+    /// The prompt to send. `Some` overrides the standard continuation with the
+    /// verifier-directed next action queued by `_verify-result`.
+    Send(Box<Goal>, u64, Option<String>),
     Stop(Status, String, Option<&'static str>),
 }
 
@@ -195,7 +197,7 @@ fn step() -> Option<Instant> {
             stop(status, &reason, cause);
             None
         }
-        Plan::Send(goal, revision) => {
+        Plan::Send(goal, revision, verdict_prompt) => {
             // A pause or replacement may have committed after `evaluate`
             // released the state lock. Check again before touching the host so
             // a stale plan cannot start a run for a stopped or replaced goal.
@@ -207,7 +209,7 @@ fn step() -> Option<Instant> {
             if !dispatch_is_current(&goal, revision) {
                 return None;
             }
-            dispatch(&goal, revision);
+            dispatch(&goal, revision, verdict_prompt);
             None
         }
     }
@@ -271,10 +273,14 @@ fn evaluate(goals: Goals, settings: settings::Settings, tools_available: bool) -
     if goal.active_since.is_none() {
         goal.start_clock(now);
     }
+    // A queued verifier next action replaces the generic continuation prompt.
+    // It stays in state until the run's fold-back clears it, so a stale plan
+    // (a pause that lands first) cannot drop it.
+    let verdict_prompt = goal.pending_next_action.clone();
     let mut next = goals.clone();
     next.active = Some(goal.clone());
     let revision = state::queue(&next);
-    Plan::Send(Box::new(goal), revision)
+    Plan::Send(Box::new(goal), revision, verdict_prompt)
 }
 
 /// Whether a plan created by `evaluate` is still the current intent. The
@@ -292,15 +298,28 @@ fn dispatch_is_current(goal: &Goal, revision: u64) -> bool {
 
 /// Send one continuation and fold the outcome back into state. The call blocks
 /// until the run ends, so the settlement that follows is already queued.
-fn dispatch(goal: &Goal, revision: u64) {
+fn dispatch(goal: &Goal, revision: u64, verdict_prompt: Option<String>) {
     if !dispatch_is_current(goal, revision) {
         return;
     }
     let first = goal.iteration <= 1;
-    let prompt = if first {
-        prompts::kickoff(goal)
-    } else {
-        prompts::continuation(goal, goal.iteration)
+    let served_verdict_prompt = verdict_prompt.is_some();
+    let prompt = match verdict_prompt {
+        Some(action) => {
+            let verdict =
+                goal.verifications
+                    .last()
+                    .cloned()
+                    .unwrap_or(crate::state::GoalVerification {
+                        outcome: crate::state::VerdictOutcome::NotSatisfied,
+                        reason: None,
+                        next_action: Some(action),
+                        at_ms: state::now_ms(),
+                    });
+            prompts::verdict_continuation(goal, &verdict)
+        }
+        None if first => prompts::kickoff(goal),
+        None => prompts::continuation(goal, goal.iteration),
     };
     AUTOMATIC.store(true, Ordering::SeqCst);
     let result = crate::call_runtime(
@@ -347,6 +366,12 @@ fn dispatch(goal: &Goal, revision: u64) {
                                 let mut active = active;
                                 active.last_outcome = Some(other.to_string());
                                 active.updated_at = state::now_ms();
+                                // The verifier-directed run has been served; a
+                                // completed/aborted/errored run keeps it queued
+                                // so `/goal resume` re-runs it.
+                                if served_verdict_prompt {
+                                    active.pending_next_action = None;
+                                }
                                 goals.active = Some(active);
                                 state::queue(&goals);
                                 true
