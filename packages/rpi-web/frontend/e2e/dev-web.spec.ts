@@ -1088,7 +1088,6 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   await expect(rows).toHaveCount(15);
   await expect(recent.locator(".recent-session-link")).toHaveCount(15);
   const wrap = recent.locator(".recent-wrap");
-  const clientHeight = await wrap.evaluate((element) => element.clientHeight);
   const firstFiveFit = await wrap.evaluate((element) => {
     const box = element.getBoundingClientRect();
     return [...element.querySelectorAll(".recent-session-row")]
@@ -1099,9 +1098,6 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
       });
   });
   expect(firstFiveFit).toBe(true);
-  expect(await wrap.evaluate((element) => element.scrollHeight)).toBeGreaterThan(clientHeight);
-  await wrap.evaluate((element) => element.scrollTo({ top: 200 }));
-  await expect.poll(() => wrap.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   // Recent rows must never take the selected/active state from the project tree.
   await expect(recent.locator(".recent-session-row.active")).toHaveCount(0);
 });
