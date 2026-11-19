@@ -8054,8 +8054,13 @@ test.describe("attachment cards", () => {
     const fileRequests: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
+      // The app's own bundle assets (the brand logo now ships under /assets)
+      // are not attachment fetches; the copy path must fetch no document.
+      const ownAsset =
+        url.pathname === "/favicon.svg" ||
+        url.pathname.startsWith("/assets/");
       if (
-        (request.resourceType() === "image" && url.pathname !== "/rpi-logo.png") ||
+        (request.resourceType() === "image" && !ownAsset) ||
         /\.docx$/i.test(url.pathname) ||
         url.pathname.includes("/uploads/") ||
         /\/projects\/[^/]+\/file$/.test(url.pathname)
