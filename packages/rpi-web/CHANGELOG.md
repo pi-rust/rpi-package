@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.1.65](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.64...rpi-web-v0.1.65) - 2026-11-19
+
+### Changed
+
+- *(web)* show recent chats inline in a five-row sidebar list and use the project logo as the browser favicon
+
+
 ### Fixed
 
 - *(web)* release native hosts left waiting on an unanswered dialog: after the idle budget with no requests, the reaper cancels the pending dialog so the tool call settles and the host can later be closed without interrupting a running operation. Requires the matching `rpi-extcore` backend update.
