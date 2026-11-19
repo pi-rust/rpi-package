@@ -266,14 +266,14 @@ impl Transport for TcpTransport {
     }
 
     async fn accept(&self) -> Result<TcpConnection, String> {
-        let listener = self.listener.lock().await;
-        let listener = listener.as_ref().ok_or("not listening")?;
-
-        let (stream, addr) = listener
-            .accept()
-            .await
-            .map_err(|e| format!("accept failed: {e}"))?;
-
+        let (stream, addr) = {
+            let listener = self.listener.lock().await;
+            let listener = listener.as_ref().ok_or("not listening")?;
+            listener
+                .accept()
+                .await
+                .map_err(|e| format!("accept failed: {e}"))?
+        };
         Ok(TcpConnection::new(stream, format!("tcp-{addr}")))
     }
 
@@ -403,11 +403,16 @@ impl WebSocketTransport {
     }
 
     /// 明文或 TLS 的客户端字节流。
-    async fn connect_stream(&self, host: &str, port: u16) -> Result<Box<dyn Stream>, String> {
+    async fn connect_stream(
+        &self,
+        host: &str,
+        port: u16,
+        secure: bool,
+    ) -> Result<Box<dyn Stream>, String> {
         let tcp = TcpStream::connect((host, port))
             .await
             .map_err(|e| format!("connect failed: {e}"))?;
-        if !self.secure {
+        if !secure {
             return Ok(Box::new(tcp));
         }
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
@@ -445,12 +450,17 @@ impl Transport for WebSocketTransport {
     }
 
     async fn accept(&self) -> Result<WebSocketConnection, String> {
-        let listener = self.listener.lock().await;
-        let listener = listener.as_ref().ok_or("not listening")?;
-        let (stream, addr) = listener
-            .accept()
-            .await
-            .map_err(|e| format!("accept failed: {e}"))?;
+        // Take the connection, then release the listener: a peer that connects
+        // and never finishes the TLS/WebSocket handshake must not block every
+        // other accept.
+        let (stream, addr) = {
+            let listener = self.listener.lock().await;
+            let listener = listener.as_ref().ok_or("not listening")?;
+            listener
+                .accept()
+                .await
+                .map_err(|e| format!("accept failed: {e}"))?
+        };
         // TLS first when configured, then the WebSocket handshake on the same
         // boxed stream type the client side uses.
         let stream: Box<dyn Stream> = match &self.acceptor {
@@ -480,11 +490,14 @@ impl Transport for WebSocketTransport {
             .host()
             .ok_or_else(|| format!("websocket url {url} has no host"))?
             .to_string();
+        // An explicit `wss://` address is TLS regardless of how the transport
+        // was constructed, so a caller cannot silently downgrade to plaintext.
+        let secure = self.secure || url.starts_with("wss://");
         let port = request
             .uri()
             .port_u16()
-            .unwrap_or(if self.secure { 443 } else { 80 });
-        let stream = self.connect_stream(&host, port).await?;
+            .unwrap_or(if secure { 443 } else { 80 });
+        let stream = self.connect_stream(&host, port, secure).await?;
         let (socket, _) = tokio_tungstenite::client_async(request, stream)
             .await
             .map_err(|e| format!("websocket connect failed: {e}"))?;
@@ -622,6 +635,55 @@ mod websocket_tests {
             secure.url("wss://example.test/rpi"),
             "wss://example.test/rpi"
         );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_handshake_does_not_block_other_connections() {
+        let addr = free_addr();
+        let server = Arc::new(WebSocketTransport::new());
+        server.listen(&addr).await.expect("listen");
+
+        // A peer that connects and never sends the WebSocket handshake. The
+        // first accept parks in that handshake for much longer than the second
+        // accept is allowed to take, so holding the listener would be visible.
+        let _stalled = TcpStream::connect(&addr).await.expect("stalled peer");
+        let first = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(5), server.accept()).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let second = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(1), server.accept()).await
+            })
+        };
+        let connecting =
+            tokio::spawn(async move { WebSocketTransport::new().connect(&addr).await });
+        // Judge the accept first: a listener held across the stalled handshake
+        // fails here within a second instead of hanging the client below.
+        let mut peer = second
+            .await
+            .expect("accept task")
+            .expect("accept was blocked by the stalled handshake")
+            .expect("peer");
+        let mut client = connecting
+            .await
+            .expect("connect task")
+            .expect("second connection");
+
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}))
+            .await
+            .expect("client send");
+        let frame = peer.recv().await.expect("peer recv").expect("frame");
+        assert_eq!(frame["method"], "ping");
+
+        first.abort();
+        let _ = client.close().await;
     }
 
     #[tokio::test]
