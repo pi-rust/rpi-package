@@ -26,6 +26,8 @@ Todo cards keep the native result's **whole-list progress**, even when `list` hi
 
 Ask tool history (`ask_user`, `ask`, including `functions.` prefixes) renders **read-only question and answer cards** instead of raw JSON: questions, context, option descriptions, exact native selected titles, multi-select values, comments and free-text answers. Multiple questions are matched by stable answer IDs, or unambiguous question text when no ID is present; unmatched answers are never assigned by position. Confirmation accepts/declines remain distinct from cancellation and tool errors. Native result summaries and failures stay readable; unsupported payloads remain available under a collapsed **Raw data / 原始数据** disclosure. Cards preserve tool-name preferences, expansion and authoritative call timings on live updates and reloads. This presentation does not submit answers, reopen dialogs or change native history; the existing live answering overlay is unchanged.
 
+Live question and permission dialogs open and close immediately while a run-boundary transcript refresh is pending. A late snapshot or replay cannot reopen an answered/cancelled question or clear a draft in the next question; transcript rows still use ordered snapshot/replay reconciliation.
+
 Delegated task history (`delegate_task`, including `functions.` prefixes) renders **read-only task/report cards** instead of transport JSON. Expand to read the full task, role, native child status, turns used and Markdown report, or live text progress/errors while running. A native `turnLimited` flag is an explicit warning, not an inferred failure. Requested/returned execution budgets and child/session IDs are in a closed **Execution details / 执行信息** disclosure; raw input/output is separately opt-in. The header's elapsed time remains the actual tool-call timing, never the timeout budget. Cards preserve tool-name preferences and manual expansion through live completion, restore structured results on reload, and never start, rerun, cancel or navigate to a child. Unknown payloads remain available as raw data; invalid tasks and image-bearing outputs retain the generic renderer. Native child lifecycle and history are unchanged.
 
 Tool headers show exact **native tool names by default**, including prefixes and case. In **Settings → Tool names**, choose **Native names / 原生名称** or **Mapped names / 映射名称** (the previous localized actions such as Read/Ran/Edited). The selection is saved in this browser and applies to all tool cards, including live updates, plans and todos. Switching changes only the header label: paths, commands, metadata, elapsed times, details and expansion state are preserved; native calls and transcript data are unchanged.
@@ -60,8 +62,12 @@ sent automatically.
 Web automatically releases an **idle native host** after 30 minutes without a
 request for that session. This closes the child process but preserves the
 session registry entry and native transcript; opening the chat again restores
-it. A running operation, pending dialog, queued work, or uncertain native idle
-state is never interrupted. Set `"sessionTimeoutSeconds": 0` in `.rpi/web.json`
+it. A running operation, queued work, or uncertain native idle state is never
+interrupted. A session left waiting on an unanswered dialog (`awaiting_input`)
+is also not killed mid-run: after the same idle budget without any request the
+reaper cancels the pending dialog through the ordinary response path, which lets
+the tool call settle; the host is then closed on a later pass once it is idle.
+Set `"sessionTimeoutSeconds": 0` in `.rpi/web.json`
 to disable the reaper, or choose another positive number of seconds. The
 command-line override is `--session-timeout SECONDS` (use `0` to disable).
 This is a resource cleanup timeout, not permanent session deletion.

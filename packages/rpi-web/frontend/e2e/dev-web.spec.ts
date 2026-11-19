@@ -1077,32 +1077,33 @@ test("fork is available from a session context menu", async ({ page }) => {
   await expect.poll(() => forkBody).toEqual({ title: "Design fork" });
 });
 
-test("recent chats open as a floating window without moving the project tree", async ({
+test("recent chats stay inline as a scrollable sidebar list", async ({
   page,
 }) => {
-  await mockHost(page, { additionalSessions: 10 });
+  await mockHost(page, { additionalSessions: 40 });
   await page.goto("/");
-  const tree = page.locator(".project-tree");
-  const treeBox = async () =>
-    tree.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      return { top: rect.top, height: rect.height };
-    });
-  const before = await treeBox();
-  await page.getByRole("button", { name: "Recent chats", exact: true }).click();
-  const recent = page.getByRole("dialog", { name: "Recent chats" });
+  const recent = page.getByRole("region", { name: "Recent chats" });
   await expect(recent).toBeVisible();
-  // Cross-project recency is the one thing the tree cannot express; the window
-  // lists every non-archived chat and tags each row with its project.
-  await expect(recent.locator(".slim-recent-option")).toHaveCount(11);
-  await expect(recent.locator(".slim-recent-project").first()).toHaveText(
-    "rpi-package",
-  );
-  // The floating window costs no permanent vertical space: the tree keeps its
-  // full height and position while it is open.
-  expect(await treeBox()).toEqual(before);
-  await page.keyboard.press("Escape");
-  await expect(recent).toHaveCount(0);
+  const rows = recent.locator(".recent-session-link");
+  await expect(rows).toHaveCount(15);
+  await expect(recent.locator(".recent-session-link")).toHaveCount(15);
+  const wrap = recent.locator(".recent-wrap");
+  const geometry = await wrap.evaluate((element) => {
+    const list = element.querySelector(".recent-session-list") as HTMLElement;
+    const box = list.getBoundingClientRect();
+    const rows = [...list.querySelectorAll(".recent-session-row")];
+    const firstFiveFit = rows.slice(0, 5).every((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.top >= box.top - 0.5 && rect.bottom <= box.bottom + 0.5;
+    });
+    return { firstFiveFit, clientHeight: list.clientHeight, scrollHeight: list.scrollHeight };
+  });
+  expect(geometry.firstFiveFit).toBe(true);
+  // Exactly five rows occupy the list; the rest scroll inside it.
+  expect(geometry.clientHeight).toBeLessThanOrEqual(160);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+  // Recent rows must never take the selected/active state from the project tree.
+  await expect(recent.locator(".recent-session-row.active")).toHaveCount(0);
 });
 
 test("details jump is right-aligned in the slim metrics strip (#306)", async ({
@@ -2809,6 +2810,102 @@ test("the working indicator does not resize the transcript", async ({
   const withoutIndicator = await transcript.evaluate((node) => node.scrollHeight);
   expect(withoutIndicator).toBe(busyHeight);
   hold();
+});
+
+test("streaming thinking does not resize the transcript", async ({ page }) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          {
+            role: "user",
+            entryId: "thinking-jitter-user",
+            content: "Check the streamed reasoning",
+          },
+        ],
+      },
+    }),
+  );
+  let streams = 0;
+  let releaseUpdate!: () => void;
+  const readyForUpdate = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  const shortThinking = "**检查思路**\n\n- 确认段落";
+  const longThinking = `**检查思路**\n\n- 确认段落\n\n\`\`\`typescript\nconst line = "${"long_line_".repeat(60)}";\n\`\`\`\n`;
+  const message = (text: string) =>
+    JSON.stringify({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: text }],
+      },
+    });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      streams++;
+      if (streams === 1)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+          headers: { "cache-control": "no-store" },
+        });
+      if (streams === 2)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            'id: 6\nevent: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n' +
+            `id: 7\nevent: message_update\ndata: ${message(shortThinking)}\n\n`,
+          headers: { "cache-control": "no-store" },
+        });
+      await readyForUpdate;
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: `id: 8\nevent: message_update\ndata: ${message(longThinking)}\n\n`,
+        headers: { "cache-control": "no-store" },
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".message.user")).toContainText("Check the streamed reasoning");
+  await expect(page.locator(".transcript")).not.toHaveAttribute("data-history-window", "true");
+  const transcript = page.locator(".transcript");
+  const row = page.locator(".thinking-row-streaming");
+  await expect(row).toBeVisible();
+  await expect(row.locator(".thinking-row-viewport")).toHaveCSS(
+    "overflow-y",
+    "auto",
+  );
+  const firstHeight = await transcript.evaluate(
+    (node) => node.scrollHeight,
+  );
+  const viewportHeight = await row
+    .locator(".thinking-row-viewport")
+    .evaluate((node) => node.clientHeight);
+  releaseUpdate();
+  await expect(row.locator(".thinking-row-viewport strong")).toHaveText(
+    "检查思路",
+  );
+  const secondHeight = await transcript.evaluate(
+    (node) => node.scrollHeight,
+  );
+  expect(secondHeight).toBe(firstHeight);
+  expect(
+    await row
+      .locator(".thinking-row-viewport")
+      .evaluate((node) => node.clientHeight),
+  ).toBe(viewportHeight);
+  expect(
+    await row
+      .locator(".thinking-row-viewport")
+      .evaluate((node) => node.scrollHeight > node.clientHeight),
+  ).toBe(true);
 });
 
 // The indicator is out of flow, so the only thing keeping it off the transcript
@@ -5037,6 +5134,103 @@ test("a boundary snapshot buffers live assistant events while restoring a native
   );
 });
 
+test("ask_user input opens during a held boundary snapshot and preserves its draft", async ({ page }) => {
+  await mockHost(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let snapshots = 0;
+  await page.route(snapshotRoute, async (route) => {
+    if (++snapshots === 1) return route.fallback();
+    await held;
+    return route.fulfill({ json: {
+      sessionId, status: "running", messages: [], lastSeq: 6, events: [], pendingDialogs: [],
+    } });
+  });
+  const events = [
+    { type: "agent_start" },
+    { type: "ui_dialog_request", requestId: "ask-during-refresh", ui: {
+      kind: "input", question: "请提供当前页面的完整网址", allowFreeform: true, timeout: 90,
+    } },
+  ];
+  await page.route(`**/api/v1/sessions/${sessionId}/events?*`, (route) =>
+    route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n\n" + events.map((event, index) =>
+      `id: ${index + 5}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+    ).join("") }),
+  );
+  await page.goto("/");
+  await expect.poll(() => snapshots).toBe(2);
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "请提供当前页面的完整网址" })).toBeVisible();
+  await dialog.getByRole("textbox").fill("https://example.com/products");
+  const refreshed = page.waitForResponse((response) => snapshotRoute(new URL(response.url())));
+  release();
+  await (await refreshed).finished();
+  await expect(dialog.getByRole("textbox")).toHaveValue("https://example.com/products");
+});
+
+for (const nextQuestion of [false, true]) {
+  test(`ask_user can answer during a held snapshot without replaying ${nextQuestion ? "the previous question" : "a closed question"}`, async ({ page }) => {
+    await mockHost(page);
+    let releaseSnapshot!: () => void;
+    let answered!: () => void;
+    const held = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    const answerReceived = new Promise<void>((resolve) => { answered = resolve; });
+    const first = { type: "ui_dialog_request", requestId: "first-held", ui: {
+      kind: "input", question: "First held question", allowFreeform: true,
+    } };
+    const controls = [
+      { seq: 6, event: first },
+      { seq: 7, event: { type: "ui_dialog_closed", requestId: "first-held" } },
+      ...(nextQuestion ? [{ seq: 8, event: { ...first, requestId: "second-held", ui: { ...first.ui, question: "Second held question" } } }] : []),
+    ];
+    let snapshots = 0;
+    await page.route(snapshotRoute, async (route) => {
+      if (++snapshots === 1) return route.fallback();
+      await held;
+      return route.fulfill({ json: {
+        sessionId, status: "awaiting_input", messages: [], lastSeq: nextQuestion ? 8 : 7,
+        pendingDialogs: [first], events: controls,
+      } });
+    });
+    let streams = 0;
+    const frames = (events: { seq: number; event: { type: string } }[]) => events.map(({ seq, event }) =>
+      `id: ${seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+    ).join("");
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async (route) => {
+      if (++streams === 1) return route.fulfill({ contentType: "text/event-stream", body: "retry: 10\n\n" + frames([
+        { seq: 5, event: { type: "agent_start" } }, controls[0],
+      ]) });
+      await answerReceived;
+      return route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n\n" + frames(controls.slice(1)) });
+    });
+    let submitted: unknown;
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "ui_dialog_response") return route.fallback();
+      submitted = body;
+      answered();
+      return route.fulfill({ json: response({ accepted: true }, body.type) });
+    });
+    await page.goto("/");
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("heading", { name: "First held question" })).toBeVisible();
+    await dialog.getByRole("textbox").fill("https://example.com/products");
+    await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+    await expect.poll(() => submitted).toMatchObject({ requestId: "first-held", answer: {
+      values: ["https://example.com/products"], text: "https://example.com/products",
+    } });
+    if (nextQuestion) {
+      await expect(dialog.getByRole("heading", { name: "Second held question" })).toBeVisible();
+      await dialog.getByRole("textbox").fill("Second answer draft");
+    } else await expect(dialog).toHaveCount(0);
+    const refreshed = page.waitForResponse((res) => snapshotRoute(new URL(res.url())));
+    releaseSnapshot();
+    await (await refreshed).finished();
+    if (nextQuestion) await expect(dialog.getByRole("textbox")).toHaveValue("Second answer draft");
+    else await expect(dialog).toHaveCount(0);
+  });
+}
+
 test("run boundary refresh preserves loaded earlier messages and their pagination cursor", async ({
   page,
 }) => {
@@ -6314,6 +6508,61 @@ test("composer model picker groups by provider and applies the selection", async
       expect.objectContaining({ type: "set_model", provider: "beta" }),
     ]);
   await expect(page.locator(".composer-model")).toContainText("Model Beta");
+});
+
+test("model menu runtime entry uses the weight of an unselected model row", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const catalog = [
+    { id: "alpha-id", name: "Model Alpha", provider: "alpha" },
+    { id: "beta-id", name: "Model Beta", provider: "beta" },
+  ];
+  await page.route("**/api/v1/capabilities", (route) =>
+    route.fulfill({
+      json: {
+        ...capabilities,
+        supportedCommands: [
+          ...capabilities.supportedCommands,
+          "get_available_models",
+          "set_model",
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/v1/sessions/*/commands", (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type === "get_available_models")
+      return route.fulfill({ json: response({ models: catalog }, body.type) });
+    if (body.type === "get_state")
+      return route.fulfill({
+        json: response({ modelId: "alpha-id", provider: "alpha" }, body.type),
+      });
+    return route.fallback();
+  });
+  await page.goto("/");
+  await page.locator(".composer-model").click();
+  const entry = page.locator(".dropdown-popover .slim-model-runtime");
+  await expect(entry).toBeVisible();
+
+  // #302: the runtime entry is supporting navigation, not an emphasised
+  // choice. Its label must match an unselected model row (the menu inherits
+  // font-weight 400 from the document) and stay lighter than the selected
+  // row, which keeps its own emphasis.
+  const weight = (target: typeof entry) =>
+    target.evaluate((node) => Number(window.getComputedStyle(node).fontWeight));
+  const runtimeLabel = entry.locator(".slim-model-runtime-label");
+  const unselected = page
+    .locator(".dropdown-popover .dropdown-item")
+    .filter({ hasText: "Model Beta" });
+  const selected = page.locator(
+    ".dropdown-popover .dropdown-item[aria-selected='true']",
+  );
+
+  const runtimeWeight = await weight(runtimeLabel);
+  expect(runtimeWeight).toBe(await weight(unselected));
+  expect(runtimeWeight).toBeLessThanOrEqual(500);
+  expect(await weight(selected)).toBeGreaterThan(runtimeWeight);
 });
 
 test("edit tool renders a file diff and powershell renders as a terminal", async ({
@@ -7885,8 +8134,13 @@ test.describe("attachment cards", () => {
     const fileRequests: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
+      // The app's own bundle assets (the brand logo now ships under /assets)
+      // are not attachment fetches; the copy path must fetch no document.
+      const ownAsset =
+        url.pathname === "/favicon.svg" ||
+        url.pathname.startsWith("/assets/");
       if (
-        (request.resourceType() === "image" && url.pathname !== "/favicon.svg") ||
+        (request.resourceType() === "image" && !ownAsset) ||
         /\.docx$/i.test(url.pathname) ||
         url.pathname.includes("/uploads/") ||
         /\/projects\/[^/]+\/file$/.test(url.pathname)

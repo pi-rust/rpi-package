@@ -2742,9 +2742,11 @@ dependencies = [
 name = "rpi-optchat"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "rpi-plugin-sdk 0.3.20",
  "serde",
  "serde_json",
+ "wait-timeout",
 ]
 
 [[package]]

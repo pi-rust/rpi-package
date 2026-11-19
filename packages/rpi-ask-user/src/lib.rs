@@ -337,8 +337,17 @@ fn invoke_ui_dialog(runtime: &HostRuntime, args: &Value) -> Result<Value, String
         .map_err(|error| format!("ask_user UI dialog returned invalid JSON: {error}"))
 }
 
+/// Cancel an open dialog and release its mailbox entry.
+///
+/// The host keeps a cancelled entry visible for the plugin's next `poll`.
+/// These paths (timeout, tool cancellation, abort) abandon the question
+/// without ever polling again, so also ask the host to reclaim the terminal
+/// entry. `forget` is best-effort: older hosts do not implement the op and
+/// simply keep the entry until the process exits, which preserves today's
+/// behavior instead of failing the cancellation.
 fn cancel_ui_dialog(runtime: &HostRuntime, request_id: &str) {
     let _ = invoke_ui_dialog(runtime, &json!({"op": "cancel", "requestId": request_id}));
+    let _ = invoke_ui_dialog(runtime, &json!({"op": "forget", "requestId": request_id}));
 }
 
 // ---------------------------------------------------------------------------
@@ -773,7 +782,7 @@ fn ask_command(args_json, out, _user_data) {
     }
 }
 }
-const TOOL_DESCRIPTION: &str = "Ask for a missing decision or explicit confirmation through an attached interactive UI. Use one question, 1-3 sequential questions, or type=confirm with summary. Options open a selector; otherwise an input editor. Optional timeout is seconds per question; confirm has no timeout. Timeout/cancellation closes the dialog and errors. Returns a summary and details.answers {id, question, values, text, confirmed}. Read values/text for selections; confirmed only indicates whether a selector's first value is Yes (null for input), not general approval.";
+const TOOL_DESCRIPTION: &str = "Ask for a missing decision or explicit confirmation through an attached interactive UI. Use one question, 1-3 sequential questions, or type=confirm with summary. Options open a selector; otherwise an input editor. Omit timeout for open-ended questions that need a human to look something up or paste text; only set a deadline for short selector choices or confirmations, and allow at least 300 seconds. A timed-out question closes the dialog and errors, so a too-short deadline loses the answer. confirm has no timeout. Returns a summary and details.answers {id, question, values, text, confirmed}. Read values/text for selections; confirmed only indicates whether a selector's first value is Yes (null for input), not general approval.";
 
 fn question_properties() -> Value {
     // Host validation runs before alias parsing, so canonical option titles stay optional.
@@ -795,7 +804,7 @@ fn question_properties() -> Value {
         "allowFreeform":{"type":"boolean","description":"Allow custom text; defaults to true without options, false with options."},
         "allowComment":{"type":"boolean","default":false,"description":"Allow an additional comment; default false."},
         "displayMode":{"type":"string","enum":["overlay","inline"],"description":"Optional UI presentation hint; otherwise the host chooses."},
-        "timeout":{"type":"integer","minimum":1,"description":"Positive seconds per question; omitted means no deadline. Expiry closes the dialog and errors. Ignored for confirm (no timeout)."},
+        "timeout":{"type":"integer","minimum":1,"description":"Positive seconds per question; omitted (recommended for open-ended input questions) means no plugin deadline, so the user can take as long as needed. Only set a deadline for short selector choices or confirmations, and allow at least 300 seconds. Expiry closes the dialog and errors rather than returning an answer. Ignored for confirm (no timeout)."},
         "suggest":{"type":"string","description":"Optional input suggestion, not an answer."}
     })
 }
@@ -886,6 +895,12 @@ mod tests {
             .description
             .to_string_lossy()
             .contains("interactive UI"));
+        // A too-short deadline on an open-ended question loses the answer, so
+        // both the model-facing description and the schema must steer callers
+        // away from it. Keep the guidance in sync with README.md.
+        let description = schema.description.to_string_lossy();
+        assert!(description.contains("Omit timeout for open-ended questions"));
+        assert!(description.contains("300 seconds"));
         let params: Value = serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
         assert_eq!(params["type"], "object");
         assert!(params.get("required").is_none());
@@ -899,6 +914,17 @@ mod tests {
         assert_eq!(properties["options"]["maxItems"], 20);
         assert!(properties["options"]["items"]["anyOf"].is_array());
         assert_eq!(properties["timeout"]["minimum"], 1);
+        for fields in [properties, &properties["questions"]["items"]["properties"]] {
+            let timeout_description = fields["timeout"]["description"].as_str().unwrap_or("");
+            assert!(
+                timeout_description.contains("omitted"),
+                "missing no-deadline default in {timeout_description}"
+            );
+            assert!(
+                timeout_description.contains("open-ended"),
+                "missing open-ended guidance in {timeout_description}"
+            );
+        }
         assert!(properties["allowFreeform"].get("default").is_none()); // Depends on options.
         assert_eq!(properties["allowMultiple"]["default"], false);
         assert_eq!(properties["allowComment"]["default"], false);

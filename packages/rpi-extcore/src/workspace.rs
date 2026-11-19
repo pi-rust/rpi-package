@@ -36,10 +36,7 @@ impl Project {
                 "project must be a directory",
             ));
         }
-        let display = root
-            .to_string_lossy()
-            .trim_start_matches(r"\\?\")
-            .to_string();
+        let display = display_root(&root);
         let key = if cfg!(windows) {
             display.to_lowercase()
         } else {
@@ -114,6 +111,90 @@ fn resolve(root: &Path, relative: &str) -> Result<PathBuf, (ReplyKind, Value)> {
             Err(_) => return Err(failure(ReplyKind::AccessDenied, "path is not accessible")),
         }
     }
+}
+
+/// Display spelling of a browsable root: canonical, without the Windows verbatim prefix.
+fn display_root(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_string()
+}
+
+/// Linked worktrees of this project's repository, excluding the project root.
+///
+/// Agents work in sibling checkouts (`git worktree add ../name`), and every
+/// write there used to be unpresentable: links pointed outside the one
+/// configured root. Git lists every checkout of the repository, so the main
+/// checkout -- and the project's own root -- are filtered by canonical
+/// comparison instead of by string.
+///
+/// Never cached: a worktree is usually created while a run is in progress, and
+/// a stale list would hide exactly the files the run was asked to produce.
+/// Errors fail closed (no extra root), matching the read-only boundary.
+pub async fn worktrees(project: &Project) -> Vec<PathBuf> {
+    let Ok((true, output)) = git(project, &["worktree", "list", "--porcelain"]).await else {
+        return Vec::new();
+    };
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for line in output.lines() {
+        let Some(raw) = line.strip_prefix("worktree ") else {
+            continue;
+        };
+        let Some(canonical) = std::fs::canonicalize(raw.trim())
+            .ok()
+            .filter(|p| p.is_dir())
+        else {
+            continue;
+        };
+        // The main checkout is listed too. It is already browsable when it is
+        // the project itself, and when the project is a subdirectory of it the
+        // enclosing checkout must NOT become a root: that would widen the
+        // boundary past the configured project. Sibling and nested checkouts
+        // are the extra roots this exists for.
+        if canonical != project.root
+            && !project.root.starts_with(&canonical)
+            && !roots.contains(&canonical)
+        {
+            roots.push(canonical);
+        }
+    }
+    roots
+}
+
+/// The `/projects` spelling of [`worktrees`], ready for a client to join and
+/// hand back as the `root` of a file or image request.
+pub async fn worktree_paths(project: &Project) -> Vec<String> {
+    worktrees(project)
+        .await
+        .iter()
+        .map(|path| display_root(path))
+        .collect()
+}
+
+/// The root a client asked to read: empty is the project root, anything else
+/// must be one of this project's linked worktrees. Canonical comparison keeps
+/// the boundary even when the client sends `..`, a symlink, or another
+/// spelling of the same directory.
+pub async fn browse_root(project: &Project, root: &str) -> Result<PathBuf, (ReplyKind, Value)> {
+    if root.is_empty() {
+        return Ok(project.root.clone());
+    }
+    if root.contains('\0') {
+        return Err(failure(ReplyKind::InvalidInput, "invalid project path"));
+    }
+    let requested = std::fs::canonicalize(root).map_err(|_| {
+        failure(
+            ReplyKind::AccessDenied,
+            "path is outside the browsable project",
+        )
+    })?;
+    if requested == project.root || worktrees(project).await.contains(&requested) {
+        return Ok(requested);
+    }
+    Err(failure(
+        ReplyKind::AccessDenied,
+        "path is outside the browsable project",
+    ))
 }
 
 pub async fn files(project: &Project, relative: &str) -> Reply {
@@ -249,7 +330,16 @@ pub struct ProjectImage {
 
 /// Read a project-relative raster image. Errors use the existing neutral reply contract.
 pub async fn image(project: &Project, relative: &str) -> Result<ProjectImage, (ReplyKind, Value)> {
-    let path = resolve(&project.root, relative)?;
+    image_at(project, "", relative).await
+}
+
+/// Read a raster image from the project root or one of its linked worktrees.
+pub async fn image_at(
+    project: &Project,
+    root: &str,
+    relative: &str,
+) -> Result<ProjectImage, (ReplyKind, Value)> {
+    let path = resolve(&browse_root(project, root).await?, relative)?;
     let extension = Path::new(relative)
         .extension()
         .and_then(|s| s.to_str())
@@ -324,7 +414,12 @@ pub async fn image(project: &Project, relative: &str) -> Result<ProjectImage, (R
 }
 
 pub async fn file(project: &Project, relative: &str) -> Reply {
-    let path = resolve(&project.root, relative)?;
+    file_at(project, "", relative).await
+}
+
+/// Read a text file from the project root or one of its linked worktrees.
+pub async fn file_at(project: &Project, root: &str, relative: &str) -> Reply {
+    let path = resolve(&browse_root(project, root).await?, relative)?;
     // Reject devices/FIFOs before opening: opening one may otherwise block indefinitely.
     match tokio::fs::metadata(&path).await {
         Ok(metadata) if metadata.is_file() => {}
@@ -995,6 +1090,105 @@ mod tests {
                 .unwrap()
                 .0
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The reported failure: an agent creates a linked worktree as a sibling
+    /// (`git worktree add ../feature`) and writes its output files there. The
+    /// web preview must read that checkout, and only that checkout, without
+    /// widening the project root.
+    #[tokio::test]
+    async fn linked_worktrees_are_browsable_preview_roots() {
+        let root = fixture();
+        let project = Project::new(&root).unwrap();
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            assert!(git(&project, &args).await.unwrap().0);
+        }
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "main checkout\n").unwrap();
+        // Sibling worktree, the layout every `git worktree add ../name` produces.
+        let linked = root.with_extension("worktree");
+        assert!(
+            git(
+                &project,
+                &["worktree", "add", "-b", "feature", linked.to_str().unwrap()]
+            )
+            .await
+            .unwrap()
+            .0
+        );
+        std::fs::create_dir(linked.join("src")).unwrap();
+        std::fs::write(linked.join("src/main.rs"), "worktree checkout\n").unwrap();
+
+        let canonical = std::fs::canonicalize(&linked).unwrap();
+        assert_eq!(worktrees(&project).await, vec![canonical.clone()]);
+        assert_eq!(
+            worktree_paths(&project).await,
+            vec![display_root(&canonical)]
+        );
+        let branch = display_root(&canonical);
+
+        // A project rooted in a subdirectory keeps its own boundary: the
+        // enclosing checkout is not an extra root, the sibling worktree is.
+        let nested_project = Project::new(&root.join("src")).unwrap();
+        assert_eq!(worktrees(&nested_project).await, vec![canonical.clone()]);
+        assert!(browse_root(&nested_project, &root.to_string_lossy())
+            .await
+            .is_err());
+
+        // The same relative path resolves independently per root: the project
+        // root keeps its own content and the worktree keeps its output.
+        assert_eq!(
+            file(&project, "src/main.rs").await.unwrap()["content"],
+            "main checkout\n"
+        );
+        assert_eq!(
+            file_at(&project, &branch, "src/main.rs").await.unwrap()["content"],
+            "worktree checkout\n"
+        );
+        // The worktree is still held to the same relative-path boundary.
+        for relative in [
+            "../src/main.rs",
+            "/etc/passwd",
+            ".git",
+            ".rpi/sessions/a.jsonl",
+        ] {
+            assert!(
+                file_at(&project, &branch, relative).await.is_err(),
+                "{relative}"
+            );
+        }
+        // A root that is not this project's linked worktree is refused.
+        for denied in [
+            linked.join("src").to_string_lossy().into_owned(),
+            linked.join("missing").to_string_lossy().into_owned(),
+            std::env::temp_dir().to_string_lossy().into_owned(),
+        ] {
+            assert!(
+                file_at(&project, &denied, "src/main.rs").await.is_err(),
+                "{denied}"
+            );
+            assert!(browse_root(&project, &denied).await.is_err(), "{denied}");
+        }
+        assert!(file_at(&project, &branch, "missing.rs").await.is_err());
+        assert_eq!(browse_root(&project, "").await.unwrap(), project.root);
+        assert_eq!(browse_root(&project, &branch).await.unwrap(), canonical);
+
+        assert!(
+            git(
+                &project,
+                &["worktree", "remove", "--force", linked.to_str().unwrap()]
+            )
+            .await
+            .unwrap()
+            .0
+        );
+        assert!(worktrees(&project).await.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 

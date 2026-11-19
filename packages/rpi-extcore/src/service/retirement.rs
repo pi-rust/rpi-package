@@ -84,8 +84,42 @@ pub(super) async fn reap_idle(state: &Service, timeout: Duration) {
         }
         match idle_close(state, &id).await {
             Ok(()) => {}
-            // Busy sessions are checked again on the next pass. Unknown native
-            // state is backed off so a broken host cannot consume the reaper.
+            // A session can stay `awaiting_input` indefinitely when a
+            // `ui_dialog_request` (ask_user/permission gate) is never
+            // answered: the native run lease is still held, so the ordinary
+            // idle proof above correctly returns Busy and the host process is
+            // never released. After the full idle budget has elapsed with no
+            // request at all, cancel those dialogs through the normal command
+            // path instead of killing the run. The plugin then settles the tool
+            // call, the run returns to `ready`, and a later reaper pass closes
+            // the host with the existing idle proof. Never touch a `running`
+            // session: `cancel_stale_dialogs` is a no-op unless the projection
+            // says `awaiting_input` with pending dialogs.
+            Err((ReplyKind::Conflict, _)) => {
+                let Some(session) = state.sessions.read().await.get(&id).cloned() else {
+                    continue;
+                };
+                // Only a session that is actually waiting on a projected
+                // dialog is eligible. `cancel_stale_dialogs` itself is a no-op
+                // for other states, but checking here keeps ordinary Busy
+                // sessions (active run, held lease) off this path entirely.
+                let snapshot = session.snapshot().await;
+                if snapshot.status != "awaiting_input" || snapshot.pending_dialogs.is_empty() {
+                    continue;
+                }
+                if session.cancel_stale_dialogs().await.is_err() {
+                    // Back off when the cancellation itself could not be
+                    // delivered; retrying every tick against a broken native
+                    // host would just spin.
+                    state
+                        .session_activity
+                        .write()
+                        .await
+                        .insert(id, Instant::now());
+                }
+            }
+            // Unknown native state is backed off so a broken host cannot
+            // consume the reaper.
             Err((ReplyKind::Unavailable, _)) => {
                 state
                     .session_activity

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- *(web)* release native hosts left waiting on an unanswered dialog: after the idle budget with no requests, the reaper cancels the pending dialog so the tool call settles and the host can later be closed without interrupting a running operation. Requires the matching `rpi-extcore` backend update.
+
 ## [0.1.64](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.63...rpi-web-v0.1.64) - 2026-11-18
 
 ### Fixed

@@ -298,9 +298,9 @@ fn text_of(content: &[Content]) -> String {
 #[tokio::test]
 async fn catalog_and_registrations_load_beside_the_other_providers() {
     let (session, providers) = load();
-    assert_eq!(providers.len(), 5);
+    assert_eq!(providers.len(), 6);
     let snapshot = session.snapshot().expect("bundle loaded");
-    assert_eq!(snapshot.providers().len(), 5);
+    assert_eq!(snapshot.providers().len(), 6);
 
     let manifest = snapshot
         .provider_manifest(PROVIDER_ID)
@@ -353,7 +353,7 @@ async fn oauth_begin_requires_configuration_then_issues_an_s256_pkce_url() {
         .to_string();
     assert!(error.contains("not configured"), "{error}");
     assert!(error.contains(CLIENT_ID_ENV) && error.contains(CLIENT_SECRET_ENV));
-    assert_eq!(providers.len(), 5);
+    assert_eq!(providers.len(), 6);
 
     // Configured from the runtime environment with obviously fake values.
     std::env::set_var(CLIENT_ID_ENV, "fake-client.invalid");

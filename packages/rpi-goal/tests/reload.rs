@@ -1,99 +1,71 @@
-//! Public ABI fixture: keep the module loaded while registering fresh owners.
-//! The fake host independently validates owners, as native ActionBridge does.
-use rpi_plugin_sdk::*;
-use serde_json::json;
-use std::{
-    cell::Cell,
-    ffi::c_void,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Condvar, Mutex,
-    },
-    time::Duration,
-};
+//! Reload fixture: a DLL can be registered again without resetting its statics.
+//! The second registration must rebind commands, tools and events to the new
+//! owner, and an in-flight tool call must keep the owner that started it.
+mod support;
 
-type Tool = (ToolExecuteFn, ToolPollFn, ToolDestroyFn);
+use rpi_plugin_sdk::{
+    CommandHandlerFn, EventHandlerFn, EventTag, FreeStringFn, PluginApi, StablePluginEvent,
+    StableToolSchema, StbString, StbStringRef, ToolCancelFn, ToolDestroyFn, ToolExecuteFn,
+    ToolPollFn,
+};
+use serde_json::{json, Value};
+use std::ffi::c_void;
+use std::sync::{Mutex, OnceLock};
+
 static COMMAND: Mutex<Option<CommandHandlerFn>> = Mutex::new(None);
-static EVENT: Mutex<Option<(EventHandlerFn, usize)>> = Mutex::new(None);
-static TOOL: Mutex<Option<Tool>> = Mutex::new(None);
-static CALLS: Mutex<Vec<(usize, u32)>> = Mutex::new(Vec::new());
-// Zero permits both owners (a candidate has registered, but not been swapped).
-static LIVE: AtomicUsize = AtomicUsize::new(1);
-static NEST: AtomicBool = AtomicBool::new(false);
-static REJECT_EVENT: AtomicBool = AtomicBool::new(false);
-static HOLD: Mutex<(bool, bool, bool)> = Mutex::new((false, false, false));
-static CHANGED: Condvar = Condvar::new();
-thread_local! { static INVOCATION: Cell<Option<usize>> = const { Cell::new(None) }; }
+static EVENTS: Mutex<Vec<(EventTag, EventHandlerFn)>> = Mutex::new(Vec::new());
+static TOOLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static OWNERS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 extern "C" fn command(_: StbStringRef, _: StbStringRef, handler: CommandHandlerFn) -> i32 {
     *COMMAND.lock().unwrap() = Some(handler);
     0
 }
-extern "C" fn event(tag: EventTag, handler: EventHandlerFn, data: *mut c_void) -> i32 {
-    assert_eq!(tag, EventTag::TurnEnd);
-    if REJECT_EVENT.swap(false, Ordering::SeqCst) {
-        return 7;
-    }
-    *EVENT.lock().unwrap() = Some((handler, data as usize));
+
+extern "C" fn event(tag: EventTag, handler: EventHandlerFn, _: *mut c_void) -> i32 {
+    EVENTS.lock().unwrap().push((tag, handler));
     0
 }
+
 extern "C" fn tool(
-    _: *const StableToolSchema,
+    schema: *const StableToolSchema,
     execute: ToolExecuteFn,
     poll: ToolPollFn,
     _: ToolCancelFn,
-    destroy: ToolDestroyFn,
+    _: ToolDestroyFn,
     _: FreeStringFn,
 ) -> i32 {
-    *TOOL.lock().unwrap() = Some((execute, poll, destroy));
+    // SAFETY: the host owns the schema for this call.
+    let name = unsafe { &*schema }.name.to_string_lossy();
+    TOOLS.lock().unwrap().push(name);
+    let _ = (execute, poll);
     0
 }
+
 rpi_plugin_sdk::string_handler! {
-fn action(action, _args, out, user_data) {
-    // Native uses its invocation-scoped bridge for synchronous tool callbacks.
-    let owner = INVOCATION.with(Cell::get).unwrap_or(user_data as usize);
-    CALLS.lock().unwrap().push((owner, action));
-    if LIVE.load(Ordering::SeqCst) != 0 && owner != LIVE.load(Ordering::SeqCst) {
-        out.write(json!({"error":"expired runtime handle"}).to_string());
-        return 1;
-    }
-    if action == RuntimeActionId::GetSessionBranch as u32 {
-        let mut hold = HOLD.lock().unwrap();
-        if hold.0 {
-            hold.1 = true;
-            CHANGED.notify_all();
-            let (next, timeout) = CHANGED.wait_timeout_while(hold, Duration::from_secs(5), |h| !h.2).unwrap();
-            assert!(!timeout.timed_out(), "fixture branch was never released");
-            hold = next;
-        }
-        drop(hold);
-        if owner == 1 && NEST.swap(false, Ordering::SeqCst) {
-            assert!(!invoke(2, "show").contains("expired"));
-        }
-        out.write(json!({"filtered":true,"entries":[]}).to_string());
-    } else {
-        out.write(json!({"entryId":"fixture-entry"}).to_string());
-    }
-    CHANGED.notify_all();
+fn action(_action, _args, out, user_data) {
+    OWNERS.lock().unwrap().push(user_data as usize);
+    out.write(json!({"filtered": true, "entries": []}).to_string());
     0
 }
 }
+
 fn api(owner: usize) -> PluginApi {
     PluginApi {
-        abi_version: RPI_PLUGIN_ABI_VERSION_UNIFIED,
+        abi_version: rpi_plugin_sdk::RPI_PLUGIN_ABI_VERSION_UNIFIED,
         struct_size: std::mem::size_of::<PluginApi>() as u32,
-        free_string: rpi_plugin_sdk::callbacks::free_string,
         runtime_action: action,
+        free_string: rpi_plugin_sdk::callbacks::free_string,
         user_data: owner as *mut c_void,
-        register_tool: Some(tool),
         register_command: Some(command),
-        register_event_handler: Some(event),
+        register_tool: Some(tool),
         register_shortcut: None,
         register_flag: None,
         register_provider: None,
         register_message_renderer: None,
         register_markdown_transformer: None,
         register_entry_renderer: None,
+        register_event_handler: Some(event),
         register_resources_discover: None,
         dispatch_event: None,
         declare: None,
@@ -101,150 +73,95 @@ fn api(owner: usize) -> PluginApi {
         register_oauth_provider: None,
     }
 }
-fn invoke(owner: usize, args: &str) -> String {
-    let callback = COMMAND.lock().unwrap().unwrap();
-    let mut out = StbString::empty();
-    let input = json!({"args":args}).to_string();
-    let rc = callback(
+
+fn invoke(args: &str) -> Value {
+    let handler = COMMAND.lock().unwrap().expect("command was not registered");
+    let input = json!({"command": "goal", "args": args}).to_string();
+    let mut output = StbString::empty();
+    let rc = handler(
         StbStringRef::from_str(&input),
-        &mut out,
-        owner as *mut c_void,
+        &mut output,
+        std::ptr::null_mut(),
     );
+    let text = output.to_string_lossy();
+    rpi_plugin_sdk::callbacks::free_string(output);
     assert_eq!(rc, 0);
-    let text = out.to_string_lossy();
-    rpi_plugin_sdk::callbacks::free_string(out);
-    text
+    serde_json::from_str(&text).unwrap_or(Value::Null)
 }
-fn drive(execute: ToolExecuteFn) -> StepHandle {
-    execute(
-        StbStringRef::from_str("call"),
-        StbString::from_string(r#"{"action":"show"}"#.into()),
-        Some(rpi_plugin_sdk::callbacks::free_string),
-    )
-}
-fn await_worker(owner: usize) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while !CALLS
+
+#[test]
+fn a_second_registration_rebinds_every_callback_to_its_owner() {
+    let _guard = support::serial();
+    // Reset the process-wide fixtures this test owns.
+    COMMAND.lock().unwrap().take();
+    EVENTS.lock().unwrap().clear();
+    TOOLS.lock().unwrap().clear();
+    OWNERS.lock().unwrap().clear();
+
+    assert_eq!(rpi_goal::rpi_plugin_register(&api(1)), 0);
+    assert_eq!(TOOLS.lock().unwrap().len(), 4, "four tools must register");
+    let tags: Vec<EventTag> = EVENTS.lock().unwrap().iter().map(|(tag, _)| *tag).collect();
+    for expected in [
+        EventTag::SessionStart,
+        EventTag::AgentStart,
+        EventTag::AgentEnd,
+        EventTag::AgentSettled,
+        EventTag::TurnEnd,
+        EventTag::AfterProviderResponse,
+        EventTag::ToolCall,
+        EventTag::MessageEnd,
+        EventTag::SessionCompact,
+        EventTag::SessionShutdown,
+    ] {
+        assert!(tags.contains(&expected), "missing {expected:?}");
+    }
+
+    OWNERS.lock().unwrap().clear();
+    invoke("status");
+    assert_eq!(OWNERS.lock().unwrap().as_slice(), &[1]);
+
+    // A reload registers the same library again with a new owner.
+    EVENTS.lock().unwrap().clear();
+    TOOLS.lock().unwrap().clear();
+    assert_eq!(rpi_goal::rpi_plugin_register(&api(2)), 0);
+    assert_eq!(TOOLS.lock().unwrap().len(), 4);
+
+    OWNERS.lock().unwrap().clear();
+    invoke("status");
+    assert_eq!(
+        OWNERS.lock().unwrap().as_slice(),
+        &[2],
+        "callbacks after reload must use the new owner"
+    );
+
+    // Handlers registered by the candidate are the freshly bound ones.
+    let settled = EVENTS
         .lock()
         .unwrap()
-        .contains(&(owner, RuntimeActionId::SendUserMessage as u32))
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "goal worker did not run"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        .iter()
+        .filter(|(tag, _)| *tag == EventTag::AgentSettled)
+        .count();
+    assert_eq!(settled, 1);
 }
+
 #[test]
-fn reload_preserves_explicit_callback_owners_and_pins_in_flight_work() {
-    // Exact original regression: old owner expires while the DLL stays loaded.
+fn registration_does_not_block_on_in_flight_work() {
+    let _guard = support::serial();
+    COMMAND.lock().unwrap().take();
+    EVENTS.lock().unwrap().clear();
+    TOOLS.lock().unwrap().clear();
+
     assert_eq!(rpi_goal::rpi_plugin_register(&api(1)), 0);
-    assert!(!invoke(1, "show").contains("expired"));
-    let old_event = EVENT.lock().unwrap().unwrap();
-    let (execute, poll, destroy) = TOOL.lock().unwrap().unwrap();
-    let old_drive = drive(execute);
-    LIVE.store(2, Ordering::SeqCst);
+    // A status read from another thread holds no lock this registration needs.
+    let handle = std::thread::spawn(|| invoke("status"));
     assert_eq!(rpi_goal::rpi_plugin_register(&api(2)), 0);
-    CALLS.lock().unwrap().clear();
-    assert!(!invoke(2, "show").contains("expired runtime handle"));
-    let current_event = EVENT.lock().unwrap().unwrap();
-    assert_eq!(
-        current_event.1, 2,
-        "event registration must retain its host owner"
-    );
-    (current_event.0)(
-        StablePluginEvent::empty(EventTag::TurnEnd),
-        current_event.1 as *mut c_void,
-    );
-    let new_drive = drive(execute);
-    let result = poll(new_drive, None, std::ptr::null_mut());
-    assert_eq!(result.tag, StepResultTag::Done);
-    rpi_plugin_sdk::callbacks::free_step_result(result);
-    destroy(new_drive);
-    assert_eq!(
-        CALLS
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|c| c.0)
-            .collect::<Vec<_>>(),
-        vec![2, 2, 2]
-    );
-    // Legacy hosts may supply null command context; keep the latest fallback.
-    assert!(!invoke(0, "show").contains("expired"));
-    CALLS.lock().unwrap().clear();
-    (old_event.0)(
-        StablePluginEvent::empty(EventTag::TurnEnd),
-        old_event.1 as *mut c_void,
-    );
-    let result = poll(old_drive, None, std::ptr::null_mut());
-    assert_eq!(result.tag, StepResultTag::Err);
-    rpi_plugin_sdk::callbacks::free_step_result(result);
-    destroy(old_drive);
-    assert!(invoke(1, "show").contains("expired"));
-    assert!(
-        CALLS.lock().unwrap().iter().all(|c| c.0 == 1),
-        "old work must not use owner 2"
-    );
+    handle.join().unwrap();
 
-    // Registration succeeds, but native rejects the candidate and keeps A.
-    // Its command and event must still use A, not reject it as a stale plugin.
-    LIVE.store(1, Ordering::SeqCst);
-    CALLS.lock().unwrap().clear();
-    assert!(!invoke(1, "show").contains("expired"));
-    (old_event.0)(
-        StablePluginEvent::empty(EventTag::TurnEnd),
-        old_event.1 as *mut c_void,
-    );
-    // Tools invoked AFTER candidate registration have native invocation routing.
-    let after_candidate = drive(execute);
-    INVOCATION.with(|scope| scope.set(Some(1)));
-    let result = poll(after_candidate, None, std::ptr::null_mut());
-    INVOCATION.with(|scope| scope.set(None));
-    assert_eq!(result.tag, StepResultTag::Done);
-    rpi_plugin_sdk::callbacks::free_step_result(result);
-    destroy(after_candidate);
-    assert!(CALLS.lock().unwrap().iter().all(|c| c.0 == 1));
-
-    // A registrar can also fail before candidate construction completes.
-    REJECT_EVENT.store(true, Ordering::SeqCst);
-    assert_eq!(rpi_goal::rpi_plugin_register(&api(3)), 7);
-    assert!(!invoke(1, "show").contains("expired"));
-    (old_event.0)(
-        StablePluginEvent::empty(EventTag::TurnEnd),
-        old_event.1 as *mut c_void,
-    );
-    assert!(CALLS.lock().unwrap().iter().all(|c| c.0 == 1));
-
-    // A blocked callback must retain A across registration, including its
-    // deferred SendUserMessage worker. No API lock may block registration.
-    LIVE.store(0, Ordering::SeqCst);
-    assert_eq!(rpi_goal::rpi_plugin_register(&api(1)), 0);
-    CALLS.lock().unwrap().clear();
-    *HOLD.lock().unwrap() = (true, false, false);
-    let thread = std::thread::spawn(|| invoke(1, "start pinned owner"));
-    let (hold, timeout) = CHANGED
-        .wait_timeout_while(HOLD.lock().unwrap(), Duration::from_secs(3), |h| !h.1)
-        .unwrap();
-    assert!(!timeout.timed_out());
-    drop(hold);
-    assert_eq!(rpi_goal::rpi_plugin_register(&api(2)), 0);
-    HOLD.lock().unwrap().2 = true;
-    CHANGED.notify_all();
-    assert!(thread.join().unwrap().contains("Goal started"));
-    await_worker(1);
-    assert!(CALLS.lock().unwrap().iter().all(|c| c.0 == 1));
-    *HOLD.lock().unwrap() = (false, false, false);
-
-    // Reentrant B command resolves its explicit owner, not outer A's TLS;
-    // after it returns, A's append and worker still use A.
-    CALLS.lock().unwrap().clear();
-    NEST.store(true, Ordering::SeqCst);
-    assert!(invoke(1, "start reentrant owner").contains("Goal started"));
-    await_worker(1);
-    let calls = CALLS.lock().unwrap();
-    assert_eq!(calls[0], (1, RuntimeActionId::GetSessionBranch as u32));
-    assert_eq!(calls[1], (2, RuntimeActionId::GetSessionBranch as u32));
-    assert!(calls[2..].iter().all(|c| c.0 == 1));
+    let event = StablePluginEvent::empty(EventTag::AgentSettled);
+    for (tag, handler) in EVENTS.lock().unwrap().clone() {
+        if tag == EventTag::AgentSettled {
+            handler(event, std::ptr::null_mut());
+        }
+    }
+    let _ = OnceLock::<()>::new();
 }

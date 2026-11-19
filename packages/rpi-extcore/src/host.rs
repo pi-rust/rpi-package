@@ -1477,6 +1477,51 @@ impl HostSession {
         self.shutdown_idle_child().await
     }
 
+    /// Cancel projected dialogs that nobody has answered for longer than the
+    /// idle budget. This is the graceful counterpart to `shutdown_if_idle`:
+    /// a pending `ask_user` (or permission gate) keeps the native run lease and
+    /// the host process alive forever, and `check_idle_projection` deliberately
+    /// refuses to retire such a session. Sending the ordinary cancellation
+    /// lets the plugin's `poll` observe `cancelled`, settle the tool call and
+    /// return the run to `ready`, after which the normal idle reaper can close
+    /// the host without interrupting an active operation.
+    ///
+    /// Returns the number of dialogs cancelled. Only `awaiting_input` sessions
+    /// with projected dialogs are touched; `running` sessions are never
+    /// interrupted.
+    pub async fn cancel_stale_dialogs(&self) -> Result<usize, String> {
+        let snapshot = self.snapshot().await;
+        if snapshot.status != "awaiting_input" || snapshot.pending_dialogs.is_empty() {
+            return Ok(0);
+        }
+        let mut cancelled = 0;
+        for dialog in &snapshot.pending_dialogs {
+            let Some(request_id) = dialog.get("requestId").and_then(Value::as_str) else {
+                continue;
+            };
+            if request_id.trim().is_empty() {
+                continue;
+            }
+            // `command` uses the normal admission path, so an in-flight
+            // request or a closing host is respected rather than bypassed.
+            match self
+                .command(
+                    "ui_dialog_response",
+                    json!({"requestId": request_id, "cancelled": true}),
+                    Duration::from_secs(15),
+                )
+                .await
+            {
+                Ok(_) => cancelled += 1,
+                // A dialog answered or closed between the snapshot and this
+                // command can surface as a native rejection; back off so the
+                // reaper re-checks the projection on its next pass.
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(cancelled)
+    }
+
     async fn check_idle_projection(&self) -> Result<(), IdleCloseError> {
         let snapshot = self.snapshot().await;
         if !snapshot.pending_dialogs.is_empty()

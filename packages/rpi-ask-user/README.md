@@ -15,6 +15,14 @@ options use a selector. Timeout and cancellation close the pending UI request.
 The tool result contains only a readable answer summary and structured answer
 details, never the transport JSON.
 
+**Do not set `timeout` on open-ended questions.** A question that asks a human
+to find a URL, copy a value, or read something outside the app can easily take
+more than a minute; a short deadline closes the dialog and returns
+`ask timed out` with no answer. Leave `timeout` out (the default, no plugin
+deadline) and let the user answer at their own pace; the host's idle-session
+reaper reclaims a session nobody returns to. If a deadline is genuinely needed
+for a quick choice, use at least 300 seconds and show/announce it to the user.
+
 Hosts without an interactive UI receive the explicit error
 `ask_user requires an interactive UI`. The registered `/ask_user` command is
 also available for hosts that expose the native command selector directly:
@@ -43,7 +51,7 @@ Unknown top-level host metadata, including `__rpi`, is accepted.
 | `allowFreeform` | If unset on both item and top level: `true` with no options, `false` with options. |
 | `allowComment` | Default `false`; allows an extra comment. |
 | `displayMode` | `overlay` or `inline`; omitted delegates presentation to the host. |
-| `timeout` | Positive integer seconds per question; omitted means no plugin deadline. Timeout cancels the pending UI request and errors, not an implicit answer. |
+| `timeout` | Positive integer seconds per question; **omit for open-ended input questions** so the user can look something up or paste text without a deadline. Reserve it for short selector choices or confirmations, and allow at least 300 seconds. Expiry cancels the pending UI request and errors, not an implicit answer. |
 | `suggest` | Optional trimmed input suggestion/placeholder, not a selected answer. |
 | `summary` | In confirm mode, nonblank confirmation text (fallback `question`); no question-mode length limit. Ignored in question mode. |
 

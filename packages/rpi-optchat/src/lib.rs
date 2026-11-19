@@ -22,8 +22,11 @@
 // The pinned SDK exports safe C entrypoints around its internal raw ABI reads.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+mod compact;
+mod import;
 mod memory;
 mod runtime;
+mod store;
 
 use memory::{clip, flat, iso8601, Kind, Memory, Origin, MAX_ENTRIES, PAGE, VIEW};
 use rpi_plugin_sdk::callbacks::free_string;
@@ -41,6 +44,11 @@ use std::sync::Mutex;
 
 /// Session custom-entry type holding one whole message.
 const ENTRY_TYPE: &str = "optchat-entry";
+/// Session custom-entry type remembering the view shape (its parts and whether a
+/// merge batch is running), so a resumed session shows the same lines.
+const VIEW_TYPE: &str = "optchat-view";
+/// Session custom-entry type remembering which profile this session belongs to.
+const PROFILE_TYPE: &str = "optchat-profile";
 /// Marker that makes the injected pointer line idempotent.
 const MEMORY_MARKER: &str = "[OptChat memory]";
 /// The two tools this plugin owns; their own calls are not logged as memory,
@@ -49,6 +57,9 @@ const OWN_TOOLS: [&str; 2] = ["zoom", "search"];
 /// Bounds for `/optchat import`.
 const MAX_IMPORT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_IMPORT_LINES: usize = 2_000;
+/// How many messages to release at once when the retained window overflows, so
+/// the tree rebuild is amortized rather than paid per message.
+const TRIM_SLACK: usize = 512;
 /// `GetSessionBranch` page size while hydrating the log.
 const HYDRATE_PAGE: usize = 200;
 /// How close two identical captures must be to count as one message.
@@ -78,11 +89,17 @@ fn is_subagent() -> bool {
 // ---------------------------------------------------------------------------
 
 fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
+    call_action(id as u32, args)
+}
+
+/// Call a runtime action by ABI id, for host actions the published SDK does not
+/// declare yet (`GetExecutionContext`).
+fn call_action(id: u32, args: Value) -> Result<Value, String> {
     let runtime = runtime::snapshot().ok_or("optchat runtime is unavailable")?;
     let input = args.to_string();
     let mut output = StbString::empty();
     let rc = (runtime.runtime_action)(
-        id as u32,
+        id,
         StbStringRef::from_str(&input),
         &mut output,
         runtime.user_data,
@@ -91,7 +108,7 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     (runtime.free_string)(output);
     if rc != 0 {
         return Err(if text.trim().is_empty() {
-            format!("runtime action {id:?} failed")
+            format!("runtime action {id} failed")
         } else {
             text
         });
@@ -109,6 +126,10 @@ fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
 struct State {
     session: String,
     memory: Memory,
+    /// Model-written summaries are enabled for this session.
+    compact: bool,
+    /// The cross-session profile this session mirrors into.
+    profile: String,
     /// The last captured message, so one message delivered twice — a user
     /// prompt via `before_agent_start` and again via `message_end`, or a
     /// re-dispatched turn — is not logged twice. Two genuinely identical
@@ -128,15 +149,32 @@ fn current_session() -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
+/// What one branch read yields: the log plus the lines and settings stored with it.
+struct Hydrated {
+    memory: Memory,
+    compact: bool,
+    profile: String,
+}
+
 /// Reload the log from the current session branch. Only `optchat-entry` entries
 /// are requested, and a host that cannot filter them is refused rather than
 /// reading the whole branch.
-fn hydrate() -> Result<Memory, String> {
+fn hydrate() -> Result<Hydrated, String> {
     let mut entries: Vec<memory::Entry> = Vec::new();
+    let mut nodes: Vec<(u32, u64, String)> = Vec::new();
+    let mut compact: Option<bool> = None;
+    let mut profile: Option<String> = None;
+    let mut view: Option<(Vec<(u32, u64)>, bool)> = None;
     let mut after: Option<u64> = None;
     for _ in 0..(MAX_ENTRIES / HYDRATE_PAGE + 4) {
         let mut args = json!({
-            "customTypes": [ENTRY_TYPE],
+            "customTypes": [
+                ENTRY_TYPE,
+                compact::NODE_TYPE,
+                compact::CONFIG_TYPE,
+                PROFILE_TYPE,
+                VIEW_TYPE,
+            ],
             "limit": HYDRATE_PAGE,
             "order": "oldestFirst",
         });
@@ -163,12 +201,65 @@ fn hydrate() -> Result<Memory, String> {
             if record.get("type").and_then(Value::as_str) != Some("custom") {
                 continue;
             }
-            if record.get("customType").and_then(Value::as_str) != Some(ENTRY_TYPE) {
+            let Some(custom_type) = record.get("customType").and_then(Value::as_str) else {
+                continue;
+            };
+            if custom_type != ENTRY_TYPE
+                && custom_type != compact::NODE_TYPE
+                && custom_type != compact::CONFIG_TYPE
+                && custom_type != PROFILE_TYPE
+                && custom_type != VIEW_TYPE
+            {
                 continue;
             }
-            if let Some(data) = record.get("data") {
-                if let Ok(entry) = serde_json::from_value(data.clone()) {
-                    entries.push(entry);
+            let Some(data) = record.get("data") else {
+                continue;
+            };
+            match custom_type {
+                ENTRY_TYPE => {
+                    if let Ok(entry) = serde_json::from_value::<memory::Entry>(data.clone()) {
+                        entries.push(entry);
+                    }
+                }
+                compact::NODE_TYPE => {
+                    let l = data.get("l").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let i = data.get("i").and_then(Value::as_u64).unwrap_or(0);
+                    if let Some(text) = data.get("text").and_then(Value::as_str) {
+                        nodes.push((l, i, text.to_string()));
+                    }
+                }
+                compact::CONFIG_TYPE => {
+                    if let Some(enabled) = data.get("compact").and_then(Value::as_bool) {
+                        compact = Some(enabled);
+                    }
+                }
+                PROFILE_TYPE => {
+                    if let Some(name) = data.get("name").and_then(Value::as_str) {
+                        profile = Some(name.to_string());
+                    }
+                }
+                _ => {
+                    let parts: Vec<(u32, u64)> = data
+                        .get("parts")
+                        .and_then(Value::as_array)
+                        .map(|parts| {
+                            parts
+                                .iter()
+                                .filter_map(|part| {
+                                    let part = part.as_array()?;
+                                    Some((
+                                        u32::try_from(part.first()?.as_u64()?).ok()?,
+                                        part.get(1)?.as_u64()?,
+                                    ))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let merging = data
+                        .get("merging")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    view = Some((parts, merging));
                 }
             }
         }
@@ -181,33 +272,115 @@ fn hydrate() -> Result<Memory, String> {
             _ => break,
         }
     }
-    Ok(Memory::load(entries))
+    let mut memory = Memory::load(entries);
+    memory.trim_to(MAX_ENTRIES);
+    for (l, i, text) in nodes {
+        memory.install_node(l, i, text);
+    }
+    if let Some((parts, merging)) = view {
+        // A shape saved before a trim may no longer tile the window; then the
+        // log is folded afresh instead of refusing the session.
+        memory.restore_view(&parts, merging);
+    }
+    Ok(Hydrated {
+        memory,
+        compact: compact.unwrap_or_else(compact::env_enabled),
+        profile: profile
+            .and_then(|name| store::normalize(&name))
+            .unwrap_or_else(default_profile),
+    })
+}
+
+/// The profile this session serves: the launch environment first, then the
+/// remembered binding, then the neutral default.
+fn default_profile() -> String {
+    std::env::var("RPI_OPTCHAT_PROFILE")
+        .ok()
+        .and_then(|name| store::normalize(&name))
+        .unwrap_or_else(|| "default".to_string())
+}
+
+/// The id of the newest message the branch holds, read in one cheap query.
+/// `None` means the branch holds no memory entry at all.
+fn branch_mark() -> Result<Option<u64>, String> {
+    let value = call_runtime(
+        RuntimeActionId::GetSessionBranch,
+        json!({
+            "customTypes": [ENTRY_TYPE],
+            "limit": 1,
+            "order": "newestFirst",
+        }),
+    )?;
+    if value.get("filtered").and_then(Value::as_bool) != Some(true) {
+        return Err("This rpi host answered GetSessionBranch without `filtered: true`".into());
+    }
+    let Some(record) = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.first())
+    else {
+        return Ok(None);
+    };
+    Ok(record
+        .get("data")
+        .and_then(|data| data.get("i"))
+        .and_then(Value::as_u64))
+}
+
+/// Whether a cached state still describes the branch it was loaded from: the
+/// newest message in the branch must be the newest one this state holds. A
+/// branch switch inside one session keeps `RPI_SESSION_ID`, so identity — not a
+/// timestamp or a session name — decides whether the cache is still valid.
+fn state_is_current(session: &str, state: &State) -> bool {
+    if state.session != session {
+        return false;
+    }
+    let expected = if state.memory.len() == 0 {
+        None
+    } else {
+        Some(state.memory.end() - 1)
+    };
+    match branch_mark() {
+        Ok(actual) => actual == expected,
+        // A failed identity probe must not destroy a working cache: the next
+        // capture still appends, and a later probe repairs the view.
+        Err(_) => true,
+    }
 }
 
 /// Run `f` against the state of the session this process is serving, reloading
-/// the log when the host switched sessions. Hydration happens outside the lock:
-/// it calls the host, and a host call must never be made while holding a lock a
-/// callback could re-enter.
+/// the log when the host switched sessions or moved to another branch. Both the
+/// hydration and the identity probe call the host, which must never happen while
+/// `STATE` is held: a host call can re-enter a callback.
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Result<T, String> {
     let session = current_session();
     let stale = {
         let guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
-        guard
-            .as_ref()
-            .map(|state| state.session != session)
-            .unwrap_or(true)
+        match guard.as_ref() {
+            Some(state) => !state_is_current(&session, state),
+            None => true,
+        }
     };
     if stale {
-        let memory = hydrate()?;
+        let Hydrated {
+            memory,
+            compact,
+            profile,
+        } = hydrate()?;
+        if compact {
+            compact::bind_session(&call_action);
+        }
         let mut guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
-        let still_stale = guard
-            .as_ref()
-            .map(|state| state.session != session)
-            .unwrap_or(true);
+        let still_stale = match guard.as_ref() {
+            Some(state) => !state_is_current(&session, state),
+            None => true,
+        };
         if still_stale {
             *guard = Some(State {
                 session,
                 memory,
+                compact,
+                profile,
                 last: None,
             });
         }
@@ -219,8 +392,115 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> Result<T, String> {
     Ok(f(state))
 }
 
+/// Drop the cached log: the session or its branch changed.
+fn reset_state() {
+    let mut guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
+    *guard = None;
+}
+
 fn with_memory<T>(f: impl FnOnce(&mut Memory) -> T) -> Result<T, String> {
     with_state(|state| f(&mut state.memory))
+}
+
+/// Persist the current view shape so a resumed session shows the same lines.
+fn persist_view() {
+    let Ok(shape) = with_state(|state| state.memory.view_shape()) else {
+        return;
+    };
+    let parts: Vec<Value> = shape.0.iter().map(|(l, i)| json!([l, i])).collect();
+    if let Err(error) = call_action(
+        RuntimeActionId::AppendEntry as u32,
+        json!({
+            "customType": VIEW_TYPE,
+            "data": {"parts": parts, "merging": shape.1},
+        }),
+    ) {
+        debug(&format!("could not persist the view shape: {error}"));
+    }
+}
+
+/// Install finished lines, persist them, and queue merges the view still shows
+/// as extractive cuts. Runs on paths that already talk to the host, so it never
+/// adds a host call of its own to a hot path.
+fn service_compaction() {
+    let mut installed = false;
+    for node in compact::drain() {
+        if node.text.is_empty() {
+            continue;
+        }
+        let applied =
+            with_state(|state| state.memory.install_node(node.l, node.i, node.text.clone()))
+                .unwrap_or(false);
+        if !applied {
+            continue;
+        }
+        installed = true;
+        if let Err(error) = call_action(
+            RuntimeActionId::AppendEntry as u32,
+            json!({
+                "customType": compact::NODE_TYPE,
+                "data": {"l": node.l, "i": node.i, "text": node.text},
+            }),
+        ) {
+            debug(&format!("could not persist a summary line: {error}"));
+        }
+    }
+    if installed {
+        persist_view();
+    }
+    let Ok((enabled, parts)) = with_state(|state| {
+        let parts = if state.compact {
+            state.memory.extractive_parts(2)
+        } else {
+            Vec::new()
+        };
+        (state.compact, parts)
+    }) else {
+        return;
+    };
+    if !enabled {
+        return;
+    }
+    for (part, source) in &parts {
+        compact::enqueue(part.l, part.i, source.clone());
+    }
+}
+
+/// Publish a one-line footer (`SetStatus`) so the host UI can show the memory
+/// without the user asking. Best effort: a headless host accepts and ignores it.
+fn publish_status() {
+    let Ok(text) = with_state(|state| {
+        let stats = state.memory.stats();
+        let window = format!("{}..{}", state.memory.base(), state.memory.end());
+        let size = match stats.bytes {
+            0 => String::new(),
+            bytes => format!(" · {} KB", bytes / 1024),
+        };
+        format!(
+            "optchat · {} messages ({window}) · {} lines · compact {} · profile {}{size}",
+            stats.messages,
+            stats.lines,
+            if state.compact { "on" } else { "off" },
+            state.profile,
+        )
+    }) else {
+        return;
+    };
+    let _ = call_action(
+        RuntimeActionId::SetStatus as u32,
+        json!({"key": "optchat", "value": text}),
+    );
+}
+
+/// Drop the footer when this session stops owning it, so a closed or switched
+/// session does not leave a count behind. The host clears on an empty value.
+fn clear_status() {
+    if let Err(error) = call_runtime(
+        RuntimeActionId::SetStatus,
+        json!({"key": "optchat", "value": ""}),
+    ) {
+        debug(&format!("could not clear the footer: {error}"));
+    }
 }
 
 fn persist(entry: &memory::Entry) -> Result<(), String> {
@@ -254,18 +534,31 @@ fn persist_then_commit(
     entry: memory::Entry,
     session: &str,
     last: Option<(Kind, String, i64)>,
-) -> Result<usize, String> {
+) -> Result<u64, String> {
     persist(&entry)?;
-    with_state(|state| {
+    // Commit into the state this entry was prepared from, without the branch
+    // identity probe `with_state` runs: the probe would see the entry this call
+    // just appended as a foreign change and reload the log underneath it.
+    let mut guard = STATE.lock().unwrap_or_else(|error| error.into_inner());
+    (|| {
+        let state = guard
+            .as_mut()
+            .ok_or("OptChat memory state is unavailable")?;
         if state.session != session {
             return Err("OptChat session changed while persisting an entry".to_string());
         }
         let committed = state.memory.append_prepared(entry)?;
+        // Retaining a window, not a prefix: past the cap the oldest messages
+        // fall out instead of new ones being dropped. Trimming in batches keeps
+        // the tree rebuild off the per-message path.
+        if state.memory.len() > MAX_ENTRIES {
+            state.memory.trim_to(MAX_ENTRIES - TRIM_SLACK);
+        }
         if let Some(last) = last {
             state.last = Some(last);
         }
         Ok(committed.i)
-    })?
+    })()
 }
 
 /// Log one message, then store it as a session custom entry. The entry is only
@@ -297,7 +590,7 @@ fn capture(
                     && last_text == &text
                     && (millis - last).abs() <= DUPLICATE_WINDOW_MS
             });
-        if duplicate || state.memory.len() >= MAX_ENTRIES {
+        if duplicate {
             return None;
         }
         Some(state.memory.prepare(kind, text, date, receipt, origin))
@@ -305,31 +598,66 @@ fn capture(
     let Some(entry) = candidate else {
         return Ok(());
     };
-    if let Err(error) = persist_then_commit(entry, &session, Some((kind, dedupe_text, millis))) {
-        debug(&format!("could not persist message: {error}"));
+    match persist_then_commit(entry, &session, Some((kind, dedupe_text, millis))) {
+        Ok(id) => mirror(id),
+        Err(error) => debug(&format!("could not persist message: {error}")),
     }
     Ok(())
+}
+
+/// Copy one committed entry into the project profile store, where another
+/// session can attach it. Best effort: the branch is authoritative.
+fn mirror(id: u64) {
+    let Ok((profile, entry)) =
+        with_state(|state| (state.profile.clone(), state.memory.get(id).cloned()))
+    else {
+        return;
+    };
+    let Some(entry) = entry else { return };
+    if let Err(error) = store::append(&profile, &entry) {
+        debug(&format!(
+            "could not mirror message {id} into `{profile}`: {error}"
+        ));
+    }
+}
+
+/// Normalize an imported date into the ISO-8601 form stored in `Entry.date`.
+/// Import parsers keep only the source day; the entry keeps midnight UTC so
+/// `[IMP <day>]` and `short_date` still render the original day.
+fn normalize_entry_date(date: Option<String>) -> String {
+    match date
+        .map(|date| date.trim().to_string())
+        .filter(|date| !date.is_empty())
+    {
+        Some(date) if date.len() == 10 => format!("{date}T00:00:00Z"),
+        Some(date) => date,
+        None => iso8601(now_ms()),
+    }
 }
 
 /// Log an entry the user asked for (`/optchat note`, import): not deduplicated,
 /// because two identical notes are two notes. It also uses the same append gate
 /// as automatic capture, so its index cannot race a message event.
-fn record_note(kind: Kind, text: String, origin: Option<Origin>) -> Result<usize, String> {
-    let date = iso8601(now_ms());
+fn record_note(kind: Kind, text: String, origin: Option<Origin>) -> Result<u64, String> {
+    record_note_at(kind, text, origin, None)
+}
+
+/// Like `record_note`, but preserves the source date for imported history.
+fn record_note_at(
+    kind: Kind,
+    text: String,
+    origin: Option<Origin>,
+    date: Option<String>,
+) -> Result<u64, String> {
+    let date = normalize_entry_date(date);
     let _gate = APPEND_GATE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let session = current_session();
-    let candidate = with_state(|state| {
-        (state.memory.len() < MAX_ENTRIES)
-            .then(|| state.memory.prepare(kind, text, date, None, origin))
-    })?;
-    let Some(entry) = candidate else {
-        return Err(format!(
-            "This session's memory already holds {MAX_ENTRIES} messages; nothing was recorded."
-        ));
-    };
-    persist_then_commit(entry, &session, None)
+    let entry = with_state(|state| state.memory.prepare(kind, text, date, None, origin))?;
+    let id = persist_then_commit(entry, &session, None)?;
+    mirror(id);
+    Ok(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +771,52 @@ fn on_tool_end(event, data) {
 }
 }
 
+rpi_plugin_sdk::event_handler! {
+/// Session transitions invalidate the branch-local cache. The host dispatches
+/// these events around tree navigation, fork, session switching and compaction;
+/// the reset is deliberately idempotent because both before/after tree events
+/// may be observed by a plugin.
+fn on_session_lifecycle(event, data) {
+    let _scope = runtime::enter(runtime::callback(data));
+    debug(&format!("{:?}", event.tag()));
+    match event.tag() {
+        EventTag::SessionStart | EventTag::SessionShutdown => {
+            // A session that ends without an explicit `/optchat fit` still keeps
+            // the shape it folded to, so resuming shows the same lines.
+            if event.tag() == EventTag::SessionShutdown {
+                persist_view();
+                clear_status();
+            }
+            reset_state();
+        }
+        EventTag::SessionBeforeSwitch
+        | EventTag::SessionBeforeFork
+        | EventTag::SessionBeforeTree
+        | EventTag::SessionTree => {
+            // Persist the old branch before a transition, then discard the
+            // cache. The next callback hydrates the branch selected by the host.
+            if matches!(
+                event.tag(),
+                EventTag::SessionBeforeSwitch
+                    | EventTag::SessionBeforeFork
+                    | EventTag::SessionBeforeTree
+            ) {
+                persist_view();
+                clear_status();
+            }
+            reset_state();
+        }
+        EventTag::SessionBeforeCompact | EventTag::SessionCompact => {
+            // Compaction changes native transcript state, not the branch id;
+            // the next boundary probe still provides a safe fallback for older
+            // hosts that do not dispatch these lifecycle events.
+        }
+        _ => {}
+    }
+    0
+}
+}
+
 // ---------------------------------------------------------------------------
 // Prompt pointer
 // ---------------------------------------------------------------------------
@@ -485,6 +859,8 @@ fn before_agent_start(input, out, data) {
     if let Some(text) = envelope.get("prompt").and_then(Value::as_str) {
         let _ = capture(Kind::User, text.to_string(), None, None, None);
     }
+    service_compaction();
+    publish_status();
     let hint = if prompt.contains(MEMORY_MARKER) {
         None
     } else {
@@ -561,6 +937,8 @@ extern "C" fn poll(handle: StepHandle, _: Option<ToolPartialCb>, _: *mut c_void)
         ));
     }
     drive.done = true;
+    service_compaction();
+    publish_status();
     let tool = match drive.op {
         Op::Zoom => "zoom",
         Op::Search => "search",
@@ -671,6 +1049,10 @@ const HELP: &str = r#"OptChat memory — this session branch, persisted with the
 /optchat search <text>   find logged messages by content
 /optchat note <text>     append a durable note to memory
 /optchat import <file>   append a text/markdown/JSONL file as imported notes
+/optchat profile [name]  show or switch the cross-session profile
+/optchat recall <text>   search the profile store, beyond the retained window
+/optchat attach [name]   copy a profile store into this session
+/optchat compact on|off  rewrite summary lines with a child model
 /optchat fit             merge the view as far as the tree allows
 /optchat help            this list
 ```
@@ -703,12 +1085,20 @@ fn status() -> String {
                 conversation continues; `/optchat note <text>` adds one now."
             .to_string();
     }
+    let window = if stats.messages > 0 {
+        with_memory(|memory| (memory.base(), memory.end())).unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
     format!(
-        "OptChat memory · {} messages · {} view lines · {} of {} bytes\n\
+        "OptChat memory · {} messages (ids {}..{}) · {} view lines · {} of {} bytes\n\
          user {} · talk {} · tool {} · echo {} · note {} · work {}\n\n\
-         Stored as `optchat-entry` custom entries on this session branch. \
-         `/optchat view` shows the summary view; `/optchat help` lists commands.",
+         Stored as `optchat-entry` custom entries on this session branch; model \
+         compaction is {}; profile {} . `/optchat view` shows the summary view; \
+         `/optchat help` lists commands.",
         stats.messages,
+        window.0,
+        window.1,
         stats.lines,
         stats.bytes,
         VIEW,
@@ -717,7 +1107,14 @@ fn status() -> String {
         kinds[2],
         kinds[3],
         kinds[4],
-        kinds[5]
+        kinds[5],
+        with_state(|state| if state.compact { "on" } else { "off" }).unwrap_or("off"),
+        with_state(|state| {
+            let profile = state.profile.clone();
+            (profile, store::count(&state.profile))
+        })
+        .map(|(profile, count)| format!("`{profile}` ({count} stored)"))
+        .unwrap_or_else(|_| "unavailable".to_string())
     )
 }
 
@@ -773,8 +1170,160 @@ fn view_command(rest: &str) -> Result<String, String> {
     })
 }
 
+/// `/optchat profile`: show or switch the cross-session profile.
+fn profile_command(rest: &str) -> Result<String, String> {
+    if rest.is_empty() {
+        let (profile, mirrored, in_store) = with_state(|state| {
+            let profile = state.profile.clone();
+            let mirrored = state
+                .memory
+                .entries()
+                .iter()
+                .filter(|entry| {
+                    entry
+                        .origin
+                        .as_ref()
+                        .map(|origin| origin.source == "profile")
+                        .unwrap_or(false)
+                })
+                .count();
+            let stored = store::count(&profile);
+            (profile, mirrored, stored)
+        })?;
+        let location = store::path(&profile)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "(unusable name)".to_string());
+        return Ok(format!(
+            "OptChat profile `{profile}` · {in_store} messages stored · {mirrored} attached here\n\
+             Store: {location}\n\
+             `/optchat profile <name>` switches profile; `/optchat attach` copies the \
+             store's messages into this session as imported notes."
+        ));
+    }
+    let name = store::normalize(rest).ok_or_else(|| {
+        format!("`{rest}` is not a profile name: use letters, digits, `-`, `_`, `.`")
+    })?;
+    with_state(|state| state.profile = name.clone())?;
+    call_action(
+        RuntimeActionId::AppendEntry as u32,
+        json!({"customType": PROFILE_TYPE, "data": {"name": name}}),
+    )
+    .map_err(|error| format!("could not persist the profile binding: {error}"))?;
+    Ok(format!(
+        "OptChat profile is now `{name}`; new messages mirror into it. \
+         `/optchat attach` imports what it already holds."
+    ))
+}
+
+/// Search a profile store: the messages that may already have left the retained
+/// window, so `recall` is what makes the memory effectively unbounded.
+fn recall_from(base: &std::path::Path, profile: &str, needle: &str) -> Result<String, String> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return Err("Usage: /optchat recall <text>".to_string());
+    }
+    let entries = store::read_in(base, profile)?;
+    if entries.is_empty() {
+        return Ok(format!(
+            "Profile `{profile}` holds nothing yet; messages mirror into it as they are logged."
+        ));
+    }
+    let memory = Memory::load(entries);
+    let hits = memory.search(needle, None);
+    Ok(format!(
+        "Profile `{profile}` store · {} messages\n{hits}",
+        memory.len()
+    ))
+}
+
+/// `/optchat recall <text>`: search the profile store.
+fn recall_command(rest: &str) -> Result<String, String> {
+    if rest.trim().is_empty() {
+        return Err("Usage: /optchat recall <text>".to_string());
+    }
+    let profile = with_state(|state| state.profile.clone())?;
+    recall_from(&store::directory(), &profile, rest)
+}
+
+/// `/optchat attach`: copy the profile store into this session as imported notes,/// `/optchat attach`: copy the profile store into this session as imported notes,
+/// skipping anything this session already logged.
+fn attach_command(rest: &str) -> Result<String, String> {
+    let profile = with_state(|state| state.profile.clone())?;
+    let name = if rest.is_empty() {
+        profile
+    } else {
+        store::normalize(rest).ok_or_else(|| format!("`{rest}` is not a profile name"))?
+    };
+    let stored = store::read(&name)?;
+    if stored.is_empty() {
+        return Ok(format!("Profile `{name}` holds nothing yet."));
+    }
+    let known: std::collections::HashSet<(String, String)> = with_state(|state| {
+        state
+            .memory
+            .entries()
+            .iter()
+            .map(|entry| (entry.text.clone(), entry.date.clone()))
+            .collect()
+    })?;
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    for entry in stored {
+        if known.contains(&(entry.text.clone(), entry.date.clone())) {
+            skipped += 1;
+            continue;
+        }
+        let origin = Origin {
+            source: "profile".into(),
+            conversation: name.clone(),
+            message: entry.i.to_string(),
+            title: name.clone(),
+            project: None,
+        };
+        let date = entry.date.clone();
+        record_note_at(entry.kind, entry.text, Some(origin), Some(date))?;
+        added += 1;
+    }
+    Ok(format!(
+        "Attached {added} messages from `{name}`; {skipped} were already here."
+    ))
+}
+
+fn compact_status() -> String {
+    let enabled = with_state(|state| state.compact).unwrap_or(false);
+    let pending = with_state(|state| state.memory.extractive_parts(usize::MAX).len()).unwrap_or(0);
+    format!(
+        "Model compaction is {}. {pending} merge(s) are still extractive.\n\
+         `/optchat compact on` enables it for this session (each line costs one \
+         model call through a child `rpi -p`); `/optchat compact off` falls back to \
+         extractive cuts. `RPI_OPTCHAT_COMPACT=auto` sets the launch default.",
+        if enabled { "on" } else { "off" }
+    )
+}
+
+fn set_compaction(enabled: bool) -> Result<String, String> {
+    with_state(|state| state.compact = enabled)?;
+    call_action(
+        RuntimeActionId::AppendEntry as u32,
+        json!({
+            "customType": compact::CONFIG_TYPE,
+            "data": {"compact": enabled},
+        }),
+    )
+    .map_err(|error| format!("could not persist the compaction setting: {error}"))?;
+    if enabled {
+        compact::bind_session(&call_action);
+        service_compaction();
+    }
+    Ok(if enabled {
+        "Model compaction is on for this session; queued merges will be rewritten as the engine answers.".to_string()
+    } else {
+        "Model compaction is off; the view keeps extractive cuts.".to_string()
+    })
+}
+
 fn fit_command() -> Result<String, String> {
-    with_memory(|memory| {
+    let text = with_memory(|memory| {
         let before = memory.stats();
         memory.collapse();
         let after = memory.stats();
@@ -782,12 +1331,14 @@ fn fit_command() -> Result<String, String> {
             "Merged the view from {} to {} lines ({} to {} bytes).",
             before.lines, after.lines, before.bytes, after.bytes
         )
-    })
+    })?;
+    persist_view();
+    Ok(text)
 }
 
 /// A line of an import file: JSON text when the line is a JSON object/string,
 /// otherwise the raw line.
-fn import_line(line: &str) -> String {
+pub(crate) fn import_line(line: &str) -> String {
     let line = line.trim();
     if let Some(rest) = line.strip_prefix('#') {
         return rest.trim_start_matches('#').trim().to_string();
@@ -816,8 +1367,28 @@ fn import_line(line: &str) -> String {
     line.to_string()
 }
 
-fn import_command(path: &str) -> Result<String, String> {
-    let path = PathBuf::from(path.trim().trim_matches('"'));
+/// `/optchat import <file> [--format claude|chatgpt|jsonl|text]`.
+fn import_command(rest: &str) -> Result<String, String> {
+    let mut format: Option<String> = None;
+    let mut target: Option<String> = None;
+    let mut tokens = rest.split_whitespace();
+    while let Some(token) = tokens.next() {
+        match token {
+            "--format" | "-f" => {
+                format = Some(
+                    tokens
+                        .next()
+                        .ok_or("`--format` needs a name: claude, chatgpt, jsonl, text")?
+                        .to_string(),
+                );
+            }
+            other if target.is_none() => target = Some(other.trim_matches('"').to_string()),
+            _ => {}
+        }
+    }
+    let target =
+        target.ok_or("Usage: /optchat import <file> [--format claude|chatgpt|jsonl|text]")?;
+    let path = PathBuf::from(&target);
     let metadata = fs::metadata(&path)
         .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
     if !metadata.is_file() {
@@ -836,33 +1407,28 @@ fn import_command(path: &str) -> Result<String, String> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
+    let format = import::Format::resolve(format.as_deref(), &target, &text)
+        .ok_or_else(|| "unknown `--format`: use claude, chatgpt, jsonl, or text".to_string())?;
+    let items = import::parse(format, &text, MAX_IMPORT_LINES);
+    if items.is_empty() {
+        return Err(format!(
+            "`{conversation}` holds no messages this parser recognises ({} format).",
+            format.as_str()
+        ));
+    }
     let mut added = 0usize;
-    let mut skipped = 0usize;
-    for (line_no, line) in text.lines().enumerate() {
-        let body = import_line(line);
-        if body.trim().is_empty() || added >= MAX_IMPORT_LINES {
-            skipped += 1;
-            continue;
-        }
-        let origin = Origin {
-            source: "import".into(),
-            conversation: conversation.clone(),
-            message: (line_no + 1).to_string(),
-            title: conversation.clone(),
-            project: None,
-        };
-        match record_note(Kind::Note, body, Some(origin)) {
+    for item in items {
+        let origin = import::origin(format, &conversation, added, item.date.as_deref());
+        let date = item.date;
+        match record_note_at(item.kind, item.text, Some(origin), date) {
             Ok(_) => added += 1,
             Err(error) => return Err(format!("stopped after {added} messages: {error}")),
         }
     }
-    let mut summary = format!("Imported {added} messages from `{conversation}`.");
-    if skipped > 0 {
-        summary.push_str(&format!(
-            " {skipped} empty lines or lines over the {MAX_IMPORT_LINES}-message limit were skipped."
-        ));
-    }
-    Ok(summary)
+    Ok(format!(
+        "Imported {added} messages from `{conversation}` as {} history.",
+        format.as_str()
+    ))
 }
 
 fn run_command(args: &str) -> String {
@@ -878,14 +1444,35 @@ fn run_command(args: &str) -> String {
         "note" if !rest.is_empty() => record_note(Kind::Note, rest.to_string(), None)
             .map(|i| format!("Noted as memory message {i}.")),
         "import" if !rest.is_empty() => import_command(rest),
-        "fit" | "compact" => fit_command(),
+        "profile" => profile_command(rest),
+        "recall" => recall_command(rest),
+        "attach" => attach_command(rest),
+        "compact" | "compress" => match rest {
+            "" | "status" => Ok(compact_status()),
+            "on" | "off" => set_compaction(rest == "on"),
+            other => Err(format!(
+                "`{other}` is not a compaction setting: use `/optchat compact on|off`"
+            )),
+        },
+        "fit" => fit_command(),
         "help" | "-h" | "--help" => Ok(HELP.to_string()),
         other => Err(format!("unknown /optchat command `{other}`\n\n{HELP}")),
     };
     match result {
         Ok(text) => text,
-        Err(error) => format!("⚠️ {error}"),
+        Err(error) => zoom_hint(error),
     }
+}
+
+/// A `zoom` past the retained window is answered by the store, not by luck.
+fn zoom_hint(error: String) -> String {
+    if error.contains("memory holds messages") {
+        return format!(
+            "⚠️ {error}\nOlder messages are kept in the profile store: `/optchat recall <text>` \
+             searches it, and `/optchat attach` copies it back in."
+        );
+    }
+    format!("⚠️ {error}")
 }
 
 fn command_output(out: &mut rpi_plugin_sdk::callbacks::Output<'_>, value: Value) -> i32 {
@@ -904,14 +1491,50 @@ fn optchat_command(input, out, data) {
         .get("args")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    service_compaction();
+    publish_status();
     let text = run_command(args);
     command_output(out, json!({"kind": "message", "text": text, "markdown": true}))
 }
 }
 
 // ---------------------------------------------------------------------------
-// Entrypoint
+// Inline transcript rendering
 // ---------------------------------------------------------------------------
+
+// Render OptChat's custom entries when a host supplies the entry-renderer
+// capability. Raw entries and summary nodes stay recognizable in the TUI while
+// `optchat-view`/`optchat-profile` metadata remains silent.
+rpi_plugin_sdk::string_handler! {
+fn optchat_entry_renderer(input, out, _data) {
+    let envelope: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let Some(custom_type) = envelope.get("customType").and_then(Value::as_str) else {
+        return 1;
+    };
+    let Some(data) = envelope.get("data") else {
+        return 1;
+    };
+    let text = match custom_type {
+        ENTRY_TYPE => {
+            let Ok(entry) = serde_json::from_value::<memory::Entry>(data.clone()) else {
+                return 1;
+            };
+            format!("OptChat {} · {}", entry.kind.as_str(), clip(&entry.text, 320))
+        }
+        compact::NODE_TYPE => {
+            let Some(text) = data.get("text").and_then(Value::as_str) else {
+                return 1;
+            };
+            let level = data.get("l").and_then(Value::as_u64).unwrap_or_default();
+            let index = data.get("i").and_then(Value::as_u64).unwrap_or_default();
+            format!("OptChat summary {level}+{index} · {}", clip(text, 320))
+        }
+        _ => return 1,
+    };
+    out.write(json!({"text": text}).to_string());
+    0
+}
+}
 
 rpi_plugin_sdk::export_plugin!(|api| {
     capture_process_role();
@@ -928,6 +1551,34 @@ rpi_plugin_sdk::export_plugin!(|api| {
         (EventTag::ToolExecutionEnd, on_tool_end as EventHandlerFn),
     ] {
         let rc = register_event(tag, handler, api.user_data);
+        if rc != 0 {
+            return rc;
+        }
+    }
+    let lifecycle_tags = [
+        EventTag::SessionStart,
+        EventTag::SessionShutdown,
+        EventTag::SessionBeforeSwitch,
+        EventTag::SessionBeforeFork,
+        EventTag::SessionBeforeCompact,
+        EventTag::SessionCompact,
+        EventTag::SessionBeforeTree,
+        EventTag::SessionTree,
+    ];
+    for tag in lifecycle_tags {
+        let rc = register_event(tag, on_session_lifecycle as EventHandlerFn, api.user_data);
+        if rc != 0 {
+            return rc;
+        }
+    }
+
+    if let Some(register_entry_renderer) = api.register_entry_renderer {
+        let rc = register_entry_renderer(
+            StbStringRef::from_str("optchat"),
+            optchat_entry_renderer,
+            free_string,
+            api.user_data,
+        );
         if rc != 0 {
             return rc;
         }
@@ -966,6 +1617,19 @@ rpi_plugin_sdk::export_plugin!(|api| {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_dates_are_normalized_to_iso_midnight() {
+        assert_eq!(
+            normalize_entry_date(Some("2026-02-03".into())),
+            "2026-02-03T00:00:00Z"
+        );
+        assert_eq!(
+            normalize_entry_date(Some(" 2026-02-03T04:05:06Z ".into())),
+            "2026-02-03T04:05:06Z"
+        );
+        assert!(normalize_entry_date(None).ends_with('Z'));
+    }
 
     #[test]
     fn message_text_keeps_only_text_blocks() {
@@ -1024,6 +1688,63 @@ mod tests {
     }
 
     #[test]
+    fn entry_renderer_formats_optchat_entries_and_ignores_other_types() {
+        let render = |value: Value| {
+            let mut out = StbString::empty();
+            let rc = optchat_entry_renderer(
+                StbStringRef::from_str(&value.to_string()),
+                &mut out,
+                std::ptr::null_mut(),
+            );
+            let text = out.to_string_lossy();
+            free_string(out);
+            (rc, text)
+        };
+        let (rc, text) = render(json!({
+            "customType": compact::NODE_TYPE,
+            "data": {"l": 2, "i": 3, "text": "bounded summary"}
+        }));
+        assert_eq!(rc, 0);
+        assert!(text.contains("OptChat summary 2+3"), "{text}");
+        assert!(text.contains("bounded summary"), "{text}");
+
+        let (rc, text) = render(json!({
+            "customType": "unrelated-entry",
+            "data": {"text": "leave this to another renderer"}
+        }));
+        assert_eq!(rc, 1);
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn entry_renderer_formats_a_memory_entry() {
+        let entry = memory::Entry {
+            i: 4,
+            kind: Kind::Note,
+            text: "a durable note".into(),
+            date: iso8601(0),
+            receipt: None,
+            origin: None,
+        };
+        let mut out = StbString::empty();
+        let input = json!({
+            "customType": ENTRY_TYPE,
+            "data": serde_json::to_value(entry).expect("entry json"),
+        });
+        assert_eq!(
+            optchat_entry_renderer(
+                StbStringRef::from_str(&input.to_string()),
+                &mut out,
+                std::ptr::null_mut(),
+            ),
+            0
+        );
+        let rendered = out.to_string_lossy();
+        free_string(out);
+        assert!(rendered.contains("OptChat note"), "{rendered}");
+        assert!(rendered.contains("a durable note"), "{rendered}");
+    }
+    #[test]
     fn tool_schemas_advertise_canonical_arguments_without_host_context() {
         let zoom = zoom_schema();
         assert_eq!(zoom.name.to_string_lossy(), "zoom");
@@ -1047,6 +1768,68 @@ mod tests {
         assert_eq!(params["properties"]["text"]["minLength"], 1);
         assert_eq!(params["properties"]["before"]["minimum"], 0);
         assert!(!params.to_string().contains("__rpi"));
+    }
+
+    #[test]
+    fn a_zoom_past_the_window_points_at_recall() {
+        let hinted = zoom_hint("No message 3: memory holds messages 7..9".to_string());
+        assert!(hinted.contains("recall <text>"), "{hinted}");
+        assert!(hinted.contains("memory holds messages 7..9"), "{hinted}");
+        let plain = zoom_hint("zoom needs an integer `id`".to_string());
+        assert!(!plain.contains("recall"), "{plain}");
+        assert_eq!(plain, "⚠️ zoom needs an integer `id`");
+    }
+
+    #[test]
+    fn recall_reads_the_store_without_a_session() {
+        let dir = std::env::temp_dir().join(format!("optchat-recall-{}", std::process::id()));
+        let base = dir.join(".rpi").join("optchat");
+        let entry = |i: u64, text: &str| memory::Entry {
+            i,
+            kind: Kind::Note,
+            text: text.to_string(),
+            date: iso8601(1_700_000_000_000 + i as i64 * 1000),
+            receipt: None,
+            origin: None,
+        };
+        store::append_in_for_tests(&base, "work", &entry(0, "the parser bug was fixed"))
+            .expect("append");
+        store::append_in_for_tests(&base, "work", &entry(1, "unrelated note")).expect("append");
+
+        let hits = recall_from(&base, "work", "PARSER").expect("recall");
+        assert!(hits.contains("Profile `work` store"), "{hits}");
+        assert!(hits.contains("1 message contains"), "{hits}");
+        assert!(hits.contains("parser bug"), "{hits}");
+        assert!(!hits.contains("unrelated note"), "{hits}");
+
+        assert!(recall_from(&base, "work", "   ").is_err());
+        let empty = recall_from(&base, "absent", "anything").expect("empty store");
+        assert!(empty.contains("holds nothing yet"), "{empty}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_commands_stay_inside_the_store_directory() {
+        // Without a host the commands report unavailability instead of panicking.
+        assert!(run_command("profile").contains("unavailable"));
+        assert!(run_command("attach").contains("unavailable"));
+        // A traversal attempt is refused before any file is touched.
+        let refused = run_command("profile ../escape");
+        assert!(refused.contains("not a profile name"), "{refused}");
+        let refused = run_command("attach ../escape");
+        assert!(
+            refused.contains("not a profile name") || refused.contains("unavailable"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn compact_command_reports_state_without_a_host() {
+        let text = run_command("compact");
+        assert!(text.contains("Model compaction is off"), "{text}");
+        assert!(text.contains("extractive"), "{text}");
+        assert!(run_command("compact nope").contains("not a compaction setting"));
+        assert!(run_command("help").contains("/optchat compact on|off"));
     }
 
     #[test]

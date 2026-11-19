@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Unified DeepSeek, OpenRouter, llama.cpp, proxy and Antigravity provider extension for rpi"
+description = "Unified DeepSeek, OpenRouter, llama.cpp, proxy, Antigravity and OpenAI Codex provider extension for rpi"
 readme = "README.md"
 
 # Publish native archives alongside the crates.io package.
