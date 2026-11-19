@@ -349,21 +349,46 @@ async fn notifications_are_accepted_without_a_body() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn delete_retires_the_session_and_get_is_not_offered() {
+async fn delete_retires_the_session_and_standalone_stream() {
     let base = start(None).await;
     let session = open_session(&base).await;
 
-    let response = client()
+    // The standalone stream needs a session; without one it is a client error.
+    let status = client()
+        .get(format!("{base}/mcp"))
+        .send()
+        .await
+        .expect("get without session")
+        .status();
+    assert_eq!(status, 400);
+
+    let status = client()
+        .get(format!("{base}/mcp"))
+        .header("mcp-session-id", "nope")
+        .send()
+        .await
+        .expect("get unknown session")
+        .status();
+    assert_eq!(status, 404);
+
+    let streamed = client()
         .get(format!("{base}/mcp"))
         .header("mcp-session-id", &session)
+        .header("accept", "text/event-stream")
         .send()
         .await
         .expect("get");
-    assert_eq!(response.status(), 405);
+    assert_eq!(streamed.status(), 200);
     assert_eq!(
-        response.headers().get("allow").unwrap().to_str().unwrap(),
-        "POST, DELETE"
+        streamed
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "text/event-stream"
     );
+    drop(streamed);
 
     let status = client()
         .delete(format!("{base}/mcp"))
@@ -373,6 +398,15 @@ async fn delete_retires_the_session_and_get_is_not_offered() {
         .expect("delete")
         .status();
     assert_eq!(status, 204);
+
+    let status = client()
+        .get(format!("{base}/mcp"))
+        .header("mcp-session-id", &session)
+        .send()
+        .await
+        .expect("get after delete")
+        .status();
+    assert_eq!(status, 404);
 
     let status = client()
         .post(format!("{base}/mcp"))
@@ -793,5 +827,151 @@ mod resumption {
         let sse = start().await;
         let response = prompt_request(&sse, Some(("last-event-id", "deadbeef:1"))).await;
         assert_eq!(response.status(), 404);
+    }
+}
+
+/// The standalone `GET /mcp` stream carries server notifications, and its events
+/// can be replayed from `Last-Event-ID`.
+mod standalone_stream {
+    use super::*;
+    use futures_util::StreamExt;
+
+    fn parse(buf: &mut String) -> Vec<(String, Value)> {
+        let mut events = Vec::new();
+        while let Some(end) = buf.find("\n\n") {
+            let block: String = buf.drain(..end + 2).collect();
+            let mut id = None;
+            let mut data = None;
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("id: ") {
+                    id = Some(value.to_string());
+                } else if let Some(value) = line.strip_prefix("data: ") {
+                    data = Some(value.to_string());
+                }
+            }
+            if let (Some(id), Some(data)) = (id, data) {
+                if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                    events.push((id, value));
+                }
+            }
+        }
+        events
+    }
+
+    /// Read SSE frames until `predicate` matches, or the deadline passes.
+    async fn read_until(
+        response: reqwest::Response,
+        mut predicate: impl FnMut(&Value) -> bool,
+    ) -> Option<(String, Value)> {
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        loop {
+            let chunk =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await
+                {
+                    Ok(Some(Ok(chunk))) => chunk,
+                    Ok(Some(Err(error))) => panic!("stream error: {error}"),
+                    Ok(None) | Err(_) => return None,
+                };
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            for (id, value) in parse(&mut buffer) {
+                if predicate(&value) {
+                    return Some((id, value));
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delivers_resource_updates_and_replays_them() {
+        let factory = settling_factory_logged(Arc::new(Mutex::new(Vec::new())));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let _ = serve_listener(listener, HttpOptions::new(address.to_string()), factory).await;
+        });
+        let base = format!("http://{address}");
+        let session = open_session(&base).await;
+
+        let status = client()
+            .post(format!("{base}/mcp"))
+            .header("mcp-session-id", &session)
+            .json(&json!({
+                "jsonrpc":"2.0","id":2,"method":"resources/subscribe",
+                "params":{"uri":"rpi://session/transcript"},
+            }))
+            .send()
+            .await
+            .expect("subscribe")
+            .status();
+        assert_eq!(status, 200);
+
+        // Settle a run while the standalone stream is not open yet, so the
+        // notification has to be retained for the GET below.
+        let prompt = {
+            let base = base.clone();
+            let session = session.clone();
+            tokio::spawn(async move {
+                let _ = client()
+                    .post(format!("{base}/mcp"))
+                    .header("mcp-session-id", &session)
+                    .json(&json!({
+                        "jsonrpc":"2.0","id":3,"method":"tools/call",
+                        "params":{"name":"rpi_prompt","arguments":{"message":"hi"}},
+                    }))
+                    .send()
+                    .await;
+            })
+        };
+
+        let response = client()
+            .get(format!("{base}/mcp"))
+            .header("mcp-session-id", &session)
+            .header("accept", "text/event-stream")
+            .send()
+            .await
+            .expect("get");
+        let update = read_until(response, |value| {
+            value["method"] == "notifications/resources/updated"
+        })
+        .await
+        .expect("resource update on the standalone stream");
+        assert_eq!(update.1["params"]["uri"], "rpi://session/transcript");
+        let seq: u64 = update.0.rsplit_once(':').unwrap().1.parse().unwrap();
+        assert!(seq >= 1, "{update:?}");
+        prompt.abort();
+
+        // Replaying from an earlier id returns the same notification.
+        let replay = client()
+            .get(format!("{base}/mcp"))
+            .header("mcp-session-id", &session)
+            .header("accept", "text/event-stream")
+            .header("last-event-id", format!("{session}:0"))
+            .send()
+            .await
+            .expect("replay");
+        let replayed = read_until(replay, |value| {
+            value["method"] == "notifications/resources/updated"
+        })
+        .await
+        .expect("replayed update");
+        assert_eq!(replayed.0, update.0);
+
+        // A `Last-Event-ID` naming another stream is ignored rather than trusted,
+        // so the session's own log is replayed from the start.
+        let foreign = client()
+            .get(format!("{base}/mcp"))
+            .header("mcp-session-id", &session)
+            .header("accept", "text/event-stream")
+            .header("last-event-id", "some-other-stream:99")
+            .send()
+            .await
+            .expect("foreign id");
+        let replayed = read_until(foreign, |value| {
+            value["method"] == "notifications/resources/updated"
+        })
+        .await
+        .expect("replayed update");
+        assert_eq!(replayed.0, update.0);
     }
 }

@@ -63,6 +63,10 @@ For a client that speaks HTTP instead of spawning processes, point it at
 returns `Mcp-Session-Id`, requires it on later requests, and answers `404` once a
 session is gone.
 
+`GET /mcp` with that session id opens the standalone server stream: an SSE stream
+carrying server notifications (resource updates) that is independent of any POST.
+It honours `Last-Event-ID` for replay and answers `400` without a session header.
+
 ## What the client can call
 
 Tools: `rpi_prompt`, `rpi_state`, `rpi_available_models`,

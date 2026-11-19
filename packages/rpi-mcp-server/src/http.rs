@@ -191,6 +191,8 @@ struct HttpSession {
     last_used: AtomicU64,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     streams: Mutex<StreamRegistry>,
+    /// Retained server notifications for `GET /mcp`, addressable by `Last-Event-ID`.
+    notifications: Arc<StreamState>,
 }
 
 #[derive(Default)]
@@ -222,6 +224,11 @@ impl HttpSession {
             sender: outbound.clone(),
             buffer: Vec::new(),
         };
+        let notification_log = StreamState::new();
+        let _log_task = HttpSession::spawn_notification_log(
+            outbound.subscribe(),
+            Arc::clone(&notification_log),
+        );
         let task = tokio::spawn(async move {
             let poll = move || {
                 Ok(match inbound_rx.try_recv() {
@@ -240,6 +247,26 @@ impl HttpSession {
             last_used: AtomicU64::new(now_ms()),
             task: Mutex::new(Some(task)),
             streams: Mutex::new(StreamRegistry::default()),
+            notifications: notification_log.clone(),
+        })
+    }
+
+    /// Copy server notifications into the retained log so a `GET /mcp` stream can
+    /// replay them. Responses stay with the POST that asked for them.
+    fn spawn_notification_log(
+        mut outbound: broadcast::Receiver<Value>,
+        log: Arc<StreamState>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                match outbound.recv().await {
+                    Ok(frame) if frame.get("method").is_some() => log.append(frame),
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            log.finish();
         })
     }
 
@@ -860,17 +887,34 @@ async fn handle_get(State(state): State<AppState>, headers: HeaderMap) -> Respon
     if let Err(error) = state.check_access(&headers) {
         return error.into_response();
     }
-    // No standalone server stream: updates are delivered inside POST streams.
-    let mut response = (
-        StatusCode::METHOD_NOT_ALLOWED,
-        "this server does not offer a standalone GET stream",
+    let Some(id) = header(&headers, "mcp-session-id").map(str::to_string) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "mcp-session-id is required for the standalone stream",
+        )
+            .into_response();
+    };
+    let Some(session) = state.session(&id) else {
+        return (StatusCode::NOT_FOUND, "unknown or expired MCP session").into_response();
+    };
+    session.touch();
+    let after = header(&headers, "last-event-id")
+        .and_then(parse_event_id)
+        .filter(|(stream_id, _)| *stream_id == session.id)
+        .map(|(_, seq)| seq)
+        .unwrap_or(0);
+    if session.notifications.is_gap(after) {
+        return (StatusCode::NOT_FOUND, "MCP stream events have expired").into_response();
+    }
+    // The standalone stream carries server notifications only (resource
+    // updates). Responses belong to the POST that issued the request.
+    stream_response(
+        &session.id,
+        Arc::clone(&session.notifications),
+        after,
+        &state,
+        &headers,
     )
-        .into_response();
-    response.headers_mut().insert(
-        header::ALLOW,
-        header::HeaderValue::from_static("POST, DELETE"),
-    );
-    response
 }
 
 async fn reap_idle(state: AppState) {

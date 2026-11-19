@@ -38,7 +38,7 @@ rpi-mcp-bridge --http 0.0.0.0:8080 --token "$TOKEN" --allow-origin https://ide.e
 | Endpoint | Behaviour |
 | --- | --- |
 | `POST /mcp` | JSON-RPC frames. Requests get one JSON response, or an SSE stream when the client sends `Accept: text/event-stream` **and** the body calls `rpi_prompt`. Notifications/responses only → `202`. Streams emit `id: <stream>:<seq>` and can be resumed with `Last-Event-ID`. |
-| `GET /mcp` | `405` with `Allow: POST, DELETE`: this server offers no standalone server stream. |
+| `GET /mcp` | Standalone server stream (SSE) for one session; requires `Mcp-Session-Id` (`400` without one, `404` when unknown). Carries server notifications only — resource updates — and honours `Last-Event-ID`. |
 | `DELETE /mcp` | Terminates the session (`204`), so later requests get `404`. |
 | `OPTIONS /mcp` | Browser preflight: `204` with CORS headers for an allowed origin, `403` otherwise. |
 | `GET /mcp/ws` | Private WebSocket upgrade. First frame is `{"jsonrpc":"2.0","method":"rpi/session","params":{"sessionId":"…"}}`; reattach with `?session=<id>`. |
