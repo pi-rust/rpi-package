@@ -73,7 +73,7 @@
 .sidebar-primary-actions {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: -3px;
   padding: 0 3px;
 }
 .sidebar-new-chat,
@@ -96,7 +96,6 @@
 }
 /* All three primary rows share one geometry; only New session is bold. */
 .sidebar-primary-actions > .sidebar-new-chat:first-child { font-weight: 500; }
-.sidebar-primary-actions .sidebar-new-chat { min-height: 30px; }
 .sidebar-new-chat.recent-chats-heading { color: var(--muted); }
 .sidebar-primary-actions kbd {
   margin-left: auto;
