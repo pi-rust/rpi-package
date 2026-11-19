@@ -165,6 +165,12 @@ impl StreamState {
         !self.log.lock().expect("stream log").finished
     }
 
+    /// Whether `cursor` fell behind the retained window, so events are missing.
+    fn is_gap(&self, cursor: u64) -> bool {
+        self.oldest()
+            .is_some_and(|oldest| cursor.saturating_add(1) < oldest)
+    }
+
     /// Sequence of the oldest retained event, if any.
     fn oldest(&self) -> Option<u64> {
         self.log
@@ -741,10 +747,7 @@ fn resume_stream(
     else {
         return (StatusCode::NOT_FOUND, "unknown or expired MCP stream").into_response();
     };
-    if stream
-        .oldest()
-        .is_some_and(|oldest| after.saturating_add(1) < oldest)
-    {
+    if stream.is_gap(after) {
         // The gap is real: resuming would silently drop events.
         return (StatusCode::NOT_FOUND, "MCP stream events have expired").into_response();
     }
@@ -1165,6 +1168,19 @@ mod tests {
         assert_eq!(parse_event_id("stream-1"), None);
         assert_eq!(parse_event_id(":7"), None);
         assert_eq!(parse_event_id("stream-1:not-a-number"), None);
+    }
+
+    #[test]
+    fn a_reader_behind_the_window_is_detected() {
+        let stream = StreamState::new();
+        assert!(!stream.is_gap(0), "an empty log has no gap");
+        for index in 0..(MAX_STREAM_EVENTS + 5) {
+            stream.append(json!(index));
+        }
+        // The oldest retained event is 6, so a cursor of 4 misses 5.
+        assert!(stream.is_gap(4));
+        assert!(!stream.is_gap(5));
+        assert!(!stream.is_gap(100));
     }
 
     #[tokio::test]
