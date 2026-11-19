@@ -207,13 +207,22 @@ impl Server {
             .clone()
     }
 
-    /// Stop the server and wait for the thread to exit.
-    pub fn stop(&self) -> Result<(), String> {
-        let (tx, rx) = std::sync::mpsc::channel();
+    /// Ask the hub to stop without waiting.
+    ///
+    /// Used by the plugin's `begin_shutdown` hook, which must be non-blocking:
+    /// the hub closes every pane, rejects pending calls and exits on its own.
+    pub fn request_stop(&self) {
+        let (tx, _rx) = std::sync::mpsc::channel();
         let _ = self
             .commands
             .send(HubEvent::Command(ServerCommand::Stop(tx)));
-        let _ = rx.recv_timeout(Duration::from_secs(5));
+    }
+
+    /// Wait for the hub thread to exit (idempotent).
+    ///
+    /// Returns only once no hub code can run again, which is what
+    /// `finish_shutdown` promises the host before it may unload the library.
+    pub fn join(&self) {
         let handle = self
             .join
             .lock()
@@ -222,6 +231,16 @@ impl Server {
         if let Some(handle) = handle {
             let _ = handle.join();
         }
+    }
+
+    /// Stop the server and wait for the thread to exit.
+    pub fn stop(&self) -> Result<(), String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = self
+            .commands
+            .send(HubEvent::Command(ServerCommand::Stop(tx)));
+        let _ = rx.recv_timeout(Duration::from_secs(5));
+        self.join();
         Ok(())
     }
 }
