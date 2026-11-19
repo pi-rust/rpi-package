@@ -686,7 +686,7 @@ impl TcpServerHandle {
 
         // Kill all child processes
         let sessions = self.state.sessions.lock().await;
-        for (_, session) in sessions.iter() {
+        for session in sessions.values() {
             let mut s = session.lock().await;
             let _ = s.child.kill().await;
             let _ = s.child.wait().await;

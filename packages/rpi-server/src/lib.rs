@@ -421,10 +421,15 @@ async fn do_status(id: &str) -> Result<String, String> {
 }
 
 async fn do_list() -> Result<String, String> {
-    let registry = servers().lock().map_err(|_| "server registry poisoned")?;
+    // Snapshot the handles first: `server_status` awaits, and a std MutexGuard
+    // must not be held across an await point.
+    let handles: Vec<Arc<TcpServerHandle>> = {
+        let registry = servers().lock().map_err(|_| "server registry poisoned")?;
+        registry.values().cloned().collect()
+    };
     let mut list: Vec<Value> = Vec::new();
-    for server in registry.values() {
-        list.push(server_status(server).await?);
+    for server in handles {
+        list.push(server_status(&server).await?);
     }
     Ok(json!(list).to_string())
 }
@@ -888,10 +893,25 @@ rpi_plugin_sdk::export_plugin!(|api| {
     };
 
     if let Some(register_flag) = api.register_flag {
-        let _ = register_flag(
-            StbStringRef::from_str("server-ws"),
-            StbStringRef::from_str("Serve --server over WebSocket instead of TCP JSONL"),
-        );
+        for (name, description) in [
+            (
+                "server-ws",
+                "Serve --server over WebSocket instead of TCP JSONL",
+            ),
+            (
+                "server-tls-cert",
+                "PEM certificate chain for --server-ws (implies wss)",
+            ),
+            (
+                "server-tls-key",
+                "PEM private key matching --server-tls-cert",
+            ),
+        ] {
+            let _ = register_flag(
+                StbStringRef::from_str(name),
+                StbStringRef::from_str(description),
+            );
+        }
     }
 
     // Register SessionStart handler to auto-start server when --server flag is passed
