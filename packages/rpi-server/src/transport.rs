@@ -4,10 +4,12 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
+use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{accept_async, WebSocketStream};
 
 /// 传输层 trait - 抽象底层协议
 #[async_trait]
@@ -348,25 +350,79 @@ impl Connection for TcpConnection {
 
 // ── WebSocket 实现 ────────────────────────────────────────────────────────────
 
+/// 服务端/客户端共用的字节流：明文 TCP 或已完成 TLS 握手的流。
+pub trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
+
+type Socket = WebSocketStream<Box<dyn Stream>>;
+
 /// 每条 JSON 消息占一个 WebSocket 文本帧；协议与 TCP JSONL 一致。
 pub struct WebSocketTransport {
     listener: Mutex<Option<TcpListener>>,
+    /// 服务端 TLS；`Some` 时监听 `wss://`。
+    acceptor: Option<TlsAcceptor>,
+    /// 客户端是否使用 `wss://`（与服务端的 TLS 状态无关）。
+    secure: bool,
 }
 
 impl WebSocketTransport {
     pub fn new() -> Self {
         Self {
             listener: Mutex::new(None),
+            acceptor: None,
+            secure: false,
         }
     }
 
-    /// 客户端使用的完整 URL。`addr` 是 `host:port`。
-    fn url(addr: &str) -> String {
+    /// 服务端：先做 TLS 握手再升级 WebSocket。
+    pub fn with_tls(acceptor: TlsAcceptor) -> Self {
+        Self {
+            listener: Mutex::new(None),
+            acceptor: Some(acceptor),
+            secure: false,
+        }
+    }
+
+    /// 客户端：连接 `wss://`，按系统根证书校验。
+    pub fn secure() -> Self {
+        Self {
+            listener: Mutex::new(None),
+            acceptor: None,
+            secure: true,
+        }
+    }
+
+    /// 客户端使用的完整 URL。`addr` 是 `host:port` 或完整 URL。
+    fn url(&self, addr: &str) -> String {
+        let scheme = if self.secure { "wss" } else { "ws" };
         if addr.starts_with("ws://") || addr.starts_with("wss://") {
             addr.to_string()
         } else {
-            format!("ws://{addr}/")
+            format!("{scheme}://{addr}/")
         }
+    }
+
+    /// 明文或 TLS 的客户端字节流。
+    async fn connect_stream(&self, host: &str, port: u16) -> Result<Box<dyn Stream>, String> {
+        let tcp = TcpStream::connect((host, port))
+            .await
+            .map_err(|e| format!("connect failed: {e}"))?;
+        if !self.secure {
+            return Ok(Box::new(tcp));
+        }
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let config = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.to_string())
+            .map_err(|_| format!("invalid TLS server name: {host}"))?;
+        let stream = connector
+            .connect(server_name, tcp)
+            .await
+            .map_err(|e| format!("tls handshake failed: {e}"))?;
+        Ok(Box::new(stream))
     }
 }
 
@@ -395,16 +451,41 @@ impl Transport for WebSocketTransport {
             .accept()
             .await
             .map_err(|e| format!("accept failed: {e}"))?;
-        // Handshake on the same stream type the client side uses, so one
-        // connection type serves both directions.
-        let socket = accept_async(MaybeTlsStream::Plain(stream))
+        // TLS first when configured, then the WebSocket handshake on the same
+        // boxed stream type the client side uses.
+        let stream: Box<dyn Stream> = match &self.acceptor {
+            Some(acceptor) => Box::new(
+                acceptor
+                    .accept(stream)
+                    .await
+                    .map_err(|e| format!("tls handshake failed: {e}"))?,
+            ),
+            None => Box::new(stream),
+        };
+        let socket = accept_async(stream)
             .await
             .map_err(|e| format!("websocket handshake failed: {e}"))?;
         Ok(WebSocketConnection::new(socket, format!("ws-{addr}")))
     }
 
     async fn connect(&self, addr: &str) -> Result<WebSocketConnection, String> {
-        let (socket, _) = connect_async(Self::url(addr))
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let url = self.url(addr);
+        let request = url
+            .clone()
+            .into_client_request()
+            .map_err(|e| format!("invalid websocket url {url}: {e}"))?;
+        let host = request
+            .uri()
+            .host()
+            .ok_or_else(|| format!("websocket url {url} has no host"))?
+            .to_string();
+        let port = request
+            .uri()
+            .port_u16()
+            .unwrap_or(if self.secure { 443 } else { 80 });
+        let stream = self.connect_stream(&host, port).await?;
+        let (socket, _) = tokio_tungstenite::client_async(request, stream)
             .await
             .map_err(|e| format!("websocket connect failed: {e}"))?;
         Ok(WebSocketConnection::new(
@@ -420,12 +501,12 @@ impl Transport for WebSocketTransport {
 }
 
 pub struct WebSocketConnection {
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    socket: Socket,
     id: String,
 }
 
 impl WebSocketConnection {
-    pub fn new(socket: WebSocketStream<MaybeTlsStream<TcpStream>>, id: String) -> Self {
+    pub fn new(socket: Socket, id: String) -> Self {
         Self { socket, id }
     }
 }
@@ -532,13 +613,14 @@ mod websocket_tests {
 
     #[tokio::test]
     async fn connects_accept_ws_urls_and_bare_addresses() {
+        let plain = WebSocketTransport::new();
+        assert_eq!(plain.url("127.0.0.1:9800"), "ws://127.0.0.1:9800/");
+        assert_eq!(plain.url("ws://example.test/rpi"), "ws://example.test/rpi");
+        let secure = WebSocketTransport::secure();
+        assert_eq!(secure.url("127.0.0.1:9800"), "wss://127.0.0.1:9800/");
         assert_eq!(
-            WebSocketTransport::url("127.0.0.1:9800"),
-            "ws://127.0.0.1:9800/"
-        );
-        assert_eq!(
-            WebSocketTransport::url("ws://example.test/rpi"),
-            "ws://example.test/rpi"
+            secure.url("wss://example.test/rpi"),
+            "wss://example.test/rpi"
         );
     }
 

@@ -768,6 +768,8 @@ pub async fn run_server<T: Transport>(
 mod transport_tests {
     use super::*;
     use crate::transport::{Connection, WebSocketTransport};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
 
     fn free_port() -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("free port");
@@ -833,6 +835,79 @@ mod transport_tests {
 
         client.close().await.expect("close");
         handle.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn serves_wss_with_a_supplied_certificate() {
+        let generated =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+        let cert_pem = generated.cert.pem();
+        let key_pem = generated.key_pair.serialize_pem();
+        let dir = std::env::temp_dir().join(format!("rpi-server-wss-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, &cert_pem).expect("write cert");
+        std::fs::write(&key_path, &key_pem).expect("write key");
+
+        let config = crate::tls::load_server_config(&cert_path, &key_path).expect("tls config");
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(WebSocketTransport::with_tls(
+                tokio_rustls::TlsAcceptor::from(config),
+            )),
+            "wss",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start wss server");
+        assert_eq!(handle.transport, "wss");
+
+        // A real TLS client that trusts exactly the generated certificate.
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for certificate in rustls_pemfile::certs(&mut cert_pem.as_bytes()) {
+            roots.add(certificate.expect("cert der")).expect("add root");
+        }
+        let client_config = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_tungstenite::Connector::Rustls(Arc::new(client_config));
+        let (mut socket, _) = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{port}/"),
+            None,
+            false,
+            Some(connector),
+        )
+        .await
+        .expect("wss connect");
+
+        socket
+            .send(Message::Text(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("send");
+        let reply = loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    break serde_json::from_str::<serde_json::Value>(&text).expect("json");
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        };
+        assert!(reply.get("result").is_some(), "{reply}");
+        assert_eq!(reply["result"]["type"], "pong");
+
+        let _ = socket.close(None).await;
+        handle.stop().await.expect("stop");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

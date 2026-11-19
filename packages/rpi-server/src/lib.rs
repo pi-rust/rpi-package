@@ -4,6 +4,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod server;
+pub mod tls;
 pub mod transport;
 
 use rpi_plugin_sdk::handles::ToolHandles;
@@ -115,6 +116,12 @@ fn timeout_param(params: &Value) -> Result<Duration, String> {
 }
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
+
+/// Load `wss` credentials once, before any listener starts.
+fn rpi_tls_acceptor(cert: String, key: String) -> Result<tokio_rustls::TlsAcceptor, String> {
+    let config = tls::load_server_config(std::path::Path::new(&cert), std::path::Path::new(&key))?;
+    Ok(tokio_rustls::TlsAcceptor::from(config))
+}
 
 /// One request/response exchange over an already-created managed connection.
 async fn run_client<T: transport::Transport>(
@@ -228,15 +235,31 @@ fn do_start(params: &Value) -> Result<String, String> {
         Some(_) => return Err("port must be an integer".into()),
     };
 
-    // Wire transport: TCP JSONL (default) or one JSON frame per WebSocket text frame.
+    // Wire transport: TCP JSONL (default), WebSocket, or WebSocket over TLS.
     let transport_name: &'static str = match params.get("transport") {
         None | Some(Value::Null) => "tcp",
         Some(Value::String(name)) if name.eq_ignore_ascii_case("tcp") => "tcp",
         Some(Value::String(name)) if name.eq_ignore_ascii_case("ws") => "ws",
+        Some(Value::String(name)) if name.eq_ignore_ascii_case("wss") => "wss",
         Some(Value::String(other)) => {
-            return Err(format!("transport must be \"tcp\" or \"ws\" (got {other})"))
+            return Err(format!(
+                "transport must be \"tcp\", \"ws\" or \"wss\" (got {other})"
+            ))
         }
         Some(_) => return Err("transport must be a string".into()),
+    };
+
+    // `wss` terminates TLS with an operator-supplied certificate; `ws`/`tcp` must
+    // not silently ignore TLS files.
+    let tls = match (
+        transport_name,
+        optional_string(params, "tlsCert")?,
+        optional_string(params, "tlsKey")?,
+    ) {
+        ("wss", Some(cert), Some(key)) => Some(rpi_tls_acceptor(cert, key)?),
+        ("wss", _, _) => return Err("transport wss requires both tlsCert and tlsKey".into()),
+        (_, None, None) => None,
+        (_, _, _) => return Err("tlsCert/tlsKey are only valid with transport wss".into()),
     };
 
     let (executable, args) = launch_args(params)?;
@@ -276,7 +299,19 @@ fn do_start(params: &Value) -> Result<String, String> {
         };
 
         let result = runtime.block_on(async {
-            if transport_name == "ws" {
+            if transport_name == "wss" {
+                let acceptor = tls.expect("wss transport requires TLS files");
+                run_server(
+                    Arc::new(WebSocketTransport::with_tls(acceptor)),
+                    transport_name,
+                    &bind_clone,
+                    port,
+                    token_clone,
+                    exec_clone,
+                    args_clone,
+                )
+                .await
+            } else if transport_name == "ws" {
                 run_server(
                     Arc::new(WebSocketTransport::new()),
                     transport_name,
@@ -473,9 +508,25 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
     };
 
     // `--server-ws` serves the same JSON-RPC frames over WebSocket instead of
-    // TCP JSONL, for clients that cannot speak a raw line protocol.
+    // TCP JSONL; adding both TLS paths upgrades it to `wss`.
     let websocket = flag_is_on(get_cli_flag("server-ws").as_ref());
-    let transport = if websocket { "ws" } else { "tcp" };
+    let tls_cert = match get_cli_flag("server-tls-cert") {
+        Some(Value::String(value)) if !value.is_empty() => Some(value),
+        _ => None,
+    };
+    let tls_key = match get_cli_flag("server-tls-key") {
+        Some(Value::String(value)) if !value.is_empty() => Some(value),
+        _ => None,
+    };
+    let transport = match (websocket, tls_cert.is_some() || tls_key.is_some()) {
+        (true, true) => "wss",
+        (true, false) => "ws",
+        (false, true) => {
+            eprintln!("[rpi-server] --server-tls-cert/--server-tls-key need --server-ws");
+            return 0;
+        }
+        (false, false) => "tcp",
+    };
     eprintln!("[rpi-server] --server detected, starting {transport} server on {bind}:{port}");
 
     let token = match get_cli_flag("token") {
@@ -490,6 +541,8 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
         "token": token,
         "noToken": no_token,
         "transport": transport,
+        "tlsCert": tls_cert,
+        "tlsKey": tls_key,
     });
 
     match do_start(&params) {
@@ -542,7 +595,17 @@ fn client_tool(params: &Value, cancelled: &AtomicBool) -> Result<String, String>
                 "params": rpc_params,
                 "id": 1,
             });
-            if server.transport == "ws" {
+            if server.transport == "wss" {
+                run_client(
+                    ManagedConnection::new(Arc::new(WebSocketTransport::secure())),
+                    &server,
+                    request,
+                    subscribe,
+                    wait,
+                    cancelled_inner,
+                )
+                .await
+            } else if server.transport == "ws" {
                 run_client(
                     ManagedConnection::new(Arc::new(WebSocketTransport::new())),
                     &server,
@@ -701,7 +764,7 @@ use rpi_plugin_sdk::callbacks::free_string;
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
-const SERVER_DESCRIPTION: &str = "Manage extension-local TCP JSONL or WebSocket listeners, not HTTP. Default start opens a listener and stores child launch defaults; status/stop require id. Child sessions start separately through rpc_client. Default is loopback with token authentication; non-loopback binds expose session control over unencrypted TCP. Results/logs contain secret tokens: do not publish them. Stop requests listener shutdown and terminates tracked children; session shutdown attempts cleanup. Timeout/cancellation does not undo side effects; inspect state before retrying. Explicitly stop sessions/listeners you create.";
+const SERVER_DESCRIPTION: &str = "Manage extension-local TCP JSONL, WebSocket or WebSocket-over-TLS listeners, not HTTP. Default start opens a listener and stores child launch defaults; status/stop require id. Child sessions start separately through rpc_client. Default is loopback with token authentication; non-loopback binds expose session control over unencrypted TCP. Results/logs contain secret tokens: do not publish them. Stop requests listener shutdown and terminates tracked children; session shutdown attempts cleanup. Timeout/cancellation does not undo side effects; inspect state before retrying. Explicitly stop sessions/listeners you create.";
 const CLIENT_DESCRIPTION: &str = "Send JSON-RPC to a running server using its extension-local serverId; authentication is automatic. start_session creates a child, send writes a native command, stop_session terminates a child. method=subscribe with subscribe=true collects live events, not history. Results contain raw JSON-RPC responses: inspect nested errors even when the tool succeeds. Timeout/cancellation does not cancel remote work or imply rollback: do not blindly retry side-effecting methods. Clean up sessions with stop_session and listeners with rpc_server stop. Responses/events may contain secrets; redact before sharing.";
 
 const SERVER_PARAMETERS: &str = r#"{
@@ -709,7 +772,9 @@ const SERVER_PARAMETERS: &str = r#"{
   "properties":{
     "action":{"type":"string","enum":["start","stop","status","list"],"default":"start","description":"Optional; defaults to start. start opens a listener; status reads one server; stop removes/stops one server and kills tracked children; list returns all registered server snapshots. Only start reads launch/network fields; stop/status require id."},
     "id":{"type":"string","description":"Non-blank extension-local server id returned by start/list; required only for stop/status. Not a child session id. No default; ignored for start/list."},
-    "transport":{"type":"string","enum":["tcp","ws"],"default":"tcp","description":"Start only. Wire transport: tcp keeps newline-delimited JSON, ws sends one JSON frame per WebSocket text frame. Omitted/null defaults to tcp. Authentication, methods and results are identical on both; neither has TLS."},
+    "transport":{"type":"string","enum":["tcp","ws","wss"],"default":"tcp","description":"Start only. Wire transport: tcp keeps newline-delimited JSON, ws sends one JSON frame per WebSocket text frame, wss is ws over TLS and needs tlsCert+tlsKey. Omitted/null defaults to tcp. Authentication, methods and results are identical on all three; only wss encrypts the wire."},
+    "tlsCert":{"type":"string","description":"Start only, transport wss. Path to a PEM certificate chain for the listener. Required together with tlsKey and rejected for tcp/ws so TLS files are never silently ignored. Use a CA-issued certificate: rpc_client verifies against system roots, so a self-signed certificate needs a trusted proxy or an explicit client configuration."},
+    "tlsKey":{"type":"string","description":"Start only, transport wss. Path to the PEM private key matching tlsCert. Read once at start; the key never appears in results or logs, and a mismatch fails the start instead of serving."},
     "bind":{"type":"string","default":"127.0.0.1","description":"Start only. Non-blank TCP bind host; omitted/null defaults to 127.0.0.1. 0.0.0.0 exposes all IPv4 interfaces; TCP has no TLS. Prefer loopback; not an HTTP URL."},
     "port":{"type":"integer","minimum":0,"maximum":65535,"default":9800,"description":"Start only. Listener port, default 9800; 0 requests an OS-assigned port, but returned/stored address currently retains :0 and cannot be used by rpc_client to discover that port. Use a known available port for client calls. null is invalid."},
     "token":{"type":"string","description":"Start only. Secret authentication token; omitted/empty generates one. noToken=true overrides it. Included in status/results and server logs: do not echo, commit or share. Authentication does not encrypt TCP traffic."},

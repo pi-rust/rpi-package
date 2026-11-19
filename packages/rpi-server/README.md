@@ -28,12 +28,31 @@ rpi --server --bind 0.0.0.0 --port 9800
 
 # 改用 WebSocket 传输（同样的方法、认证与结果）
 rpi --server --server-ws --port 9800
+
+# WebSocket over TLS（证书和私钥由运维提供）
+rpi --server --server-ws \
+  --server-tls-cert /etc/rpi/cert.pem \
+  --server-tls-key  /etc/rpi/key.pem \
+  --port 9800
 ```
 
 rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动服务器；加上
-`--server-ws` 时改用 WebSocket。`rpc_server` 工具的 `transport` 参数
-（`"tcp"` 默认 / `"ws"`）可以在会话内选择传输，返回结果里的 `transport`
-字段就是实际使用的传输。`rpc_client` 会按监听器记录的传输自动选择客户端。
+`--server-ws` 时改用 WebSocket，同时给出 `--server-tls-cert` 与
+`--server-tls-key` 时升级为 `wss`（TLS 终结在监听器内）。`rpc_server` 工具的
+`transport` 参数（`"tcp"` 默认 / `"ws"` / `"wss"`）可以在会话内选择传输，返回
+结果里的 `transport` 字段就是实际使用的传输。`rpc_client` 会按监听器记录的
+传输自动选择客户端（`wss` 时用系统根证书校验）。
+
+### wss 的证书要求
+
+- `tlsCert` / `tlsKey` 只在 `transport: "wss"` 时有效；`tcp`/`ws` 传这两个参数
+  会直接报错，避免"配了 TLS 却静默明文"
+- 证书必须是 PEM 链，私钥必须是 PEM；读取失败、缺少证书、证书与私钥不匹配都会
+  让启动失败，而不是降级
+- 私钥只在启动时读取一次，不出现在返回值或日志里
+- `rpc_client` 使用系统根证书，因此**自签名证书需要反向代理或自定义客户端**；
+  浏览器等外部客户端同理
+- 监听器不做 HSTS/重定向：`wss` 只加密这一条通道
 
 ### 在 rpi 会话中管理
 
@@ -414,6 +433,7 @@ println!("messages received: {}", status.messages_received);
 | 协议开销 | 低（仅 `\n` 分隔） | 中（帧协议） |
 | 浏览器支持 | ❌ 需要代理 | ✅ 原生支持（`ws://host:port/`） |
 | 认证/方法/结果 | 相同 | 相同（`authenticate` 仍在最前） |
+| 加密 | 无 | `wss` 由监听器终结 TLS（`ws` 仍为明文） |
 | 调试难度 | 低（nc/telnet） | 中（需要工具） |
 | 心跳检测 | 应用层实现 | 协议自带 |
 | 适用场景 | 服务间通信 | Web 客户端 |
