@@ -88,6 +88,62 @@ pub fn parse_office_command(args: &str) -> OfficeCommand {
     }
 }
 
+/// One `/office` argument completion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    pub text: String,
+    pub description: String,
+}
+
+/// The subcommands, in the order the completion list shows them.
+const SUBCOMMANDS: [(&str, &str); 5] = [
+    (
+        "status",
+        "Show the bridge state, port and attached Office apps",
+    ),
+    (
+        "connect",
+        "Start the bridge (optional port: /office connect 38617)",
+    ),
+    ("close", "Stop the bridge and disconnect the Office add-in"),
+    ("restart", "Stop and start the bridge (optional port)"),
+    ("help", "Show the /office command list"),
+];
+
+/// Argument completions for `/office <prefix>`.
+///
+/// Only the subcommand word is completed: once the user has typed a port there
+/// is nothing to suggest, so an input containing whitespace yields no items and
+/// the editor keeps its default behavior.
+pub fn office_argument_completions(prefix: &str) -> Vec<Suggestion> {
+    let trimmed = prefix.trim_start();
+    if trimmed.chars().any(char::is_whitespace) {
+        return Vec::new();
+    }
+    let needle = trimmed.to_lowercase();
+    SUBCOMMANDS
+        .iter()
+        .filter(|(name, _)| name.starts_with(&needle))
+        .map(|(name, description)| Suggestion {
+            text: (*name).to_string(),
+            description: (*description).to_string(),
+        })
+        .collect()
+}
+
+/// JSON body for the host's command-completion slot.
+pub fn office_argument_completions_json(prefix: &str) -> Option<String> {
+    let items = office_argument_completions(prefix);
+    if items.is_empty() {
+        return None;
+    }
+    let items: Vec<serde_json::Value> = items
+        .into_iter()
+        .map(|item| serde_json::json!({"text": item.text, "description": item.description}))
+        .collect();
+    Some(serde_json::json!({"items": items}).to_string())
+}
+
 /// The command help block, shared by `/office help` and parse errors.
 pub fn office_command_help() -> String {
     [
@@ -306,6 +362,30 @@ mod tests {
         assert!(text.contains("listening on :39001"));
         assert!(text.contains("no app attached"));
         assert!(text.contains("catalog v3"));
+    }
+
+    #[test]
+    fn office_argument_completions_cover_the_documented_subcommands() {
+        let all = office_argument_completions("");
+        assert_eq!(all.len(), 5);
+        assert_eq!(all[0].text, "status");
+        assert!(all[1].description.contains("connect"));
+
+        let filtered = office_argument_completions("con");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].text, "connect");
+        assert!(office_argument_completions("RES")
+            .iter()
+            .any(|item| item.text == "restart"));
+        // A port (or any second word) is not completed.
+        assert!(office_argument_completions("connect 39").is_empty());
+        assert!(office_argument_completions("zzz").is_empty());
+
+        let json: serde_json::Value =
+            serde_json::from_str(&office_argument_completions_json("c").unwrap()).unwrap();
+        assert_eq!(json["items"][0]["text"], serde_json::json!("connect"));
+        assert_eq!(json["items"][1]["text"], serde_json::json!("close"));
+        assert!(office_argument_completions_json("nope").is_none());
     }
 
     #[test]

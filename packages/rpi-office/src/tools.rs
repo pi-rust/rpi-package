@@ -8,17 +8,13 @@
 //! The ABI's `execute` callback does not carry the tool name, so each tool gets
 //! its own trampoline generated from the catalog list below. A test keeps that
 //! list and the committed catalog in sync.
-#![deny(unsafe_code)]
-// The pinned SDK marks raw ABI string reads/frees unsafe. Tool inputs use the
-// SDK's safe execute macro; the remaining test-only raw schema reads are covered
-// by an explicit expectation with a SAFETY comment.
+#![forbid(unsafe_code)]
 
 use crate::active_tools::OFFICE_LIST_TOOL;
 use crate::bridge::Pane;
 use crate::catalog::{self, CatalogEntry, Host};
 use crate::protocol::now_ms;
 use crate::server::{Server, ToolOutput};
-use rpi_plugin_sdk::callbacks::OwnedString;
 use rpi_plugin_sdk::handles::ToolHandles;
 use rpi_plugin_sdk::{
     PluginApi, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult, ToolCancelFn,
@@ -47,11 +43,13 @@ panel), then try again.";
 macro_rules! office_tools {
     ($($fn_name:ident => $tool:literal),* $(,)?) => {
         $(
-            // The SDK macro owns the raw ABI input and frees it after the body;
-            // the tool body only sees a safe OwnedString.
+            // `execute_handler!` owns the raw-pointer half of the ABI: it turns
+            // the call id into `&str` and adopts `params` as an `OwnedString`
+            // that reclaims itself through the host's deallocator, so this crate
+            // needs no `unsafe` for any of the 33 trampolines.
             rpi_plugin_sdk::execute_handler! {
-                fn $fn_name(_tool_call_id, params) {
-                    execute_named($tool, params)
+                fn $fn_name(id, params) {
+                    execute_named($tool, id, params)
                 }
             }
         )*
@@ -229,7 +227,11 @@ pub fn list_documents_text(host: Option<Host>) -> String {
 
 /* ── ABI drive ─────────────────────────────────────────────────────── */
 
-fn execute_named(tool: &str, params: OwnedString) -> StepHandle {
+fn execute_named(
+    tool: &str,
+    _tool_call_id: &str,
+    params: rpi_plugin_sdk::callbacks::OwnedString,
+) -> StepHandle {
     let mut args: Value = serde_json::from_str(&params.to_string_lossy()).unwrap_or(Value::Null);
     strip_host_context(&mut args);
     if !args.is_object() {
@@ -452,7 +454,6 @@ fn register_tool_prompt(api: &PluginApi, name: &str) {
 }
 
 #[cfg(test)]
-#[expect(unsafe_code)] // SAFETY: tests own every string they read/free.
 mod tests {
     use super::*;
 
@@ -484,10 +485,9 @@ mod tests {
             .entry_by_op("excel.read_range")
             .expect("entry");
         let schema = catalog_schema(entry);
-        // SAFETY: this test owns the schema strings for the whole test.
         let parameters: Value =
-            serde_json::from_str(&unsafe { schema.parameters.to_string_lossy() }).unwrap();
-        assert_eq!(unsafe { schema.name.to_string_lossy() }, entry.name);
+            serde_json::from_str(&crate::abi::text(&schema.parameters)).unwrap();
+        assert_eq!(crate::abi::text(&schema.name), entry.name);
         assert!(parameters["properties"]["document"].is_object());
         assert!(parameters["properties"]["range"].is_object());
         let required = parameters["required"]
@@ -500,10 +500,9 @@ mod tests {
     #[test]
     fn list_schema_is_a_valid_object() {
         let schema = list_schema();
-        // SAFETY: this test owns the schema strings for the whole test.
         let parameters: Value =
-            serde_json::from_str(&unsafe { schema.parameters.to_string_lossy() }).unwrap();
-        assert_eq!(unsafe { schema.name.to_string_lossy() }, OFFICE_LIST_TOOL);
+            serde_json::from_str(&crate::abi::text(&schema.parameters)).unwrap();
+        assert_eq!(crate::abi::text(&schema.name), OFFICE_LIST_TOOL);
         assert_eq!(
             parameters["properties"]["host"]["enum"],
             json!(["excel", "word", "powerpoint"])

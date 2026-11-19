@@ -124,6 +124,23 @@ async fn pane_drives_a_tool_and_receives_streamed_replies() {
             && !active.contains(&"office_excel_charts".to_string())
     });
 
+    // ── `#document` completion offers the attached document ─────────────
+    let mentions = support::run_autocomplete("#", "#").expect("mention items");
+    let items = mentions["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "{mentions}");
+    assert_eq!(items[0]["text"], json!("#Book1.xlsx"));
+    assert_eq!(items[0]["description"], json!("Excel"));
+    assert_eq!(items[0]["insertSpace"], json!(false));
+    // Mid-word `#` and non-matching prefixes fall through to the host.
+    assert!(support::run_autocomplete("a#", "a#").is_none());
+    assert!(support::run_autocomplete("#zzz", "#zzz").is_none());
+    // The inserted mention is what the server already resolves as a target.
+    let by_mention = run_tool("office_list_documents", json!({"host": "excel"})).expect("listing");
+    assert!(by_mention["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Book1.xlsx"));
+
     // ── tool proxy: execute → pane → tool_result → poll ────────────────
     let (_, _, callbacks) = support::tool("office_excel_read_range").expect("registered");
     let handle = (callbacks.execute)(

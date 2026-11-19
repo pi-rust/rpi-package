@@ -11,15 +11,24 @@
 //! user runs `/office connect` (or passes `--office-bridge-autostart`), so
 //! several sessions can coexist without silently fighting over 38617.
 //!
-//! Requires `rpi-plugin-sdk` 0.25 (ABI 4, `struct_size` 192): the host actions
-//! and slots this extension relies on (`Abort`, `register_plugin_lifecycle`,
-//! `register_tool_prompt`) were appended after the older 0.3.x line. On a host
-//! with a shorter vtable the SDK reports those slots as `None` and the plugin
-//! degrades: no `client-abort`, no prompt snippets, and no reload-safe join.
+//! Requires `rpi-plugin-sdk` 0.26 (ABI 4). The host may expose a shorter vtable
+//! (for example `rpi 0.24.0`'s 192-byte layout); the SDK zero-fills appended
+//! slots, so the plugin degrades instead of failing: no `client-abort`, no
+//! prompt snippets, no reload-safe join, and no editor/command completions.
+//
+// ABI inputs and outputs use the SDK's `event_handler!`, `string_handler!` and
+// `execute_handler!` macros where available. The one remaining raw runtime-action
+// output is isolated in `src/abi.rs`, where each function carries an explicit
+// `#[expect(unsafe_code)]`; the crate root keeps `#![deny(unsafe_code)]` so new
+// unsafe cannot spread silently. The entrypoint emitted by `export_plugin!`
+// takes a raw `*const PluginApi` by ABI definition, which is why the
+// pointer-deref lint is allowed here; the dereference itself stays in the SDK.
 #![deny(unsafe_code)]
-// The pinned SDK marks raw ABI string reads/frees unsafe; the one remaining
-// boundary is covered by an explicit expectation with a SAFETY comment.
+// `unsafe` lives in `src/abi.rs` only, on the two functions with explicit
+// expectations below; `deny` (not `forbid`) lets those expectations apply.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
+
+mod abi;
 
 pub mod active_tools;
 pub mod bridge;
@@ -27,6 +36,7 @@ pub mod catalog;
 pub mod commands;
 pub mod config;
 pub mod lifecycle;
+pub mod mentions;
 pub mod pane_replies;
 pub mod protocol;
 pub mod server;
@@ -37,8 +47,8 @@ use bridge::{HealthMeta, Pane};
 use lifecycle::{BridgeSnapshot, Controller};
 use pane_replies::{format_document_tag, PanePromptEntry, PanePromptTracker};
 use rpi_plugin_sdk::{
-    BeforeAgentStartFn, CommandHandlerFn, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
-    RuntimeActionId, StbString, StbStringRef,
+    AutocompleteProviderFn, BeforeAgentStartFn, CommandArgumentCompletionFn, CommandHandlerFn,
+    EventHandlerFn, EventTag, FreeStringFn, PluginApi, RuntimeActionId, StbStringRef,
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;
@@ -78,20 +88,9 @@ fn api(owner: *mut c_void) -> Option<PluginApi> {
     Some(api)
 }
 
-#[expect(unsafe_code)] // SAFETY: see the comments at the unsafe blocks.
 fn call_action(api: PluginApi, action: RuntimeActionId, args: Value) -> Result<Value, String> {
     let encoded = args.to_string();
-    let mut out = StbString::empty();
-    let rc = (api.runtime_action)(
-        u32::from(action),
-        StbStringRef::from_str(&encoded),
-        &mut out,
-        api.user_data,
-    );
-    // SAFETY: `out` was produced by the host through this action call; reading
-    // and freeing it are the ABI ownership contract.
-    let text = unsafe { out.to_string_lossy() };
-    unsafe { (api.free_string)(out) };
+    let (rc, text) = abi::action_text(api, action, &encoded);
     if rc != 0 {
         return Err(if text.trim().is_empty() {
             format!("runtime action {action:?} failed")
@@ -1042,6 +1041,46 @@ fn office_tools_command(_input, out, owner) {
 }
 }
 
+/* ── editor + command completion (SDK 0.26 slots) ──────────────────── */
+
+// Prompt-editor autocomplete: offer attached documents for a `#` mention.
+rpi_plugin_sdk::string_handler! {
+fn document_mentions(input, out, _owner) {
+    let query: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let Some(line_prefix) = query["linePrefix"].as_str() else {
+        return 1;
+    };
+    let Some(needle) = mentions::mention_needle(line_prefix) else {
+        return 1;
+    };
+    let panes = panes_lookup();
+    if panes.is_empty() {
+        return 1;
+    }
+    let items = mentions::document_items(&panes, needle);
+    if items.is_empty() {
+        return 1;
+    }
+    out.write(json!({"items": items}).to_string());
+    0
+}
+}
+
+// `/office` argument completions.
+rpi_plugin_sdk::string_handler! {
+fn office_command_arguments(input, out, _owner) {
+    let query: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let prefix = query["argumentPrefix"].as_str().unwrap_or_default();
+    match commands::office_argument_completions_json(prefix) {
+        Some(body) => {
+            out.write(body);
+            0
+        }
+        None => 1,
+    }
+}
+}
+
 /* ── registration ──────────────────────────────────────────────────── */
 
 fn register(api: &PluginApi) -> i32 {
@@ -1082,6 +1121,26 @@ fn register(api: &PluginApi) -> i32 {
         office_tools_command as CommandHandlerFn,
     );
     if rc != 0 {
+        return rc;
+    }
+
+    // Completion slots (SDK 0.26). An older host reports -1 here; that is not a
+    // registration failure, it just means no `#`/argument completion.
+    let rc = rpi_plugin_sdk::register_autocomplete_provider(
+        api,
+        document_mentions as AutocompleteProviderFn,
+        api.user_data,
+    );
+    if rc != 0 && rc != -1 {
+        return rc;
+    }
+    let rc = rpi_plugin_sdk::register_command_completions(
+        api,
+        "office",
+        office_command_arguments as CommandArgumentCompletionFn,
+        api.user_data,
+    );
+    if rc != 0 && rc != -1 {
         return rc;
     }
 
@@ -1142,6 +1201,7 @@ rpi_plugin_sdk::export_plugin!(register);
 mod tests {
     use super::*;
     use crate::catalog::Host;
+    use rpi_plugin_sdk::StbString;
 
     #[test]
     fn flattens_message_content_shapes() {
@@ -1274,6 +1334,9 @@ mod tests {
             register_tool_prompt: None,
             register_oauth_provider_cancellable: None,
             register_tool_result: None,
+            register_autocomplete_provider: None,
+            register_command_completions: None,
+            register_argument_suggester: None,
         };
         // No command registrar on this host: registration refuses to load.
         assert_eq!(register(&api), 1);

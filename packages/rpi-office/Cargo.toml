@@ -26,10 +26,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Pinned to the SDK whose vtable matches the host (abi 4, struct_size 192):
-# 0.25.0 is the release that ships `Abort`, `register_plugin_lifecycle`,
-# `register_tool_prompt` and the rest of the appended slots this extension uses.
-# Older 0.3.x releases stop at `SideQuestion = 25`.
-rpi-plugin-sdk = "=0.25.0"
+# 0.26.0 ships `Abort`, `register_plugin_lifecycle`, `register_tool_prompt`,
+# `GetEditorText` and the autocomplete / command-completion slots, plus the safe
+# `OwnedString` + `execute_handler!` wrappers that keep `unsafe` out of this
+# crate. Older 0.3.x releases stop at `SideQuestion = 25`.
+rpi-plugin-sdk = "=0.26.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros"] }

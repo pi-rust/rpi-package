@@ -57,6 +57,26 @@ fn registration_and_office_command_flow() {
         .expect("overview metadata");
     assert!(read_range_meta["promptSnippet"].is_string());
 
+    // ── completion slots (SDK 0.26) ────────────────────────────────────
+    assert!(
+        support::autocomplete_registered(),
+        "the `#document` provider must be registered"
+    );
+    assert_eq!(
+        support::command_completions()
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>(),
+        vec!["office".to_string()],
+        "/office must expose argument completions"
+    );
+    // With no pane attached the provider has no opinion and lets the host's
+    // built-in providers run.
+    assert!(support::run_autocomplete("#", "#").is_none());
+    let items = support::run_command_completions("office", "co").expect("completions");
+    assert_eq!(items["items"][0]["text"], json!("connect"));
+    assert!(support::run_command_completions("office", "connect 39").is_none());
+
     // ── plugin lifecycle hooks (reload/shutdown safety) ────────────────
     assert!(
         support::lifecycle_hooks().is_some(),
