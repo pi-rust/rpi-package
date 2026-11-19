@@ -34,6 +34,13 @@ rpi --server --server-ws \
   --server-tls-cert /etc/rpi/cert.pem \
   --server-tls-key  /etc/rpi/key.pem \
   --port 9800
+
+# 双向 TLS：再要求客户端证书（mTLS）
+rpi --server --server-ws \
+  --server-tls-cert /etc/rpi/cert.pem \
+  --server-tls-key  /etc/rpi/key.pem \
+  --server-tls-client-ca /etc/rpi/client-ca.pem \
+  --port 9800
 ```
 
 rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动服务器；加上
@@ -53,6 +60,17 @@ rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动服务�
 - `rpc_client` 使用系统根证书，因此**自签名证书需要反向代理或自定义客户端**；
   浏览器等外部客户端同理
 - 监听器不做 HSTS/重定向：`wss` 只加密这一条通道
+
+### mTLS（客户端证书）
+
+`--server-tls-client-ca`（工具参数 `tlsClientCa`）指定一个 PEM CA bundle 后，
+**每个连接都必须出示由该 CA 签发的客户端证书**，否则 TLS 握手直接失败：
+
+- 没有「只在客户端提供时校验」的模式——那等于放行任何人
+- 客户端证书与 token 是两层独立机制：证书决定"能不能建立连接"，token 决定
+  "能不能调用方法"；两者可以同时启用
+- CA 文件可以是多个证书（多 CA），但必须至少有一个；读取失败/非 PEM/不可用作
+  根证书都会让启动失败，而不是退化成无客户端校验
 
 ### 在 rpi 会话中管理
 

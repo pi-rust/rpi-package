@@ -862,7 +862,8 @@ mod transport_tests {
         std::fs::write(&cert_path, &cert_pem).expect("write cert");
         std::fs::write(&key_path, &key_pem).expect("write key");
 
-        let config = crate::tls::load_server_config(&cert_path, &key_path).expect("tls config");
+        let config =
+            crate::tls::load_server_config(&cert_path, &key_path, None).expect("tls config");
         let port = free_port();
         let handle = run_server(
             Arc::new(WebSocketTransport::with_tls(
@@ -915,6 +916,127 @@ mod transport_tests {
             }
         };
         assert!(reply.get("result").is_some(), "{reply}");
+        assert_eq!(reply["result"]["type"], "pong");
+
+        let _ = socket.close(None).await;
+        handle.stop().await.expect("stop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn requires_a_client_certificate_when_a_client_ca_is_configured() {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+        };
+        use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+        // CA, server leaf and client leaf, all minted locally.
+        let ca_key = KeyPair::generate().expect("ca key");
+        let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "rpi-test-ca");
+        let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
+
+        let server_key = KeyPair::generate().expect("server key");
+        let mut server_params =
+            CertificateParams::new(vec!["localhost".to_string()]).expect("server params");
+        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let server_cert = server_params
+            .signed_by(&server_key, &ca_cert, &ca_key)
+            .expect("server cert");
+
+        let client_key = KeyPair::generate().expect("client key");
+        let mut client_params =
+            CertificateParams::new(vec!["rpi-test-client".to_string()]).expect("client params");
+        client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        let client_cert = client_params
+            .signed_by(&client_key, &ca_cert, &ca_key)
+            .expect("client cert");
+
+        let dir = std::env::temp_dir().join(format!("rpi-server-mtls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        let ca_path = dir.join("ca.pem");
+        std::fs::write(&cert_path, server_cert.pem()).expect("write cert");
+        std::fs::write(&key_path, server_key.serialize_pem()).expect("write key");
+        std::fs::write(&ca_path, ca_cert.pem()).expect("write ca");
+
+        let config = crate::tls::load_server_config(&cert_path, &key_path, Some(&ca_path))
+            .expect("mtls config");
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(WebSocketTransport::with_tls(
+                tokio_rustls::TlsAcceptor::from(config),
+            )),
+            "wss",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start mtls server");
+
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from(ca_cert.der().to_vec()))
+            .expect("trust ca");
+
+        // A client without a certificate cannot complete the handshake.
+        let anonymous = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots.clone())
+            .with_no_client_auth();
+        let refused = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{port}/"),
+            None,
+            false,
+            Some(tokio_tungstenite::Connector::Rustls(Arc::new(anonymous))),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "a certificate-less client must be rejected"
+        );
+
+        // With a certificate signed by the CA the session works.
+        let authenticated = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(
+                vec![CertificateDer::from(client_cert.der().to_vec())],
+                PrivateKeyDer::try_from(client_key.serialize_der()).expect("client key der"),
+            )
+            .expect("client config");
+        let (mut socket, _) = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{port}/"),
+            None,
+            false,
+            Some(tokio_tungstenite::Connector::Rustls(Arc::new(
+                authenticated,
+            ))),
+        )
+        .await
+        .expect("client certificate accepted");
+        socket
+            .send(Message::Text(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("send");
+        let reply = loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    break serde_json::from_str::<serde_json::Value>(&text).expect("json");
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        };
         assert_eq!(reply["result"]["type"], "pong");
 
         let _ = socket.close(None).await;

@@ -118,8 +118,16 @@ fn timeout_param(params: &Value) -> Result<Duration, String> {
 // ── Server lifecycle ──────────────────────────────────────────────────────────
 
 /// Load `wss` credentials once, before any listener starts.
-fn rpi_tls_acceptor(cert: String, key: String) -> Result<tokio_rustls::TlsAcceptor, String> {
-    let config = tls::load_server_config(std::path::Path::new(&cert), std::path::Path::new(&key))?;
+fn rpi_tls_acceptor(
+    cert: String,
+    key: String,
+    client_ca: Option<String>,
+) -> Result<tokio_rustls::TlsAcceptor, String> {
+    let config = tls::load_server_config(
+        std::path::Path::new(&cert),
+        std::path::Path::new(&key),
+        client_ca.as_deref().map(std::path::Path::new),
+    )?;
     Ok(tokio_rustls::TlsAcceptor::from(config))
 }
 
@@ -255,11 +263,14 @@ fn do_start(params: &Value) -> Result<String, String> {
         transport_name,
         optional_string(params, "tlsCert")?,
         optional_string(params, "tlsKey")?,
+        optional_string(params, "tlsClientCa")?,
     ) {
-        ("wss", Some(cert), Some(key)) => Some(rpi_tls_acceptor(cert, key)?),
-        ("wss", _, _) => return Err("transport wss requires both tlsCert and tlsKey".into()),
-        (_, None, None) => None,
-        (_, _, _) => return Err("tlsCert/tlsKey are only valid with transport wss".into()),
+        ("wss", Some(cert), Some(key), client_ca) => Some(rpi_tls_acceptor(cert, key, client_ca)?),
+        ("wss", _, _, _) => return Err("transport wss requires both tlsCert and tlsKey".into()),
+        (_, None, None, None) => None,
+        (_, _, _, _) => {
+            return Err("tlsCert/tlsKey/tlsClientCa are only valid with transport wss".into())
+        }
     };
 
     let (executable, args) = launch_args(params)?;
@@ -523,7 +534,12 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
         Some(Value::String(value)) if !value.is_empty() => Some(value),
         _ => None,
     };
-    let transport = match (websocket, tls_cert.is_some() || tls_key.is_some()) {
+    let tls_client_ca = match get_cli_flag("server-tls-client-ca") {
+        Some(Value::String(value)) if !value.is_empty() => Some(value),
+        _ => None,
+    };
+    let has_tls = tls_cert.is_some() || tls_key.is_some() || tls_client_ca.is_some();
+    let transport = match (websocket, has_tls) {
         (true, true) => "wss",
         (true, false) => "ws",
         (false, true) => {
@@ -548,6 +564,7 @@ extern "C" fn on_session_start(event: StablePluginEvent, _: *mut std::ffi::c_voi
         "transport": transport,
         "tlsCert": tls_cert,
         "tlsKey": tls_key,
+        "tlsClientCa": tls_client_ca,
     });
 
     match do_start(&params) {
@@ -780,6 +797,7 @@ const SERVER_PARAMETERS: &str = r#"{
     "transport":{"type":"string","enum":["tcp","ws","wss"],"default":"tcp","description":"Start only. Wire transport: tcp keeps newline-delimited JSON, ws sends one JSON frame per WebSocket text frame, wss is ws over TLS and needs tlsCert+tlsKey. Omitted/null defaults to tcp. Authentication, methods and results are identical on all three; only wss encrypts the wire."},
     "tlsCert":{"type":"string","description":"Start only, transport wss. Path to a PEM certificate chain for the listener. Required together with tlsKey and rejected for tcp/ws so TLS files are never silently ignored. Use a CA-issued certificate: rpc_client verifies against system roots, so a self-signed certificate needs a trusted proxy or an explicit client configuration."},
     "tlsKey":{"type":"string","description":"Start only, transport wss. Path to the PEM private key matching tlsCert. Read once at start; the key never appears in results or logs, and a mismatch fails the start instead of serving."},
+    "tlsClientCa":{"type":"string","description":"Start only, transport wss. Path to a PEM CA bundle; when set, every client must present a certificate signed by one of those roots (mTLS) or the handshake fails. There is no \"verify when offered\" mode. Client certificates are verified independently of the token, which still gates the JSON-RPC methods."},
     "bind":{"type":"string","default":"127.0.0.1","description":"Start only. Non-blank TCP bind host; omitted/null defaults to 127.0.0.1. 0.0.0.0 exposes all IPv4 interfaces; TCP has no TLS. Prefer loopback; not an HTTP URL."},
     "port":{"type":"integer","minimum":0,"maximum":65535,"default":9800,"description":"Start only. Listener port, default 9800; 0 requests an OS-assigned port, but returned/stored address currently retains :0 and cannot be used by rpc_client to discover that port. Use a known available port for client calls. null is invalid."},
     "token":{"type":"string","description":"Start only. Secret authentication token; omitted/empty generates one. noToken=true overrides it. Included in status/results and server logs: do not echo, commit or share. Authentication does not encrypt TCP traffic."},
@@ -905,6 +923,10 @@ rpi_plugin_sdk::export_plugin!(|api| {
             (
                 "server-tls-key",
                 "PEM private key matching --server-tls-cert",
+            ),
+            (
+                "server-tls-client-ca",
+                "Require client certificates signed by this PEM CA (mTLS)",
             ),
         ] {
             let _ = register_flag(
