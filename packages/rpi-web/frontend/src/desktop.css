@@ -217,7 +217,9 @@
   align-items: center;
   justify-content: space-between;
   min-height: 43px;
-  margin: -12px 7px 2px;
+  /* Move only the Projects heading down 5px: +5 top, -5 bottom keeps the
+     divider and first project row pinned while closing their gap by 5px. */
+  margin: -7px 7px -3px;
   padding-left: 5px;
   color: var(--muted);
   font-size: 11px;
