@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/jobs` command face (host bridge): `list` / `tail <jobId> [lines]` /
+  `kill <jobId>` mirror the tool actions so an embedding host can cancel a job
+  without a model turn. Session scoping is enforced through the branch — a job
+  id that is not in the calling session's newest snapshot is refused — and a
+  command `kill` settles the row and appends the `cancelled` snapshot through
+  the same `settle` path as the tool
+
 ## [0.1.0](https://github.com/pi-rust/rpi-package/releases/tag/rpi-background-tasks-v0.1.0) - 2026-11-10
 
 ### Added

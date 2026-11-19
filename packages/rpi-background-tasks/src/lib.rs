@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 const SNAPSHOT_ENTRY: &str = "background-tasks";
 
 const BACKGROUND_TOOL: &str = "background";
+/// Slash command name (no leading slash; the host matches either form).
+const JOBS_COMMAND: &str = "jobs";
 const JOBS_TOOL: &str = "jobs";
 
 /// Upper bound for the command text echoed back into the snapshot/summary.
@@ -1034,6 +1036,204 @@ fn jobs_tool(params: &Value) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Command face (`/jobs`) — the host bridge
+// ---------------------------------------------------------------------------
+
+/// The owning session of one job, or `None` when the id is unknown.
+///
+/// The command face resolves the owner from the row instead of from caller
+/// input, so `kill_job`'s own per-session guard stays the single authority.
+fn job_owner(id: u64) -> Option<String> {
+    let table = table().lock().unwrap_or_else(|p| p.into_inner());
+    table
+        .jobs
+        .iter()
+        .find(|job| job.id == id)
+        .map(|job| job.owner.clone())
+}
+
+/// Read the newest `background-tasks` snapshot from the current branch.
+///
+/// Every spawn (and every settle) appends a full-table snapshot for its owning
+/// session, so a job started in **this** session always appears in the newest
+/// entry. This is what lets the command face enforce the same per-session guard
+/// as the tools without a host-context channel: tool arguments get
+/// `__rpi.sessionId` injected by the engine, command envelopes do not — the
+/// plugin resolves identity from the branch instead. `Ok(None)` = this session
+/// has never persisted a snapshot (no jobs started here).
+fn branch_snapshot() -> Result<Option<Value>, String> {
+    let value = call_runtime(
+        RuntimeActionId::GetSessionBranch,
+        json!({ "customTypes": [SNAPSHOT_ENTRY] }),
+    )?;
+    if value.get("filtered").and_then(Value::as_bool) != Some(true) {
+        return Err("GetSessionBranch must confirm filtered: true".into());
+    }
+    let entries = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or("GetSessionBranch returned no valid entries array")?;
+    for entry in entries.iter().rev() {
+        if entry.get("type").and_then(Value::as_str) == Some("custom")
+            && entry.get("customType").and_then(Value::as_str) == Some(SNAPSHOT_ENTRY)
+        {
+            return Ok(Some(entry.get("data").cloned().unwrap_or(Value::Null)));
+        }
+    }
+    Ok(None)
+}
+
+/// The job ids the current session's newest snapshot carries.
+fn branch_job_ids(snapshot: &Value) -> Vec<String> {
+    snapshot["jobs"]
+        .as_array()
+        .map(|jobs| {
+            jobs.iter()
+                .filter_map(|job| job["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The error for a command-face action on a job this session does not own.
+///
+/// Distinguished from "not found" like the tool face's `exists_error`: the job
+/// may well exist, in the session that started it. Also covers the "snapshot
+/// not committed yet" window: a job spawned during a still-active run has its
+/// start snapshot queued by the engine and committed at the turn boundary, so a
+/// host that cancels mid-run must retry once the turn settles.
+fn command_guard_error(id: u64, snapshot_exists: bool) -> String {
+    if snapshot_exists {
+        format!(
+            "job {id} does not belong to this session (or its start snapshot has not been \
+             committed yet); background jobs can only be inspected or stopped by the session \
+             that started them"
+        )
+    } else {
+        format!("no background jobs belong to this session (job {id} not found here)")
+    }
+}
+
+/// Guard one command-face action: the job id must appear in this session's
+/// newest snapshot. Returns the row's owner so the underlying tool-path
+/// function can run unchanged.
+fn guard_command_job(id: u64) -> Result<String, String> {
+    let snapshot = branch_snapshot()?;
+    let ids = snapshot.as_ref().map(branch_job_ids).unwrap_or_default();
+    if ids.iter().any(|job_id| job_id == &id.to_string()) {
+        return job_owner(id).ok_or_else(|| {
+            "job {id} is in this session's snapshot but not in the running table; the process \
+             was reloaded — use list to see what is actually tracked"
+                .replace("{id}", &id.to_string())
+        });
+    }
+    Err(command_guard_error(id, snapshot.is_some()))
+}
+
+/// Route one `/jobs` invocation. Mirrors the `jobs` tool actions against the
+/// calling session; the per-session guard is the snapshot membership check
+/// ([`guard_command_job`]), because command envelopes carry no host context.
+fn jobs_command_run(args: &str) -> Result<String, String> {
+    let args = args.trim();
+    let (verb, rest) = match args.split_once(char::is_whitespace) {
+        Some((verb, rest)) => (verb.to_lowercase(), rest.trim()),
+        None => (args.to_lowercase(), ""),
+    };
+    match verb.as_str() {
+        "" | "list" => {
+            let snapshot = branch_snapshot()?;
+            let jobs = snapshot
+                .as_ref()
+                .and_then(|data| data["jobs"].as_array())
+                .cloned()
+                .unwrap_or_default();
+            let active = jobs
+                .iter()
+                .filter(|job| {
+                    matches!(
+                        job["status"].as_str(),
+                        Some("running") | Some("starting") | None
+                    )
+                })
+                .count();
+            let mut text = if jobs.is_empty() {
+                "No background jobs".to_string()
+            } else {
+                format!("{jobs} job(s), {active} running", jobs = jobs.len())
+            };
+            for job in &jobs {
+                text.push_str(&format!(
+                    "\n#{id} [{status}] {label} — {command}",
+                    id = job["id"].as_str().unwrap_or("?"),
+                    status = job["status"].as_str().unwrap_or("?"),
+                    label = job["label"].as_str().unwrap_or(""),
+                    command = job["command"].as_str().unwrap_or("")
+                ));
+            }
+            Ok(text)
+        }
+        "tail" => {
+            let mut parts = rest.split_whitespace();
+            let id: u64 = parts
+                .next()
+                .ok_or("usage: /jobs tail <jobId> [lines]")?
+                .parse()
+                .map_err(|_| "usage: /jobs tail <jobId> [lines]")?;
+            let lines: usize = match parts.next() {
+                None => DEFAULT_TAIL_LINES,
+                Some(n) => n.parse().map_err(|_| "usage: /jobs tail <jobId> [lines]")?,
+            }
+            .clamp(1, MAX_OUTPUT_LINES);
+            let owner = guard_command_job(id)?;
+            tail_job(id, lines, &owner)
+        }
+        "kill" => {
+            let id: u64 = rest
+                .split_whitespace()
+                .next()
+                .ok_or("usage: /jobs kill <jobId>")?
+                .parse()
+                .map_err(|_| "usage: /jobs kill <jobId>")?;
+            let owner = guard_command_job(id)?;
+            kill_job(id, &owner)
+        }
+        other => Err(format!(
+            "unknown /jobs action `{other}`; use list | tail <jobId> [lines] | kill <jobId>"
+        )),
+    }
+}
+
+/// The host-facing response envelope. The TUI understands
+/// `{kind:"message",text}`; embedding hosts read the same field.
+fn command_message(text: String) -> Value {
+    json!({ "kind": "message", "text": text })
+}
+
+rpi_plugin_sdk::string_handler! {
+fn jobs_command(args_json, out, _user_data) {
+    let envelope: Value = serde_json::from_str(args_json).unwrap_or(Value::Null);
+    let args = envelope
+        .get("args")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let text = match jobs_command_run(args) {
+        Ok(text) => text,
+        Err(error) => format!("⚠️ {error}"),
+    };
+    command_output(out, command_message(text))
+}
+}
+
+fn command_output(out: &mut rpi_plugin_sdk::callbacks::Output<'_>, value: Value) -> i32 {
+    if !out.is_available() {
+        return 1;
+    }
+    out.write(value.to_string());
+    0
+}
+
+// ---------------------------------------------------------------------------
 // ABI driving
 // ---------------------------------------------------------------------------
 
@@ -1336,7 +1536,22 @@ rpi_plugin_sdk::export_plugin!(|api| {
         free_string,
     );
     drop(jobs_schema);
-    jobs_rc
+    if jobs_rc != 0 {
+        return jobs_rc;
+    }
+    // The command face is the host bridge: only the model can call tools, so an
+    // embedding host that surfaces background work in its own UI (a status
+    // panel Stop button) needs a way to cancel without a model turn.
+    if let Some(register_command) = api.register_command {
+        let name = StbStringRef::from_str(JOBS_COMMAND);
+        let description = StbStringRef::from_str(
+            "Inspect or stop background jobs (list | tail <jobId> [lines] | kill <jobId>)",
+        );
+        if register_command(name, description, jobs_command) != 0 {
+            return 1;
+        }
+    }
+    0
 });
 
 #[cfg(test)]
@@ -1361,16 +1576,40 @@ mod tests {
     rpi_plugin_sdk::string_handler! {
     fn host_runtime(action, args, out, _user_data) {
         let args: Value = serde_json::from_str(args).unwrap();
-        assert_eq!(RuntimeActionId::try_from(action).unwrap(), RuntimeActionId::AppendEntry);
-        assert_eq!(args["customType"], SNAPSHOT_ENTRY);
-        let mut host = host().lock().unwrap();
-        if host.append_fails {
-            out.write("mock append failure".into());
-            return 1;
+        match RuntimeActionId::try_from(action).unwrap() {
+            RuntimeActionId::AppendEntry => {
+                assert_eq!(args["customType"], SNAPSHOT_ENTRY);
+                let mut host = host().lock().unwrap();
+                if host.append_fails {
+                    out.write("mock append failure".into());
+                    return 1;
+                }
+                host.appends.push(args["data"].clone());
+                out.write(json!({"entryId": "snapshot"}).to_string());
+                0
+            }
+            RuntimeActionId::GetSessionBranch => {
+                assert_eq!(args["customTypes"][0], SNAPSHOT_ENTRY);
+                let host = host().lock().unwrap();
+                // The branch serves the last committed append as the newest
+                // entry — exactly what `latest_plugin_entry` reads on the host.
+                let entries: Vec<Value> = host
+                    .appends
+                    .last()
+                    .map(|data| {
+                        json!({
+                            "type": "custom",
+                            "customType": SNAPSHOT_ENTRY,
+                            "data": data,
+                        })
+                    })
+                    .into_iter()
+                    .collect();
+                out.write(json!({"filtered": true, "entries": entries}).to_string());
+                0
+            }
+            other => panic!("mock host does not implement action {other:?}"),
         }
-        host.appends.push(args["data"].clone());
-        out.write(json!({"entryId": "snapshot"}).to_string());
-        0
     }
     }
 
@@ -2117,7 +2356,131 @@ mod tests {
         case_shutdown_interrupts_still_running_jobs_and_persists_once();
         case_a_failed_snapshot_append_does_not_kill_the_job();
         case_process_tree_kill_reaches_grandchildren();
+        case_command_kill_persists_the_cancelled_snapshot();
+        case_command_kill_refuses_another_sessions_job();
+        case_command_list_reads_the_branch_snapshot();
+        case_command_verbs_report_malformed_input();
         case_abi_drivers_round_trip_and_reject_bad_params();
+    }
+
+    /// Invoke the `/jobs` command face the way a host does: one JSON envelope,
+    /// one owning output string. Returns the message text.
+    fn run_command(args: &str) -> String {
+        let input = json!({ "command": "/jobs", "args": args }).to_string();
+        let mut output = StbString::empty();
+        let rc = jobs_command(
+            StbStringRef::from_str(&input),
+            &mut output,
+            std::ptr::null_mut(),
+        );
+        assert_eq!(rc, 0, "/jobs handler failed for {args:?}");
+        let text = output.to_string_lossy();
+        free_string(output);
+        let parsed: Value = serde_json::from_str(&text).expect("/jobs returned non-JSON");
+        parsed["text"]
+            .as_str()
+            .expect("/jobs response missing text")
+            .to_string()
+    }
+
+    /// The defect the command face exists to fix: a host cancelled a job (the
+    /// in-memory row settled as `cancelled`), but the persisted snapshot never
+    /// landed, so a supervisor reading the branch kept seeing `running`.
+    fn case_command_kill_persists_the_cancelled_snapshot() {
+        install_host();
+        reset();
+        let started: Value = serde_json::from_str(
+            &background_tool(&with_session(
+                json!({ "command": "sleep 30", "label": "stop-me" }),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let id: u64 = started["details"]["jobId"].as_u64().unwrap();
+        let reply = run_command(&format!("kill {id}"));
+        assert!(reply.contains("Stopped job"), "{reply}");
+        let appends = host().lock().unwrap().appends.clone();
+        let last = appends.last().expect("the cancel must persist a snapshot");
+        assert_eq!(last["jobs"][0]["id"], json!(id.to_string()), "{last}");
+        assert_eq!(last["jobs"][0]["status"], STATUS_CANCELLED, "{last}");
+        // A second kill is an honest no-op, not an error.
+        let again = run_command(&format!("kill {id}"));
+        assert!(again.contains("already finished"), "{again}");
+    }
+
+    /// The command face guard: a job id that is not in the calling session's
+    /// newest snapshot belongs to another session and must be refused — the
+    /// snapshot would otherwise describe a session that does not own its rows.
+    fn case_command_kill_refuses_another_sessions_job() {
+        install_host();
+        reset();
+        let mine: Value = serde_json::from_str(
+            &background_tool(&with_session(
+                json!({ "command": "sleep 30", "label": "mine" }),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let theirs: Value = serde_json::from_str(
+            &background_tool(&with_other_session(
+                json!({ "command": "sleep 30", "label": "theirs" }),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let mine_id = mine["details"]["jobId"].as_u64().unwrap().to_string();
+        let theirs_id = theirs["details"]["jobId"].as_u64().unwrap().to_string();
+        // The mock branch serves the newest append, which is the other
+        // session's snapshot: their job is stoppable, mine is not visible here.
+        let refused = run_command(&format!("kill {mine_id}"));
+        assert!(refused.contains("⚠️"), "{refused}");
+        assert!(
+            refused.contains("does not belong to this session"),
+            "{refused}"
+        );
+        let allowed = run_command(&format!("kill {theirs_id}"));
+        assert!(allowed.contains("Stopped job"), "{allowed}");
+        let appends = host().lock().unwrap().appends.clone();
+        let last = appends.last().unwrap();
+        assert_eq!(last["jobs"][0]["id"], json!(theirs_id), "{last}");
+        assert_eq!(last["jobs"][0]["status"], STATUS_CANCELLED, "{last}");
+    }
+
+    /// `list` mirrors the tool's output against the branch snapshot.
+    fn case_command_list_reads_the_branch_snapshot() {
+        install_host();
+        reset();
+        let empty = run_command("list");
+        assert!(empty.contains("No background jobs"), "{empty}");
+        let started: Value = serde_json::from_str(
+            &background_tool(&with_session(
+                json!({ "command": "sleep 30", "label": "probe" }),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let id = started["details"]["jobId"].as_u64().unwrap().to_string();
+        let text = run_command("list");
+        assert!(text.contains("1 job(s), 1 running"), "{text}");
+        assert!(
+            text.contains(&format!("#{id} [running] probe — sleep 30")),
+            "{text}"
+        );
+    }
+
+    fn case_command_verbs_report_malformed_input() {
+        install_host();
+        reset();
+        for (args, needle) in [
+            ("bogus", "unknown /jobs action"),
+            ("tail", "usage: /jobs tail"),
+            ("kill", "usage: /jobs kill"),
+            ("kill abc", "usage: /jobs kill"),
+        ] {
+            let text = run_command(args);
+            assert!(text.contains("⚠️"), "{args} -> {text}");
+            assert!(text.contains(needle), "{args} -> {text}");
+        }
     }
 
     fn case_background_returns_immediately_and_reports_its_job() {

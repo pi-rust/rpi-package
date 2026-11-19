@@ -114,6 +114,38 @@ session — and is tracked separately. It does not weaken the ownership
 guarantee: one session can never *see or control* another's jobs through the
 tools, only observe stray records in its transcript.
 
+## Host bridge (`/jobs` command face)
+
+Only the model can call tools, so an embedding host that surfaces background
+work in its own UI (a status panel Stop button) needs a way to cancel without a
+model turn. The `/jobs` slash command mirrors the tool actions:
+
+```
+/jobs list                 — this session's jobs (same text as the tool)
+/jobs tail <jobId> [lines] — trailing output of one job
+/jobs kill <jobId>         — stop a job (same settle + persist path as the tool)
+```
+
+Session scoping works without a host-context channel: tool arguments get
+`__rpi.sessionId` injected by the engine, command envelopes do not. Instead the
+command face reads identity from the branch — every spawn appends a full-table
+snapshot to its owning session, so a job started in **this** session always
+appears in the newest `background-tasks` entry of the current branch. A job id
+that is not in that snapshot is refused:
+
+```text
+job 3 does not belong to this session (or its start snapshot has not been
+committed yet); background jobs can only be inspected or stopped by the session
+that started them
+```
+
+The parenthesised case is the one write-visibility window: a snapshot appended
+during an active run is committed by the engine at the turn boundary, so a host
+that cancels a job it started seconds ago must retry once the turn settles.
+A `kill` always settles the row and appends the `cancelled` snapshot through
+the same `settle` path the tool uses — a supervisor reading the branch sees the
+cancellation even when the kill came from the host.
+
 ## Lifecycle
 
 - **Cancelling the tool call** does not kill a started job. `background` returns
