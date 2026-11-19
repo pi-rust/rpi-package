@@ -16,9 +16,14 @@
 //! `register_tool_prompt`) were appended after the older 0.3.x line. On a host
 //! with a shorter vtable the SDK reports those slots as `None` and the plugin
 //! degrades: no `client-abort`, no prompt snippets, and no reload-safe join.
-#![deny(unsafe_code)]
-// The pinned SDK marks raw ABI string reads/frees unsafe; each use below is
-// covered by an explicit allow with a SAFETY comment.
+// Every ABI shape this extension touches goes through an SDK macro
+// (`event_handler!`, `string_handler!`, `execute_handler!`, `call_action!`,
+// `stb_text!`), which keeps the raw-pointer contract inside the SDK. `forbid`
+// rather than `deny` so a future `#[allow(unsafe_code)]` cannot quietly reopen
+// the door. The entrypoint the macro below emits takes a raw `*const PluginApi`
+// by ABI definition, which is why the pointer-deref lint is allowed here; the
+// dereference itself happens inside the SDK's macro.
+#![forbid(unsafe_code)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 pub mod active_tools;
@@ -38,7 +43,7 @@ use lifecycle::{BridgeSnapshot, Controller};
 use pane_replies::{format_document_tag, PanePromptEntry, PanePromptTracker};
 use rpi_plugin_sdk::{
     BeforeAgentStartFn, CommandHandlerFn, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
-    RuntimeActionId, StbString, StbStringRef,
+    RuntimeActionId, StbStringRef,
 };
 use serde_json::{json, Value};
 use std::ffi::c_void;
@@ -78,20 +83,11 @@ fn api(owner: *mut c_void) -> Option<PluginApi> {
     Some(api)
 }
 
-#[allow(unsafe_code)] // SAFETY: see the comments at the unsafe blocks.
 fn call_action(api: PluginApi, action: RuntimeActionId, args: Value) -> Result<Value, String> {
     let encoded = args.to_string();
-    let mut out = StbString::empty();
-    let rc = (api.runtime_action)(
-        u32::from(action),
-        StbStringRef::from_str(&encoded),
-        &mut out,
-        api.user_data,
-    );
-    // SAFETY: `out` was produced by the host through this action call; reading
-    // and freeing it are the ABI ownership contract.
-    let text = unsafe { out.to_string_lossy() };
-    unsafe { (api.free_string)(out) };
+    // `call_action!` owns the allocate / call / read / free sequence, so this
+    // crate never touches a raw ABI pointer for a runtime action.
+    let (rc, text) = rpi_plugin_sdk::call_action!(api, action, &encoded);
     if rc != 0 {
         return Err(if text.trim().is_empty() {
             format!("runtime action {action:?} failed")
@@ -1142,6 +1138,7 @@ rpi_plugin_sdk::export_plugin!(register);
 mod tests {
     use super::*;
     use crate::catalog::Host;
+    use rpi_plugin_sdk::StbString;
 
     #[test]
     fn flattens_message_content_shapes() {
@@ -1274,6 +1271,9 @@ mod tests {
             register_tool_prompt: None,
             register_oauth_provider_cancellable: None,
             register_tool_result: None,
+            register_autocomplete_provider: None,
+            register_command_completions: None,
+            register_argument_suggester: None,
         };
         // No command registrar on this host: registration refuses to load.
         assert_eq!(register(&api), 1);

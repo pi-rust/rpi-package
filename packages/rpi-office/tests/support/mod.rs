@@ -48,13 +48,13 @@ extern "C" fn register_tool(
     destroy: ToolDestroyFn,
     _free: FreeStringFn,
 ) -> i32 {
-    // SAFETY: the host passes a live schema for the duration of the call; copy
-    // everything now because the plugin frees the strings when we return.
+    // SAFETY: this test harness plays the host, so it dereferences the schema
+    // pointer the plugin just handed over. Nothing else here needs `unsafe`:
+    // the strings are copied out with the SDK's own reading macro.
     let schema = unsafe { &*schema };
-    // SAFETY: the host keeps the schema strings alive for this call.
-    let name = unsafe { schema.name.to_string_lossy() };
-    let description = unsafe { schema.description.to_string_lossy() };
-    let parameters: Value = serde_json::from_str(&unsafe { schema.parameters.to_string_lossy() })
+    let name = rpi_plugin_sdk::stb_text!(schema.name);
+    let description = rpi_plugin_sdk::stb_text!(schema.description);
+    let parameters: Value = serde_json::from_str(&rpi_plugin_sdk::stb_text!(schema.parameters))
         .expect("valid tool schema");
     TOOLS.lock().unwrap().push((
         name.clone(),
@@ -204,6 +204,9 @@ pub fn api() -> PluginApi {
         register_tool_prompt: Some(register_tool_prompt),
         register_oauth_provider_cancellable: None,
         register_tool_result: None,
+        register_autocomplete_provider: None,
+        register_command_completions: None,
+        register_argument_suggester: None,
     }
 }
 
