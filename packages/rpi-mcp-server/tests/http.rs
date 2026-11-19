@@ -4,28 +4,46 @@ use rpi_extcore::host::HostSession;
 use rpi_mcp_server::http::{serve_listener, HttpOptions, SessionFactory};
 use rpi_mcp_server::McpServer;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 
 const TOKEN: &str = "test-token";
 
-/// Start a loopback listener backed by a scripted native host.
-async fn start(token: Option<&str>) -> String {
-    let factory: SessionFactory = Arc::new(|| {
-        Box::pin(async {
-            let (host_stdin, _) = tokio::io::duplex(64 * 1024);
+/// Native commands the scripted host received, for lifecycle assertions.
+type CommandLog = Arc<Mutex<Vec<Value>>>;
+
+/// Factory that records what the server writes to the native child.
+fn recording_factory(commands: CommandLog) -> SessionFactory {
+    Arc::new(move || {
+        let commands = Arc::clone(&commands);
+        Box::pin(async move {
+            let (host_stdin, host_commands) = tokio::io::duplex(64 * 1024);
             let (session, _events) = HostSession::test_connection_with_ready(
                 host_stdin,
                 64,
                 json!({
                     "type": "ready",
                     "protocol": "rpi",
-                    "supportedCommands": ["get_state", "get_messages"],
+                    "supportedCommands": ["get_state", "get_messages", "compact"],
                 }),
             );
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = tokio::io::BufReader::new(host_commands).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                        commands.lock().unwrap().push(value);
+                    }
+                }
+            });
             Ok(McpServer::from_session(session))
         })
-    });
+    })
+}
+
+/// Start a loopback listener backed by a scripted native host.
+async fn start(token: Option<&str>) -> String {
+    let factory = recording_factory(Arc::new(Mutex::new(Vec::new())));
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
     let mut options = HttpOptions::new(address.to_string());
@@ -67,6 +85,120 @@ async fn open_session(base: &str) -> String {
         .to_str()
         .unwrap()
         .to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reinitializing_an_existing_session_is_rejected() {
+    let base = start(None).await;
+    let session = open_session(&base).await;
+    let response = client()
+        .post(format!("{base}/mcp"))
+        .header("mcp-session-id", &session)
+        .json(&initialize_body(2))
+        .send()
+        .await
+        .expect("re-initialize");
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cors_preflight_only_allows_known_origins() {
+    let base = start(None).await;
+    let local = client()
+        .request(reqwest::Method::OPTIONS, format!("{base}/mcp"))
+        .header("origin", "http://localhost:5173")
+        .header("access-control-request-method", "POST")
+        .send()
+        .await
+        .expect("preflight");
+    assert_eq!(local.status(), 204);
+    assert_eq!(
+        local
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "http://localhost:5173"
+    );
+    assert!(local
+        .headers()
+        .get("access-control-expose-headers")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("mcp-session-id"));
+
+    let foreign = client()
+        .request(reqwest::Method::OPTIONS, format!("{base}/mcp"))
+        .header("origin", "https://evil.example")
+        .send()
+        .await
+        .expect("preflight");
+    assert_eq!(foreign.status(), 403);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_reaches_the_native_host() {
+    let commands: CommandLog = Arc::new(Mutex::new(Vec::new()));
+    let factory = recording_factory(Arc::clone(&commands));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        let _ = serve_listener(listener, HttpOptions::new(address.to_string()), factory).await;
+    });
+    let base = format!("http://{address}");
+    let session = open_session(&base).await;
+
+    // The prompt never settles: this checks the cancellation path, not a run.
+    let prompt = {
+        let base = base.clone();
+        let session = session.clone();
+        tokio::spawn(async move {
+            let _ = client()
+                .post(format!("{base}/mcp"))
+                .header("mcp-session-id", &session)
+                .json(&json!({
+                    "jsonrpc":"2.0",
+                    "id":2,
+                    "method":"tools/call",
+                    "params":{"name":"rpi_prompt","arguments":{"message":"long run"}},
+                }))
+                .send()
+                .await;
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let status = client()
+        .post(format!("{base}/mcp"))
+        .header("mcp-session-id", &session)
+        .json(&json!({
+            "jsonrpc":"2.0",
+            "method":"notifications/cancelled",
+            "params":{"requestId":2,"reason":"test"},
+        }))
+        .send()
+        .await
+        .expect("cancel")
+        .status();
+    assert_eq!(status, 202);
+
+    let mut aborted = false;
+    for _ in 0..40 {
+        if commands
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|command| command["type"] == "abort")
+        {
+            aborted = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(aborted, "{commands:#?}");
+    prompt.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

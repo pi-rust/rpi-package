@@ -38,18 +38,23 @@ rpi-mcp-bridge --http 0.0.0.0:8080 --token "$TOKEN" --allow-origin https://ide.e
 | `POST /mcp` | JSON-RPC frames. Requests get one JSON response, or an SSE stream when the client sends `Accept: text/event-stream` **and** the body calls `rpi_prompt`. Notifications/responses only → `202`. |
 | `GET /mcp` | `405` with `Allow: POST, DELETE`: this server offers no standalone server stream. |
 | `DELETE /mcp` | Terminates the session (`204`), so later requests get `404`. |
+| `OPTIONS /mcp` | Browser preflight: `204` with CORS headers for an allowed origin, `403` otherwise. |
 | `GET /mcp/ws` | Private WebSocket upgrade. First frame is `{"jsonrpc":"2.0","method":"rpi/session","params":{"sessionId":"…"}}`; reattach with `?session=<id>`. |
 
 Session rules: `initialize` without `Mcp-Session-Id` opens a session and returns
 the id in the response header; every later request must send it back. An unknown
-or deleted session is `404` — re-`initialize` to continue. `MCP-Protocol-Version`
+or deleted session is `404` — re-`initialize` to continue. Re-initializing an
+already-open session is `400` (delete it first) so a second native child is never
+started behind a live session. `MCP-Protocol-Version`
 is validated when present. Sessions are capped (`--max-sessions`, default 8) and
 retired after 15 minutes of inactivity.
 
 Security: loopback binds only need nothing extra; **a non-loopback bind requires
 `--token`** and every request then needs `Authorization: Bearer <token>`.
 Cross-origin requests are rejected unless the `Origin`/`Host` is loopback or
-listed with `--allow-origin`. There is no TLS and no OAuth: put it behind a
+listed with `--allow-origin`; allowed origins also get CORS headers and a
+preflight response so a browser client can call `POST /mcp` directly. Bearer
+tokens are compared in constant time. There is no TLS and no OAuth: put it behind a
 trusted proxy or keep it on loopback.
 
 `/mcp/ws` is a convenience channel for our own clients (one bidirectional socket
@@ -182,7 +187,8 @@ It does not replace a run against a real `rpi` binary.
 
 `tests/http.rs` starts a loopback listener and covers the HTTP session lifecycle
 (initialize/session header, `tools/list`, `202`, `400`, `403`, `404`, `405`,
-`204`, token and protocol-version checks, SSE for `rpi_prompt`) plus the
+`204`, re-initialize rejection, token and protocol-version checks, CORS
+preflight, cancellation reaching the native host, SSE for `rpi_prompt`) plus the
 WebSocket bridge (session hello, initialize, tools/list, reattach, rejection).
 
 Live checks against `rpi 0.24.0` covered `initialize`, `tools/list`,

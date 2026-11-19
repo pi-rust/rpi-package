@@ -270,7 +270,7 @@ impl AppState {
                 .and_then(|value| value.strip_prefix("Bearer "))
                 .map(str::trim)
                 .unwrap_or_default();
-            if presented != token {
+            if !constant_time_eq(presented.as_bytes(), token.as_bytes()) {
                 return Err(HttpError::new(
                     StatusCode::UNAUTHORIZED,
                     "invalid bearer token",
@@ -302,6 +302,18 @@ impl AppState {
             .iter()
             .any(|allowed| authority_host(allowed) == Some(name))
     }
+}
+
+/// Compare secrets without leaking the matching prefix length through timing.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (left, right) in left.iter().zip(right) {
+        difference |= left ^ right;
+    }
+    difference == 0
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -413,18 +425,21 @@ async fn handle_post(State(state): State<AppState>, headers: HeaderMap, body: By
         .any(|frame| frame.get("method").and_then(Value::as_str) == Some("initialize"));
     let session_header = header(&headers, "mcp-session-id").map(str::to_string);
     let session = match session_header {
-        // A known session is reused; re-initializing an existing session would
-        // silently reset native state, so it starts a fresh one instead.
         Some(id) if !initializing => match state.session(&id) {
             Some(session) => session,
             None => {
                 return (StatusCode::NOT_FOUND, "unknown or expired MCP session").into_response()
             }
         },
-        Some(_) => match state.create().await {
-            Ok(session) => session,
-            Err(error) => return error.into_response(),
-        },
+        // Re-initializing an existing session would reset native state while the
+        // old child keeps running, so it is rejected instead of silently forked.
+        Some(id) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("session {id} is already initialized; DELETE it to start over"),
+            )
+                .into_response()
+        }
         None if initializing => match state.create().await {
             Ok(session) => session,
             Err(error) => return error.into_response(),
@@ -470,6 +485,16 @@ async fn handle_post(State(state): State<AppState>, headers: HeaderMap, body: By
         header::HeaderValue::from_str(&session.id)
             .unwrap_or_else(|_| header::HeaderValue::from_static("invalid")),
     );
+    with_cors(&state, &headers, response)
+}
+
+/// Echo CORS headers for an allowed browser origin; native clients ignore them.
+fn with_cors(state: &AppState, headers: &HeaderMap, mut response: Response) -> Response {
+    if let Some(origin) = header(headers, "origin") {
+        if state.origin_allowed(origin) {
+            insert_cors(response.headers_mut(), origin);
+        }
+    }
     response
 }
 
@@ -548,11 +573,52 @@ async fn handle_delete(State(state): State<AppState>, headers: HeaderMap) -> Res
     let Some(id) = header(&headers, "mcp-session-id").map(str::to_string) else {
         return (StatusCode::BAD_REQUEST, "mcp-session-id is required").into_response();
     };
-    if state.remove(&id).await {
+    let response = if state.remove(&id).await {
         StatusCode::NO_CONTENT.into_response()
     } else {
         (StatusCode::NOT_FOUND, "unknown or expired MCP session").into_response()
+    };
+    with_cors(&state, &headers, response)
+}
+
+/// Browser preflight for an explicitly allowed origin.
+async fn handle_options(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(error) = state.check_access(&headers) {
+        return error.into_response();
     }
+    let Some(origin) = header(&headers, "origin") else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    if !state.origin_allowed(origin) {
+        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    insert_cors(response.headers_mut(), origin);
+    response
+}
+
+fn insert_cors(headers: &mut HeaderMap, origin: &str) {
+    if let Ok(value) = header::HeaderValue::from_str(origin) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    }
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        header::HeaderValue::from_static("POST, DELETE, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        header::HeaderValue::from_static(
+            "content-type, accept, authorization, mcp-session-id, mcp-protocol-version",
+        ),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        header::HeaderValue::from_static("mcp-session-id"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        header::HeaderValue::from_static("600"),
+    );
 }
 
 async fn handle_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -595,7 +661,10 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route(
             ENDPOINT,
-            post(handle_post).get(handle_get).delete(handle_delete),
+            post(handle_post)
+                .get(handle_get)
+                .delete(handle_delete)
+                .options(handle_options),
         )
         // Private extension: MCP clients use POST, but our own clients can keep
         // one bidirectional socket on the same native session.
@@ -799,6 +868,24 @@ mod tests {
         assert!(state.origin_allowed("https://ide.example"));
         assert!(state.host_allowed("ide.example"));
         assert!(!state.origin_allowed("https://other.example"));
+    }
+
+    #[test]
+    fn token_comparison_is_length_and_prefix_safe() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"secreT"));
+        assert!(!constant_time_eq(b"secret", b"secre"));
+        assert!(!constant_time_eq(b"", b"secret"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[tokio::test]
+    async fn non_loopback_binds_require_a_token() {
+        let factory: SessionFactory = Arc::new(|| Box::pin(async { Err("unused".to_string()) }));
+        let error = serve_with_factory(HttpOptions::new("0.0.0.0:0"), factory)
+            .await
+            .unwrap_err();
+        assert!(error.contains("without --token"), "{error}");
     }
 
     #[test]
