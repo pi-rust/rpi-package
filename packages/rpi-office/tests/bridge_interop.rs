@@ -205,8 +205,8 @@ async fn hello_then_tool_proxy_round_trip() {
     assert!(capabilities.iter().any(|value| value == "http-health"));
     assert!(capabilities.iter().any(|value| value == "agent-deltas"));
     assert!(
-        !capabilities.iter().any(|value| value == "client-abort"),
-        "this ABI has no run-abort action, so the capability must not be advertised"
+        capabilities.iter().any(|value| value == "client-abort"),
+        "client-abort is backed by RuntimeActionId::Abort (SDK 0.25)"
     );
 
     let reply = harness.call(

@@ -8,17 +8,21 @@
 //! The ABI's `execute` callback does not carry the tool name, so each tool gets
 //! its own trampoline generated from the catalog list below. A test keeps that
 //! list and the committed catalog in sync.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+// The pinned SDK marks raw ABI string reads/frees unsafe. Tool inputs use the
+// SDK's safe execute macro; the remaining test-only raw schema reads are covered
+// by an explicit expectation with a SAFETY comment.
 
 use crate::active_tools::OFFICE_LIST_TOOL;
 use crate::bridge::Pane;
 use crate::catalog::{self, CatalogEntry, Host};
 use crate::protocol::now_ms;
 use crate::server::{Server, ToolOutput};
+use rpi_plugin_sdk::callbacks::OwnedString;
 use rpi_plugin_sdk::handles::ToolHandles;
 use rpi_plugin_sdk::{
-    FreeStringFn, PluginApi, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
-    ToolCancelFn, ToolDestroyFn, ToolExecuteFn, ToolPartialCb, ToolPollFn,
+    PluginApi, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult, ToolCancelFn,
+    ToolDestroyFn, ToolExecuteFn, ToolPartialCb, ToolPollFn,
 };
 use serde_json::{json, Value};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -43,12 +47,12 @@ panel), then try again.";
 macro_rules! office_tools {
     ($($fn_name:ident => $tool:literal),* $(,)?) => {
         $(
-            extern "C" fn $fn_name(
-                tool_call_id: StbStringRef,
-                params: StbString,
-                free: Option<FreeStringFn>,
-            ) -> StepHandle {
-                execute_named($tool, tool_call_id, params, free)
+            // The SDK macro owns the raw ABI input and frees it after the body;
+            // the tool body only sees a safe OwnedString.
+            rpi_plugin_sdk::execute_handler! {
+                fn $fn_name(_tool_call_id, params) {
+                    execute_named($tool, params)
+                }
             }
         )*
 
@@ -225,15 +229,8 @@ pub fn list_documents_text(host: Option<Host>) -> String {
 
 /* ── ABI drive ─────────────────────────────────────────────────────── */
 
-fn execute_named(
-    tool: &str,
-    _tool_call_id: StbStringRef,
-    params: StbString,
-    free: Option<FreeStringFn>,
-) -> StepHandle {
-    let text = params.to_string_lossy();
-    params.free_with(free);
-    let mut args: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+fn execute_named(tool: &str, params: OwnedString) -> StepHandle {
+    let mut args: Value = serde_json::from_str(&params.to_string_lossy()).unwrap_or(Value::Null);
     strip_host_context(&mut args);
     if !args.is_object() {
         args = json!({});
@@ -399,11 +396,63 @@ pub fn register(api: &PluginApi) -> i32 {
         if rc != 0 {
             return rc;
         }
+        register_tool_prompt(api, name);
     }
     0
 }
 
+/// Attach `promptSnippet` / `promptGuidelines` to an already-registered tool.
+///
+/// The metadata comes from the committed catalog, so the model-facing prompt
+/// stays in lockstep with the add-in's op surface. Hosts without the slot (or
+/// with an older `struct_size`) leave it `None` and simply get the schema.
+fn register_tool_prompt(api: &PluginApi, name: &str) {
+    let Some(register_prompt) = api.register_tool_prompt else {
+        return;
+    };
+    let metadata = match catalog::catalog().entry_by_name(name) {
+        Some(entry) => {
+            let mut metadata = serde_json::Map::new();
+            if let Some(snippet) = entry.prompt_snippet.as_deref() {
+                if !snippet.trim().is_empty() {
+                    metadata.insert("promptSnippet".into(), json!(snippet));
+                }
+            }
+            let guidelines: Vec<String> = entry
+                .prompt_guidelines
+                .iter()
+                .filter(|guideline| !guideline.trim().is_empty())
+                .cloned()
+                .collect();
+            if !guidelines.is_empty() {
+                metadata.insert("promptGuidelines".into(), json!(guidelines));
+            }
+            Value::Object(metadata)
+        }
+        None if name == OFFICE_LIST_TOOL => json!({
+            "promptSnippet": "List the Office documents attached to the bridge"
+        }),
+        None => return,
+    };
+    if metadata
+        .as_object()
+        .map(serde_json::Map::is_empty)
+        .unwrap_or(true)
+    {
+        return;
+    }
+    let encoded = metadata.to_string();
+    let rc = register_prompt(
+        StbStringRef::from_str(name),
+        StbStringRef::from_str(&encoded),
+    );
+    if rc != 0 {
+        eprintln!("[rpi-office] tool prompt metadata for {name} returned {rc}");
+    }
+}
+
 #[cfg(test)]
+#[expect(unsafe_code)] // SAFETY: tests own every string they read/free.
 mod tests {
     use super::*;
 
@@ -435,8 +484,10 @@ mod tests {
             .entry_by_op("excel.read_range")
             .expect("entry");
         let schema = catalog_schema(entry);
-        let parameters: Value = serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
-        assert_eq!(schema.name.to_string_lossy(), entry.name);
+        // SAFETY: this test owns the schema strings for the whole test.
+        let parameters: Value =
+            serde_json::from_str(&unsafe { schema.parameters.to_string_lossy() }).unwrap();
+        assert_eq!(unsafe { schema.name.to_string_lossy() }, entry.name);
         assert!(parameters["properties"]["document"].is_object());
         assert!(parameters["properties"]["range"].is_object());
         let required = parameters["required"]
@@ -449,8 +500,10 @@ mod tests {
     #[test]
     fn list_schema_is_a_valid_object() {
         let schema = list_schema();
-        let parameters: Value = serde_json::from_str(&schema.parameters.to_string_lossy()).unwrap();
-        assert_eq!(schema.name.to_string_lossy(), OFFICE_LIST_TOOL);
+        // SAFETY: this test owns the schema strings for the whole test.
+        let parameters: Value =
+            serde_json::from_str(&unsafe { schema.parameters.to_string_lossy() }).unwrap();
+        assert_eq!(unsafe { schema.name.to_string_lossy() }, OFFICE_LIST_TOOL);
         assert_eq!(
             parameters["properties"]["host"]["enum"],
             json!(["excel", "word", "powerpoint"])

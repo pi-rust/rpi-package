@@ -33,6 +33,36 @@ fn registration_and_office_command_flow() {
         .unwrap_or_default();
     assert!(!required.iter().any(|value| value == "document"));
 
+    // ── tool prompt metadata (promptSnippet / promptGuidelines) ─────────
+    let prompts = support::prompts();
+    assert_eq!(
+        prompts.len(),
+        tools.len(),
+        "every registered tool should get prompt metadata"
+    );
+    for (name, _, _, _) in &tools {
+        let (_, metadata) = prompts
+            .iter()
+            .find(|(tool, _)| tool == name)
+            .unwrap_or_else(|| panic!("{name} has no prompt metadata"));
+        assert!(
+            metadata["promptSnippet"].as_str().unwrap_or_default().len() > 3,
+            "{name} has no promptSnippet: {metadata}"
+        );
+    }
+    // At least one Excel op carries model-facing guidelines from the catalog.
+    let (_, read_range_meta) = prompts
+        .iter()
+        .find(|(tool, _)| tool == "office_excel_get_overview")
+        .expect("overview metadata");
+    assert!(read_range_meta["promptSnippet"].is_string());
+
+    // ── plugin lifecycle hooks (reload/shutdown safety) ────────────────
+    assert!(
+        support::lifecycle_hooks().is_some(),
+        "register_plugin_lifecycle must be called so a reload can join the bridge"
+    );
+
     // ── commands, flags, events, prompt transformer ─────────────────────
     let command_names: Vec<String> = support::commands()
         .into_iter()
