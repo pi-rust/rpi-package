@@ -5492,6 +5492,8 @@ export default function App() {
                     if (
                       event.key === "Enter" &&
                       !event.shiftKey &&
+                      // Touch keyboards have no Shift; Enter must insert a newline there.
+                      !window.matchMedia("(pointer: coarse)").matches &&
                       !event.nativeEvent.isComposing &&
                       event.nativeEvent.keyCode !== 229
                     ) {
