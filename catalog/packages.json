@@ -187,6 +187,17 @@
     "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-im-message-v0.1.15/rpi-extension.json"
   },
   {
+    "name": "rpi-office",
+    "version": "0.1.1",
+    "type": "extension",
+    "tool": "office_excel_* + office_word_* + office_powerpoint_* + office_list_documents",
+    "inspiredBy": "pi-for-office",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-office",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-office-v0.1.1/rpi-extension.json"
+  },
+  {
     "name": "rpi-langfuse",
     "version": "0.4.8",
     "type": "extension",
