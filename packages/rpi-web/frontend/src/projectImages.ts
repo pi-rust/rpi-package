@@ -1,6 +1,10 @@
 import { createContext } from "react";
 import type { Project } from "./api";
-import { hiddenProjectComponent, matchProjectRoot } from "./projectPaths";
+import {
+  hiddenProjectComponent,
+  isSiblingProjectPath,
+  matchProjectRoot,
+} from "./projectPaths";
 
 /** Resolve local image paths against the message's configured project, never the Vite root. */
 export const ProjectImageContext = createContext<Project | undefined>(
@@ -29,11 +33,23 @@ export function projectImageSource(source: string, project?: Project): string {
   // selected project or one of its linked worktrees. The matched root travels
   // with the request so the image is read from the checkout that wrote it.
   let root: string | undefined;
-  if (/^[a-z]:[\\/]/i.test(path) || path.startsWith("/")) {
+  if (/^[a-z]:[\\/]/i.test(path)) {
     const match = matchProjectRoot(path.replace(/\\/g, "/"), project);
     if (!match) return "";
     path = match.path;
     root = match.root;
+  } else if (path.startsWith("/")) {
+    // A leading slash is also the normal project-relative form in Markdown
+    // (`/artifacts/x.png`). Prefer a project or linked-worktree root when the
+    // source names one; otherwise keep the legacy root-relative meaning, but
+    // never advertise an unlisted sibling checkout as a project preview.
+    const match = matchProjectRoot(path, project);
+    if (match) {
+      path = match.path;
+      root = match.root;
+    } else if (isSiblingProjectPath(path, project.path)) {
+      return "";
+    }
   } else if (/^[a-z][a-z0-9+.-]*:/i.test(path)) {
     return source; // Keep the caller's existing URL safety transform in charge.
   }

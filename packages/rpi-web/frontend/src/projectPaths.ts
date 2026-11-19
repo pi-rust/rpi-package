@@ -91,6 +91,29 @@ export function matchProjectRoot(
 }
 
 /**
+ * Whether an absolute source sits under the project's parent directory, i.e.
+ * looks like a sibling checkout (`git worktree add ../name`) rather than a
+ * root-relative URL such as `/artifacts/x.png`.
+ *
+ * The browser cannot inspect the filesystem, so this is the only signal
+ * available for rejecting unlisted siblings: matchProjectRoot already accepted
+ * the configured roots, and a leading slash alone is also the normal
+ * project-relative Markdown form. Windows roots use drive matching instead.
+ */
+export function isSiblingProjectPath(
+  source: string,
+  projectPath: string,
+): boolean {
+  const normalized = projectPath.replace(/\\/g, "/");
+  if (!normalized.startsWith("/")) return false;
+  const trimmed = normalized.replace(/\/+$/, "");
+  const slash = trimmed.lastIndexOf("/");
+  // A project at `/` or a top-level directory has no meaningful parent prefix.
+  if (slash <= 0) return false;
+  return source.startsWith(trimmed.slice(0, slash) + "/");
+}
+
+/**
  * Join a project-relative file path onto the server's canonical project root.
  * `Project.path` comes from the backend (`/api/v1/projects`), not from the
  * browser's OS, so a Windows server still yields a Windows path for a client
