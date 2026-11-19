@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-goal"
-version = "0.3.0"
+version = "0.2.5"
 dependencies = [
  "rpi-plugin-sdk 0.3.20",
  "serde",
