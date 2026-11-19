@@ -1089,13 +1089,14 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   await expect(recent.locator(".recent-session-link")).toHaveCount(15);
   const wrap = recent.locator(".recent-wrap");
   const geometry = await wrap.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    const rows = [...element.querySelectorAll(".recent-session-row")];
+    const list = element.querySelector(".recent-session-list") as HTMLElement;
+    const box = list.getBoundingClientRect();
+    const rows = [...list.querySelectorAll(".recent-session-row")];
     const firstFiveFit = rows.slice(0, 5).every((row) => {
       const rect = row.getBoundingClientRect();
       return rect.top >= box.top - 0.5 && rect.bottom <= box.bottom + 0.5;
     });
-    return { firstFiveFit, clientHeight: element.clientHeight, scrollHeight: element.scrollHeight };
+    return { firstFiveFit, clientHeight: list.clientHeight, scrollHeight: list.scrollHeight };
   });
   expect(geometry.firstFiveFit).toBe(true);
   // Exactly five rows occupy the list; the rest scroll inside it.
