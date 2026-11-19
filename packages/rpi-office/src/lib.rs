@@ -17,8 +17,8 @@
 //! with a shorter vtable the SDK reports those slots as `None` and the plugin
 //! degrades: no `client-abort`, no prompt snippets, and no reload-safe join.
 #![deny(unsafe_code)]
-// The pinned SDK marks raw ABI string reads/frees unsafe; each use below is
-// covered by an explicit allow with a SAFETY comment.
+// The pinned SDK marks raw ABI string reads/frees unsafe; the one remaining
+// boundary is covered by an explicit expectation with a SAFETY comment.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 pub mod active_tools;
@@ -78,7 +78,7 @@ fn api(owner: *mut c_void) -> Option<PluginApi> {
     Some(api)
 }
 
-#[allow(unsafe_code)] // SAFETY: see the comments at the unsafe blocks.
+#[expect(unsafe_code)] // SAFETY: see the comments at the unsafe blocks.
 fn call_action(api: PluginApi, action: RuntimeActionId, args: Value) -> Result<Value, String> {
     let encoded = args.to_string();
     let mut out = StbString::empty();

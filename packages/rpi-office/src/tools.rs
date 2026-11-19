@@ -9,18 +9,20 @@
 //! its own trampoline generated from the catalog list below. A test keeps that
 //! list and the committed catalog in sync.
 #![deny(unsafe_code)]
-// The pinned SDK marks raw ABI string reads/frees unsafe; each use below is
-// covered by an explicit allow with a SAFETY comment.
+// The pinned SDK marks raw ABI string reads/frees unsafe. Tool inputs use the
+// SDK's safe execute macro; the remaining test-only raw schema reads are covered
+// by an explicit expectation with a SAFETY comment.
 
 use crate::active_tools::OFFICE_LIST_TOOL;
 use crate::bridge::Pane;
 use crate::catalog::{self, CatalogEntry, Host};
 use crate::protocol::now_ms;
 use crate::server::{Server, ToolOutput};
+use rpi_plugin_sdk::callbacks::OwnedString;
 use rpi_plugin_sdk::handles::ToolHandles;
 use rpi_plugin_sdk::{
-    FreeStringFn, PluginApi, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult,
-    ToolCancelFn, ToolDestroyFn, ToolExecuteFn, ToolPartialCb, ToolPollFn,
+    PluginApi, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult, ToolCancelFn,
+    ToolDestroyFn, ToolExecuteFn, ToolPartialCb, ToolPollFn,
 };
 use serde_json::{json, Value};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -45,12 +47,12 @@ panel), then try again.";
 macro_rules! office_tools {
     ($($fn_name:ident => $tool:literal),* $(,)?) => {
         $(
-            extern "C" fn $fn_name(
-                tool_call_id: StbStringRef,
-                params: StbString,
-                free: Option<FreeStringFn>,
-            ) -> StepHandle {
-                execute_named($tool, tool_call_id, params, free)
+            // The SDK macro owns the raw ABI input and frees it after the body;
+            // the tool body only sees a safe OwnedString.
+            rpi_plugin_sdk::execute_handler! {
+                fn $fn_name(_tool_call_id, params) {
+                    execute_named($tool, params)
+                }
             }
         )*
 
@@ -227,18 +229,8 @@ pub fn list_documents_text(host: Option<Host>) -> String {
 
 /* ── ABI drive ─────────────────────────────────────────────────────── */
 
-#[allow(unsafe_code)] // SAFETY: see the comments at the unsafe blocks.
-fn execute_named(
-    tool: &str,
-    _tool_call_id: StbStringRef,
-    params: StbString,
-    free: Option<FreeStringFn>,
-) -> StepHandle {
-    // SAFETY: the host transfers ownership of `params` and supplies the
-    // matching deallocator for this call.
-    let text = unsafe { params.to_string_lossy() };
-    unsafe { params.free_with(free) };
-    let mut args: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+fn execute_named(tool: &str, params: OwnedString) -> StepHandle {
+    let mut args: Value = serde_json::from_str(&params.to_string_lossy()).unwrap_or(Value::Null);
     strip_host_context(&mut args);
     if !args.is_object() {
         args = json!({});
@@ -460,7 +452,7 @@ fn register_tool_prompt(api: &PluginApi, name: &str) {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)] // SAFETY: tests own every string they read/free.
+#[expect(unsafe_code)] // SAFETY: tests own every string they read/free.
 mod tests {
     use super::*;
 
