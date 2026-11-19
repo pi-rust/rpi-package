@@ -18,11 +18,11 @@
 | --- | --- | --- | --- |
 | H1 | P0 宿主缺 abort action | **不成立**：宿主 `v0.24.0` 起已有 `RuntimeActionId::Abort = 27` | 升 pin 即可（见 H1） |
 | H2 | P0 宿主缺 unload 契约 | **降级**：宿主已有 `PluginKeepalive` + `register_plugin_lifecycle` 钩子，reload 路径确实会调用 | 插件侧实现 + 宿主补文档（见 H2） |
-| H3 | P1 缺草稿文本 | **仍缺**：`EditorChange` payload 在 `0.25.0` 仍是 `{chars,empty}` | 保持 |
+| H3 | P1 缺草稿文本 | **已由宿主实现（未发版）**：`GetEditorText = 32` + 补全 provider 槽位（pi-rust#366） | 改本扩展 |
 | H4 | P1 需升 SDK | **不成立**：`register_tool_prompt` 已随发布 SDK 0.25.0 提供 | 升 pin 即可 |
 | H5 | P2 缺工具作用域 | **仍缺**：`0.25.0` 无 `SetToolEnabled`，`SetActiveTools(5)` 仍是全局 | 保持 |
 | H6 | P2 `__rpi` 缺工具名 | **仍缺**：`__rpi` 仍只有 `cwd`/`sessionId` | 保持 |
-| H7 | P3 缺命令参数补全 | **仍缺**：`register_command` 仍无 completion 槽位 | 保持 |
+| H7 | P3 缺命令参数补全 | **已由宿主实现（未发版）**：`register_command_completions`（pi-rust#366） | 改本扩展 |
 | H8 | P3 缺前台标识/服务注册表 | **仍缺**：无 `RPI_SURFACE`，无回环服务注册表 | 保持 |
 | — | — | **新增**：宿主已有 4 项桥未使用的能力（`N1`–`N4`） | 见文末 |
 
@@ -41,8 +41,19 @@
 | `register_tool_prompt` 槽位 | 无 | 无 | 有 | 有 |
 | `register_tool_with_wake` 槽位 | 无 | 有 | 有 | 有 |
 | `EditorChange` 带文本 | 无 | 无 | 无 | 无 |
+| `GetEditorText = 32` | 无 | 无 | 无 | 有（pi-rust#366） |
+| `register_autocomplete_provider` 槽位 | 无 | 无 | 无 | 有（pi-rust#366） |
+| `register_command_completions` 槽位 | 无 | 无 | 无 | 有（pi-rust#366） |
 
 证据位置（宿主 `main`）：`crates/rpi-plugin-sdk/src/lib.rs` 的 `RuntimeActionId`/`EventTag`/`PluginApi`；`crates/rpi-extensions/src/actions.rs` 的 action 分发；`crates/rpi-extensions/src/loader.rs` 的 `PluginKeepalive`/`begin_shutdown`；`crates/rpi-cli/src/session.rs` 的 reload 路径（`old_session.begin_shutdown()`）。
+
+## 第三轮：宿主侧 H3/H7 已实现（未发版）
+
+`pi-rust` PR #366（合并提交 `bd08af3`）把上游 Pi 的 `ui.getEditorText()`、`ui.addAutocompleteProvider()`、`RegisteredCommand.getArgumentCompletions` 对应能力合入宿主 `main`：`RuntimeActionId::GetEditorText = 32`、`PluginApi::register_autocomplete_provider`、`PluginApi::register_command_completions`，全部追加在 vtable 尾部、ABI 版本不变。同一 PR 还补了 `register_plugin_lifecycle` 的文档（H2 的答案）。
+
+因此剩余的真实宿主缺口收缩到 **3 条**：H6（`__rpi.toolName`）、H5（单工具作用域）、H8（surface / 回环服务注册表）。H1/H2/H3/H4/H7 都已变成「升 pin + 改本扩展」的工作。
+
+> 阻塞点：`rpi-plugin-sdk` 尚未发布含新槽位的版本（0.3.20 / 0.8.3 / 0.25.0 都没有 `GetEditorText` 与两个 completion 槽位），本扩展要动 H3/H7 得先等一次 SDK 发布。
 
 ## 已验证的现状
 
@@ -59,11 +70,11 @@
 | --- | --- | --- | --- | --- |
 | H1 | P0 | 中止当前 run 的 runtime action | 升级即可（`Abort = 27`） | 窗格 Stop 无效；`client-abort` 无法宣告 |
 | H2 | P0 | 插件卸载/重载契约（unload 钩子 + DLL 保活） | 插件实现（+宿主文档） | 桥开着时 reload 可能 dlclose 后线程仍在跑 |
-| H3 | P1 | 输入框草稿文本（或补全 provider 槽位） | 缺 | 无法实现 `#文档` 补全 |
+| H3 | P1 | 输入框草稿文本（或补全 provider 槽位） | 宿主已实现（未发版） | 无法实现 `#文档` 补全 |
 | H4 | P1 | `register_tool_prompt` | 升级即可 | 33 个工具只有 description，无 snippet/guidelines |
 | H5 | P2 | per-tool / per-plugin 活动工具作用域 | 缺 | `SetActiveTools` 全局替换，与 plan-mode 等有竞态 |
 | H6 | P2 | `__rpi.toolName` | 缺 | 目录驱动插件必须为每个工具生成一个 trampoline |
-| H7 | P3 | 命令参数补全回调 | 缺 | `/office con<Tab>` 无法补全 |
+| H7 | P3 | 命令参数补全回调 | 宿主已实现（未发版） | `/office con<Tab>` 无法补全 |
 | H8 | P3 | 回环服务注册表 / 前台标识 | 缺 | rpi-web 无法发现桥；`/health` 的 owner 无法区分界面 |
 
 ---
@@ -121,18 +132,21 @@ Abort = 27,   args: {}
 
 ---
 
-## H3（P1）草稿文本 / 补全 provider —— 仍缺
+## H3（P1）草稿文本 / 补全 provider —— 宿主已实现，等发版
 
-**现状（0.25.0 复核未变）**：`EventTag::EditorChange` 的 payload 仍是 `{"chars":N,"empty":bool}`，SDK 注释明确说明**不携带草稿文本**（订阅方只关心“正在输入”）。插入侧已有 `RuntimeActionId::SetEditorText = 19`（`mode: append|replace`），够用。
+**现状（第三轮，pi-rust#366 已合入 main）**：宿主按上游 Pi 的形状补齐了两条通道。`EventTag::EditorChange` 仍然**不携带**草稿文本，这是有意的，不是缺口。
+
+- `RuntimeActionId::GetEditorText = 32`：`{}` → `{"text":"...","cursor":N}`（`cursor` 为字节偏移）。永不报错：无编辑器的宿主返回空草稿。TUI 每个 tick 发布一次草稿（含仅移动光标），所以「调用时现在的草稿」是准确的。
+- `PluginApi::register_autocomplete_provider`：handler 收到 `{"text","cursor","line","linePrefix"}`，返回 `{"items":[{"text","label"?,"description"?,"insertSpace"?,"isDirectory"?}]}`；返回 `1`、空列表或非法 JSON 都表示「没有意见」，宿主继续问下一个插件并最终回落内置 file/slash provider。插件 provider 排在内置**之前**，单次最多 50 条；`out` 由注册时传入的 `plugin_free_string` 回收。
+- 插入侧仍是 `RuntimeActionId::SetEditorText = 19`（`mode: append|replace`）。
+
+两个槽位都追加在 vtable 尾部、ABI 版本不变；旧宿主留 `None` 时插件跳过即可。
+
+**阻塞点**：`rpi-plugin-sdk` 还没发布含这些槽位的版本（0.3.20 / 0.8.3 / 0.25.0 都没有 `GetEditorText` 和两个 completion 槽位），本扩展现在拿不到。
 
 **后果**：上游的 `#` 文档选择器（多文档时还能按 id 区分同文档多窗口）无法实现。本扩展的降级：改用 `office_list_documents` 工具或 `document` 参数，并在 README 标注。
 
-**建议形状**（优先第 1 种，不动 ABI 版本）：
-
-1. 扩展 `EditorChange` payload：`{"chars":N,"empty":false,"tail":"…#Bud"}`，`tail` 为有界尾部（建议 ≤4 KiB，UTF-8 边界对齐），可省略；旧插件不受影响。
-2. 新增 `register_autocomplete_provider`（追加在 vtable 尾部）：宿主把 `{prefix, caret, linePrefix}` 交给插件，插件返回 `{items:[{label,description,insertText}]}`；插件数量上限与超时由宿主规定。
-
-**补完后本扩展的改动**：新增 `src/mentions.rs`，把预案列表（pane 的 host/name/id/focused/windows）作为候选；选中后 `SetEditorText{mode:"replace"}` 写入 `#<name>` 或 `#<id>`。
+**本扩展要做的改动**（SDK 发版后）：新增 `src/mentions.rs`，注册一个 autocomplete provider，把 pane 列表（host/name/id/focused/windows）作为候选；只看 `linePrefix` 里最后一个 `#` 之后的片段，插入文本为 `#<name>` 或 `#<id>` 且带 `insertSpace:false`。需要按需读草稿时用 `GetEditorText`，不必再考虑给 `EditorChange` 加尾串的方案。
 
 **验收**：输入 `#` 时列出已连文档并可用 Tab/Enter 选中；无窗格时不弹候选；补全不修改既有输入文本。
 
@@ -174,11 +188,11 @@ Abort = 27,   args: {}
 
 ---
 
-## H7（P3）命令参数补全 —— 仍缺
+## H7（P3）命令参数补全 —— 宿主已实现，等发版
 
-**现状（0.25.0 复核未变）**：`register_command(name, description, handler)` 没有 Pi 的 `getArgumentCompletions` 等价物。handler 能返回 `{kind:"selector"}` 交互，但 `Tab` 阶段的参数补全无从触发。本扩展的 `/office` 只能返回帮助/状态文本。
+**现状（第三轮，pi-rust#366 已合入 main）**：新增 `PluginApi::register_command_completions(name, handler, user_data)`，把 Pi 的 `getArgumentCompletions` 挂到**已注册**的命令上。handler 收到 `{"argumentPrefix":"con"}`（命令名与首个空格之后的全部文本），返回 `{"items":[{"text","description"?}]}`；返回 `0` 成功、`1` 该命令不属于本插件、`-1` 不在注册期或旧宿主无该槽位。
 
-**建议形状**：`register_command` 追加可选 completion 回调槽位（或让 handler 支持 `{"kind":"completions", ...}` 的显式协议）。
+宿主一次 Tab 的询问顺序是：命令参数 → 草稿 provider → 内置 provider。本扩展仍需先 `register_command` 再挂补全，同样等 SDK 发版。
 
 **验收**：`/office <prefix>` 时列出 `status/connect/close/restart/help`，选中后补齐参数。
 
@@ -236,10 +250,10 @@ Abort = 27,   args: {}
 | --- | --- | --- |
 | 窗格 Stop 不中止 run（`client-abort` 不宣告） | H1 | 宿主已有 `Abort=27`，升 pin 即可 |
 | reload 与常驻桥线程的兼容性未证明 | H2 | 宿主机制已就位，本扩展未注册钩子 |
-| 无 `#文档` 补全 | H3 | 宿主仍缺草稿文本 |
+| 无 `#文档` 补全 | H3 | 宿主已实现（未发版） |
 | 工具无 snippet/guidelines | H4 | 发布 SDK 0.25.0 已有槽位，升 pin 即可 |
 | 33 个 trampoline（因 `execute` 无工具名） | H6 | 宿主仍缺 `__rpi.toolName` |
-| `/office` 无参数补全 | H7 | 宿主仍缺 completion 槽位 |
+| `/office` 无参数补全 | H7 | 宿主已实现（未发版） |
 | `/health` 的 `owner.client` 恒为 `cli`；无文档面板 | H8 | 宿主仍缺 surface/注册表 |
 | 审批弹窗留在终端而不是窗格 | N1 | 宿主已有 `RelayUiDialog`，未接 |
 | 窗格只有一个 Stop | N2 | 宿主已有 `StopRound`，未接 |
@@ -251,7 +265,8 @@ Abort = 27,   args: {}
 3. **H1 + N2 中止语义**：Stop / 答完停双按钮，`client-abort` 宣告，`steer`/`followUp` 回灌。
 4. **H4 提示词元数据**：32 个 op 的 snippet/guidelines。
 5. **N1 审批中继**：`RelayUiDialog` + 新 `ui_prompt` 帧。
-6. **仍等宿主**：H6（`__rpi.toolName`，收益最大）、H3（草稿 tail）、H5（单工具作用域）、H7（命令补全）、H8（surface / 服务注册表）。
+6. **第 2 步之后即可做（宿主已实现，等 SDK 发版）**：H3（`#文档` 补全）、H7（`/office con<Tab>`）。
+7. **仍等宿主**：H6（`__rpi.toolName`，收益最大）、H5（单工具作用域）、H8（surface / 服务注册表）。
 
 ## 文档缺口（非宿主代码）
 
