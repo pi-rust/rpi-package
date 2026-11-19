@@ -469,6 +469,10 @@ async fn handle_server_status(state: &Arc<AppState>) -> Result<Value, String> {
 
 static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Subscriptions one connection may hold. Each retains a broadcast receiver and
+/// a session handle, so an uncapped client could grow both without bound.
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 32;
+
 // ── Connection handler ────────────────────────────────────────────────────────
 
 /// Handle a single client connection.
@@ -600,6 +604,22 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
 
                     match session {
                         Some(session) => {
+                            if sub_receivers.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                                let response = json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32002,
+                                        "message": format!(
+                                            "subscription limit reached ({MAX_SUBSCRIPTIONS_PER_CONNECTION})"
+                                        ),
+                                    },
+                                });
+                                if conn.send(response).await.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
                             let sub_id = NEXT_SUB_ID.fetch_add(1, Ordering::Relaxed);
                             let rx = {
                                 let sl = session.lock().await;
@@ -631,6 +651,37 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
                                 break;
                             }
                         }
+                    }
+                } else if method == "unsubscribe" {
+                    let id = msg.get("id").cloned();
+                    let requested = msg
+                        .get("params")
+                        .and_then(|params| params.get("subscriptionId"))
+                        .and_then(Value::as_u64);
+                    let removed = requested
+                        .map(|sub_id| {
+                            sub_receivers.remove(&sub_id).is_some()
+                                | sub_sessions.remove(&sub_id).is_some()
+                        })
+                        .unwrap_or(false);
+                    let response = if removed {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {"unsubscribed": true},
+                        })
+                    } else {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32000,
+                                "message": "unknown subscriptionId",
+                            },
+                        })
+                    };
+                    if conn.send(response).await.is_err() {
+                        break;
                     }
                 } else {
                     // Normal request
@@ -921,6 +972,99 @@ mod transport_tests {
         let _ = socket.close(None).await;
         handle.stop().await.expect("stop");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/bin/cat` stands in for the native child: it echoes stdin, so a session
+    /// can be started without an `rpi` binary.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subscriptions_can_be_released_and_are_capped() {
+        use crate::transport::TcpTransport;
+
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(TcpTransport::new()),
+            "tcp",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("/bin/cat"),
+            Vec::new(),
+        )
+        .await
+        .expect("start server");
+        let mut client = TcpTransport::new()
+            .connect(&format!("127.0.0.1:{port}"))
+            .await
+            .expect("connect");
+
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"start_session"}))
+            .await
+            .expect("send");
+        let started = response_for(&mut client, 1).await;
+        let session_id = started["result"]["sessionId"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+
+        client
+            .send(serde_json::json!({
+                "jsonrpc":"2.0","id":2,"method":"subscribe",
+                "params":{"sessionId":session_id},
+            }))
+            .await
+            .expect("send");
+        let subscribed = response_for(&mut client, 2).await;
+        let subscription_id = subscribed["result"]["subscriptionId"]
+            .as_u64()
+            .expect("subscription id");
+
+        client
+            .send(serde_json::json!({
+                "jsonrpc":"2.0","id":3,"method":"unsubscribe",
+                "params":{"subscriptionId":subscription_id},
+            }))
+            .await
+            .expect("send");
+        let released = response_for(&mut client, 3).await;
+        assert_eq!(released["result"]["unsubscribed"], true);
+
+        // Releasing the same id twice is an error, not a silent success.
+        client
+            .send(serde_json::json!({
+                "jsonrpc":"2.0","id":4,"method":"unsubscribe",
+                "params":{"subscriptionId":subscription_id},
+            }))
+            .await
+            .expect("send");
+        let repeated = response_for(&mut client, 4).await;
+        assert_eq!(repeated["error"]["code"], -32000, "{repeated}");
+
+        // The next subscription beyond the cap is refused; earlier ones stand.
+        let mut refused = 0;
+        for index in 0..=MAX_SUBSCRIPTIONS_PER_CONNECTION {
+            let id = 100 + index as u64;
+            client
+                .send(serde_json::json!({
+                    "jsonrpc":"2.0","id":id,"method":"subscribe",
+                    "params":{"sessionId":session_id},
+                }))
+                .await
+                .expect("send");
+            let reply = response_for(&mut client, id).await;
+            if reply["error"]["code"] == -32002 {
+                refused += 1;
+            }
+            assert!(
+                reply.get("result").is_some() || reply["error"]["code"] == -32002,
+                "{reply}"
+            );
+        }
+        assert_eq!(refused, 1, "exactly the over-cap subscription is refused");
+
+        client.close().await.expect("close");
+        handle.stop().await.expect("stop");
     }
 
     #[tokio::test]

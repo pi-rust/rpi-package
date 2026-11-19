@@ -298,7 +298,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `stop_session` | 必须 `sessionId`；从会话表移除并 kill/wait 子进程 |
 | `list_sessions` | 忽略 params；列出会话快照，不是历史记录 |
 | `server_status` | 忽略 params；服务状态（含 `transport`），包含明文 token，必须保密 |
-| `subscribe` | 必须有效 `sessionId`；订阅当前连接上的后续事件，工具收集还需 `subscribe:true` |
+| `subscribe` | 必须有效 `sessionId`；订阅当前连接上的后续事件（每个连接最多 32 个订阅，超出返回 `-32002`） |
+| `unsubscribe` | 必须 `params.subscriptionId`；释放本地订阅并返回 `{unsubscribed:true}`，未知 id 返回 `-32000` |
 | `ping` | 忽略 params；返回 pong，不保证模型或子进程健康 |
 
 ## Schema 回归检查
