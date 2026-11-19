@@ -350,6 +350,19 @@ impl Connection for TcpConnection {
 
 // ── WebSocket 实现 ────────────────────────────────────────────────────────────
 
+/// TLS 需要一个 `ServerName`：IP 字面量必须走 `IpAddress`，否则合法地址会被
+/// 当成非法 DNS 名拒掉。
+fn tls_server_name(
+    host: &str,
+) -> Result<tokio_rustls::rustls::pki_types::ServerName<'static>, String> {
+    use std::net::IpAddr;
+    use tokio_rustls::rustls::pki_types::ServerName;
+    if let Ok(address) = host.parse::<IpAddr>() {
+        return Ok(ServerName::IpAddress(address.into()));
+    }
+    ServerName::try_from(host.to_string()).map_err(|_| format!("invalid TLS server name: {host}"))
+}
+
 /// 服务端/客户端共用的字节流：明文 TCP 或已完成 TLS 握手的流。
 pub trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
@@ -421,8 +434,7 @@ impl WebSocketTransport {
             .with_root_certificates(roots)
             .with_no_client_auth();
         let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-        let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.to_string())
-            .map_err(|_| format!("invalid TLS server name: {host}"))?;
+        let server_name = tls_server_name(host)?;
         let stream = connector
             .connect(server_name, tcp)
             .await
@@ -635,6 +647,28 @@ mod websocket_tests {
             secure.url("wss://example.test/rpi"),
             "wss://example.test/rpi"
         );
+    }
+
+    #[test]
+    fn tls_server_names_accept_dns_and_ip_literals() {
+        use tokio_rustls::rustls::pki_types::ServerName;
+        assert!(matches!(
+            tls_server_name("localhost"),
+            Ok(ServerName::DnsName(_))
+        ));
+        assert!(matches!(
+            tls_server_name("ide.example"),
+            Ok(ServerName::DnsName(_))
+        ));
+        assert!(matches!(
+            tls_server_name("127.0.0.1"),
+            Ok(ServerName::IpAddress(_))
+        ));
+        assert!(matches!(
+            tls_server_name("::1"),
+            Ok(ServerName::IpAddress(_))
+        ));
+        assert!(tls_server_name("not a host").is_err());
     }
 
     #[tokio::test]

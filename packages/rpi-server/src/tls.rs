@@ -45,7 +45,9 @@ pub fn load_server_config(cert: &Path, key: &Path) -> Result<Arc<ServerConfig>, 
         .with_no_client_auth()
         .with_single_cert(chain, private_key)
         .map(Arc::new)
-        .map_err(|_| "TLS certificate and key do not form a valid pair".to_string())
+        // A certificate/key mismatch is only detected at the handshake, so the
+        // message here stays factual about what was rejected.
+        .map_err(|_| "TLS certificate chain or key is not usable for serving".to_string())
 }
 
 #[cfg(test)]
