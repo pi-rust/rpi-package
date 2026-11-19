@@ -140,12 +140,68 @@ test("file resolver contains paths, decodes once and validates line ranges", () 
   expect(browserLink("javascript:alert(1)")).toBeNull();
 });
 
+test("linked worktree paths preview from their own checkout", () => {
+  // Agents create sibling worktrees (`git worktree add ../name`) and write
+  // there; the absolute path names the checkout, so the link must carry it.
+  const worktrees = { ...project, worktrees: ["/workspace/links-wt"] };
+  expect(
+    projectFileLink("/workspace/links-wt/src/a.ts:7", worktrees),
+  ).toEqual({
+    root: "/workspace/links-wt",
+    path: "src/a.ts",
+    line: 7,
+    endLine: 7,
+  });
+  // A relative reference has no checkout signal: it stays project-relative.
+  expect(projectFileLink("src/a.ts", worktrees)?.root).toBeUndefined();
+  // A sibling that only shares a prefix is a different directory.
+  expect(
+    projectFileLink("/workspace/links-wt-other/src/a.ts", worktrees),
+  ).toBeNull();
+  // The project root keeps winning for its own files.
+  expect(projectFileLink("/workspace/links/src/a.ts", worktrees)?.root).toBe(
+    undefined,
+  );
+  // A worktree nested inside the checkout is attributed to the worktree.
+  const nested = projectFileLink("/workspace/links/wt/src/a.ts", {
+    ...project,
+    worktrees: ["/workspace/links/wt"],
+  });
+  expect({ root: nested?.root, path: nested?.path }).toEqual({
+    root: "/workspace/links/wt",
+    path: "src/a.ts",
+  });
+  // The browsable boundary applies inside a worktree too.
+  for (const source of [
+    "/workspace/links-wt/.rpi/sessions/a.jsonl",
+    "/workspace/links-wt/../secret.ts",
+    "/workspace/links-wt/target/debug/build.rs",
+  ])
+    expect(projectFileLink(source, worktrees), source).toBeNull();
+  // Windows roots carry worktrees the same way, case-folded for the drive.
+  const windows = { ...win, worktrees: ["D:\\Work\\wt"] };
+  expect(projectFileLink("d:/work/wt/src/a.ts:4", windows)?.root).toBe(
+    "D:\\Work\\wt",
+  );
+
+  expect(
+    projectImageSource("/workspace/links-wt/assets/shot.png", worktrees),
+  ).toBe(
+    `/api/v1/projects/${project.id}/image?path=assets%2Fshot.png&root=%2Fworkspace%2Flinks-wt`,
+  );
+  expect(
+    projectImageSource("/workspace/links-wt-other/assets/shot.png", worktrees),
+  ).toBe("");
+  expect(projectImageSource("/workspace/other/shot.png", worktrees)).toBe("");
+});
+
 const markdown = [
   "[Source](src/main.ts#L2-L3) [中文](src/%E4%B8%AD%E6%96%87%20%E6%96%87%E4%BB%B6.ts:2)",
   "`src/main.ts:2` and `identifier`",
   "`.rpi/uploads/notes.md` [Hidden](.rpi/uploads/notes.md)",
   "https://example.com/docs [Mail](mailto:dev@example.com)",
   "[Unsafe](javascript:alert%281%29) [OS](file:///workspace/links/main.ts) [Escape](../secret.ts)",
+  "[Worktree](/workspace/links-wt/src/a.ts:3)",
   "```ts\nsrc/main.ts:2\n```",
   "```\nsrc/plain.ts\n```",
   "[![Linked photo](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=)](https://example.com/photo)",
@@ -156,8 +212,13 @@ async function host(
   text = markdown,
   root = project.path,
   language = "en",
+  worktrees: string[] = [],
 ) {
-  const reads: Array<{ project: string; path: string }> = [];
+  const reads: Array<{
+    project: string;
+    path: string;
+    root: string | null;
+  }> = [];
   const imageReads: Array<{
     project: string;
     path: string;
@@ -211,7 +272,7 @@ async function host(
     if (path === "/api/v1/projects")
       return json({
         projects: [
-          { ...project, path: root },
+          { ...project, path: root, worktrees },
           {
             id: "other-project",
             name: "Other project",
@@ -247,6 +308,7 @@ async function host(
       reads.push({
         project: path.split("/")[4],
         path: url.searchParams.get("path")!,
+        root: url.searchParams.get("root"),
       });
       if (hold)
         await new Promise<void>((resolve) => {
@@ -374,7 +436,9 @@ for (const width of [1280, 390])
     page,
   }) => {
     await page.setViewportSize({ width, height: 844 });
-    const mock = await host(page);
+    const mock = await host(page, markdown, project.path, "en", [
+      "/workspace/links-wt",
+    ]);
     await page.addInitScript(() => {
       Object.defineProperty(navigator.clipboard, "writeText", {
         value: async (text: string) => {
@@ -427,7 +491,9 @@ for (const width of [1280, 390])
     await page.screenshot({
       path: test.info().outputPath(`file-preview-${width}.png`),
     });
-    expect(mock.reads).toEqual([{ project: project.id, path: "src/main.ts" }]);
+    expect(mock.reads).toEqual([
+      { project: project.id, path: "src/main.ts", root: null },
+    ]);
     await expect(preview(page).locator(".file-preview-path")).toContainText(
       "/workspace/links/src/main.ts",
     );
@@ -466,6 +532,21 @@ for (const width of [1280, 390])
     await page.keyboard.press("Escape");
     await expect(preview(page)).toHaveCount(0);
     await expect(source).toBeFocused();
+    // A file an agent wrote in a sibling worktree previews from that checkout,
+    // not from the like-named path in the project root.
+    await page.getByRole("button", { name: "Worktree", exact: true }).click();
+    await expect(preview(page).locator(".file-preview-code")).toBeVisible();
+    expect(mock.reads.at(-1)).toEqual({
+      project: project.id,
+      path: "src/a.ts",
+      root: "/workspace/links-wt",
+    });
+    await expect(preview(page).locator(".file-preview-path")).toContainText(
+      "/workspace/links-wt/src/a.ts",
+    );
+    await expect(preview(page).locator('[data-line="3"]')).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(preview(page)).toHaveCount(0);
     await page.getByRole("button", { name: "中文", exact: true }).click();
     await expect(preview(page).locator(".file-preview-code")).toBeVisible();
     expect(mock.reads.at(-1)?.path).toBe("src/中文 文件.ts");
@@ -501,7 +582,9 @@ test("Windows authored URLs survive Markdown URL safety and preview without OS n
   await expect(preview(page).locator('[data-highlighted="true"]')).toHaveCount(
     1,
   );
-  expect(mock.reads).toEqual([{ project: project.id, path: "src/a.ts" }]);
+  expect(mock.reads).toEqual([
+    { project: project.id, path: "src/a.ts", root: null },
+  ]);
   // The mock host runs on Linux, but the server root is a Windows path: the
   // copied value must still use native separators.
   await page.addInitScript(() => {
@@ -844,7 +927,7 @@ test("unsupported binary links retain the text error route, never an image", asy
   await expect(preview(page).locator("img")).toHaveCount(0);
   expect(mock.imageReads).toEqual([]);
   expect(mock.reads).toEqual([
-    { project: project.id, path: "assets/manual.pdf" },
+    { project: project.id, path: "assets/manual.pdf", root: null },
   ]);
   expect(mock.unexpected).toEqual([]);
 });

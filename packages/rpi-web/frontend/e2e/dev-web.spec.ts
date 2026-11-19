@@ -5157,6 +5157,103 @@ test("a boundary snapshot buffers live assistant events while restoring a native
   );
 });
 
+test("ask_user input opens during a held boundary snapshot and preserves its draft", async ({ page }) => {
+  await mockHost(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let snapshots = 0;
+  await page.route(snapshotRoute, async (route) => {
+    if (++snapshots === 1) return route.fallback();
+    await held;
+    return route.fulfill({ json: {
+      sessionId, status: "running", messages: [], lastSeq: 6, events: [], pendingDialogs: [],
+    } });
+  });
+  const events = [
+    { type: "agent_start" },
+    { type: "ui_dialog_request", requestId: "ask-during-refresh", ui: {
+      kind: "input", question: "请提供当前页面的完整网址", allowFreeform: true, timeout: 90,
+    } },
+  ];
+  await page.route(`**/api/v1/sessions/${sessionId}/events?*`, (route) =>
+    route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n\n" + events.map((event, index) =>
+      `id: ${index + 5}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+    ).join("") }),
+  );
+  await page.goto("/");
+  await expect.poll(() => snapshots).toBe(2);
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "请提供当前页面的完整网址" })).toBeVisible();
+  await dialog.getByRole("textbox").fill("https://example.com/products");
+  const refreshed = page.waitForResponse((response) => snapshotRoute(new URL(response.url())));
+  release();
+  await (await refreshed).finished();
+  await expect(dialog.getByRole("textbox")).toHaveValue("https://example.com/products");
+});
+
+for (const nextQuestion of [false, true]) {
+  test(`ask_user can answer during a held snapshot without replaying ${nextQuestion ? "the previous question" : "a closed question"}`, async ({ page }) => {
+    await mockHost(page);
+    let releaseSnapshot!: () => void;
+    let answered!: () => void;
+    const held = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    const answerReceived = new Promise<void>((resolve) => { answered = resolve; });
+    const first = { type: "ui_dialog_request", requestId: "first-held", ui: {
+      kind: "input", question: "First held question", allowFreeform: true,
+    } };
+    const controls = [
+      { seq: 6, event: first },
+      { seq: 7, event: { type: "ui_dialog_closed", requestId: "first-held" } },
+      ...(nextQuestion ? [{ seq: 8, event: { ...first, requestId: "second-held", ui: { ...first.ui, question: "Second held question" } } }] : []),
+    ];
+    let snapshots = 0;
+    await page.route(snapshotRoute, async (route) => {
+      if (++snapshots === 1) return route.fallback();
+      await held;
+      return route.fulfill({ json: {
+        sessionId, status: "awaiting_input", messages: [], lastSeq: nextQuestion ? 8 : 7,
+        pendingDialogs: [first], events: controls,
+      } });
+    });
+    let streams = 0;
+    const frames = (events: { seq: number; event: { type: string } }[]) => events.map(({ seq, event }) =>
+      `id: ${seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+    ).join("");
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async (route) => {
+      if (++streams === 1) return route.fulfill({ contentType: "text/event-stream", body: "retry: 10\n\n" + frames([
+        { seq: 5, event: { type: "agent_start" } }, controls[0],
+      ]) });
+      await answerReceived;
+      return route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n\n" + frames(controls.slice(1)) });
+    });
+    let submitted: unknown;
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "ui_dialog_response") return route.fallback();
+      submitted = body;
+      answered();
+      return route.fulfill({ json: response({ accepted: true }, body.type) });
+    });
+    await page.goto("/");
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("heading", { name: "First held question" })).toBeVisible();
+    await dialog.getByRole("textbox").fill("https://example.com/products");
+    await dialog.getByRole("button", { name: "Submit", exact: true }).click();
+    await expect.poll(() => submitted).toMatchObject({ requestId: "first-held", answer: {
+      values: ["https://example.com/products"], text: "https://example.com/products",
+    } });
+    if (nextQuestion) {
+      await expect(dialog.getByRole("heading", { name: "Second held question" })).toBeVisible();
+      await dialog.getByRole("textbox").fill("Second answer draft");
+    } else await expect(dialog).toHaveCount(0);
+    const refreshed = page.waitForResponse((res) => snapshotRoute(new URL(res.url())));
+    releaseSnapshot();
+    await (await refreshed).finished();
+    if (nextQuestion) await expect(dialog.getByRole("textbox")).toHaveValue("Second answer draft");
+    else await expect(dialog).toHaveCount(0);
+  });
+}
+
 test("run boundary refresh preserves loaded earlier messages and their pagination cursor", async ({
   page,
 }) => {
