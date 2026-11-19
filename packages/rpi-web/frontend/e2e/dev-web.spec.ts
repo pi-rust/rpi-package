@@ -1080,7 +1080,7 @@ test("fork is available from a session context menu", async ({ page }) => {
 test("recent chats open as a floating window without moving the project tree", async ({
   page,
 }) => {
-  await mockHost(page, { additionalSessions: 10 });
+  await mockHost(page, { additionalSessions: 40 });
   await page.goto("/");
   const tree = page.locator(".project-tree");
   const treeBox = async () =>
@@ -1094,13 +1094,31 @@ test("recent chats open as a floating window without moving the project tree", a
   await expect(recent).toBeVisible();
   // Cross-project recency is the one thing the tree cannot express; the window
   // lists every non-archived chat and tags each row with its project.
-  await expect(recent.locator(".slim-recent-option")).toHaveCount(11);
+  await expect(recent.locator(".slim-recent-option")).toHaveCount(41);
   await expect(recent.locator(".slim-recent-project").first()).toHaveText(
     "rpi-package",
   );
   // The floating window costs no permanent vertical space: the tree keeps its
   // full height and position while it is open.
   expect(await treeBox()).toEqual(before);
+  // The list must scroll inside the capped window: the flex child needs
+  // min-height: 0 or the rows push past the hidden overflow with no scrollbar.
+  const scroll = await recent
+    .locator(".slim-recent-list")
+    .evaluate((element) => ({
+      client: element.clientHeight,
+      scroll: element.scrollHeight,
+      top: element.scrollTop,
+    }));
+  expect(scroll.scroll).toBeGreaterThan(scroll.client);
+  await recent
+    .locator(".slim-recent-list")
+    .evaluate((element) => element.scrollTo({ top: 200 }));
+  await expect
+    .poll(() =>
+      recent.locator(".slim-recent-list").evaluate((element) => element.scrollTop),
+    )
+    .toBeGreaterThan(0);
   await page.keyboard.press("Escape");
   await expect(recent).toHaveCount(0);
 });
@@ -8036,8 +8054,13 @@ test.describe("attachment cards", () => {
     const fileRequests: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
+      // The app's own bundle assets (the brand logo now ships under /assets)
+      // are not attachment fetches; the copy path must fetch no document.
+      const ownAsset =
+        url.pathname === "/favicon.svg" ||
+        url.pathname.startsWith("/assets/");
       if (
-        (request.resourceType() === "image" && url.pathname !== "/rpi-logo.png") ||
+        (request.resourceType() === "image" && !ownAsset) ||
         /\.docx$/i.test(url.pathname) ||
         url.pathname.includes("/uploads/") ||
         /\/projects\/[^/]+\/file$/.test(url.pathname)
