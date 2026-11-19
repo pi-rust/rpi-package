@@ -30,7 +30,6 @@ import {
 import { api, type Project, type SessionSummary } from "./api";
 import { translate, type Language } from "./i18n";
 import { SessionAnswerBadge, SessionIssueBadge } from "./SessionIssueBadge";
-import { RecentChats } from "./RecentChats";
 import { SessionSearch } from "./SessionSearch";
 import { createPortal } from "react-dom";
 type FolderNode = {
@@ -742,6 +741,73 @@ function shortTime(time: number, language: Language) {
   }).format(time);
 }
 
+function useAutoHideScrollbar() {
+  const host = useRef<HTMLDivElement>(null);
+  const thumb = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const list = host.current;
+    const bar = thumb.current;
+    if (!list || !bar) return;
+    let timer = 0;
+    let dragging = false;
+    let startY = 0;
+    let startTop = 0;
+    const show = () => {
+      list.classList.add("scrolling");
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => list.classList.remove("scrolling"), 350);
+    };
+    const sync = () => {
+      const max = list.scrollHeight - list.clientHeight;
+      const track = list.clientHeight;
+      if (max <= 0) {
+        bar.style.opacity = "0";
+        return;
+      }
+      const size = Math.max(24, (track / list.scrollHeight) * track);
+      bar.style.height = `${Math.min(track, size)}px`;
+      bar.style.transform = `translateY(${(list.scrollTop / max) * (track - size)}px)`;
+    };
+    const onScroll = () => { show(); sync(); };
+    const leave = () => {
+      if (!dragging) window.clearTimeout(timer), list.classList.remove("scrolling");
+    };
+    const down = (event: PointerEvent) => {
+      if (!(event.target as Element).closest(".scroll-thumb")) return;
+      dragging = true;
+      startY = event.clientY;
+      startTop = list.scrollTop;
+      bar.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    };
+    const move = (event: PointerEvent) => {
+      if (!dragging) return;
+      const max = list.scrollHeight - list.clientHeight;
+      const track = list.clientHeight;
+      const size = bar.getBoundingClientRect().height;
+      list.scrollTop = startTop + ((event.clientY - startY) / Math.max(1, track - size)) * max;
+    };
+    const up = () => { dragging = false; show(); };
+    list.addEventListener("scroll", onScroll, { passive: true });
+    list.addEventListener("pointerleave", leave);
+    bar.addEventListener("pointerdown", down);
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up);
+    sync();
+    window.addEventListener("resize", sync);
+    return () => {
+      window.clearTimeout(timer);
+      list.removeEventListener("scroll", onScroll);
+      list.removeEventListener("pointerleave", leave);
+      bar.removeEventListener("pointerdown", down);
+      bar.removeEventListener("pointermove", move);
+      bar.removeEventListener("pointerup", up);
+      window.removeEventListener("resize", sync);
+    };
+  }, []);
+  return { host, thumb };
+}
+
 interface SidebarProps {
   projects: Project[];
   sessions: SessionSummary[];
@@ -807,9 +873,9 @@ export function ProjectSidebar({
   });
   const [menu, setMenu] = useState("");
   const [pending, setPending] = useState("");
-  const [recentOpen, setRecentOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const recentScroll = useAutoHideScrollbar();
   useEffect(() => {
     try {
       localStorage.setItem(
@@ -850,7 +916,6 @@ export function ProjectSidebar({
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       if (event.key.toLowerCase() !== "k") return;
       event.preventDefault();
-      setRecentOpen(false);
       setSearchOpen(true);
     };
     window.addEventListener("keydown", keydown);
@@ -887,7 +952,8 @@ export function ProjectSidebar({
       setPending("");
     }
   }
-  function sessionRow(session: SessionSummary) {
+  function sessionRow(session: SessionSummary, options: { recent?: boolean } = {}) {
+    const recent = options.recent === true;
     const title = session.title || (zh ? "新会话" : "New session");
     const relationKind =
       session.relation === "clone"
@@ -899,10 +965,10 @@ export function ProjectSidebar({
     const running = ["running", "starting"].includes(session.status);
     return (
       <div
-        className={`project-session ${session.sessionId === sessionId ? "active" : ""}`}
+        className={`project-session${recent ? "" : session.sessionId === sessionId ? " active" : ""}`}
         key={session.sessionId}
         onContextMenu={(event) => {
-          if (!canManage && !canFork) return;
+          if (recent || (!canManage && !canFork)) return;
           event.preventDefault();
           setMenuPosition({
             top: Math.min(event.clientY, window.innerHeight - 150),
@@ -915,7 +981,7 @@ export function ProjectSidebar({
           className="project-session-link"
           onClick={() => onSelectSession(session)}
           title={title}
-          aria-current={session.sessionId === sessionId ? "page" : undefined}
+          aria-current={!recent && session.sessionId === sessionId ? "page" : undefined}
         >
           {awaitingAnswer ? (
             <span className="session-answer-dot" title={translate(language, "sessionAwaitingAnswer")} aria-hidden="true" />
@@ -924,7 +990,7 @@ export function ProjectSidebar({
               className="session-running-dot"
               title={zh ? "运行中" : "Running"}
             />
-          ) : session.pinned ? (
+          ) : !recent && session.pinned ? (
             <Pin size={12} />
           ) : (
             <span className="session-indent-dot" />
@@ -959,7 +1025,7 @@ export function ProjectSidebar({
               {translate(language, "draft")}
             </span>
           )}
-          {(session.tags ?? []).length > 0 && (
+          {!recent && (session.tags ?? []).length > 0 && (
             <span className="session-tags" aria-label={translate(language, "tags")}>
               {(session.tags ?? []).slice(0, 2).map((tag) => (
                 <span className="session-tag" key={tag}>{tag}</span>
@@ -973,7 +1039,7 @@ export function ProjectSidebar({
             {shortTime(session.updatedAt, language)}
           </time>
         </button>
-        {(canManage || canFork) && (
+        {!recent && (canManage || canFork) && (
           <div className="session-menu">
             <button
               className="icon-button session-menu-trigger"
@@ -1143,7 +1209,6 @@ export function ProjectSidebar({
           aria-controls={searchOpen ? "sidebar-chat-search" : undefined}
           title={translate(language, "searchChats")}
           onClick={() => {
-            setRecentOpen(false);
             setSearchOpen((open) => !open);
           }}
         >
@@ -1153,20 +1218,28 @@ export function ProjectSidebar({
         </button>
         <button
           type="button"
-          className={`sidebar-new-chat slim-recent-trigger${recentOpen ? " active" : ""}`}
+          className="sidebar-new-chat recent-chats-heading"
           aria-label={translate(language, "recentChats")}
-          aria-expanded={recentOpen}
-          aria-controls={recentOpen ? "sidebar-recent-chats" : undefined}
           title={translate(language, "recentChats")}
-          onClick={() => {
-            setSearchOpen(false);
-            setRecentOpen((open) => !open);
-          }}
         >
           <Clock3 size={16} />
           <span>{translate(language, "recentChats")}</span>
         </button>
       </div>
+      {!archived && (
+        <section className="recent-sessions" aria-label={translate(language, "recentChats")}>
+          <div className="recent-wrap" ref={recentScroll.host}>
+          <div className="recent-session-list">
+            {sessions
+              .filter((session) => !session.archived && !session.deleting)
+              .sort((a, b) => b.updatedAt - a.updatedAt)
+              .slice(0, 15)
+              .map((session) => sessionRow(session, { recent: true }))}
+          </div>
+          <div className="scroll-thumb" ref={recentScroll.thumb} aria-hidden="true" />
+          </div>
+        </section>
+      )}
       <div className="project-section-heading">
         <span>
           {archived ? (zh ? "已归档" : "Archived") : zh ? "项目" : "Projects"}
@@ -1368,16 +1441,6 @@ export function ProjectSidebar({
           );
         })}
       </nav>
-      {recentOpen && (
-        <RecentChats
-          language={language}
-          sessions={sessions}
-          projects={projects}
-          activeSessionId={sessionId}
-          onSelect={jumpToSession}
-          onClose={() => setRecentOpen(false)}
-        />
-      )}
       {searchOpen && (
         <SessionSearch
           language={language}

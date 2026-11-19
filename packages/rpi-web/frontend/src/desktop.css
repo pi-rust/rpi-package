@@ -94,6 +94,10 @@
   box-shadow: none;
   width: 100%;
 }
+/* All three primary rows share one geometry; only New session is bold. */
+.sidebar-primary-actions > .sidebar-new-chat:first-child { font-weight: 500; }
+.sidebar-primary-actions .sidebar-new-chat { min-height: 30px; }
+.sidebar-new-chat.recent-chats-heading { color: var(--muted); }
 .sidebar-primary-actions kbd {
   margin-left: auto;
   flex-shrink: 0;
@@ -237,47 +241,19 @@
   padding: 0 1px 7px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
-.recent-sessions-heading {
-  min-height: 35px;
-  margin-top: 4px;
-  margin-bottom: 0;
-}
-.recent-sessions-heading > span,
-.recent-sessions-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.recent-sessions-heading > span > svg {
-  color: var(--muted);
-}
-.recent-sessions-toggle {
-  min-height: 25px;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 10px;
-}
-.recent-sessions-toggle:hover,
-.recent-sessions-toggle:focus-visible {
-  background: var(--hover);
-  color: var(--text);
-}
-/* Only the expanded (ten-row) list is capped and scrolls on its own. The
-   default five rows stay fully visible exactly as before; without the cap,
-   expanding them consumes the only flexible sibling (.project-tree) and the
-   project/session rows become unreachable (#289). */
-.recent-sessions:has(.recent-sessions-toggle[aria-expanded="true"])
-  .recent-session-list {
-  max-height: min(24dvh, 200px);
+.recent-session-list {
+  max-height: 160px;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
+  scrollbar-width: none;
+  scroll-behavior: auto;
 }
-.recent-session-list .recent-session {
+.recent-session-list::-webkit-scrollbar,
+.project-tree::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.recent-session-list .project-session {
   margin-left: 3px;
   margin-right: 3px;
 }
@@ -293,13 +269,9 @@
 }
 .project-group,
 .project-group-header,
-.project-session,
-.recent-session {
+.project-session {
   min-width: 0;
   max-width: 100%;
-}
-.project-session,
-.recent-session {
   overflow: hidden;
 }
 .project-group {
@@ -366,8 +338,7 @@
 .project-menu-trigger[aria-expanded="true"] {
   opacity: 1;
 }
-.project-session,
-.recent-session {
+.project-session {
   position: relative;
   display: flex;
   align-items: center;
@@ -377,11 +348,7 @@
   padding-right: 2px;
 }
 .project-session:hover,
-.recent-session:hover {
-  background: var(--hover);
-}
-.project-session.active,
-.recent-session.active {
+.project-session.active {
   background: var(--hover);
 }
 .project-session-link {
@@ -412,13 +379,6 @@
   flex: 1;
   text-align: left;
 }
-.recent-session-title::before {
-  content: attr(data-title);
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .project-session-link > time {
   flex: 0 0 auto;
   white-space: nowrap;
@@ -432,7 +392,7 @@
   color: var(--yellow-text, var(--muted));
   font-size: 9px;
 }
-.recent-project-tag {
+.recent-project-tag-unused {
   flex: 0 1 auto;
   max-width: 90px;
   overflow: hidden;
@@ -1982,3 +1942,19 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Custom scrollbar thumb: hidden at rest, visible while scrolling. */
+.recent-wrap { position: relative; }
+.scroll-thumb {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 2px;
+  min-height: 24px;
+  border-radius: 2px;
+  background: var(--line);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .4s cubic-bezier(.4, 0, .2, 1);
+}
+.recent-wrap.scrolling .scroll-thumb { opacity: 1; pointer-events: auto; }
