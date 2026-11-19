@@ -139,14 +139,16 @@ Neither guard, nor the token budget, is a dollar-cost cap.
   blocked, limited, waiting, shutdown, and offline time do not count.
 - Budget exhaustion stops automatic work without injecting a wrap-up turn and
   without scheduling another model request. Raise the budget and `/goal resume`.
-- **Token budgets need a host that reports usage.** Usage comes from the
-  `AfterProviderResponse` provider hook (payload fields `usage.totalTokens` /
-  `cacheRead` / `cacheWrite`). When the host never delivers that event, a token
-  budget cannot be enforced; after the first goal-owned turn the goal says so once
-  (`/goal status` shows `usage: not reported by this host`) and the turn, time, and
-  continuation limits remain the effective caps. Verified absent on rpi 0.24.0 and
-  0.25.0, where the host wires the response observer internally instead of
-  dispatching it to plugins.
+- **Usage comes from the terminal assistant message.** `MessageEnd` carries the
+  serialized `AgentMessage`, so an assistant message reports `usage.totalTokens`
+  (or the `input + output + cacheRead + cacheWrite` components), `stopReason`, and
+  `errorMessage`. `AfterProviderResponse` is an optional second carrier on hosts
+  that dispatch it; the same response is never counted twice. If a host delivers
+  neither, the goal says so once (`/goal status` shows `usage: not reported by
+  this host`) instead of pretending a token budget is enforced, and the turn, time,
+  and continuation limits remain the effective caps. On rpi 0.24.0/0.25.0 the
+  provider-hook observer is not dispatched to plugins, so `MessageEnd` is the
+  carrier that actually counts.
 
 ## Write visibility
 

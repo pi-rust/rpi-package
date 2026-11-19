@@ -395,6 +395,25 @@ pub fn fire(tag: EventTag) {
     }
 }
 
+/// Fire a message event carrying a JSON payload (the host sends the serialized
+/// `AgentMessage` for `MessageStart`/`MessageUpdate`/`MessageEnd`).
+pub fn fire_message(tag: EventTag, payload: &str) {
+    let handlers: Vec<EventHandlerFn> = HANDLERS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|(registered, _)| *registered == tag)
+        .map(|(_, handler)| *handler)
+        .collect();
+    let owned = StbString::from_string(payload.to_string());
+    for handler in handlers {
+        let event = StablePluginEvent::message(tag, owned);
+        handler(event, std::ptr::null_mut());
+    }
+    // The host frees one payload allocation after the fan-out.
+    owned.free_with(Some(rpi_plugin_sdk::callbacks::free_string));
+}
+
 pub fn fire_settled() {
     fire(EventTag::AgentSettled);
 }

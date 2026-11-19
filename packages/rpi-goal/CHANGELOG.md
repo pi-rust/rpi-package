@@ -33,9 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- provider responses are read with the host's camelCase field names
+- token usage and interruption classification now come from the assistant message
+  carried by `MessageEnd` (the host does not dispatch `AfterProviderResponse` to
+  plugins), and are read with the host's camelCase field names
   (`usage.totalTokens`, `stopReason`, `errorMessage`); the previous snake_case
-  lookups silently counted zero tokens and never classified an interruption
+  lookups counted zero tokens and never classified an interruption
+- the no-progress fingerprint hashes the assistant's visible text instead of the
+  serialized message, so identical replies are detected even though timestamps and
+  token counts differ
 - a state write that the host defers until the current turn ends stays visible:
   the newest local intent is served until a branch read confirms its revision, so
   `/goal status` and the terminal tools no longer report "no active goal" mid-run

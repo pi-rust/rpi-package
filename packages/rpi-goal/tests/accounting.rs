@@ -19,7 +19,9 @@ fn seed_active(title: &str, extra: serde_json::Value) -> String {
         "automaticTurns": 0,
         "noProgressCount": 0,
         "tokensUsed": 0,
-        "baselineTokens": 0
+        "baselineTokens": 0,
+        "usageSeen": 0,
+        "usageUnavailable": false
     });
     for (key, value) in extra.as_object().unwrap() {
         active[key] = value.clone();
@@ -117,7 +119,7 @@ fn a_tool_free_automatic_turn_feeds_the_no_progress_counter() {
     support::wait_for("SendMessage", 1, std::time::Duration::from_secs(3));
     rpi_goal::events::account_turn_end("same answer", false);
     let first = support::active_goal().unwrap();
-    assert_eq!(first["noProgressCount"], json!(0));
+    assert_eq!(first["noProgressCount"], json!(1));
     assert_eq!(first["automaticTurns"], json!(1));
     assert!(first["lastOutputFingerprint"].is_string());
     support::release_sends();
@@ -164,4 +166,98 @@ fn an_observed_usage_report_clears_the_unavailable_flag() {
     assert_eq!(goal["usageSeen"], json!(1));
     assert_eq!(goal["usageUnavailable"], json!(false));
     assert_eq!(goal["tokensUsed"], json!(250));
+}
+
+fn assistant_message(text: &str, tokens: i64, stop: &str, timestamp: i64) -> String {
+    json!({
+        "kind": "assistant",
+        "role": "assistant",
+        "content": [{"type": "text", "text": text}],
+        "usage": {"input": tokens, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": tokens},
+        "stopReason": stop,
+        "timestamp": timestamp
+    })
+    .to_string()
+}
+
+#[test]
+fn message_end_carries_usage_and_classification() {
+    let _guard = support::serial();
+    seed_active("Message end accounting", json!({}));
+
+    support::fire_message(
+        rpi_plugin_sdk::EventTag::MessageEnd,
+        &assistant_message("all good", 120, "stop", 1),
+    );
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["tokensUsed"], json!(120), "{goal}");
+    assert_eq!(goal["usageSeen"], json!(1));
+
+    // The same response must not be counted again when the optional
+    // AfterProviderResponse observer also reports it.
+    rpi_goal::events::account_response(&json!({
+        "kind": "assistant",
+        "usage": {"totalTokens": 120},
+        "stopReason": "stop",
+        "timestamp": 1
+    }));
+    assert_eq!(support::active_goal().unwrap()["tokensUsed"], json!(120));
+
+    // A quota error in the same carrier stops the goal.
+    support::fire_message(
+        rpi_plugin_sdk::EventTag::MessageEnd,
+        &json!({
+            "kind": "assistant",
+            "role": "assistant",
+            "content": [],
+            "usage": {"totalTokens": 5},
+            "stopReason": "error",
+            "errorMessage": "429 exceeded your current quota",
+            "timestamp": 2
+        })
+        .to_string(),
+    );
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["status"], json!("usage_limited"), "{goal}");
+}
+
+#[test]
+fn user_messages_are_not_accounted() {
+    let _guard = support::serial();
+    seed_active("Ignore user messages", json!({}));
+    support::fire_message(
+        rpi_plugin_sdk::EventTag::MessageEnd,
+        &json!({"kind": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 9})
+            .to_string(),
+    );
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["tokensUsed"], json!(0));
+    assert_eq!(goal["usageSeen"], json!(0));
+}
+
+#[test]
+fn identical_tool_free_output_pauses_an_automatic_loop() {
+    let _guard = support::serial();
+    let _settings = support::SettingsDir::with_limits(Some(25), Some(2));
+    seed_active("Stuck loop", json!({}));
+
+    support::block_sends(true);
+    support::fire_settled();
+    support::wait_for("SendMessage", 1, std::time::Duration::from_secs(3));
+
+    // Two tool-free automatic turns whose visible text is identical, while the
+    // timestamps and token counts differ.
+    for (tokens, timestamp) in [(10, 1), (11, 2)] {
+        support::fire_message(
+            rpi_plugin_sdk::EventTag::MessageEnd,
+            &assistant_message("same answer", tokens, "stop", timestamp),
+        );
+        support::fire_turn_end();
+    }
+
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["noProgressCount"], json!(2), "{goal}");
+    assert_eq!(goal["status"], json!("paused"), "{goal}");
+    assert_eq!(goal["safetyPauseCause"], json!("no_progress"));
+    support::release_sends();
 }

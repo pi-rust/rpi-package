@@ -32,6 +32,11 @@ pub fn is_run_active() -> bool {
 /// no-progress fingerprint. Cleared on every `turn_end`.
 static LAST_TEXT: Mutex<Option<String>> = Mutex::new(None);
 
+/// Assistant-message timestamp of the last accounted response. `MessageEnd` and
+/// `AfterProviderResponse` can describe the same response on hosts that deliver
+/// both; accounting it twice would double a token budget.
+static LAST_ACCOUNTED: Mutex<Option<i64>> = Mutex::new(None);
+
 fn last_text() -> &'static Mutex<Option<String>> {
     &LAST_TEXT
 }
@@ -126,6 +131,18 @@ pub fn account_turn_end(output: &str, used_tool: bool) {
 pub fn account_response(value: &serde_json::Value) {
     if crate::is_subagent() {
         return;
+    }
+    if !policy::is_assistant(value) {
+        return;
+    }
+    // One response, one accounting pass: `MessageEnd` is the reliable carrier on
+    // every host, `AfterProviderResponse` is an optional duplicate.
+    if let Some(timestamp) = value.get("timestamp").and_then(|v| v.as_i64()) {
+        let mut last = LAST_ACCOUNTED.lock().unwrap_or_else(|p| p.into_inner());
+        if *last == Some(timestamp) {
+            return;
+        }
+        *last = Some(timestamp);
     }
     let tokens = policy::response_tokens(value);
     let class = policy::classify_response(value);
@@ -338,8 +355,18 @@ fn on_tool_call(_event, data) {
 rpi_plugin_sdk::event_handler! {
 fn on_message_end(event, data) {
     let _scope = runtime::enter(runtime::callback(data));
-    if let Some(text) = event.message_text() {
-        *last_text().lock().unwrap_or_else(|p| p.into_inner()) = Some(text);
+    let Some(raw) = event.message_text() else {
+        return 0;
+    };
+    // The payload is the serialized `AgentMessage` (tagged by `kind`), not plain
+    // text: assistant messages carry usage and the stop reason here.
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        *last_text().lock().unwrap_or_else(|p| p.into_inner()) = Some(raw);
+        return 0;
+    };
+    if policy::is_assistant(&value) {
+        account_response(&value);
+        *last_text().lock().unwrap_or_else(|p| p.into_inner()) = Some(policy::assistant_text(&value));
     }
     0
 }

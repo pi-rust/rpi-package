@@ -30,6 +30,41 @@ fn field<'a>(
     value.get(camel).or_else(|| value.get(snake))
 }
 
+/// Visible text of a serialized assistant message: the `text` blocks only. Tool
+/// calls, usage and timestamps are excluded so the no-progress fingerprint tracks
+/// what the model actually said.
+pub fn assistant_text(value: &serde_json::Value) -> String {
+    let mut text = String::new();
+    if let Some(blocks) = value.get("content").and_then(|v| v.as_array()) {
+        for block in blocks {
+            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                if let Some(part) = block.get("text").and_then(|v| v.as_str()) {
+                    text.push_str(part);
+                }
+            }
+        }
+    }
+    text
+}
+
+/// Is this payload an assistant message? `MessageEnd` carries the tagged
+/// `AgentMessage` (`kind`), while `AfterProviderResponse` carries a bare
+/// `AssistantMessage` (`role`); `MessageEnd` also delivers user and tool
+/// messages, which must not be accounted.
+pub fn is_assistant(value: &serde_json::Value) -> bool {
+    let kind = value.get("kind").and_then(|v| v.as_str());
+    let role = value.get("role").and_then(|v| v.as_str());
+    match (kind, role) {
+        (Some("assistant"), _) | (_, Some("assistant")) => true,
+        (None, None) => {
+            value.get("usage").is_some()
+                || value.get("stopReason").is_some()
+                || value.get("stop_reason").is_some()
+        }
+        _ => false,
+    }
+}
+
 /// Error text of an assistant response, if any.
 pub fn error_message(value: &serde_json::Value) -> &str {
     field(value, "errorMessage", "error_message")
@@ -193,10 +228,12 @@ pub fn record_tool_free_output(goal: &mut Goal, output: &str) -> bool {
     let fingerprint = fingerprint(output);
     let repeated = goal.last_output_fingerprint.as_deref() == Some(fingerprint.as_str());
     goal.last_output_fingerprint = Some(fingerprint);
+    // The count is "consecutive identical tool-free runs", starting at 1 like
+    // pi-goal: with `noProgressTurns: 2`, two identical runs pause the goal.
     goal.no_progress_count = if repeated {
         goal.no_progress_count.saturating_add(1)
     } else {
-        0
+        1
     };
     repeated
 }
@@ -349,13 +386,13 @@ mod tests {
     fn no_progress_counts_only_repeated_tool_free_output() {
         let mut goal = goal();
         assert!(!record_tool_free_output(&mut goal, "working"));
-        assert_eq!(goal.no_progress_count, 0);
-        assert!(record_tool_free_output(&mut goal, "working"));
         assert_eq!(goal.no_progress_count, 1);
-        assert!(record_tool_free_output(&mut goal, "Working"));
+        assert!(record_tool_free_output(&mut goal, "working"));
         assert_eq!(goal.no_progress_count, 2);
+        assert!(record_tool_free_output(&mut goal, "Working"));
+        assert_eq!(goal.no_progress_count, 3);
         assert!(!record_tool_free_output(&mut goal, "different"));
-        assert_eq!(goal.no_progress_count, 0);
+        assert_eq!(goal.no_progress_count, 1);
         assert!(record_tool_free_output(&mut goal, "different"));
         record_tool_attempt(&mut goal);
         assert_eq!(goal.no_progress_count, 0);
