@@ -61,11 +61,27 @@ rpi install rpi-office
 | 多文档路由、`#name` 选择器、op 能力握手 | 一致 |
 | `/office` 命令族、手动生命周期、自动启动开关 | 一致 |
 | `before_agent_start` 注入已连文档与使用规则 | 一致 |
-| **`client-abort`（窗格 Stop 按钮真正中止当前 run）** | **不支持**：rpi 插件 ABI 没有中止 run 的 runtime action，因此 `welcome`/`/health` 的 `capabilities` 不宣告 `client-abort`，窗格退化到协议 v2 行为（回复继续到达）。收到 `abort` 时只解除本地回复绑定，不会误杀终端发起的回合 |
-| TUI 输入框里 `#` 文档补全 | 不支持（ABI 没有输入框补全回调）；改用 `office_list_documents` 或 `document` 参数 |
+| `client-abort`（窗格 Stop 真正中止当前 run） | 一致：调用宿主 `RuntimeActionId::Abort`（27）；中止后不把迟到的 final 回推窗格 |
+| reload 安全（桥开着时 `/reload`） | 一致：`register_plugin_lifecycle` 的 `begin_shutdown` 非阻塞停桥，`finish_shutdown` join 桥线程与 worker 后才返回 0 |
+| 工具 `promptSnippet` / `promptGuidelines` | 一致：`register_tool_prompt`（元数据取自共享目录） |
+| TUI 输入框里 `#` 文档补全 | 不支持（宿主 `GetEditorText`/`register_autocomplete_provider` 尚未随 SDK 发版）；改用 `office_list_documents` 或 `document` 参数 |
 | Pi Desktop 的 Documents rail | 不在扩展范围（属于宿主 UI） |
 
 另外，本扩展是**进程内**的 Rust 动态库：桥的生命周期绑定当前进程的会话，`session_shutdown` 一定关桥并释放端口。
+
+## 初始化时机
+
+`SessionStart` 和 `AgentStart` 共享同一次初始化（解析 flag、对账活动工具、按
+`--office-bridge-autostart` 起桥），只会执行一次：非交互的 `--print` 会话**不会**
+派发 `SessionStart`（在 `rpi 0.24.0` 上实测，只派发 `AgentStart`/`TurnStart`/
+`BeforeAgentStart`），所以两条路径都要覆盖。
+
+## 宿主版本要求
+
+本扩展依赖 `rpi-plugin-sdk 0.25`（ABI 4，`struct_size` 192）。`Abort`、
+`register_plugin_lifecycle`、`register_tool_prompt` 都在旧 0.3.x SDK 之后追加；在
+vtable 更短的宿主上 SDK 会把这些槽位报成 `None`，本扩展自动降级（不宣告
+`client-abort`、不注册工具摘要、不做 reload join），其余功能不受影响。
 
 ## 安全模型
 

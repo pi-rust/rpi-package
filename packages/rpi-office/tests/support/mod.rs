@@ -9,10 +9,12 @@
 
 use rpi_plugin_sdk::{
     BeforeAgentStartFn, CommandHandlerFn, EventHandlerFn, EventTag, FreeStringFn, PluginApi,
-    RuntimeActionId, StablePluginEvent, StableToolSchema, StbString, StbStringRef, ToolCancelFn,
-    ToolDestroyFn, ToolExecuteFn, ToolPollFn,
+    PluginBeginShutdownFn, PluginFinishShutdownFn, RuntimeActionId, StablePluginEvent,
+    StableToolSchema, StbString, StbStringRef, ToolCancelFn, ToolDestroyFn, ToolExecuteFn,
+    ToolPollFn,
 };
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 pub const ABI: u32 = rpi_plugin_sdk::RPI_PLUGIN_ABI_VERSION_UNIFIED;
@@ -34,6 +36,9 @@ static PROMPT: Mutex<Option<BeforeAgentStartFn>> = Mutex::new(None);
 static ACTIVE: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static STATUS: Mutex<Option<String>> = Mutex::new(None);
 static SENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static PROMPTS: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
+static LIFECYCLE: Mutex<Option<(PluginBeginShutdownFn, PluginFinishShutdownFn)>> = Mutex::new(None);
+static ABORTS: AtomicU64 = AtomicU64::new(0);
 
 extern "C" fn register_tool(
     schema: *const StableToolSchema,
@@ -46,10 +51,11 @@ extern "C" fn register_tool(
     // SAFETY: the host passes a live schema for the duration of the call; copy
     // everything now because the plugin frees the strings when we return.
     let schema = unsafe { &*schema };
-    let name = schema.name.to_string_lossy();
-    let description = schema.description.to_string_lossy();
-    let parameters: Value =
-        serde_json::from_str(&schema.parameters.to_string_lossy()).expect("valid tool schema");
+    // SAFETY: the host keeps the schema strings alive for this call.
+    let name = unsafe { schema.name.to_string_lossy() };
+    let description = unsafe { schema.description.to_string_lossy() };
+    let parameters: Value = serde_json::from_str(&unsafe { schema.parameters.to_string_lossy() })
+        .expect("valid tool schema");
     TOOLS.lock().unwrap().push((
         name.clone(),
         description,
@@ -97,6 +103,24 @@ extern "C" fn register_flag(name: StbStringRef, _description: StbStringRef) -> i
     0
 }
 
+extern "C" fn register_tool_prompt(name: StbStringRef, metadata: StbStringRef) -> i32 {
+    // SAFETY: the host owns both strings for the duration of the call.
+    let name = unsafe { name.as_str() }.to_string();
+    let metadata: Value =
+        serde_json::from_str(unsafe { metadata.as_str() }).expect("prompt metadata is JSON");
+    PROMPTS.lock().unwrap().push((name, metadata));
+    0
+}
+
+extern "C" fn register_plugin_lifecycle(
+    begin: PluginBeginShutdownFn,
+    finish: PluginFinishShutdownFn,
+    _user_data: *mut std::ffi::c_void,
+) -> i32 {
+    *LIFECYCLE.lock().unwrap() = Some((begin, finish));
+    0
+}
+
 extern "C" fn register_before_agent_start(
     handler: BeforeAgentStartFn,
     _free: FreeStringFn,
@@ -131,6 +155,13 @@ fn runtime_action(action, args, out, _user_data) {
         RuntimeActionId::SetStatus => {
             *STATUS.lock().unwrap() = args.get("value").and_then(Value::as_str).map(str::to_owned);
             out.write(json!({"ok": true}).to_string());
+        }
+        RuntimeActionId::Abort => {
+            ABORTS.fetch_add(1, Ordering::SeqCst);
+            out.write(
+                json!({"aborted": true, "runId": "run-test", "steer": [], "followUp": []})
+                    .to_string(),
+            );
         }
         RuntimeActionId::SendMessage | RuntimeActionId::SendUserMessage => {
             SENT
@@ -167,6 +198,12 @@ pub fn api() -> PluginApi {
         declare: None,
         register_before_agent_start: Some(register_before_agent_start),
         register_oauth_provider: None,
+        register_streaming_provider: None,
+        register_tool_with_wake: None,
+        register_plugin_lifecycle: Some(register_plugin_lifecycle),
+        register_tool_prompt: Some(register_tool_prompt),
+        register_oauth_provider_cancellable: None,
+        register_tool_result: None,
     }
 }
 
@@ -208,6 +245,32 @@ pub fn status() -> Option<String> {
     STATUS.lock().unwrap().clone()
 }
 
+/// `(tool name, metadata)` pairs registered through `register_tool_prompt`.
+pub fn prompts() -> Vec<(String, Value)> {
+    PROMPTS.lock().unwrap().clone()
+}
+
+pub fn lifecycle_hooks() -> Option<(PluginBeginShutdownFn, PluginFinishShutdownFn)> {
+    *LIFECYCLE.lock().unwrap()
+}
+
+/// How many `RuntimeActionId::Abort` calls the plugin made.
+pub fn abort_count() -> u64 {
+    ABORTS.load(Ordering::SeqCst)
+}
+
+/// Invoke the registered `begin_shutdown` hook (non-blocking half).
+pub fn run_begin_shutdown() {
+    let (begin, _) = lifecycle_hooks().expect("lifecycle hooks registered");
+    begin(std::ptr::null_mut());
+}
+
+/// Invoke the registered `finish_shutdown` hook and return its status.
+pub fn run_finish_shutdown() -> i32 {
+    let (_, finish) = lifecycle_hooks().expect("lifecycle hooks registered");
+    finish(std::ptr::null_mut())
+}
+
 /// Texts injected into the session via `SendMessage`/`SendUserMessage`.
 pub fn sent_messages() -> Vec<String> {
     SENT.lock().unwrap().clone()
@@ -229,8 +292,9 @@ pub fn run_command(name: &str, args: &str) -> Value {
         &mut out,
         std::ptr::null_mut(),
     );
-    let text = out.to_string_lossy();
-    rpi_plugin_sdk::callbacks::free_string(out);
+    // SAFETY: the host produced `out`; read then free it exactly once.
+    let text = unsafe { out.to_string_lossy() };
+    unsafe { rpi_plugin_sdk::callbacks::free_string(out) };
     assert_eq!(rc, 0);
     serde_json::from_str(&text).expect("command returns JSON")
 }
@@ -274,8 +338,9 @@ pub fn run_before_agent_start(system_prompt: &str) -> Option<String> {
         &mut out,
         std::ptr::null_mut(),
     );
-    let text = out.to_string_lossy();
-    rpi_plugin_sdk::callbacks::free_string(out);
+    // SAFETY: the host produced `out`; read then free it exactly once.
+    let text = unsafe { out.to_string_lossy() };
+    unsafe { rpi_plugin_sdk::callbacks::free_string(out) };
     assert_eq!(rc, 0);
     if text.trim().is_empty() {
         None

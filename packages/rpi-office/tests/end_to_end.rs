@@ -81,15 +81,17 @@ fn run_tool(name: &str, params: Value) -> Result<Value, String> {
             // SAFETY: the tag selects the live union arm; the plugin produced
             // the string, so the host frees it through the SDK callback.
             let stb = unsafe { payload.done_payload().result };
-            let text = stb.to_string_lossy();
-            rpi_plugin_sdk::callbacks::free_string(stb);
+            // SAFETY: the plugin produced this string; the host frees it once.
+            let text = unsafe { stb.to_string_lossy() };
+            unsafe { rpi_plugin_sdk::callbacks::free_string(stb) };
             serde_json::from_str(&text).map_err(|error| format!("invalid result JSON: {error}"))
         }
         StepResultTag::Err => {
             // SAFETY: as above, for the Err arm.
             let stb = unsafe { payload.err_payload().message };
-            let text = stb.to_string_lossy();
-            rpi_plugin_sdk::callbacks::free_string(stb);
+            // SAFETY: as above, for the Err arm.
+            let text = unsafe { stb.to_string_lossy() };
+            unsafe { rpi_plugin_sdk::callbacks::free_string(stb) };
             Err(text)
         }
         StepResultTag::Pending => unreachable!(),
@@ -99,7 +101,9 @@ fn run_tool(name: &str, params: Value) -> Result<Value, String> {
 #[tokio::test]
 async fn pane_drives_a_tool_and_receives_streamed_replies() {
     support::register_plugin();
-    support::run_empty_event(EventTag::SessionStart);
+    // A print-mode session never dispatches SessionStart, so AgentStart must be
+    // enough to resolve flags and reconcile the active tool set.
+    support::run_empty_event(EventTag::AgentStart);
 
     let port = support::free_port();
     support::run_command("office", &format!("connect {port}"));
@@ -162,8 +166,9 @@ async fn pane_drives_a_tool_and_receives_streamed_replies() {
     assert_eq!(result.tag, StepResultTag::Done);
     // SAFETY: Done selects the live union arm; the host frees the string once.
     let stb = unsafe { result.done_payload().result };
-    let text = stb.to_string_lossy();
-    rpi_plugin_sdk::callbacks::free_string(stb);
+    // SAFETY: Done selects the live union arm; the host frees the string once.
+    let text = unsafe { stb.to_string_lossy() };
+    unsafe { rpi_plugin_sdk::callbacks::free_string(stb) };
     let value: Value = serde_json::from_str(&text).expect("tool result JSON");
     assert_eq!(value["content"][0]["type"], json!("text"));
     assert_eq!(value["content"][0]["text"], json!("A1=1 B1=2"));
@@ -237,6 +242,33 @@ async fn pane_drives_a_tool_and_receives_streamed_replies() {
         "a terminal turn must not be forwarded to the pane: {quiet:?}"
     );
 
+    // ── pane Stop aborts the run through the host action ────────────────
+    send_frame(
+        &mut ws,
+        json!({"type": "user_message", "text": "stop this"}),
+    )
+    .await;
+    support::wait_until("the second pane prompt", || {
+        support::sent_messages().len() >= 2
+    });
+    let second_prompt = support::sent_messages()[1].clone();
+    support::run_message_event(
+        EventTag::MessageStart,
+        json!({"role": "user", "content": [{"type": "text", "text": second_prompt}]}),
+    );
+    send_frame(&mut ws, json!({"type": "abort"})).await;
+    support::wait_until("the host Abort action", || support::abort_count() >= 1);
+    // The aborted turn must not leak a late final into the stopped pane.
+    support::run_message_event(
+        EventTag::MessageEnd,
+        json!({"role": "assistant", "content": [{"type": "text", "text": "late"}]}),
+    );
+    let quiet = tokio::time::timeout(Duration::from_millis(300), ws.next()).await;
+    assert!(
+        quiet.is_err(),
+        "an aborted turn must not send a final to the pane: {quiet:?}"
+    );
+
     // ── pane detach deactivates its tools again ─────────────────────────
     drop(ws);
     support::wait_until("the pane to detach", || {
@@ -269,5 +301,24 @@ async fn pane_drives_a_tool_and_receives_streamed_replies() {
         "{error}"
     );
 
+    support::run_command("office", "close");
+
+    // ── reload safety: begin/finish shutdown join both plugin threads ───
+    let port = support::free_port();
+    support::run_command("office", &format!("connect {port}"));
+    assert_eq!(support::health(port)["ok"], json!(true));
+    support::run_begin_shutdown();
+    support::wait_until("the bridge to stop listening", || {
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_err()
+    });
+    assert_eq!(support::run_finish_shutdown(), 0);
+    assert_eq!(
+        support::run_finish_shutdown(),
+        0,
+        "finish_shutdown is idempotent"
+    );
+    // Everything was released: a reloaded session can claim the port again.
+    support::run_command("office", &format!("connect {port}"));
+    assert_eq!(support::health(port)["ok"], json!(true));
     support::run_command("office", "close");
 }

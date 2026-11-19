@@ -145,6 +145,37 @@ impl Controller {
         }
     }
 
+    /// Non-blocking first half of shutdown (`begin_shutdown`).
+    ///
+    /// Asks the hub to close panes and exit; the caller must still call
+    /// [`Controller::finish_shutdown`] before the host may unload the library.
+    pub fn begin_shutdown(&mut self) {
+        if let Some(server) = self.server.as_ref() {
+            server.request_stop();
+            self.state = LifecycleState::Closing;
+        }
+    }
+
+    /// Blocking second half of shutdown (`finish_shutdown`).
+    ///
+    /// Joins the hub thread, so no bridge code can run once this returns.
+    /// Idempotent.
+    pub fn finish_shutdown(&mut self) {
+        match self.server.take() {
+            Some(server) => {
+                server.join();
+                self.actual_port = None;
+                self.started_at = None;
+                self.state = LifecycleState::Off;
+            }
+            None => {
+                self.actual_port = None;
+                self.started_at = None;
+                self.state = LifecycleState::Off;
+            }
+        }
+    }
+
     /// Stop listening and drop every pane.
     pub fn close(&mut self) -> Result<BridgeSnapshot, String> {
         let Some(server) = self.server.take() else {
@@ -260,6 +291,28 @@ mod tests {
         assert!(snapshot.last_error.is_some());
         assert!(!controller.is_on());
         drop(occupied);
+    }
+
+    #[test]
+    fn begin_and_finish_shutdown_release_the_port_without_blocking_begin() {
+        let probe = server::bind(0).expect("ephemeral bind");
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let mut controller = Controller::new(port);
+        controller
+            .connect(None, &meta, Arc::new(NoHooks))
+            .expect("connect");
+        controller.begin_shutdown();
+        assert_eq!(controller.snapshot().state, LifecycleState::Closing);
+        controller.finish_shutdown();
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.state, LifecycleState::Off);
+        assert!(snapshot.actual_port.is_none());
+        // Idempotent, and the port is usable again.
+        controller.finish_shutdown();
+        assert_eq!(controller.snapshot().state, LifecycleState::Off);
+        let listener = server::bind(port).expect("port released by finish_shutdown");
+        drop(listener);
     }
 
     #[test]

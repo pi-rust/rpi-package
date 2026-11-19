@@ -26,11 +26,14 @@ pub const OFFICE_TARGET_PARAM: &str = "document";
 
 /// Server capabilities advertised in `welcome` and `GET /health`.
 ///
-/// `client-abort` is deliberately absent: the rpi plugin ABI has no runtime
-/// action that cancels the in-flight run, so a pane's Stop button degrades to
-/// the documented v2 behaviour (the reply keeps arriving) instead of being
-/// advertised and silently ignored.
-pub const CAPABILITIES: [&str; 3] = ["http-health", "agent-deltas", "manual-lifecycle"];
+/// `client-abort` is backed by `RuntimeActionId::Abort` (27), which the host
+/// has shipped since 0.24.0; the plugin ABI exposes it from SDK 0.25.0.
+pub const CAPABILITIES: [&str; 4] = [
+    "http-health",
+    "agent-deltas",
+    "client-abort",
+    "manual-lifecycle",
+];
 
 /// Longest tool-result text forwarded to the model.
 pub const MAX_TEXT_CHARS: usize = 50_000;
@@ -512,6 +515,14 @@ mod tests {
         assert!(bound_details(Some(json!({"ok": true}))).unwrap()["ok"]
             .as_bool()
             .unwrap());
+    }
+
+    #[test]
+    fn advertises_client_abort_now_that_the_abi_has_an_abort_action() {
+        assert!(CAPABILITIES.contains(&"client-abort"));
+        assert!(CAPABILITIES.contains(&"agent-deltas"));
+        assert!(CAPABILITIES.contains(&"http-health"));
+        assert!(CAPABILITIES.contains(&"manual-lifecycle"));
     }
 
     #[test]

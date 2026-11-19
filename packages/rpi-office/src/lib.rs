@@ -11,11 +11,14 @@
 //! user runs `/office connect` (or passes `--office-bridge-autostart`), so
 //! several sessions can coexist without silently fighting over 38617.
 //!
-//! Deliberate difference from upstream: the rpi plugin ABI has no runtime
-//! action that aborts the in-flight run, so a pane's Stop button degrades to
-//! the documented protocol-v2 behaviour (the reply keeps arriving) and
-//! `client-abort` is not advertised in `welcome`/`/health`.
-#![forbid(unsafe_code)]
+//! Requires `rpi-plugin-sdk` 0.25 (ABI 4, `struct_size` 192): the host actions
+//! and slots this extension relies on (`Abort`, `register_plugin_lifecycle`,
+//! `register_tool_prompt`) were appended after the older 0.3.x line. On a host
+//! with a shorter vtable the SDK reports those slots as `None` and the plugin
+//! degrades: no `client-abort`, no prompt snippets, and no reload-safe join.
+#![deny(unsafe_code)]
+// The pinned SDK marks raw ABI string reads/frees unsafe; each use below is
+// covered by an explicit allow with a SAFETY comment.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 pub mod active_tools;
@@ -75,6 +78,7 @@ fn api(owner: *mut c_void) -> Option<PluginApi> {
     Some(api)
 }
 
+#[allow(unsafe_code)] // SAFETY: see the comments at the unsafe blocks.
 fn call_action(api: PluginApi, action: RuntimeActionId, args: Value) -> Result<Value, String> {
     let encoded = args.to_string();
     let mut out = StbString::empty();
@@ -84,8 +88,10 @@ fn call_action(api: PluginApi, action: RuntimeActionId, args: Value) -> Result<V
         &mut out,
         api.user_data,
     );
-    let text = out.to_string_lossy();
-    (api.free_string)(out);
+    // SAFETY: `out` was produced by the host through this action call; reading
+    // and freeing it are the ABI ownership contract.
+    let text = unsafe { out.to_string_lossy() };
+    unsafe { (api.free_string)(out) };
     if rc != 0 {
         return Err(if text.trim().is_empty() {
             format!("runtime action {action:?} failed")
@@ -204,19 +210,57 @@ enum Job {
         status: String,
         summary: Option<String>,
     },
+    /// A pane asked to abort the run answering its prompt.
+    Abort {
+        prompt_id: Option<String>,
+    },
+    /// `finish_shutdown` asked the worker to exit; reply once it has stopped.
+    Shutdown(Sender<()>),
 }
 
-static JOBS: OnceLock<Sender<Job>> = OnceLock::new();
+struct Worker {
+    tx: Sender<Job>,
+    join: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
 
-fn worker() -> &'static Sender<Job> {
-    JOBS.get_or_init(|| {
+static WORKER: OnceLock<Worker> = OnceLock::new();
+
+fn worker_state() -> &'static Worker {
+    WORKER.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
+        let join = std::thread::Builder::new()
             .name("rpi-office-worker".into())
             .spawn(move || run_worker(rx))
             .expect("spawn rpi-office worker");
-        tx
+        Worker {
+            tx,
+            join: Mutex::new(Some(join)),
+        }
     })
+}
+
+fn worker() -> &'static Sender<Job> {
+    &worker_state().tx
+}
+
+/// Stop and join the worker so no plugin code can run after `finish_shutdown`.
+fn shutdown_worker() -> bool {
+    let Some(worker) = WORKER.get() else {
+        return true;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    if worker.tx.send(Job::Shutdown(tx)).is_ok() {
+        let _ = rx.recv_timeout(Duration::from_secs(5));
+    }
+    let handle = worker
+        .join
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .take();
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
+    true
 }
 
 fn run_worker(rx: Receiver<Job>) {
@@ -259,6 +303,12 @@ fn run_worker(rx: Receiver<Job>) {
                 &pane_id,
                 protocol::tool_activity(&tool, &status, summary.as_deref()),
             ),
+            Ok(Job::Abort { prompt_id }) => abort_run(prompt_id.as_deref()),
+            Ok(Job::Shutdown(done)) => {
+                flush_deltas();
+                let _ = done.send(());
+                break;
+            }
             Err(RecvTimeoutError::Timeout) => flush_deltas(),
             Err(RecvTimeoutError::Disconnected) => {
                 flush_deltas();
@@ -299,6 +349,35 @@ fn inject_pane_prompt(pane: &Pane, text: &str) {
     );
     if let Err(error) = result {
         eprintln!("[rpi-office] could not inject the pane prompt: {error}");
+    }
+    refresh_status(api);
+}
+
+/// Abort the in-flight run on behalf of a pane's Stop button.
+///
+/// The host's `Abort` is cooperative, so late stream events may still arrive;
+/// the local reply binding is cleared by `on_abort_request` before this runs.
+/// The response's `aborted` flag is only logged: on this host it is `true` even
+/// for a second call on the same run, so it must not drive any control flow.
+fn abort_run(prompt_id: Option<&str>) {
+    let Some(api) = api(std::ptr::null_mut()) else {
+        return;
+    };
+    match call_action(api, RuntimeActionId::Abort, json!({})) {
+        Ok(value) => {
+            eprintln!(
+                "[rpi-office] abort requested (prompt {}) → aborted={} run={} steer={} followUp={}",
+                prompt_id.unwrap_or("-"),
+                value["aborted"],
+                value["runId"].as_str().unwrap_or("-"),
+                value["steer"].as_array().map(Vec::len).unwrap_or(0),
+                value["followUp"].as_array().map(Vec::len).unwrap_or(0),
+            );
+        }
+        Err(error) => eprintln!(
+            "[rpi-office] abort failed (prompt {}): {error}",
+            prompt_id.unwrap_or("-")
+        ),
     }
     refresh_status(api);
 }
@@ -452,10 +531,10 @@ impl server::Hooks for PluginHooks {
     }
 
     fn on_abort_request(&self, prompt_id: Option<&str>, pane: &Pane) {
-        // The plugin ABI has no run-abort action, so `client-abort` is not
-        // advertised. Still release the local reply binding so a late delta or
-        // final cannot land in the pane's stopped buffer.
-        with_state(|state| {
+        // Release the local reply binding first so a late delta or final cannot
+        // land in the pane's stopped buffer, then ask the host to abort the run
+        // (`client-abort`, backed by `RuntimeActionId::Abort`).
+        let matched = with_state(|state| {
             if let Some(active) = state.prompts.active() {
                 let same_pane = active.pane == pane.pane_id;
                 let same_prompt = prompt_id
@@ -464,9 +543,16 @@ impl server::Hooks for PluginHooks {
                 if same_pane && same_prompt {
                     state.prompts.complete();
                     state.delta.clear();
+                    return true;
                 }
             }
+            false
         });
+        if matched {
+            let _ = worker().send(Job::Abort {
+                prompt_id: prompt_id.map(str::to_owned),
+            });
+        }
     }
 
     fn on_panes_changed(&self, _panes: &[Pane]) {
@@ -610,17 +696,21 @@ feature you are unsure about.",
 
 /* ── event handlers ────────────────────────────────────────────────── */
 
-rpi_plugin_sdk::event_handler! {
-fn on_session_start(_event, owner) {
-    let Some(api) = api(owner) else { return 0 };
-    let port = config::resolve_port(
-        cli_flag(api, config::FLAG_PORT).as_ref(),
-        &env_value,
-    );
-    let autostart = config::resolve_autostart(
-        cli_flag(api, config::FLAG_AUTOSTART).as_ref(),
-        &env_value,
-    );
+/// One-shot session initialization.
+///
+/// `SessionStart` is the natural hook, but non-interactive (`--print`) runs
+/// dispatch `AgentStart`/`TurnStart`/`BeforeAgentStart` and **never**
+/// `SessionStart` (measured on `rpi 0.24.0`). Both entry points share this
+/// function so a print-mode session still resolves flags, reconciles the tool
+/// set and honours `--office-bridge-autostart`.
+fn ensure_initialized(api: PluginApi, owner: *mut c_void) {
+    static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let port = config::resolve_port(cli_flag(api, config::FLAG_PORT).as_ref(), &env_value);
+    let autostart =
+        config::resolve_autostart(cli_flag(api, config::FLAG_AUTOSTART).as_ref(), &env_value);
     with_state(|state| {
         state.port = port;
         state.autostart = autostart;
@@ -631,7 +721,9 @@ fn on_session_start(_event, owner) {
     // Always reconcile: with the bridge off this removes every office tool from
     // the active set, so an offline session does not advertise Office support.
     reconcile_tools(api);
-    if autostart && with_state(|state| state.controller.snapshot().state == lifecycle::LifecycleState::Off) {
+    if autostart
+        && with_state(|state| state.controller.snapshot().state == lifecycle::LifecycleState::Off)
+    {
         match connect_bridge(Some(port), owner) {
             Ok(snapshot) => eprintln!(
                 "[rpi-office] bridge listening on ws://127.0.0.1:{}",
@@ -641,6 +733,22 @@ fn on_session_start(_event, owner) {
         }
     }
     refresh_status(api);
+}
+
+rpi_plugin_sdk::event_handler! {
+fn on_session_start(_event, owner) {
+    if let Some(api) = api(owner) {
+        ensure_initialized(api, owner);
+    }
+    0
+}
+}
+
+rpi_plugin_sdk::event_handler! {
+fn on_agent_start(_event, owner) {
+    if let Some(api) = api(owner) {
+        ensure_initialized(api, owner);
+    }
     0
 }
 }
@@ -830,6 +938,29 @@ fn before_agent_start(input, out, _owner) {
 }
 }
 
+/* ── plugin lifecycle (reload / shutdown safety) ────────────────────── */
+
+/// `begin_shutdown`: non-blocking half. Ask the hub to close panes and exit,
+/// drop prompt correlation, and refuse to start new work.
+extern "C" fn plugin_begin_shutdown(_user_data: *mut c_void) {
+    with_state(|state| {
+        state.prompts.clear();
+        state.delta.clear();
+        state.controller.begin_shutdown();
+    });
+}
+
+/// `finish_shutdown`: blocking half. Join both plugin threads, then report 0 so
+/// the host may unload the library; returning nonzero would keep it resident.
+extern "C" fn plugin_finish_shutdown(_user_data: *mut c_void) -> i32 {
+    with_state(|state| state.controller.finish_shutdown());
+    let _ = shutdown_worker();
+    if let Some(api) = api(std::ptr::null_mut()) {
+        let _ = call_action(api, RuntimeActionId::SetStatus, json!({"key": STATUS_KEY}));
+    }
+    0
+}
+
 /* ── commands ──────────────────────────────────────────────────────── */
 
 fn command_text(raw: &str, owner: *mut c_void) -> String {
@@ -957,8 +1088,9 @@ fn register(api: &PluginApi) -> i32 {
     let Some(register_event) = api.register_event_handler else {
         return 1;
     };
-    let handlers: [(EventTag, EventHandlerFn); 8] = [
+    let handlers: [(EventTag, EventHandlerFn); 9] = [
         (EventTag::SessionStart, on_session_start as EventHandlerFn),
+        (EventTag::AgentStart, on_agent_start as EventHandlerFn),
         (
             EventTag::SessionShutdown,
             on_session_shutdown as EventHandlerFn,
@@ -978,6 +1110,13 @@ fn register(api: &PluginApi) -> i32 {
     ];
     for (tag, handler) in handlers {
         let rc = register_event(tag, handler, api.user_data);
+        if rc != 0 {
+            return rc;
+        }
+    }
+
+    if let Some(register_lifecycle) = api.register_plugin_lifecycle {
+        let rc = register_lifecycle(plugin_begin_shutdown, plugin_finish_shutdown, api.user_data);
         if rc != 0 {
             return rc;
         }
@@ -1129,6 +1268,12 @@ mod tests {
             declare: None,
             register_before_agent_start: None,
             register_oauth_provider: None,
+            register_streaming_provider: None,
+            register_tool_with_wake: None,
+            register_plugin_lifecycle: None,
+            register_tool_prompt: None,
+            register_oauth_provider_cancellable: None,
+            register_tool_result: None,
         };
         // No command registrar on this host: registration refuses to load.
         assert_eq!(register(&api), 1);
