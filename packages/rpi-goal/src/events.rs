@@ -145,6 +145,7 @@ pub fn account_response(value: &serde_json::Value) {
         *last = Some(timestamp);
     }
     let tokens = policy::response_tokens(value);
+    let observed_usage = tokens > 0;
     let class = policy::classify_response(value);
     let error = policy::error_message(value).to_string();
 
@@ -158,8 +159,14 @@ pub fn account_response(value: &serde_json::Value) {
             return;
         }
         goal.tokens_used = goal.tokens_used.saturating_add(tokens);
-        goal.usage_seen = goal.usage_seen.saturating_add(1);
-        goal.usage_unavailable = false;
+        // A serialized assistant message can carry a zeroed usage object even
+        // when the provider reported nothing. Only a positive token count
+        // proves that usage was actually observed; otherwise a token budget
+        // must remain visibly unenforceable.
+        if observed_usage {
+            goal.usage_seen = goal.usage_seen.saturating_add(1);
+            goal.usage_unavailable = false;
+        }
         goal.updated_at = state::now_ms();
         goals.active = Some(goal.clone());
         state::queue(&goals);

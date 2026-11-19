@@ -153,6 +153,35 @@ fn a_token_budget_says_so_when_the_host_reports_no_usage() {
 }
 
 #[test]
+fn message_end_without_usage_marks_a_token_budget_unavailable() {
+    let _guard = support::serial();
+    seed_active(
+        "Unreported usage via MessageEnd",
+        json!({"tokenBudget": 100_000}),
+    );
+
+    // A serialized AssistantMessage may carry a zeroed usage object even when
+    // the provider reported nothing. This must not look like an observed
+    // report just because the response reached MessageEnd.
+    support::fire_message(
+        rpi_plugin_sdk::EventTag::MessageEnd,
+        &json!({
+            "kind": "assistant",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "done"}],
+            "stopReason": "stop"
+        })
+        .to_string(),
+    );
+    support::fire_turn_end();
+
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["tokensUsed"], json!(0), "{goal}");
+    assert_eq!(goal["usageSeen"], json!(0), "{goal}");
+    assert_eq!(goal["usageUnavailable"], json!(true), "{goal}");
+}
+
+#[test]
 fn an_observed_usage_report_clears_the_unavailable_flag() {
     let _guard = support::serial();
     seed_active(
