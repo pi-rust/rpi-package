@@ -14,8 +14,16 @@ static RUNTIME_ACTION: OnceLock<RuntimeActionFn> = OnceLock::new();
 static RUNTIME_USER_DATA: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HOST_FREE_STRING: OnceLock<FreeStringFn> = OnceLock::new();
 static MCP_ENABLED: AtomicBool = AtomicBool::new(false);
-static SERVER_STOP: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
-static SERVER_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// The running server, if any. Both halves are replaced together, so a reload
+/// after `SessionShutdown` always joins the thread its own sender controls.
+#[derive(Default)]
+struct Running {
+    stop: Option<tokio::sync::watch::Sender<bool>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+static SERVER: Mutex<Option<Running>> = Mutex::new(None);
 
 fn action(id: RuntimeActionId, args: Value) -> Option<Value> {
     let action = *RUNTIME_ACTION.get()?;
@@ -75,8 +83,8 @@ fn get_flag(name: &str) -> bool {
 }
 
 extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
-    let mut thread = SERVER_THREAD.lock().unwrap();
-    if thread.is_some() || !MCP_ENABLED.load(Ordering::Acquire) {
+    let mut running = SERVER.lock().unwrap();
+    if running.is_some() || !MCP_ENABLED.load(Ordering::Acquire) {
         return 0;
     }
     // Stdio ownership is already ours here, so refusing a conflicting adapter
@@ -89,7 +97,6 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
         }
     }
     let (stop, receiver) = tokio::sync::watch::channel(false);
-    let _ = SERVER_STOP.set(stop);
     let options = ServerOptions {
         cwd: std::env::current_dir().unwrap_or_else(|_| ".".into()),
         model: get_arg("--model"),
@@ -98,7 +105,7 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
         session_dir: get_arg("--session-dir").map(Into::into),
         saved_session: get_arg("--resume").map(Into::into),
     };
-    *thread = Some(thread::spawn(move || {
+    let thread = thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -121,18 +128,31 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
         };
         let code = runtime.block_on(run(input, pending, receiver, options));
         lifecycle("finish", code);
-    }));
+    });
+    *running = Some(Running {
+        stop: Some(stop),
+        thread: Some(thread),
+    });
     0
 }
 
 extern "C" fn stop(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
-    if let Some(stop) = SERVER_STOP.get() {
+    stop_running();
+    0
+}
+
+/// Signal and join whichever server is installed right now. Taking the slot
+/// first is what lets a later `SessionStart` install a fresh sender.
+fn stop_running() {
+    let Some(running) = SERVER.lock().unwrap().take() else {
+        return;
+    };
+    if let Some(stop) = running.stop {
         let _ = stop.send(true);
     }
-    if let Some(thread) = SERVER_THREAD.lock().unwrap().take() {
+    if let Some(thread) = running.thread {
         let _ = thread.join();
     }
-    0
 }
 
 fn take_stdin() -> Result<(rpi_plugin_sdk::stdio::StdinLines, Option<String>), String> {
@@ -178,4 +198,73 @@ pub fn register(api: &rpi_plugin_sdk::PluginApi) -> i32 {
         return 1;
     }
     register_handler(EventTag::SessionStart, start, api.user_data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn install(sender: tokio::sync::watch::Sender<bool>) {
+        *SERVER.lock().unwrap() = Some(Running {
+            stop: Some(sender),
+            thread: None,
+        });
+    }
+
+    #[test]
+    fn each_session_stop_signals_its_own_sender() {
+        // First session stops normally.
+        let (first, mut first_rx) = tokio::sync::watch::channel(false);
+        install(first);
+        stop_running();
+        assert!(*first_rx.borrow_and_update());
+
+        // A second session (host reload) must stop through its own channel; the
+        // previous OnceLock implementation kept the first, dead sender.
+        let (second, mut second_rx) = tokio::sync::watch::channel(false);
+        install(second);
+        stop_running();
+        assert!(*second_rx.borrow_and_update());
+        assert!(SERVER.lock().unwrap().is_none());
+
+        // Stopping with nothing installed is a no-op, not a panic.
+        stop_running();
+    }
+
+    #[test]
+    fn flag_values_are_parsed_like_the_host() {
+        assert!(flag_is_on(Some(&json!(true))));
+        assert!(flag_is_on(Some(&json!("yes"))));
+        assert!(!flag_is_on(Some(&json!(false))));
+        assert!(!flag_is_on(Some(&json!("false"))));
+        assert!(!flag_is_on(Some(&json!(""))));
+        assert!(!flag_is_on(None));
+    }
+
+    #[test]
+    fn cli_arguments_forward_model_and_provider() {
+        // `get_arg` reads the host argv, which tests cannot rewrite; assert the
+        // parsing shape through a representative slice instead.
+        let args = [
+            "rpi",
+            "--model",
+            "p/m",
+            "--provider=p2",
+            "--resume",
+            "/tmp/s.jsonl",
+        ];
+        let find = |name: &str| {
+            args.windows(2)
+                .find(|pair| pair[0] == name)
+                .map(|pair| pair[1].to_string())
+                .or_else(|| {
+                    args.iter()
+                        .find_map(|arg| arg.strip_prefix(&format!("{name}=")).map(String::from))
+                })
+        };
+        assert_eq!(find("--model").as_deref(), Some("p/m"));
+        assert_eq!(find("--provider").as_deref(), Some("p2"));
+        assert_eq!(find("--resume").as_deref(), Some("/tmp/s.jsonl"));
+        assert_eq!(find("--session-dir"), None);
+    }
 }

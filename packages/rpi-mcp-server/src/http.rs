@@ -160,6 +160,11 @@ impl StreamState {
         )
     }
 
+    /// Whether the producer is still running.
+    fn is_live(&self) -> bool {
+        !self.log.lock().expect("stream log").finished
+    }
+
     /// Sequence of the oldest retained event, if any.
     fn oldest(&self) -> Option<u64> {
         self.log
@@ -238,6 +243,21 @@ impl HttpSession {
 
     fn idle_for(&self) -> Duration {
         Duration::from_millis(now_ms().saturating_sub(self.last_used.load(Ordering::Relaxed)))
+    }
+
+    /// A session with an unfinished stream is never idle: a long prompt would
+    /// otherwise be killed by the reaper while its client is still reading.
+    fn has_live_stream(&self) -> bool {
+        self.streams
+            .lock()
+            .expect("streams")
+            .states
+            .values()
+            .any(|stream| stream.is_live())
+    }
+
+    fn is_reapable(&self) -> bool {
+        self.idle_for() >= SESSION_IDLE && !self.has_live_stream()
     }
 
     async fn shutdown(&self) {
@@ -859,7 +879,7 @@ async fn reap_idle(state: AppState) {
             .lock()
             .expect("sessions")
             .iter()
-            .filter(|(_, session)| session.idle_for() >= SESSION_IDLE)
+            .filter(|(_, session)| session.is_reapable())
             .map(|(id, _)| id.clone())
             .collect();
         for id in expired {
@@ -1145,6 +1165,16 @@ mod tests {
         assert_eq!(parse_event_id("stream-1"), None);
         assert_eq!(parse_event_id(":7"), None);
         assert_eq!(parse_event_id("stream-1:not-a-number"), None);
+    }
+
+    #[tokio::test]
+    async fn a_live_stream_keeps_its_session_alive() {
+        let stream = StreamState::new();
+        assert!(stream.is_live());
+        stream.append(json!({"type":"progress"}));
+        assert!(stream.is_live());
+        stream.finish();
+        assert!(!stream.is_live());
     }
 
     #[tokio::test]
