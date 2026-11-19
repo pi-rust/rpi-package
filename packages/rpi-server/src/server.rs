@@ -482,6 +482,10 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
 
     loop {
         // Check for subscription events (non-blocking)
+        // Subscriptions whose child ended (or whose sender closed) are dropped
+        // after this pass; keeping them would grow the map for the life of the
+        // connection and keep replaying a finished session.
+        let mut finished: Vec<u64> = Vec::new();
         for (sub_id, rx) in sub_receivers.iter_mut() {
             loop {
                 match rx.try_recv() {
@@ -499,6 +503,7 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
                             return;
                         }
                         if event.get("type").and_then(Value::as_str) == Some("session_end") {
+                            finished.push(*sub_id);
                             break;
                         }
                     }
@@ -514,9 +519,16 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
                         });
                         let _ = conn.send(notification).await;
                     }
-                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        finished.push(*sub_id);
+                        break;
+                    }
                 }
             }
+        }
+        for sub_id in finished {
+            sub_receivers.remove(&sub_id);
+            sub_sessions.remove(&sub_id);
         }
 
         // Read next message with a short timeout to allow subscription polling
@@ -644,10 +656,10 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
         }
     }
 
-    // Cleanup: abort all subscription tasks
-    for (_, session) in sub_sessions {
-        let _ = session;
-    }
+    // Receivers and session handles are dropped with the connection; the child
+    // processes stay owned by the server so another client can subscribe.
+    drop(sub_receivers);
+    drop(sub_sessions);
 }
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────

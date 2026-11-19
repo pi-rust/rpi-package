@@ -1,0 +1,56 @@
+name: rpi-server
+
+on:
+  pull_request:
+    paths:
+      - 'packages/rpi-server/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/server-checks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/rpi-server/**'
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: rpi-server (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      # Compiler warnings are failures, matching the other package workflows.
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --check -p rpi-server
+      # Covers the TCP, WebSocket and TLS transports plus the schema regression
+      # tests. Loopback TLS tests mint their own certificate, so no fixtures or
+      # native binaries are required.
+      - name: Test transports and schema contracts
+        run: cargo test --locked -p rpi-server
+      - name: Check all targets
+        run: cargo check --locked -p rpi-server --all-targets
+      - name: Clippy
+        run: cargo clippy --locked -p rpi-server --all-targets --no-deps -- -D warnings
+      - name: Verify the package
+        run: cargo package --locked -p rpi-server --no-verify
+
+  # Real-native and remote-client behaviour is not qualified here: these fixtures
+  # never start `rpi --mode rpc`, a browser, or a CA-issued certificate.
