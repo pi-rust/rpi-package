@@ -59,15 +59,27 @@ pub fn document_items(panes: &[Pane], needle: &str) -> Vec<Value> {
         .take(MAX_ITEMS)
         .map(|pane| {
             // Two *different* documents sharing a name cannot be told apart by
-            // name, so those mentions insert the id instead.
-            let same_name = panes
-                .iter()
-                .filter(|other| {
-                    other.target_id != pane.target_id
-                        && other.document_name.is_some()
-                        && other.document_name == pane.document_name
+            // name, so those mentions insert the id instead. Match the
+            // resolver's case-insensitive name comparison so completion cannot
+            // suggest an ambiguous `#name`.
+            let name_key = pane.document_name.as_deref().map(str::to_lowercase);
+            let same_name = name_key
+                .as_deref()
+                .map(|name| {
+                    panes
+                        .iter()
+                        .filter(|other| {
+                            other.target_id != pane.target_id
+                                && other
+                                    .document_name
+                                    .as_deref()
+                                    .map(str::to_lowercase)
+                                    .as_deref()
+                                    == Some(name)
+                        })
+                        .count()
                 })
-                .count();
+                .unwrap_or(0);
             let identity = if same_name > 0 {
                 pane.document_ref()
             } else {
@@ -177,6 +189,20 @@ mod tests {
         assert!(items
             .iter()
             .all(|item| item["text"].as_str().unwrap().starts_with("#id-")));
+    }
+
+    #[test]
+    fn duplicate_names_are_detected_case_insensitively() {
+        let first = pane("p1", Host::Excel, Some("Book.xlsx"), Some("id-1"));
+        let second = pane("p2", Host::Excel, Some("book.xlsx"), Some("id-2"));
+        let items = document_items(&[first, second], "");
+        assert_eq!(items.len(), 2);
+        assert!(
+            items
+                .iter()
+                .all(|item| item["text"].as_str().unwrap().starts_with("#id-")),
+            "case-insensitive duplicate names must insert ids: {items:?}"
+        );
     }
 
     #[test]

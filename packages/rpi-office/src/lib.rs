@@ -11,21 +11,21 @@
 //! user runs `/office connect` (or passes `--office-bridge-autostart`), so
 //! several sessions can coexist without silently fighting over 38617.
 //!
-//! Requires `rpi-plugin-sdk` 0.25 (ABI 4, `struct_size` 192): the host actions
-//! and slots this extension relies on (`Abort`, `register_plugin_lifecycle`,
-//! `register_tool_prompt`) were appended after the older 0.3.x line. On a host
-//! with a shorter vtable the SDK reports those slots as `None` and the plugin
-//! degrades: no `client-abort`, no prompt snippets, and no reload-safe join.
-// Every ABI shape this extension touches goes through an SDK macro
-// (`event_handler!`, `string_handler!`, `execute_handler!`, `call_action!`,
-// `stb_text!`), which keeps the raw-pointer contract inside the SDK. `forbid`
-// rather than `deny` so a future `#[allow(unsafe_code)]` cannot quietly reopen
-// the door. The entrypoint the macro below emits takes a raw `*const PluginApi`
-// by ABI definition, which is why the pointer-deref lint is allowed here; the
-// dereference itself happens inside the SDK's macro.
+//! Requires `rpi-plugin-sdk` 0.26 (ABI 4). The host may expose a shorter vtable
+//! (for example `rpi 0.24.0`'s 192-byte layout); the SDK zero-fills appended
+//! slots, so the plugin degrades instead of failing: no `client-abort`, no
+//! prompt snippets, no reload-safe join, and no editor/command completions.
+//
+// ABI inputs and outputs use the SDK's `event_handler!`, `string_handler!` and
+// `execute_handler!` macros where available. The one remaining raw runtime-action
+// output is isolated in `src/abi.rs`, where each function carries an explicit
+// `#[expect(unsafe_code)]`; the crate root keeps `#![deny(unsafe_code)]` so new
+// unsafe cannot spread silently. The entrypoint emitted by `export_plugin!`
+// takes a raw `*const PluginApi` by ABI definition, which is why the
+// pointer-deref lint is allowed here; the dereference itself stays in the SDK.
 #![deny(unsafe_code)]
-// `unsafe` lives in `src/abi.rs` only (one documented fallback for a macro the
-// pinned SDK release does not ship yet); `deny` lets that one module opt in.
+// `unsafe` lives in `src/abi.rs` only, on the two functions with explicit
+// expectations below; `deny` (not `forbid`) lets those expectations apply.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod abi;

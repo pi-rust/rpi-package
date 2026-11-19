@@ -92,10 +92,11 @@ vtable 更短时 SDK 把这些槽位报成 `None`（注册 helper 返回 `-1`）
 
 ## 关于 `unsafe`
 
-除 `src/abi.rs` 外全crate `#![deny(unsafe_code)]`。那个模块只有一处 `unsafe`：把
-runtime action 的 `out` 交给 SDK 的 `OwnedString` 读取。宿主仓库已有对应的
-`call_action!` / `stb_text!` / `stb_take!` 宏，但尚未随 SDK 发版；等它们发布后删除
-`src/abi.rs` 并直接调用宏，即可回到完全无 `unsafe`。
+crate 根保持 `#![deny(unsafe_code)]`。`src/abi.rs` 只有两处必需的 ABI 读取，分别用
+`#[expect(unsafe_code)]` 精确标注：生产路径的 runtime action `out` 读取，以及测试里
+对宿主借用 schema 字符串的读取。不存在模块级 `allow(unsafe_code)`；等宿主发布
+`call_action!` / `stb_text!` / `stb_take!` 后删除 `src/abi.rs`，即可回到完全无
+`unsafe`。
 
 ## 安全模型
 

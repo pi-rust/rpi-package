@@ -30,20 +30,22 @@
 
 ### 版本事实（可直接引用）
 
-| 能力 | pin 的 SDK 0.3.20 | 已发布 SDK 0.8.3 | 已发布 SDK 0.25.0 | 宿主 `v0.24.0` / `main` |
-| --- | --- | --- | --- | --- |
-| `RuntimeActionId` 上限 | `SideQuestion = 25` | `SideQuestion = 25` | `ReloadModels = 31` | 同 0.25.0 |
-| `Abort = 27` | 无 | 无 | 有 | 有（`actions.rs` 已分发） |
-| `StopRound = 29` | 无 | 无 | 有 | 有 |
-| `RelayUiDialog = 28` | 无 | 无 | 有 | 有 |
-| `ListCommands = 26` | 无 | 无 | 有 | 有 |
-| `register_plugin_lifecycle` 槽位 | **无** | 有 | 有 | 有（reload 时调用） |
-| `register_tool_prompt` 槽位 | 无 | 无 | 有 | 有 |
-| `register_tool_with_wake` 槽位 | 无 | 有 | 有 | 有 |
-| `EditorChange` 带文本 | 无 | 无 | 无 | 无 |
-| `GetEditorText = 32` | 无 | 无 | **有** | 有（pi-rust#366） |
-| `register_autocomplete_provider` 槽位 | 无 | 无 | **有** | 有（pi-rust#366） |
-| `register_command_completions` 槽位 | 无 | 无 | **有** | 有（pi-rust#366） |
+本轮实现 pin 到 `0.26.0`；下表把 `0.25.0` 与 `0.26.0` 分开，避免把 0.26 才发布的 completion 槽位误记到 0.25。
+
+| 能力 | pin 的 SDK 0.3.20 | 已发布 SDK 0.8.3 | 已发布 SDK 0.25.0 | 已发布 SDK 0.26.0 | 宿主 `v0.24.0` / `main` |
+| --- | --- | --- | --- | --- | --- |
+| `RuntimeActionId` 上限 | `SideQuestion = 25` | `SideQuestion = 25` | `ReloadModels = 31` | `GetEditorText = 32` | `v0.24.0`: `ReloadModels = 31`; `main`: `GetEditorText = 32` |
+| `Abort = 27` | 无 | 无 | 有 | 有 | 有（`actions.rs` 已分发） |
+| `StopRound = 29` | 无 | 无 | 有 | 有 | 有 |
+| `RelayUiDialog = 28` | 无 | 无 | 有 | 有 | 有 |
+| `ListCommands = 26` | 无 | 无 | 有 | 有 | 有 |
+| `register_plugin_lifecycle` 槽位 | **无** | 有 | 有 | 有 | 有（reload 时调用） |
+| `register_tool_prompt` 槽位 | 无 | 无 | 有 | 有 | 有 |
+| `register_tool_with_wake` 槽位 | 无 | 有 | 有 | 有 | 有 |
+| `EditorChange` 带文本 | 无 | 无 | 无 | 无 | 无 |
+| `GetEditorText = 32` | 无 | 无 | 无 | **有** | `main` 有（pi-rust#366） |
+| `register_autocomplete_provider` 槽位 | 无 | 无 | 无 | **有** | `main` 有（pi-rust#366） |
+| `register_command_completions` 槽位 | 无 | 无 | 无 | **有** | `main` 有（pi-rust#366） |
 
 证据位置（宿主 `main`）：`crates/rpi-plugin-sdk/src/lib.rs` 的 `RuntimeActionId`/`EventTag`/`PluginApi`；`crates/rpi-extensions/src/actions.rs` 的 action 分发；`crates/rpi-extensions/src/loader.rs` 的 `PluginKeepalive`/`begin_shutdown`；`crates/rpi-cli/src/session.rs` 的 reload 路径（`old_session.begin_shutdown()`）。
 
@@ -155,7 +157,7 @@ Abort = 27,   args: {}
 **`StopRound = 29`（伴生能力）**：`{"requested": true}`，只阻止游标进入下一轮，不打断正在生成的回答——对应“这轮答完再停”，是窗格 Stop 之外的第二个按钮语义。首版没提到它。
 
 **补完后本扩展的改动**：
-1. `Cargo.toml` 的 `rpi-plugin-sdk` 从 `=0.3.20` 升到 `=0.25.0`（顺带解锁 H2/H4 的槽位）；
+1. `Cargo.toml` 的 `rpi-plugin-sdk` 首轮从 `=0.3.20` 升到 `=0.25.0`（顺带解锁 H2/H4 的槽位），本轮再升到 `=0.26.0` 以接入 H3/H7；
 2. `on_abort_request` 调用 `RuntimeActionId::Abort`，用返回的 `aborted`/`runId` 记录“宿主是否真的取消了某个 run”（空闲时是 `false`+`null`，见第四轮实测），本地回复绑定仍按活动 pane prompt 决定，把 `steer`/`followUp` 按需回灌；
 3. `protocol::CAPABILITIES` 加回 `client-abort`；
 4. 可选：窗格双按钮（Stop / 答完停），后者走 `StopRound`；
@@ -319,7 +321,7 @@ Abort = 27,   args: {}
 
 ## 落地顺序（建议）
 
-1. ~~升 pin 到 `=0.25.0`~~ — 已完成（`5da3f47`）。
+1. ~~升 pin 到 `=0.25.0`~~ — 已完成（`5da3f47`）；当前实现已继续升到 `=0.26.0`。
 2. ~~H2 卸载钩子~~ — 已完成（`begin_shutdown` 关窗格后非阻塞退出，`finish_shutdown` join 桥线程与 worker，返回 0 允许卸载）。
 3. ~~H1 中止语义~~ — 已完成（`client-abort` 重新宣告；Stop 先解除本地回复绑定再请求宿主 `Abort`，`aborted` 仅记录日志）。
 4. ~~H4 提示词元数据~~ — 已完成（33 个工具的 snippet/guidelines 取自共享目录）。

@@ -5,14 +5,15 @@
 //! unreleased: `rpi-plugin-sdk` 0.26.0 (the version this extension pins) exposes
 //! `execute_handler!`, `OwnedString` and `string_handler!` only. When a release
 //! carries `call_action!`, delete this module and call the macro directly — the
-//! rest of the crate is already `#![forbid(unsafe_code)]`.
-#![allow(unsafe_code)]
+//! crate root uses `#![deny(unsafe_code)]`; the two functions below carry
+//! explicit `#[expect(unsafe_code)]` attributes so each ABI boundary is visible.
 
 use rpi_plugin_sdk::callbacks::OwnedString;
 use rpi_plugin_sdk::{PluginApi, RuntimeActionId, StbString, StbStringRef};
 
 /// Copy a borrowed ABI string (host-owned for the current callback).
 #[cfg(test)]
+#[expect(unsafe_code)]
 pub(crate) fn text(value: &StbString) -> String {
     // SAFETY: the caller only passes a string the host lends us for the current
     // callback; reading copies it and retains no buffer.
@@ -20,6 +21,7 @@ pub(crate) fn text(value: &StbString) -> String {
 }
 
 /// Invoke a runtime action and copy its response body.
+#[expect(unsafe_code)]
 pub(crate) fn action_text(api: PluginApi, action: RuntimeActionId, args: &str) -> (i32, String) {
     let mut out = StbString::empty();
     let rc = (api.runtime_action)(
