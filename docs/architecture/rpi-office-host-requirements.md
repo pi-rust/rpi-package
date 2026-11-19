@@ -16,10 +16,10 @@
 
 | 原编号 | 首版判定 | 复核判定 | 处置 |
 | --- | --- | --- | --- |
-| H1 | P0 宿主缺 abort action | **不成立**：宿主 `v0.24.0` 起已有 `RuntimeActionId::Abort = 27` | 升 pin 即可（见 H1） |
-| H2 | P0 宿主缺 unload 契约 | **降级**：宿主已有 `PluginKeepalive` + `register_plugin_lifecycle` 钩子，reload 路径确实会调用 | 插件侧实现 + 宿主补文档（见 H2） |
+| H1 | P0 宿主缺 abort action | **不成立**：宿主 `v0.24.0` 起已有 `RuntimeActionId::Abort = 27` | **已实现**（`5da3f47`） |
+| H2 | P0 宿主缺 unload 契约 | **降级**：宿主已有 `PluginKeepalive` + `register_plugin_lifecycle` 钩子，reload 路径确实会调用 | **已实现**（`5da3f47`；宿主文档由 pi-rust#366 补） |
 | H3 | P1 缺草稿文本 | **已由宿主实现（未发版）**：`GetEditorText = 32` + 补全 provider 槽位（pi-rust#366） | 改本扩展 |
-| H4 | P1 需升 SDK | **不成立**：`register_tool_prompt` 已随发布 SDK 0.25.0 提供 | 升 pin 即可 |
+| H4 | P1 需升 SDK | **不成立**：`register_tool_prompt` 已随发布 SDK 0.25.0 提供 | **已实现**（`5da3f47`） |
 | H5 | P2 缺工具作用域 | **仍缺**：`0.25.0` 无 `SetToolEnabled`，`SetActiveTools(5)` 仍是全局 | 保持 |
 | H6 | P2 `__rpi` 缺工具名 | **仍缺**：`__rpi` 仍只有 `cwd`/`sessionId` | 保持 |
 | H7 | P3 缺命令参数补全 | **已由宿主实现（未发版）**：`register_command_completions`（pi-rust#366） | 改本扩展 |
@@ -108,6 +108,8 @@ rpi --local-only --extensions-dir /tmp/probe-ext --provider openai --model gpt-6
 
 事件侧有 `event_handler!` 宏把 unsafe 收进 SDK，其余三种形状没有对应宏——于是每个插件都要手写并由自己承担 SAFETY 契约。建议 SDK 补 `command_handler!` / `step_fn!` 一类的宏（或提供接受原始指针的安全构造器），并把每种形状的 SAFETY 说明写进文档。
 
+本扩展的过渡做法（`5da3f47`）：crate 级 `#![deny(unsafe_code)]`，只在确实要碰 ABI 字符串/步骤返回的函数上 `#[allow(unsafe_code)]` 并逐处写 SAFETY 注释。这样新增的 unsafe 必须显式落在带注释的函数上，而不是整个 crate 静默放开。
+
 ## 已验证的现状
 
 - 本扩展作为 Rust cdylib 加载进真实 `rpi 0.24.0` 成功：33 个工具（32 目录 op + 发现工具）、2 个 slash 命令、8 个事件、`before_agent_start` 与 2 个 flag 全部注册返回 0，进程无告警退出（`rpi --local-only --extensions-dir <dir> --list-models`）。
@@ -121,10 +123,10 @@ rpi --local-only --extensions-dir /tmp/probe-ext --provider openai --model gpt-6
 
 | 编号 | 优先级 | 缺口 | 状态 | 影响 |
 | --- | --- | --- | --- | --- |
-| H1 | P0 | 中止当前 run 的 runtime action | 升级即可（`Abort = 27`） | 窗格 Stop 无效；`client-abort` 无法宣告 |
-| H2 | P0 | 插件卸载/重载契约（unload 钩子 + DLL 保活） | 插件实现（+宿主文档） | 桥开着时 reload 可能 dlclose 后线程仍在跑 |
+| H1 | P0 | 中止当前 run 的 runtime action | 已实现（`5da3f47`） | 窗格 Stop 无效；`client-abort` 无法宣告 |
+| H2 | P0 | 插件卸载/重载契约（unload 钩子 + DLL 保活） | 已实现（`5da3f47`） | 桥开着时 reload 可能 dlclose 后线程仍在跑 |
 | H3 | P1 | 输入框草稿文本（或补全 provider 槽位） | 宿主已实现（未发版） | 无法实现 `#文档` 补全 |
-| H4 | P1 | `register_tool_prompt` | 升级即可 | 33 个工具只有 description，无 snippet/guidelines |
+| H4 | P1 | `register_tool_prompt` | 已实现（`5da3f47`） | 33 个工具只有 description，无 snippet/guidelines |
 | H5 | P2 | per-tool / per-plugin 活动工具作用域 | 缺 | `SetActiveTools` 全局替换，与 plan-mode 等有竞态 |
 | H6 | P2 | `__rpi.toolName` | 缺 | 目录驱动插件必须为每个工具生成一个 trampoline |
 | H7 | P3 | 命令参数补全回调 | 宿主已实现（未发版） | `/office con<Tab>` 无法补全 |
@@ -132,7 +134,7 @@ rpi --local-only --extensions-dir /tmp/probe-ext --provider openai --model gpt-6
 
 ---
 
-## H1（P0）中止当前 run —— 宿主已提供，结论改写
+## H1（P0）中止当前 run —— 已实现（`5da3f47`）
 
 **复核判定**：宿主 `RuntimeActionId::Abort = 27` 早在 `v0.24.0` tag 就存在并已分发（`crates/rpi-extensions/src/actions.rs`）。首版说“没有中止 run 的 action”是照着 pin 的 SDK 0.3.20 枚举写的，而 0.3.20 的 `RuntimeActionId` 停在 `SideQuestion = 25`。**这不是宿主缺口，是依赖版本缺口。**
 
@@ -165,7 +167,7 @@ Abort = 27,   args: {}
 
 ---
 
-## H2（P0）插件卸载/重载契约 —— 机制已在，缺实现与文档
+## H2（P0）插件卸载/重载契约 —— 已实现（`5da3f47`）
 
 **复核判定（首版判断有误）**：宿主有两块机制，且 `v0.24.0` 就有：
 
@@ -207,7 +209,7 @@ Abort = 27,   args: {}
 
 ---
 
-## H4（P1）`register_tool_prompt` —— 宿主已提供，只剩升级
+## H4（P1）`register_tool_prompt` —— 已实现（`5da3f47`）
 
 **复核判定**：`PluginApi::register_tool_prompt` 槽位在已发布的 `rpi-plugin-sdk-0.25.0`（crates.io 实包）里就有，追加在 `register_plugin_lifecycle` 之后，不动 `StableToolSchema`、不 bump ABI。首版说的“只差 SDK 版本”方向正确，但要补两点：**只升到 0.8.3 不够**（0.8.3 仍无该槽位），且宿主 `struct_size` 需覆盖新槽位（`0.24.0` 已覆盖）。
 
@@ -305,10 +307,10 @@ Abort = 27,   args: {}
 
 | 差异 | 对应需求 | 状态 |
 | --- | --- | --- |
-| 窗格 Stop 不中止 run（`client-abort` 不宣告） | H1 | 宿主已有 `Abort=27`，升 pin 即可 |
-| reload 与常驻桥线程的兼容性未证明 | H2 | 宿主机制已就位，本扩展未注册钩子 |
+| 窗格 Stop 中止 run（`client-abort` 已宣告） | H1 | 已实现 |
+| reload 与常驻桥线程 | H2 | 已实现（lifecycle 钩子 + join 桥线程） |
 | 无 `#文档` 补全 | H3 | 宿主已实现（未发版） |
-| 工具无 snippet/guidelines | H4 | 发布 SDK 0.25.0 已有槽位，升 pin 即可 |
+| 工具 snippet/guidelines | H4 | 已实现（元数据取自共享目录） |
 | 33 个 trampoline（因 `execute` 无工具名） | H6 | 宿主仍缺 `__rpi.toolName` |
 | `/office` 无参数补全 | H7 | 宿主已实现（未发版） |
 | `/health` 的 `owner.client` 恒为 `cli`；无文档面板 | H8 | 宿主仍缺 surface/注册表 |
@@ -317,10 +319,10 @@ Abort = 27,   args: {}
 
 ## 落地顺序（建议）
 
-1. **升 pin 到 `rpi-plugin-sdk = "=0.25.0"`**：一次性解锁 `Abort`、`StopRound`、`RelayUiDialog`、`register_plugin_lifecycle`、`register_tool_prompt`，把 H1/H2/H4/N1/N2 从“等宿主”变成“改本扩展”。
-2. **H2 卸载钩子**（风险最高，先做）：注册 lifecycle，`finish` 里 join 桥线程；顺手给 `docs/extensions/lifecycle.md` 补文。
-3. **H1 + N2 中止语义**：Stop / 答完停双按钮，`client-abort` 宣告，`steer`/`followUp` 回灌。
-4. **H4 提示词元数据**：32 个 op 的 snippet/guidelines。
+1. ~~升 pin 到 `=0.25.0`~~ — 已完成（`5da3f47`）。
+2. ~~H2 卸载钩子~~ — 已完成（`begin_shutdown` 关窗格后非阻塞退出，`finish_shutdown` join 桥线程与 worker，返回 0 允许卸载）。
+3. ~~H1 中止语义~~ — 已完成（`client-abort` 重新宣告；Stop 先解除本地回复绑定再请求宿主 `Abort`，`aborted` 仅记录日志）。
+4. ~~H4 提示词元数据~~ — 已完成（33 个工具的 snippet/guidelines 取自共享目录）。
 5. **N1 审批中继**：`RelayUiDialog` + 新 `ui_prompt` 帧。
 6. **第 2 步之后即可做（宿主已实现，等 SDK 发版）**：H3（`#文档` 补全）、H7（`/office con<Tab>`）。
 7. **仍等宿主**：H6（`__rpi.toolName`，收益最大）、H5（单工具作用域）、H8（surface / 服务注册表）。
