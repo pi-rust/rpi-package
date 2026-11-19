@@ -8,11 +8,12 @@ use rustls::ServerConfig;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// PEM files backing `wss://`.
+/// PEM files backing `wss://`. `client_ca` enables mTLS when set.
 #[derive(Debug, Clone)]
 pub struct TlsFiles {
     pub cert: PathBuf,
     pub key: PathBuf,
+    pub client_ca: Option<PathBuf>,
 }
 
 impl TlsFiles {
@@ -20,7 +21,18 @@ impl TlsFiles {
         Self {
             cert: cert.into(),
             key: key.into(),
+            client_ca: None,
         }
+    }
+
+    pub fn with_client_ca(mut self, ca: impl Into<PathBuf>) -> Self {
+        self.client_ca = Some(ca.into());
+        self
+    }
+
+    /// Load this file set, keeping the paths for later rotation.
+    pub fn load(&self) -> Result<Arc<ServerConfig>, String> {
+        load_server_config(&self.cert, &self.key, self.client_ca.as_deref())
     }
 }
 

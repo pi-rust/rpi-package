@@ -363,6 +363,19 @@ fn tls_server_name(
     ServerName::try_from(host.to_string()).map_err(|_| format!("invalid TLS server name: {host}"))
 }
 
+/// Newest modification time among the existing TLS files.
+fn newest_mtime(files: &crate::tls::TlsFiles) -> Option<std::time::SystemTime> {
+    [
+        Some(&files.cert),
+        Some(&files.key),
+        files.client_ca.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|path| std::fs::metadata(path).ok()?.modified().ok())
+    .max()
+}
+
 /// 服务端/客户端共用的字节流：明文 TCP 或已完成 TLS 握手的流。
 pub trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
@@ -372,18 +385,29 @@ type Socket = WebSocketStream<Box<dyn Stream>>;
 /// 每条 JSON 消息占一个 WebSocket 文本帧；协议与 TCP JSONL 一致。
 pub struct WebSocketTransport {
     listener: Mutex<Option<TcpListener>>,
-    /// 服务端 TLS；`Some` 时监听 `wss://`。
-    acceptor: Option<TlsAcceptor>,
+    /// 服务端 TLS；`Some` 时监听 `wss://`。握手中途可被证书轮换替换。
+    acceptor: std::sync::Mutex<Option<TlsAcceptor>>,
     /// 客户端是否使用 `wss://`（与服务端的 TLS 状态无关）。
     secure: bool,
+    /// 轮换来源：PEM 文件、检查间隔、上次成功加载的时间。
+    rotation: Option<Rotation>,
+}
+
+/// Where rotated TLS material is read from.
+struct Rotation {
+    files: crate::tls::TlsFiles,
+    interval: Duration,
+    loaded_at: std::time::SystemTime,
+    last_check: std::sync::Mutex<Instant>,
 }
 
 impl WebSocketTransport {
     pub fn new() -> Self {
         Self {
             listener: Mutex::new(None),
-            acceptor: None,
+            acceptor: std::sync::Mutex::new(None),
             secure: false,
+            rotation: None,
         }
     }
 
@@ -391,17 +415,80 @@ impl WebSocketTransport {
     pub fn with_tls(acceptor: TlsAcceptor) -> Self {
         Self {
             listener: Mutex::new(None),
-            acceptor: Some(acceptor),
+            acceptor: std::sync::Mutex::new(Some(acceptor)),
             secure: false,
+            rotation: None,
         }
+    }
+
+    /// 服务端 TLS，并在这几个 PEM 文件变化后重新加载。
+    ///
+    /// `config` 必须是调用方已经用同一组文件加载并校验过的配置，这样启动错误
+    /// 能在开启监听之前暴露；轮换失败时保留旧配置而不是让监听器失效。
+    pub fn with_tls_rotation(
+        files: crate::tls::TlsFiles,
+        config: Arc<tokio_rustls::rustls::ServerConfig>,
+        interval: Duration,
+    ) -> Self {
+        let loaded_at = newest_mtime(&files).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        Self {
+            listener: Mutex::new(None),
+            acceptor: std::sync::Mutex::new(Some(TlsAcceptor::from(config))),
+            secure: false,
+            rotation: Some(Rotation {
+                files,
+                interval,
+                loaded_at,
+                last_check: std::sync::Mutex::new(Instant::now()),
+            }),
+        }
+    }
+
+    /// Reload rotated certificates when the files are newer than the last load.
+    ///
+    /// Called before each accept, throttled by the configured interval, so a bad
+    /// rotation logs and keeps serving the previous material.
+    fn reload_if_changed(&self) {
+        let Some(rotation) = &self.rotation else {
+            return;
+        };
+        {
+            let mut last = rotation.last_check.lock().expect("tls reload clock");
+            if last.elapsed() < rotation.interval {
+                return;
+            }
+            *last = Instant::now();
+        }
+        let Some(newest) = newest_mtime(&rotation.files) else {
+            return;
+        };
+        if newest <= rotation.loaded_at {
+            return;
+        }
+        let files = &rotation.files;
+        match crate::tls::load_server_config(&files.cert, &files.key, files.client_ca.as_deref()) {
+            Ok(config) => {
+                *self.acceptor.lock().expect("tls acceptor") = Some(TlsAcceptor::from(config));
+                eprintln!("[rpi-server] reloaded rotated TLS material");
+            }
+            Err(error) => {
+                eprintln!("[rpi-server] TLS rotation rejected, keeping previous material: {error}")
+            }
+        }
+    }
+
+    /// Snapshot the current acceptor so a rotation cannot change it mid-handshake.
+    fn current_acceptor(&self) -> Option<TlsAcceptor> {
+        self.acceptor.lock().expect("tls acceptor").clone()
     }
 
     /// 客户端：连接 `wss://`，按系统根证书校验。
     pub fn secure() -> Self {
         Self {
             listener: Mutex::new(None),
-            acceptor: None,
+            acceptor: std::sync::Mutex::new(None),
             secure: true,
+            rotation: None,
         }
     }
 
@@ -462,6 +549,7 @@ impl Transport for WebSocketTransport {
     }
 
     async fn accept(&self) -> Result<WebSocketConnection, String> {
+        self.reload_if_changed();
         // Take the connection, then release the listener: a peer that connects
         // and never finishes the TLS/WebSocket handshake must not block every
         // other accept.
@@ -475,7 +563,7 @@ impl Transport for WebSocketTransport {
         };
         // TLS first when configured, then the WebSocket handshake on the same
         // boxed stream type the client side uses.
-        let stream: Box<dyn Stream> = match &self.acceptor {
+        let stream: Box<dyn Stream> = match self.current_acceptor() {
             Some(acceptor) => Box::new(
                 acceptor
                     .accept(stream)
@@ -669,6 +757,136 @@ mod websocket_tests {
             Ok(ServerName::IpAddress(_))
         ));
         assert!(tls_server_name("not a host").is_err());
+    }
+
+    /// Mint `(ca pem, leaf cert pem, leaf key pem)` for a fresh CA.
+    fn mint_leaf() -> (String, String, String) {
+        use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa};
+        let ca_key = rcgen::KeyPair::generate().expect("ca key");
+        let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
+
+        let leaf_key = rcgen::KeyPair::generate().expect("leaf key");
+        let mut leaf_params =
+            CertificateParams::new(vec!["localhost".to_string()]).expect("leaf params");
+        leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let leaf_cert = leaf_params
+            .signed_by(&leaf_key, &ca_cert, &ca_key)
+            .expect("leaf cert");
+        (ca_cert.pem(), leaf_cert.pem(), leaf_key.serialize_pem())
+    }
+
+    fn trust(pem: &str) -> tokio_rustls::rustls::RootCertStore {
+        use tokio_rustls::rustls::pki_types::CertificateDer;
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for certificate in rustls_pemfile::certs(&mut pem.as_bytes()) {
+            roots
+                .add(CertificateDer::from(certificate.expect("cert").to_vec()))
+                .expect("trust anchor");
+        }
+        roots
+    }
+
+    #[tokio::test]
+    async fn rotated_tls_material_is_used_by_the_next_handshake() {
+        let first = mint_leaf();
+        let second = mint_leaf();
+        let dir = std::env::temp_dir().join(format!("rpi-server-rotate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, &first.1).expect("cert");
+        std::fs::write(&key_path, &first.2).expect("key");
+
+        let files = crate::tls::TlsFiles::new(&cert_path, &key_path);
+        let config = files.load().expect("tls config");
+        let server = Arc::new(WebSocketTransport::with_tls_rotation(
+            files,
+            config,
+            Duration::ZERO,
+        ));
+        let addr = free_addr();
+        server.listen(&addr).await.expect("listen");
+
+        // The first CA is trusted before rotation.
+        let accepting = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.accept().await })
+        };
+        let connector = tokio_tungstenite::Connector::Rustls(Arc::new(
+            tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(trust(&first.0))
+                .with_no_client_auth(),
+        ));
+        let _ = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{}/", addr.rsplit(':').next().unwrap()),
+            None,
+            false,
+            Some(connector),
+        )
+        .await
+        .expect("first handshake");
+        let _ = accepting.await;
+
+        // Rotate the files, move their mtime forward, and let the next accept
+        // reload them.
+        std::fs::write(&cert_path, &second.1).expect("cert");
+        std::fs::write(&key_path, &second.2).expect("key");
+        let future = std::time::SystemTime::now() + Duration::from_secs(5);
+        for path in [&cert_path, &key_path] {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("open")
+                .set_modified(future)
+                .expect("set mtime");
+        }
+
+        let accepting = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.accept().await })
+        };
+        let connector = tokio_tungstenite::Connector::Rustls(Arc::new(
+            tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(trust(&second.0))
+                .with_no_client_auth(),
+        ));
+        let rotated = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{}/", addr.rsplit(':').next().unwrap()),
+            None,
+            false,
+            Some(connector),
+        )
+        .await;
+        assert!(
+            rotated.is_ok(),
+            "the rotated certificate must be served: {:?}",
+            rotated.err()
+        );
+        let _ = accepting.await;
+
+        // The superseded CA no longer verifies the served certificate.
+        let accepting = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move { server.accept().await })
+        };
+        let connector = tokio_tungstenite::Connector::Rustls(Arc::new(
+            tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(trust(&first.0))
+                .with_no_client_auth(),
+        ));
+        let stale = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{}/", addr.rsplit(':').next().unwrap()),
+            None,
+            false,
+            Some(connector),
+        )
+        .await;
+        assert!(stale.is_err(), "the old CA must not verify the new leaf");
+        let _ = accepting.await;
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

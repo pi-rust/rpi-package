@@ -117,18 +117,22 @@ fn timeout_param(params: &Value) -> Result<Duration, String> {
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
 
-/// Load `wss` credentials once, before any listener starts.
-fn rpi_tls_acceptor(
+/// How often rotated `wss` material is checked for.
+const TLS_RELOAD_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Validate `wss` credentials before any listener starts, and keep the paths so
+/// the running listener can pick up rotation.
+fn rpi_tls_files(
     cert: String,
     key: String,
     client_ca: Option<String>,
-) -> Result<tokio_rustls::TlsAcceptor, String> {
-    let config = tls::load_server_config(
-        std::path::Path::new(&cert),
-        std::path::Path::new(&key),
-        client_ca.as_deref().map(std::path::Path::new),
-    )?;
-    Ok(tokio_rustls::TlsAcceptor::from(config))
+) -> Result<(tls::TlsFiles, Arc<tokio_rustls::rustls::ServerConfig>), String> {
+    let mut files = tls::TlsFiles::new(cert, key);
+    if let Some(ca) = client_ca {
+        files = files.with_client_ca(ca);
+    }
+    let config = files.load()?;
+    Ok((files, config))
 }
 
 /// One request/response exchange over an already-created managed connection.
@@ -265,7 +269,7 @@ fn do_start(params: &Value) -> Result<String, String> {
         optional_string(params, "tlsKey")?,
         optional_string(params, "tlsClientCa")?,
     ) {
-        ("wss", Some(cert), Some(key), client_ca) => Some(rpi_tls_acceptor(cert, key, client_ca)?),
+        ("wss", Some(cert), Some(key), client_ca) => Some(rpi_tls_files(cert, key, client_ca)?),
         ("wss", _, _, _) => return Err("transport wss requires both tlsCert and tlsKey".into()),
         (_, None, None, None) => None,
         (_, _, _, _) => {
@@ -311,9 +315,13 @@ fn do_start(params: &Value) -> Result<String, String> {
 
         let result = runtime.block_on(async {
             if transport_name == "wss" {
-                let acceptor = tls.expect("wss transport requires TLS files");
+                let (files, config) = tls.expect("wss transport requires TLS files");
                 run_server(
-                    Arc::new(WebSocketTransport::with_tls(acceptor)),
+                    Arc::new(WebSocketTransport::with_tls_rotation(
+                        files,
+                        config,
+                        TLS_RELOAD_INTERVAL,
+                    )),
                     transport_name,
                     &bind_clone,
                     port,
