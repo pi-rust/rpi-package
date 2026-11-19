@@ -1101,24 +1101,30 @@ test("recent chats open as a floating window without moving the project tree", a
   // The floating window costs no permanent vertical space: the tree keeps its
   // full height and position while it is open.
   expect(await treeBox()).toEqual(before);
-  // The list must scroll inside the capped window: the flex child needs
-  // min-height: 0 or the rows push past the hidden overflow with no scrollbar.
-  const scroll = await recent
-    .locator(".slim-recent-list")
-    .evaluate((element) => ({
+  // The list must scroll *inside* the capped window and show a real, space-
+  // reserving scrollbar. With only `scrollbar-width: thin` Chromium renders an
+  // overlay bar that is invisible until interaction: clientWidth == offsetWidth.
+  // An always-visible bar reduces clientWidth; assert both facts so the probe
+  // fails when the bar regresses to overlay-only.
+  const list = recent.locator(".slim-recent-list");
+  const geometry = await list.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const parent = element.parentElement!.getBoundingClientRect();
+    return {
+      bottom: box.bottom,
+      parentBottom: parent.bottom,
       client: element.clientHeight,
       scroll: element.scrollHeight,
-      top: element.scrollTop,
-    }));
-  expect(scroll.scroll).toBeGreaterThan(scroll.client);
-  await recent
-    .locator(".slim-recent-list")
-    .evaluate((element) => element.scrollTo({ top: 200 }));
-  await expect
-    .poll(() =>
-      recent.locator(".slim-recent-list").evaluate((element) => element.scrollTop),
-    )
-    .toBeGreaterThan(0);
+      clientWidth: element.clientWidth,
+      offsetWidth: element.offsetWidth,
+    };
+  });
+  expect(geometry.scroll).toBeGreaterThan(geometry.client);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.parentBottom);
+  expect(geometry.clientWidth).toBeLessThan(geometry.offsetWidth);
+  expect(await list.evaluate((element) => element.scrollTop)).toBe(0);
+  await list.evaluate((element) => element.scrollTo({ top: 200 }));
+  expect(await list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await page.keyboard.press("Escape");
   await expect(recent).toHaveCount(0);
 });

@@ -388,3 +388,25 @@
     pointer-events: auto;
   }
 }
+
+/* Keep the floating-list scrollbar visible and space-reserved in Chromium.
+   `scrollbar-width: thin` alone is rendered as an overlay scrollbar that only
+   appears while scrolling, so users perceive the list as having no scrollbar. */
+.slim-recent-list,
+.slim-chat-search-list {
+  scrollbar-gutter: stable;
+}
+.slim-recent-list::-webkit-scrollbar,
+.slim-chat-search-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.slim-recent-list::-webkit-scrollbar-thumb,
+.slim-chat-search-list::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  background: var(--line);
+}
+.slim-recent-list::-webkit-scrollbar-track,
+.slim-chat-search-list::-webkit-scrollbar-track {
+  background: transparent;
+}
