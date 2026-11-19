@@ -317,3 +317,7 @@
 .slim-chat-search-list::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Preview-only build marker: gated by VITE_PREVIEW_BUILD. */
+.slim-preview-badge { display:flex; align-items:center; gap:6px; padding:0 10px 8px; color:var(--muted); font-family:var(--mono); font-size:10.5px; letter-spacing:.01em; }
+.slim-preview-badge > span { width:6px; height:6px; flex:0 0 auto; border-radius:50%; background:var(--green); }
