@@ -237,7 +237,7 @@
 }
 .recent-sessions {
   flex: 0 0 auto;
-  padding: 0 1px 5px;
+  padding: 0 1px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
 .recent-session-list {
