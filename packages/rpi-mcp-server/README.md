@@ -1,6 +1,8 @@
 # rpi-mcp-server
 
-Publish the rpi agent as an **MCP server**. This is the opposite direction of
+Publish the rpi agent as an **MCP server**. For transport choice, client
+configuration and troubleshooting see the
+[MCP integration guide](../../docs/mcp-server.md). This is the opposite direction of
 [`rpi-mcp-adapter`](../rpi-mcp-adapter/README.md), which consumes MCP servers.
 
 Transports:

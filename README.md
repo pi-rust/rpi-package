@@ -159,8 +159,10 @@ per-platform archive next to the ACP bridge:
 task pack-mcp   # dist/rpi-mcp-<platform>.tar.gz with the binary at the root
 ```
 
-See the [MCP server package README](packages/rpi-mcp-server/README.md) for the
-tool catalog, limits and client configuration.
+See the [MCP integration guide](docs/mcp-server.md) for transport choice, client
+configuration, trust boundaries and troubleshooting, and the
+[MCP server package README](packages/rpi-mcp-server/README.md) for the exact tool
+arguments and limits.
 
 ## Native ACP integration
 
