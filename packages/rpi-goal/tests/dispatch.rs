@@ -273,3 +273,68 @@ fn an_aborted_run_pauses_and_an_errored_run_waits() {
     assert_eq!(goal["status"], json!("active"), "{goal}");
     assert_eq!(support::sends_mentioning("Error objective").len(), 2);
 }
+
+#[test]
+fn pausing_a_live_run_aborts_it_instead_of_waiting() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    support::settle_pause();
+
+    support::block_sends(true);
+    support::fire(EventTag::AgentStart);
+    support::command("Abort objective");
+    support::wait_sends_mentioning("Abort objective", 1, TIMEOUT);
+
+    support::command("pause");
+    let aborts = support::wait_for("Abort", 1, TIMEOUT);
+    assert_eq!(aborts.len(), 1, "pause must abort the in-flight run");
+    assert_eq!(support::status(), "paused");
+    support::fire(EventTag::AgentEnd);
+    support::release_sends();
+    support::sleep(80);
+}
+
+#[test]
+fn pausing_without_a_live_run_does_not_abort_anything() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    support::settle_pause();
+
+    support::command("Idle pause objective");
+    support::wait_sends_mentioning("Idle pause objective", 1, TIMEOUT);
+    support::command("pause");
+    support::sleep(120);
+    assert!(
+        support::calls_named("Abort").is_empty(),
+        "no run was in flight, so nothing may be aborted"
+    );
+    assert_eq!(support::status(), "paused");
+}
+
+#[test]
+fn a_host_without_abort_still_pauses_cleanly() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    support::settle_pause();
+    support::set_abort_supported(false);
+
+    support::block_sends(true);
+    support::fire(EventTag::AgentStart);
+    support::command("Legacy host objective");
+    support::wait_sends_mentioning("Legacy host objective", 1, TIMEOUT);
+
+    support::command("pause");
+    let attempts = support::wait_for("Abort", 1, TIMEOUT);
+    assert_eq!(attempts.len(), 1, "the action is attempted once");
+    assert_eq!(
+        support::status(),
+        "paused",
+        "an unsupported abort must not block the stop"
+    );
+    support::fire(EventTag::AgentEnd);
+    support::release_sends();
+    support::sleep(80);
+}

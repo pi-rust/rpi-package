@@ -29,6 +29,39 @@ use crate::state::{self, Goal, Goals, Status};
 /// to distinguish automatic work from user work.
 static AUTOMATIC: AtomicBool = AtomicBool::new(false);
 
+/// The rejection is reported once. It is not latched into "never try again":
+/// a stop is rare, and a host that gains the action (or a reload) must not stay
+/// permanently degraded because of one early failure.
+static ABORT_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Cancel the in-flight run so a stop takes effect now instead of after the
+/// current turn. Hosts without the action reject it; the goal then stops at the
+/// next boundary exactly as before.
+pub fn request_abort() {
+    if crate::is_subagent() || !crate::events::is_run_active() {
+        return;
+    }
+    let Some(runtime) = runtime::snapshot() else {
+        return;
+    };
+    // The action runs asynchronously in the host and reclaims the queue; sending
+    // it from this thread would block the caller that is trying to stop the goal.
+    let _ = std::thread::Builder::new()
+        .name("rpi-goal-abort".into())
+        .spawn(move || {
+            let _scope = runtime::enter(Some(runtime));
+            if let Err(error) =
+                crate::call_runtime_raw(crate::raw_actions::ABORT, json!({}))
+            {
+                if !ABORT_WARNED.swap(true, Ordering::SeqCst) {
+                    eprintln!(
+                        "rpi-goal: this host cannot abort the current run ({error}); a stop takes effect at the next turn boundary"
+                    );
+                }
+            }
+        });
+}
+
 pub fn is_automatic() -> bool {
     AUTOMATIC.load(Ordering::SeqCst)
 }
@@ -239,6 +272,17 @@ fn dispatch(goal: &Goal) {
     );
     AUTOMATIC.store(false, Ordering::SeqCst);
 
+    // A stop (pause, budget, safety, usage limit) may have aborted this run while
+    // it was in flight; that state is already committed and needs no fold-back.
+    if !state::read_lenient()
+        .active
+        .as_ref()
+        .map(|active| active.id == goal.id && active.status == Status::Active)
+        .unwrap_or(false)
+    {
+        return;
+    }
+
     match result {
         Ok(value) => {
             let status = value
@@ -338,6 +382,9 @@ pub fn stop_current(expected_id: &str, status: Status, reason: &str, cause: Opti
     state::flush();
     inject::flush();
     crate::status::publish(&stopped);
+    // The stop is now committed: end the run that was still working instead of
+    // letting it finish work nobody asked for.
+    request_abort();
 }
 
 pub fn wait_current(expected_id: &str, waiting: crate::state::Waiting) {

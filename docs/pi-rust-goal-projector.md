@@ -64,6 +64,11 @@ AgentSettled ──wake──▶ worker ──▶ evaluate ──▶ SendMessage
   continuation for a replaced goal id is dropped.
 - Budgets are checked before dispatching and at `TurnEnd`, so a token or time
   budget exhaustion never buys one more turn.
+- A committed stop (`/goal pause`, budget, safety, usage limit) requests the host's
+  `Abort` action (raw id 27) when a run is live, so the stop takes effect
+  immediately instead of after the current turn. The action is absent from the
+  published SDK, so the call is numeric and a rejecting host degrades to the
+  turn-boundary behavior with one warning.
 
 ## Accounting
 

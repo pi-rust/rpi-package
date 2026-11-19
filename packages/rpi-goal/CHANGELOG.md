@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.rpi/agent/goal.json` with `continuationLimits.automaticTurns` (25) and
   `.noProgressTurns` (3)
 - `/goal tokens`, `/goal settings`; a footer status line
+- `/goal pause`, budget exhaustion, and safety stops abort the in-flight run via
+  the host `Abort` action (id 27, not yet in the published SDK). A host that does
+  not support it rejects the call and the stop applies at the next turn boundary
 - compaction re-injects the goal notice, and reload restores usage, safety counters,
   elapsed active time, and waiting state
 
@@ -46,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/goal status` and the terminal tools no longer report "no active goal" mid-run
 - a token budget that this host cannot report usage for is reported once instead
   of silently never triggering
+- an unsupported abort never blocks a stop or repeats its warning: the goal still
+  reaches its stopped state
 
 ## [0.2.5](https://github.com/pi-rust/rpi-package/compare/rpi-goal-v0.2.4...rpi-goal-v0.2.5) - 2026-11-06
 

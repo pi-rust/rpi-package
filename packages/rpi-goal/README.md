@@ -25,6 +25,10 @@ turn.
 - **Explicit stopping reasons.** `goal_complete`, `goal_blocked`, and `goal_wait`
   are separate tools, each guarded by the current goal id. Plain assistant text
   never completes a goal.
+- **Stops are immediate.** `/goal pause` and every limit-driven stop cancel the
+  in-flight run through the host's `Abort` action, so work ends now instead of
+  after the current turn. A host without that action rejects the call with an
+  explicit error, and the stop then takes effect at the next turn boundary.
 - **Stale turns cannot restart work.** A continuation, block, wait, or completion
   carries the goal id it was created for. After a replacement, pause, clear,
   completion, or limit transition, the delayed call is rejected.
@@ -169,9 +173,6 @@ never leak into a different branch.
   and scheduled quota retries are not implemented: a recognized usage limit stops
   the goal and waits for `/goal resume`.
 - **No managed-run RPC.** Extensions cannot start, observe, or cancel this goal.
-- **No pause-aborts-the-current-turn.** `/goal pause` stops further automatic work;
-  the in-flight run finishes on its own. rpi has no plugin-visible abort action in
-  the pinned SDK, so this is documented rather than approximated.
 - **No rich TUI manager or settings editor.** `/goal`, its subcommands, and the
   status line are the interface.
 - **Headless modes continue too.** `rpi -p` and `--mode rpc` are not gated, so a

@@ -69,15 +69,31 @@ pub fn is_subagent() -> bool {
     PROCESS_IS_SUBAGENT.load(Ordering::Relaxed)
 }
 
+/// Runtime actions the pinned SDK (0.3.20) does not name yet.
+///
+/// The ABI carries a raw `u32`, so a newer host action is still callable; an
+/// older host rejects it with an explicit "unknown runtime action id" error
+/// instead of misbehaving, which is what makes the feature detection below safe.
+pub mod raw_actions {
+    /// `Abort` — cancel the in-flight main-lane run. Present in the host runtime
+    /// (id 27) but not in the published SDK that this crate pins.
+    pub const ABORT: u32 = 27;
+}
+
 /// Call a host runtime action (e.g. `AppendEntry`, `SendMessage`). Safe from any
 /// thread, including event handlers and the continuation worker. Never call this
 /// while holding a lock the host may re-enter through this plugin.
 pub fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
+    call_runtime_raw(id as u32, args)
+}
+
+/// Numeric form, for actions the pinned SDK does not enumerate.
+pub fn call_runtime_raw(id: u32, args: Value) -> Result<Value, String> {
     let runtime = runtime::snapshot().ok_or("goal runtime is unavailable")?;
     let input = args.to_string();
     let mut output = StbString::empty();
     let rc = (runtime.runtime_action)(
-        id as u32,
+        id,
         StbStringRef::from_str(&input),
         &mut output,
         runtime.user_data,
@@ -86,7 +102,7 @@ pub fn call_runtime(id: RuntimeActionId, args: Value) -> Result<Value, String> {
     (runtime.free_string)(output);
     if rc != 0 {
         return Err(if text.is_empty() {
-            format!("runtime action {id:?} failed")
+            format!("runtime action {id} failed")
         } else {
             text
         });

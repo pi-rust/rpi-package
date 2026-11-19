@@ -29,6 +29,8 @@ static CALLS: Mutex<Vec<Call>> = Mutex::new(Vec::new());
 static CHANGED: Condvar = Condvar::new();
 static SEND_STATUS: Mutex<String> = Mutex::new(String::new());
 static ACTIVE_TOOLS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+/// Whether the fake host implements the (unpublished) `Abort` action.
+static ABORT_SUPPORTED: Mutex<bool> = Mutex::new(true);
 static HANDLERS: Mutex<Vec<(EventTag, EventHandlerFn)>> = Mutex::new(Vec::new());
 static COMMAND: Mutex<Option<CommandHandlerFn>> = Mutex::new(None);
 static TOOLS: Mutex<BTreeMap<String, ToolFns>> = Mutex::new(BTreeMap::new());
@@ -61,6 +63,9 @@ pub fn serial() -> MutexGuard<'static, ()> {
 }
 
 pub fn reset() {
+    // A previous test may have left a live run marked; a stale run flag would gate
+    // every later dispatch in this process.
+    fire(EventTag::AgentEnd);
     // The worker may still be dispatching for the previous test. Drain it until
     // the host sees no new activity, then clear twice so no queued write can
     // resurrect the old goal.
@@ -85,6 +90,7 @@ pub fn reset() {
     CALLS.lock().unwrap_or_else(|p| p.into_inner()).clear();
     *SEND_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = "completed".into();
     *ACTIVE_TOOLS.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *ABORT_SUPPORTED.lock().unwrap_or_else(|p| p.into_inner()) = true;
     *SEND_BLOCKS.lock().unwrap_or_else(|p| p.into_inner()) = false;
     *SEND_RELEASED.lock().unwrap_or_else(|p| p.into_inner()) = true;
     SEND_CV.notify_all();
@@ -315,6 +321,13 @@ fn runtime_action(action, args, out, _user_data) {
             json!({"tools": tools})
         }
         "SetStatus" => json!({"ok": true, "changed": true}),
+        "Abort" => {
+            if !*ABORT_SUPPORTED.lock().unwrap_or_else(|p| p.into_inner()) {
+                out.write("unknown runtime action id 27".to_string());
+                return 1;
+            }
+            json!({"aborted": true, "runId": "fixture-run"})
+        }
         _ => json!({}),
     };
     out.write(result.to_string());
@@ -330,6 +343,7 @@ fn action_name(action: u32) -> String {
         4 => "GetActiveTools",
         18 => "SetStatus",
         20 => "GetSessionBranch",
+        27 => "Abort",
         _ => return format!("action-{action}"),
     }
     .to_string()
@@ -559,6 +573,11 @@ pub fn active_goal_state(id: &str, title: &str) -> Value {
         },
         "archived": []
     })
+}
+
+/// Model a host that predates the abort action.
+pub fn set_abort_supported(supported: bool) {
+    *ABORT_SUPPORTED.lock().unwrap_or_else(|p| p.into_inner()) = supported;
 }
 
 /// Defer `goal-state` commits, like a host that only commits an entry written

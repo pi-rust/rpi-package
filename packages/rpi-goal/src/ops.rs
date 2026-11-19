@@ -129,7 +129,11 @@ pub fn update(notes: Option<&str>, new_status: Option<Status>) -> Result<Goal, S
         queue_active(&goals, &goal);
         (goal, notice)
     };
-    finish(&goal, notice)
+    let result = finish(&goal, notice);
+    if goal.status.is_stopped() {
+        dispatch::request_abort();
+    }
+    result
 }
 
 fn apply_status(goal: &mut Goal, new_status: Status, now: i64) {
@@ -179,7 +183,12 @@ pub fn set_status(new_status: Status) -> Result<Goal, String> {
         queue_active(&goals, &goal);
         (goal, notice)
     };
-    finish(&goal, notice)
+    let result = finish(&goal, notice);
+    if goal.status.is_stopped() {
+        // `/goal pause` (or an update to `paused`) ends the live run now.
+        dispatch::request_abort();
+    }
+    result
 }
 
 /// Archive the active goal. Used by `/goal stop|done|complete` and by the
