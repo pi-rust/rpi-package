@@ -39,5 +39,5 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 rpi-extcore = { path = "../rpi-extcore", version = "0.2.16", features = ["test-support"] }
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "stream"] }
 tokio-tungstenite = "0.29"

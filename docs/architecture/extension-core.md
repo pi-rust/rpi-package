@@ -86,6 +86,10 @@ is not part of `rpi-mcp-core` and must not add server policy there:
 - Resource updates are settlement-driven: the adapter subscribes to the native
   event stream and emits `notifications/resources/updated` for subscribed URIs
   when a run settles. It does not poll the transcript.
+- Stream resumption is adapter state, not core state: retained SSE events live in
+  the HTTP session (bounded per stream and per session) and a resumed POST replays
+  them without re-executing the request. Expired events fail closed with `404`
+  rather than silently dropping frames.
 
 ### Session-owned MCP tools integration
 

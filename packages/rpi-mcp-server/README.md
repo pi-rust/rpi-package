@@ -35,7 +35,7 @@ rpi-mcp-bridge --http 0.0.0.0:8080 --token "$TOKEN" --allow-origin https://ide.e
 
 | Endpoint | Behaviour |
 | --- | --- |
-| `POST /mcp` | JSON-RPC frames. Requests get one JSON response, or an SSE stream when the client sends `Accept: text/event-stream` **and** the body calls `rpi_prompt`. Notifications/responses only → `202`. |
+| `POST /mcp` | JSON-RPC frames. Requests get one JSON response, or an SSE stream when the client sends `Accept: text/event-stream` **and** the body calls `rpi_prompt`. Notifications/responses only → `202`. Streams emit `id: <stream>:<seq>` and can be resumed with `Last-Event-ID`. |
 | `GET /mcp` | `405` with `Allow: POST, DELETE`: this server offers no standalone server stream. |
 | `DELETE /mcp` | Terminates the session (`204`), so later requests get `404`. |
 | `OPTIONS /mcp` | Browser preflight: `204` with CORS headers for an allowed origin, `403` otherwise. |
@@ -57,6 +57,16 @@ listed with `--allow-origin`; allowed origins also get CORS headers and a
 preflight response so a browser client can call `POST /mcp` directly. Bearer
 tokens are compared in constant time. There is no TLS and no OAuth: put it behind a
 trusted proxy or keep it on loopback.
+
+### Stream resumption
+
+Every SSE frame carries `id: <stream>:<seq>`. If the connection drops mid-prompt,
+re-send the request with `Last-Event-ID: <stream>:<seq>` (the last event you
+received): the server replays the retained events after that point and continues
+live, without re-executing the prompt. Retained per stream: 512 events; 16
+streams per session. An unknown stream, or one whose events already expired, is
+`404` — re-read `rpi://session/transcript` instead of guessing. A resumed POST
+ignores its body, so a reconnect can never start a second run.
 
 `/mcp/ws` is a convenience channel for our own clients (one bidirectional socket
 on the same native session), not something an MCP client can use. It shares the
@@ -152,7 +162,7 @@ and workspace when a run must be allowed to use gated tools.
 - 16 MiB per input frame; oversized frames are rejected without dispatching.
 - At most 16 concurrent `tools/call` requests; excess calls fail with `-32603`.
 - 16 MiB per HTTP body and per WebSocket message; at most 8 HTTP sessions by
-  default.
+  default, 16 retained streams per session and 512 retained events per stream.
 - 64 queued outbound frames of backpressure.
 - 256 KiB of model-visible text per tool result, truncated with
   `\n[truncated]`.
@@ -190,8 +200,9 @@ It does not replace a run against a real `rpi` binary.
 (initialize/session header, `tools/list`, `202`, `400`, `403`, `404`, `405`,
 `204`, re-initialize rejection, session cap `429`, graceful shutdown, token and
 protocol-version checks, CORS preflight, cancellation reaching the native host,
-SSE for `rpi_prompt`) plus the WebSocket bridge (session hello, initialize,
-tools/list, reattach, rejection).
+SSE for `rpi_prompt`, interrupted-stream resumption via `Last-Event-ID`, unknown
+stream `404`) plus the WebSocket bridge (session hello, initialize, tools/list,
+reattach, rejection).
 
 Live checks against `rpi 0.24.0` covered `initialize`, `tools/list`,
 `rpi_state`, `rpi_available_models`, `rpi_thinking_levels`,

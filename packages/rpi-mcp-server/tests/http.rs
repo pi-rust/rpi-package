@@ -536,3 +536,189 @@ mod websocket {
         assert!(tokio_tungstenite::connect_async(url).await.is_err());
     }
 }
+
+/// Factory whose scripted host streams a few deltas and then settles a prompt.
+fn settling_factory() -> SessionFactory {
+    Arc::new(|| {
+        Box::pin(async {
+            let (host_stdin, host_commands) = tokio::io::duplex(64 * 1024);
+            let (session, events) = HostSession::test_connection_with_ready(
+                host_stdin,
+                64,
+                json!({
+                    "type": "ready",
+                    "protocol": "rpi",
+                    "supportedCommands": ["get_state", "get_messages"],
+                }),
+            );
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = tokio::io::BufReader::new(host_commands).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let Ok(command) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if command["type"] != "prompt" {
+                        continue;
+                    }
+                    let _ = events.send(json!({
+                        "type": "response",
+                        "id": command["id"],
+                        "success": true,
+                        "data": {"accepted": true},
+                    }));
+                    for chunk in ["one ", "two ", "three"] {
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                        let _ = events.send(json!({
+                            "type": "message_update",
+                            "eventType": "text_delta",
+                            "delta": chunk,
+                        }));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    events
+                        .send_projected(json!({
+                            "type": "agent_settled",
+                            "outcome": "completed",
+                            "finalText": "one two three",
+                        }))
+                        .await;
+                }
+            });
+            Ok(McpServer::from_session(session))
+        })
+    })
+}
+
+mod resumption {
+    use super::*;
+    use futures_util::StreamExt;
+
+    struct Sse {
+        url: String,
+        session: String,
+    }
+
+    async fn start() -> Sse {
+        let factory = settling_factory();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let _ = serve_listener(listener, HttpOptions::new(address.to_string()), factory).await;
+        });
+        let base = format!("http://{address}");
+        let session = open_session(&base).await;
+        Sse {
+            url: format!("{base}/mcp"),
+            session,
+        }
+    }
+
+    /// Parse one SSE chunk batch into `(id, payload)` pairs.
+    fn parse(buf: &mut String) -> Vec<(String, Value)> {
+        let mut events = Vec::new();
+        while let Some(end) = buf.find("\n\n") {
+            let block: String = buf.drain(..end + 2).collect();
+            let mut id = None;
+            let mut data = None;
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("id: ") {
+                    id = Some(value.to_string());
+                } else if let Some(value) = line.strip_prefix("data: ") {
+                    data = Some(value.to_string());
+                }
+            }
+            if let (Some(id), Some(data)) = (id, data) {
+                if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                    events.push((id, value));
+                }
+            }
+        }
+        events
+    }
+
+    async fn prompt_request(sse: &Sse, extra: Option<(&str, &str)>) -> reqwest::Response {
+        let mut request = client()
+            .post(&sse.url)
+            .header("mcp-session-id", &sse.session)
+            .header("accept", "application/json, text/event-stream");
+        if let Some((name, value)) = extra {
+            request = request.header(name, value);
+        }
+        request
+            .json(&json!({
+                "jsonrpc":"2.0",
+                "id":2,
+                "method":"tools/call",
+                "params":{
+                    "name":"rpi_prompt",
+                    "arguments":{"message":"hi"},
+                    "_meta":{"progressToken":"p1"},
+                },
+            }))
+            .send()
+            .await
+            .expect("prompt")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resumes_an_interrupted_stream_from_last_event_id() {
+        let sse = start().await;
+        let response = prompt_request(&sse, None).await;
+        assert_eq!(response.status(), 200);
+
+        // Read the first event, then drop the connection mid-stream.
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut first: Vec<(String, Value)> = Vec::new();
+        while first.is_empty() {
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(10), stream.next())
+                .await
+                .expect("first event")
+                .expect("chunk")
+                .expect("body");
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            first = parse(&mut buffer);
+        }
+        drop(stream);
+        let (last_id, _) = first.first().expect("first event").clone();
+        assert!(last_id.contains(':'), "{last_id}");
+
+        // Let the producer finish while no client is attached.
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+        let resumed = prompt_request(&sse, Some(("last-event-id", &last_id))).await;
+        assert_eq!(resumed.status(), 200);
+        let mut stream = resumed.bytes_stream();
+        let mut buffer = String::new();
+        let mut replay: Vec<(String, Value)> = Vec::new();
+        loop {
+            let chunk =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), stream.next()).await
+                {
+                    Ok(Some(Ok(chunk))) => chunk,
+                    Ok(Some(Err(error))) => panic!("stream error: {error}"),
+                    Ok(None) | Err(_) => break,
+                };
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            replay.extend(parse(&mut buffer));
+        }
+        assert!(!replay.is_empty(), "resumed stream replayed nothing");
+        // Every replayed event comes after the acknowledged one.
+        let acknowledged: u64 = last_id.rsplit_once(':').unwrap().1.parse().unwrap();
+        for (id, _) in &replay {
+            let seq: u64 = id.rsplit_once(':').unwrap().1.parse().unwrap();
+            assert!(seq > acknowledged, "{id} <= {last_id}");
+        }
+        let final_event = replay.last().expect("final event").1.clone();
+        assert_eq!(final_event["id"], 2, "{final_event:#?}");
+        assert_eq!(final_event["result"]["isError"], false, "{final_event:#?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_last_event_id_is_rejected() {
+        let sse = start().await;
+        let response = prompt_request(&sse, Some(("last-event-id", "deadbeef:1"))).await;
+        assert_eq!(response.status(), 404);
+    }
+}

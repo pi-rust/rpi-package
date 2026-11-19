@@ -53,6 +53,10 @@ const SESSION_IDLE: Duration = Duration::from_secs(15 * 60);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(600);
 /// Bounded wait when stopping a session.
 const STOP_DEADLINE: Duration = Duration::from_secs(5);
+/// Retained SSE frames per stream; older events cannot be resumed.
+const MAX_STREAM_EVENTS: usize = 512;
+/// Retained SSE streams per session.
+const MAX_STREAMS: usize = 16;
 
 /// Small access/parse failure, converted to a response at the handler boundary.
 #[derive(Debug)]
@@ -94,6 +98,67 @@ impl HttpOptions {
     }
 }
 
+/// One retained SSE event, addressable by `Last-Event-ID`.
+struct StreamEntry {
+    seq: u64,
+    frame: Value,
+}
+
+#[derive(Default)]
+struct StreamLog {
+    entries: std::collections::VecDeque<StreamEntry>,
+    next_seq: u64,
+    finished: bool,
+}
+
+/// A server-initiated stream that outlives the connection that started it.
+struct StreamState {
+    id: String,
+    log: Mutex<StreamLog>,
+    notify: tokio::sync::Notify,
+}
+
+impl StreamState {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            log: Mutex::new(StreamLog::default()),
+            notify: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// Append one frame, dropping the oldest retained event past the cap.
+    fn append(&self, frame: Value) {
+        let mut log = self.log.lock().expect("stream log");
+        log.next_seq += 1;
+        let seq = log.next_seq;
+        log.entries.push_back(StreamEntry { seq, frame });
+        while log.entries.len() > MAX_STREAM_EVENTS {
+            log.entries.pop_front();
+        }
+        drop(log);
+        self.notify.notify_waiters();
+    }
+
+    fn finish(&self) {
+        self.log.lock().expect("stream log").finished = true;
+        self.notify.notify_waiters();
+    }
+
+    /// Frames after `after`, plus whether the log ended and what it still holds.
+    fn snapshot(&self) -> (Vec<(u64, Value)>, bool, Option<u64>) {
+        let log = self.log.lock().expect("stream log");
+        (
+            log.entries
+                .iter()
+                .map(|entry| (entry.seq, entry.frame.clone()))
+                .collect(),
+            log.finished,
+            log.entries.front().map(|entry| entry.seq),
+        )
+    }
+}
+
 /// One HTTP session: its native server, inbound queue and outbound broadcast.
 struct HttpSession {
     id: String,
@@ -102,6 +167,26 @@ struct HttpSession {
     stop: watch::Sender<bool>,
     last_used: AtomicU64,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    streams: Mutex<StreamRegistry>,
+}
+
+#[derive(Default)]
+struct StreamRegistry {
+    order: std::collections::VecDeque<String>,
+    states: HashMap<String, Arc<StreamState>>,
+}
+
+impl StreamRegistry {
+    /// Retain `state`, evicting the oldest stream past the per-session cap.
+    fn insert(&mut self, state: Arc<StreamState>) {
+        self.order.push_back(state.id.clone());
+        self.states.insert(state.id.clone(), state);
+        while self.order.len() > MAX_STREAMS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.states.remove(&oldest);
+            }
+        }
+    }
 }
 
 impl HttpSession {
@@ -131,6 +216,7 @@ impl HttpSession {
             stop,
             last_used: AtomicU64::new(now_ms()),
             task: Mutex::new(Some(task)),
+            streams: Mutex::new(StreamRegistry::default()),
         })
     }
 
@@ -471,7 +557,19 @@ async fn handle_post(State(state): State<AppState>, headers: HeaderMap, body: By
     }
 
     if wants_stream(&frames, &headers) {
-        return stream_responses(outbound, ids);
+        // A resumed POST replays the retained stream; the body is not executed
+        // again, so a reconnect can never re-run a prompt.
+        if let Some(resume) = header(&headers, "last-event-id").and_then(parse_event_id) {
+            return resume_stream(&session, resume, &state, &headers);
+        }
+        let stream = StreamState::new();
+        session
+            .streams
+            .lock()
+            .expect("streams")
+            .insert(Arc::clone(&stream));
+        spawn_stream(Arc::clone(&stream), outbound, ids);
+        return stream_response(&session.id, stream, 0, &state, &headers);
     }
     let responses = gather(&mut outbound, ids).await;
     let body = match responses.len() {
@@ -524,10 +622,13 @@ async fn gather(outbound: &mut broadcast::Receiver<Value>, ids: HashSet<String>)
     responses
 }
 
-fn stream_responses(outbound: broadcast::Receiver<Value>, ids: HashSet<String>) -> Response {
-    let (sender, receiver) = mpsc::unbounded_channel::<Value>();
+/// Drain the session's frames into a retained stream.
+fn spawn_stream(
+    stream: Arc<StreamState>,
+    mut outbound: broadcast::Receiver<Value>,
+    ids: HashSet<String>,
+) {
     tokio::spawn(async move {
-        let mut outbound = outbound;
         let mut pending = ids;
         let deadline = tokio::time::Instant::now() + REQUEST_DEADLINE;
         while !pending.is_empty() {
@@ -539,31 +640,89 @@ fn stream_responses(outbound: broadcast::Receiver<Value>, ids: HashSet<String>) 
             };
             if frame.get("method").is_some() {
                 // Progress and other server messages stream as they arrive.
-                let _ = sender.send(frame);
+                stream.append(frame);
                 continue;
             }
             let Some(id) = frame.get("id") else {
                 continue;
             };
             if pending.remove(&id_key(id)) {
-                let _ = sender.send(frame);
+                stream.append(frame);
             }
         }
+        stream.finish();
     });
-    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
-        receiver.recv().await.map(|value| {
-            (
-                Ok::<Bytes, Infallible>(Bytes::from(format!("event: message\ndata: {value}\n\n"))),
-                receiver,
-            )
-        })
+}
+
+/// Resume a retained stream, or fail closed when its events are gone.
+fn resume_stream(
+    session: &Arc<HttpSession>,
+    (stream_id, after): (String, u64),
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Response {
+    let Some(stream) = session
+        .streams
+        .lock()
+        .expect("streams")
+        .states
+        .get(&stream_id)
+        .cloned()
+    else {
+        return (StatusCode::NOT_FOUND, "unknown or expired MCP stream").into_response();
+    };
+    let (_, _, oldest) = stream.snapshot();
+    if oldest.is_some_and(|oldest| after + 1 < oldest) {
+        // The gap is real: resuming would silently drop events.
+        return (StatusCode::NOT_FOUND, "MCP stream events have expired").into_response();
+    }
+    stream_response(&session.id, stream, after, state, headers)
+}
+
+/// Encode one retained stream as SSE, starting after `after`.
+fn stream_response(
+    session_id: &str,
+    stream: Arc<StreamState>,
+    after: u64,
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Response {
+    let source = Arc::clone(&stream);
+    let body = futures_util::stream::unfold((source, after), |(stream, cursor)| async move {
+        loop {
+            let (entries, finished, _) = stream.snapshot();
+            let next = entries.into_iter().find(|(seq, _)| *seq > cursor);
+            if let Some((seq, frame)) = next {
+                let chunk = format!("id: {}:{seq}\ndata: {frame}\n\n", stream.id);
+                return Some((Ok::<Bytes, Infallible>(Bytes::from(chunk)), (stream, seq)));
+            }
+            if finished {
+                return None;
+            }
+            stream.notify.notified().await;
+        }
     });
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from_stream(stream))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        .body(Body::from_stream(body))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    if let Ok(value) = header::HeaderValue::from_str(session_id) {
+        response
+            .headers_mut()
+            .insert(header::HeaderName::from_static("mcp-session-id"), value);
+    }
+    with_cors(state, headers, response)
+}
+
+/// `Last-Event-ID` values are `<stream>:<seq>`.
+fn parse_event_id(raw: &str) -> Option<(String, u64)> {
+    let (stream, seq) = raw.trim().rsplit_once(':')?;
+    if stream.is_empty() {
+        return None;
+    }
+    Some((stream.to_string(), seq.parse().ok()?))
 }
 
 async fn handle_delete(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -916,6 +1075,53 @@ mod tests {
         assert!(state.origin_allowed("https://ide.example"));
         assert!(state.host_allowed("ide.example"));
         assert!(!state.origin_allowed("https://other.example"));
+    }
+
+    #[test]
+    fn event_ids_carry_a_stream_and_sequence() {
+        assert_eq!(
+            parse_event_id("stream-1:42"),
+            Some(("stream-1".to_string(), 42))
+        );
+        assert_eq!(
+            parse_event_id("  stream-1:7 "),
+            Some(("stream-1".to_string(), 7))
+        );
+        assert_eq!(parse_event_id("stream-1"), None);
+        assert_eq!(parse_event_id(":7"), None);
+        assert_eq!(parse_event_id("stream-1:not-a-number"), None);
+    }
+
+    #[test]
+    fn stream_logs_are_bounded_and_evict_oldest() {
+        let stream = StreamState::new();
+        for index in 0..(MAX_STREAM_EVENTS + 5) {
+            stream.append(json!({"seq": index}));
+        }
+        let (entries, finished, oldest) = stream.snapshot();
+        assert!(!finished);
+        assert_eq!(entries.len(), MAX_STREAM_EVENTS);
+        assert_eq!(oldest, Some(6));
+        assert_eq!(entries.last().unwrap().0, (MAX_STREAM_EVENTS + 5) as u64);
+
+        stream.finish();
+        assert!(stream.snapshot().1);
+    }
+
+    #[test]
+    fn stream_registry_keeps_only_the_newest_streams() {
+        let mut registry = StreamRegistry::default();
+        let mut ids = Vec::new();
+        for _ in 0..(MAX_STREAMS + 3) {
+            let stream = StreamState::new();
+            ids.push(stream.id.clone());
+            registry.insert(stream);
+        }
+        assert_eq!(registry.states.len(), MAX_STREAMS);
+        assert!(!registry.states.contains_key(&ids[0]));
+        assert!(registry
+            .states
+            .contains_key(ids.last().expect("last stream")));
     }
 
     #[test]
