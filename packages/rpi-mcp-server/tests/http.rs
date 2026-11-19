@@ -121,6 +121,60 @@ async fn session_cap_and_graceful_shutdown() {
     assert!(result.is_ok(), "{result:?}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_initializes_cannot_exceed_the_session_cap() {
+    let factory: SessionFactory = Arc::new(|| {
+        Box::pin(async {
+            // Slow spawn widens the window a naive count-then-create would leak.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let (host_stdin, _) = tokio::io::duplex(64 * 1024);
+            let (session, _events) = HostSession::test_connection_with_ready(
+                host_stdin,
+                64,
+                json!({"type":"ready","protocol":"rpi","supportedCommands":["get_state"]}),
+            );
+            Ok(McpServer::from_session(session))
+        })
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let mut options = HttpOptions::new(address.to_string());
+    options.max_sessions = 1;
+    tokio::spawn(async move {
+        let _ = serve_listener(listener, options, factory).await;
+    });
+    let base = format!("http://{address}");
+
+    let mut tasks = Vec::new();
+    for id in 1..=3 {
+        let url = format!("{base}/mcp");
+        tasks.push(tokio::spawn(async move {
+            client()
+                .post(url)
+                .json(&initialize_body(id))
+                .send()
+                .await
+                .expect("initialize")
+                .status()
+                .as_u16()
+        }));
+    }
+    let mut statuses = Vec::new();
+    for task in tasks {
+        statuses.push(task.await.expect("join"));
+    }
+    assert_eq!(
+        statuses.iter().filter(|status| **status == 200).count(),
+        1,
+        "{statuses:?}"
+    );
+    assert_eq!(
+        statuses.iter().filter(|status| **status == 429).count(),
+        2,
+        "{statuses:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reinitializing_an_existing_session_is_rejected() {
     let base = start(None).await;
@@ -537,9 +591,11 @@ mod websocket {
     }
 }
 
-/// Factory whose scripted host streams a few deltas and then settles a prompt.
-fn settling_factory() -> SessionFactory {
-    Arc::new(|| {
+/// Factory whose scripted host streams a few deltas, settles a prompt, and
+/// records every native command it receives.
+fn settling_factory_logged(commands: CommandLog) -> SessionFactory {
+    Arc::new(move || {
+        let commands = Arc::clone(&commands);
         Box::pin(async {
             let (host_stdin, host_commands) = tokio::io::duplex(64 * 1024);
             let (session, events) = HostSession::test_connection_with_ready(
@@ -558,6 +614,7 @@ fn settling_factory() -> SessionFactory {
                     let Ok(command) = serde_json::from_str::<Value>(&line) else {
                         continue;
                     };
+                    commands.lock().unwrap().push(command.clone());
                     if command["type"] != "prompt" {
                         continue;
                     }
@@ -600,7 +657,11 @@ mod resumption {
     }
 
     async fn start() -> Sse {
-        let factory = settling_factory();
+        start_logged(Arc::new(Mutex::new(Vec::new()))).await
+    }
+
+    async fn start_logged(commands: CommandLog) -> Sse {
+        let factory = settling_factory_logged(commands);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("address");
         tokio::spawn(async move {
@@ -663,7 +724,8 @@ mod resumption {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resumes_an_interrupted_stream_from_last_event_id() {
-        let sse = start().await;
+        let commands: CommandLog = Arc::new(Mutex::new(Vec::new()));
+        let sse = start_logged(Arc::clone(&commands)).await;
         let response = prompt_request(&sse, None).await;
         assert_eq!(response.status(), 200);
 
@@ -713,6 +775,15 @@ mod resumption {
         let final_event = replay.last().expect("final event").1.clone();
         assert_eq!(final_event["id"], 2, "{final_event:#?}");
         assert_eq!(final_event["result"]["isError"], false, "{final_event:#?}");
+
+        // The resumed POST replays the stream; it must never start a second run.
+        let prompts = commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| command["type"] == "prompt")
+            .count();
+        assert_eq!(prompts, 1, "resume re-executed the prompt");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -137,25 +137,37 @@ impl StreamState {
             log.entries.pop_front();
         }
         drop(log);
-        self.notify.notify_waiters();
+        // `notify_one` keeps a permit, so a reader that checks the log just
+        // before registering cannot miss this wakeup and stall.
+        self.notify.notify_one();
     }
 
     fn finish(&self) {
         self.log.lock().expect("stream log").finished = true;
-        self.notify.notify_waiters();
+        self.notify.notify_one();
     }
 
-    /// Frames after `after`, plus whether the log ended and what it still holds.
-    fn snapshot(&self) -> (Vec<(u64, Value)>, bool, Option<u64>) {
+    /// Copy only the frames after `cursor`, plus whether the log ended.
+    fn read_after(&self, cursor: u64) -> (Vec<(u64, Value)>, bool) {
         let log = self.log.lock().expect("stream log");
         (
             log.entries
                 .iter()
+                .filter(|entry| entry.seq > cursor)
                 .map(|entry| (entry.seq, entry.frame.clone()))
                 .collect(),
             log.finished,
-            log.entries.front().map(|entry| entry.seq),
         )
+    }
+
+    /// Sequence of the oldest retained event, if any.
+    fn oldest(&self) -> Option<u64> {
+        self.log
+            .lock()
+            .expect("stream log")
+            .entries
+            .front()
+            .map(|entry| entry.seq)
     }
 }
 
@@ -282,6 +294,8 @@ pub struct AppState {
     token: Option<String>,
     allow_origins: Arc<Vec<String>>,
     max_sessions: usize,
+    /// Sessions being created; counted so a burst cannot exceed `max_sessions`.
+    creating: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl AppState {
@@ -294,19 +308,28 @@ impl AppState {
     }
 
     async fn create(&self) -> Result<Arc<HttpSession>, HttpError> {
-        if self.count() >= self.max_sessions {
+        // Reserve a slot before awaiting the (slow) native spawn, otherwise a
+        // burst of `initialize` calls all pass the count check and start more
+        // child processes than configured.
+        let reserved = reserve_slot(&self.creating, self.max_sessions, || self.count());
+        if !reserved {
             return Err(HttpError::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many MCP sessions; close one with DELETE",
             ));
         }
-        let server = (self.factory)().await.map_err(|error| {
-            eprintln!("[rpi-mcp] failed to start native session: {error}");
-            HttpError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "could not start a native session",
-            )
-        })?;
+        let server = match (self.factory)().await {
+            Ok(server) => server,
+            Err(error) => {
+                self.creating.fetch_sub(1, Ordering::AcqRel);
+                eprintln!("[rpi-mcp] failed to start native session: {error}");
+                return Err(HttpError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "could not start a native session",
+                ));
+            }
+        };
+        self.creating.fetch_sub(1, Ordering::AcqRel);
         let session = HttpSession::spawn(server).await;
         self.sessions
             .lock()
@@ -387,6 +410,29 @@ impl AppState {
         self.allow_origins
             .iter()
             .any(|allowed| authority_host(allowed) == Some(name))
+    }
+}
+
+/// Reserve one session slot, or report that the cap is already reached.
+fn reserve_slot(
+    creating: &std::sync::atomic::AtomicUsize,
+    max_sessions: usize,
+    live: impl Fn() -> usize,
+) -> bool {
+    let mut current = creating.load(Ordering::Acquire);
+    loop {
+        if live() + current >= max_sessions {
+            return false;
+        }
+        match creating.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
     }
 }
 
@@ -545,6 +591,15 @@ async fn handle_post(State(state): State<AppState>, headers: HeaderMap, body: By
         .filter(|frame| is_request(frame))
         .map(|frame| id_key(&frame["id"]))
         .collect();
+    // A resumed POST replays the retained stream and must NOT execute its body:
+    // forwarding first would start a second run and settle the original stream
+    // with a "another tool call is already driving the agent" error.
+    if wants_stream(&frames, &headers) {
+        if let Some(resume) = header(&headers, "last-event-id").and_then(parse_event_id) {
+            return resume_stream(&session, resume, &state, &headers);
+        }
+    }
+
     let mut outbound = session.outbound.subscribe();
     for frame in &frames {
         if session.inbound.send(frame.to_string()).await.is_err() {
@@ -557,11 +612,6 @@ async fn handle_post(State(state): State<AppState>, headers: HeaderMap, body: By
     }
 
     if wants_stream(&frames, &headers) {
-        // A resumed POST replays the retained stream; the body is not executed
-        // again, so a reconnect can never re-run a prompt.
-        if let Some(resume) = header(&headers, "last-event-id").and_then(parse_event_id) {
-            return resume_stream(&session, resume, &state, &headers);
-        }
         let stream = StreamState::new();
         session
             .streams
@@ -671,8 +721,10 @@ fn resume_stream(
     else {
         return (StatusCode::NOT_FOUND, "unknown or expired MCP stream").into_response();
     };
-    let (_, _, oldest) = stream.snapshot();
-    if oldest.is_some_and(|oldest| after + 1 < oldest) {
+    if stream
+        .oldest()
+        .is_some_and(|oldest| after.saturating_add(1) < oldest)
+    {
         // The gap is real: resuming would silently drop events.
         return (StatusCode::NOT_FOUND, "MCP stream events have expired").into_response();
     }
@@ -690,9 +742,8 @@ fn stream_response(
     let source = Arc::clone(&stream);
     let body = futures_util::stream::unfold((source, after), |(stream, cursor)| async move {
         loop {
-            let (entries, finished, _) = stream.snapshot();
-            let next = entries.into_iter().find(|(seq, _)| *seq > cursor);
-            if let Some((seq, frame)) = next {
+            let (entries, finished) = stream.read_after(cursor);
+            if let Some((seq, frame)) = entries.into_iter().next() {
                 let chunk = format!("id: {}:{seq}\ndata: {frame}\n\n", stream.id);
                 return Some((Ok::<Bytes, Infallible>(Bytes::from(chunk)), (stream, seq)));
             }
@@ -757,6 +808,8 @@ async fn handle_options(State(state): State<AppState>, headers: HeaderMap) -> Re
 }
 
 fn insert_cors(headers: &mut HeaderMap, origin: &str) {
+    // The allowed origin is reflected, so caches must key on it.
+    headers.insert(header::VARY, header::HeaderValue::from_static("origin"));
     if let Ok(value) = header::HeaderValue::from_str(origin) {
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
     }
@@ -952,6 +1005,7 @@ where
         token: options.token.clone(),
         allow_origins: Arc::new(options.allow_origins.clone()),
         max_sessions: options.max_sessions.max(1),
+        creating: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
     let reaper = tokio::spawn(reap_idle(state.clone()));
     let app = router(state.clone());
@@ -1053,6 +1107,7 @@ mod tests {
             token: token.map(str::to_string),
             allow_origins: Arc::new(origins.iter().map(|value| value.to_string()).collect()),
             max_sessions: 2,
+            creating: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -1092,20 +1147,47 @@ mod tests {
         assert_eq!(parse_event_id("stream-1:not-a-number"), None);
     }
 
+    #[tokio::test]
+    async fn stream_wakeups_are_not_lost_between_check_and_wait() {
+        let stream = StreamState::new();
+        // Producer appends while no reader is waiting; `notify_one` keeps a
+        // permit, so the reader cannot miss the frame it just checked for.
+        stream.append(json!({"type":"first"}));
+        assert_eq!(stream.read_after(0).0.len(), 1);
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            stream.notify.notified(),
+        )
+        .await
+        .expect("wakeup was dropped");
+
+        // And a finished stream still wakes a reader that arrives late.
+        stream.finish();
+        assert!(stream.read_after(0).1);
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            stream.notify.notified(),
+        )
+        .await
+        .expect("completion wakeup was dropped");
+    }
+
     #[test]
     fn stream_logs_are_bounded_and_evict_oldest() {
         let stream = StreamState::new();
         for index in 0..(MAX_STREAM_EVENTS + 5) {
             stream.append(json!({"seq": index}));
         }
-        let (entries, finished, oldest) = stream.snapshot();
+        let (entries, finished) = stream.read_after(0);
         assert!(!finished);
         assert_eq!(entries.len(), MAX_STREAM_EVENTS);
-        assert_eq!(oldest, Some(6));
+        assert_eq!(stream.oldest(), Some(6));
         assert_eq!(entries.last().unwrap().0, (MAX_STREAM_EVENTS + 5) as u64);
+        // Incremental reads only copy what the reader has not seen.
+        assert_eq!(stream.read_after(entries.last().unwrap().0).0.len(), 0);
 
         stream.finish();
-        assert!(stream.snapshot().1);
+        assert!(stream.read_after(0).1);
     }
 
     #[test]
