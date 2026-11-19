@@ -621,11 +621,35 @@ fn mirror(id: u64) {
     }
 }
 
+/// Normalize an imported date into the ISO-8601 form stored in `Entry.date`.
+/// Import parsers keep only the source day; the entry keeps midnight UTC so
+/// `[IMP <day>]` and `short_date` still render the original day.
+fn normalize_entry_date(date: Option<String>) -> String {
+    match date
+        .map(|date| date.trim().to_string())
+        .filter(|date| !date.is_empty())
+    {
+        Some(date) if date.len() == 10 => format!("{date}T00:00:00Z"),
+        Some(date) => date,
+        None => iso8601(now_ms()),
+    }
+}
+
 /// Log an entry the user asked for (`/optchat note`, import): not deduplicated,
 /// because two identical notes are two notes. It also uses the same append gate
 /// as automatic capture, so its index cannot race a message event.
 fn record_note(kind: Kind, text: String, origin: Option<Origin>) -> Result<u64, String> {
-    let date = iso8601(now_ms());
+    record_note_at(kind, text, origin, None)
+}
+
+/// Like `record_note`, but preserves the source date for imported history.
+fn record_note_at(
+    kind: Kind,
+    text: String,
+    origin: Option<Origin>,
+    date: Option<String>,
+) -> Result<u64, String> {
+    let date = normalize_entry_date(date);
     let _gate = APPEND_GATE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -1256,7 +1280,8 @@ fn attach_command(rest: &str) -> Result<String, String> {
             title: name.clone(),
             project: None,
         };
-        record_note(entry.kind, entry.text, Some(origin))?;
+        let date = entry.date.clone();
+        record_note_at(entry.kind, entry.text, Some(origin), Some(date))?;
         added += 1;
     }
     Ok(format!(
@@ -1394,7 +1419,8 @@ fn import_command(rest: &str) -> Result<String, String> {
     let mut added = 0usize;
     for item in items {
         let origin = import::origin(format, &conversation, added, item.date.as_deref());
-        match record_note(item.kind, item.text, Some(origin)) {
+        let date = item.date;
+        match record_note_at(item.kind, item.text, Some(origin), date) {
             Ok(_) => added += 1,
             Err(error) => return Err(format!("stopped after {added} messages: {error}")),
         }
@@ -1591,6 +1617,19 @@ rpi_plugin_sdk::export_plugin!(|api| {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_dates_are_normalized_to_iso_midnight() {
+        assert_eq!(
+            normalize_entry_date(Some("2026-02-03".into())),
+            "2026-02-03T00:00:00Z"
+        );
+        assert_eq!(
+            normalize_entry_date(Some(" 2026-02-03T04:05:06Z ".into())),
+            "2026-02-03T04:05:06Z"
+        );
+        assert!(normalize_entry_date(None).ends_with('Z'));
+    }
 
     #[test]
     fn message_text_keeps_only_text_blocks() {
