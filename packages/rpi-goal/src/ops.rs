@@ -14,6 +14,24 @@ pub fn require_active(goals: &Goals) -> Result<Goal, String> {
         .ok_or_else(|| "no active goal — start one first".to_string())
 }
 
+/// Validate the caller's goal id against the active goal under the same state
+/// lock that performs the terminal transition. Keeping this check in `ops`
+/// closes the gap between a tool-side read and a later replacement.
+pub fn require_current(goal_id: &str, goals: &Goals) -> Result<Goal, String> {
+    let goal_id = goal_id.trim();
+    if goal_id.is_empty() {
+        return Err("goal_id is required; use the id from the current goal prompt".into());
+    }
+    let goal = require_active(goals)?;
+    if goal.id != goal_id {
+        return Err(
+            "stale goal_id: it does not match the current active goal; read the latest goal prompt"
+                .into(),
+        );
+    }
+    Ok(goal)
+}
+
 pub fn validate_title(title: &str) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -266,12 +284,12 @@ pub fn set_limits(
 
 /// `goal_complete`: the model's evidence-based termination. Requires the exact
 /// active goal id and a non-empty summary; stopped goals cannot complete.
-pub fn complete_with(summary: &str) -> Result<Goal, String> {
+pub fn complete_with(goal_id: &str, summary: &str) -> Result<Goal, String> {
     let summary = bounded(summary, state::MAX_SUMMARY_CHARS, "completion summary")?;
     let goal = {
         let _guard = state::lock();
         let mut goals = state::read()?;
-        let mut goal = require_active(&goals)?;
+        let mut goal = require_current(goal_id, &goals)?;
         if goal.status.is_stopped() {
             return Err(format!(
                 "the goal is {}; resume it before completing",
@@ -296,7 +314,12 @@ pub fn complete_with(summary: &str) -> Result<Goal, String> {
 }
 
 /// `goal_blocked`: a repeated, evidenced impasse.
-pub fn block(reason: &str, evidence: &str, repeated_turns: u32) -> Result<Goal, String> {
+pub fn block(
+    goal_id: &str,
+    reason: &str,
+    evidence: &str,
+    repeated_turns: u32,
+) -> Result<Goal, String> {
     let reason = bounded(reason, state::MAX_REASON_CHARS, "blocker reason")?;
     let evidence = bounded(evidence, state::MAX_EVIDENCE_CHARS, "blocker evidence")?;
     if repeated_turns < 3 {
@@ -305,7 +328,7 @@ pub fn block(reason: &str, evidence: &str, repeated_turns: u32) -> Result<Goal, 
     let goal = {
         let _guard = state::lock();
         let mut goals = state::read()?;
-        let mut goal = require_active(&goals)?;
+        let mut goal = require_current(goal_id, &goals)?;
         if goal.status.is_stopped() {
             return Err(format!("the goal is already {}", goal.status.as_str()));
         }
@@ -331,12 +354,12 @@ pub fn block(reason: &str, evidence: &str, repeated_turns: u32) -> Result<Goal, 
 }
 
 /// `goal_wait`: quiet the goal until an external wake or a safety deadline.
-pub fn wait(reason: &str, resume_after_ms: Option<i64>) -> Result<Goal, String> {
+pub fn wait(goal_id: &str, reason: &str, resume_after_ms: Option<i64>) -> Result<Goal, String> {
     let reason = bounded(reason, state::MAX_REASON_CHARS, "wait reason")?;
     let (goal, notice) = {
         let _guard = state::lock();
         let goals = state::read()?;
-        let mut goal = require_active(&goals)?;
+        let mut goal = require_current(goal_id, &goals)?;
         if goal.status.is_stopped() {
             return Err(format!(
                 "the goal is {}; resume it before waiting",

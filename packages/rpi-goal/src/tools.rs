@@ -146,28 +146,10 @@ pub fn run_goal(params: &Value) -> Result<String, String> {
     }
 }
 
-/// Stale-turn guard shared by the three terminal tools.
-fn require_current(goal_id: &str) -> Result<state::Goal, String> {
-    let goal_id = goal_id.trim();
-    if goal_id.is_empty() {
-        return Err("goal_id is required; use the id from the current goal prompt".into());
-    }
-    let goals = state::read()?;
-    let goal = ops::require_active(&goals)?;
-    if goal.id != goal_id {
-        return Err(
-            "stale goal_id: it does not match the current active goal; read the latest goal prompt"
-                .into(),
-        );
-    }
-    Ok(goal)
-}
-
 pub fn run_complete(params: &Value) -> Result<String, String> {
     let goal_id = param_str(params, "goal_id").ok_or("goal_id is required")?;
-    require_current(goal_id)?;
     let summary = param_str(params, "summary").ok_or("completion summary is required")?;
-    let goal = ops::complete_with(summary)?;
+    let goal = ops::complete_with(goal_id, summary)?;
     Ok(render::envelope(
         "goal_complete",
         crate::prompts::completion_summary(&goal, summary),
@@ -178,11 +160,10 @@ pub fn run_complete(params: &Value) -> Result<String, String> {
 
 pub fn run_blocked(params: &Value) -> Result<String, String> {
     let goal_id = param_str(params, "goal_id").ok_or("goal_id is required")?;
-    require_current(goal_id)?;
     let reason = param_str(params, "reason").ok_or("blocker reason is required")?;
     let evidence = param_str(params, "evidence").ok_or("blocker evidence is required")?;
     let repeated = param_u32(params, "repeated_turns").unwrap_or(0);
-    let goal = ops::block(reason, evidence, repeated)?;
+    let goal = ops::block(goal_id, reason, evidence, repeated)?;
     Ok(render::envelope(
         "goal_blocked",
         crate::prompts::blocked_summary(&goal, reason, evidence, repeated),
@@ -193,10 +174,9 @@ pub fn run_blocked(params: &Value) -> Result<String, String> {
 
 pub fn run_wait(params: &Value) -> Result<String, String> {
     let goal_id = param_str(params, "goal_id").ok_or("goal_id is required")?;
-    require_current(goal_id)?;
     let reason = param_str(params, "reason").ok_or("wait reason is required")?;
     let resume_after_ms = params.get("resume_after_ms").and_then(Value::as_i64);
-    let goal = ops::wait(reason, resume_after_ms)?;
+    let goal = ops::wait(goal_id, reason, resume_after_ms)?;
     Ok(render::envelope(
         "goal_wait",
         format!(

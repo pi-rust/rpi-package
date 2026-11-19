@@ -76,6 +76,36 @@ fn goal_complete_requires_the_current_goal_id_and_a_summary() {
 }
 
 #[test]
+fn terminal_tools_reject_the_replaced_goals_id() {
+    let _guard = support::serial();
+    support::install();
+    support::fire(EventTag::SessionStart);
+    support::settle_pause();
+
+    support::tool("goal", json!({"action": "start", "title": "First goal"})).unwrap();
+    let first = support::active_goal().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    support::tool("goal", json!({"action": "start", "title": "Second goal"})).unwrap();
+    let second = support::active_goal().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(first, second);
+
+    let stale = support::tool(
+        "goal_complete",
+        json!({"goal_id": first, "summary": "old work"}),
+    )
+    .expect_err("the replaced goal id must be rejected in the same transition");
+    assert!(stale.contains("stale goal_id"), "{stale}");
+    let goal = support::active_goal().unwrap();
+    assert_eq!(goal["id"], json!(second));
+    assert_eq!(goal["status"], json!("active"));
+}
+
+#[test]
 fn goal_blocked_needs_a_repeated_evidenced_impasse() {
     let _guard = support::serial();
     let id = start_goal("Block me");
