@@ -5,8 +5,8 @@ import {
   browserLink,
 } from "../src/messageLinks";
 import { projectImageSource } from "../src/projectImages";
-import { readSheet } from "../src/spreadsheet";
-import { strToU8, zipSync } from "fflate";
+import { readWorkbook } from "../src/spreadsheet";
+import * as XLSX from "xlsx";
 import { absoluteProjectPath } from "../src/projectPaths";
 
 test.use({
@@ -28,23 +28,19 @@ const win = { ...project, path: "D:\\Work\\项目" };
 // Minimal bytes with the signatures the document route validates.
 const pdfBytes = Buffer.from("%PDF-1.7\n% mock pdf\n");
 const docxBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
-/** Minimal single-sheet workbook: shared strings plus one numeric cell. */
+/** Two-sheet workbook with a number, a date and a formula result. */
 function workbookBytes() {
+  const book = XLSX.utils.book_new();
+  const budget = XLSX.utils.aoa_to_sheet([
+    ["项目", "金额", "日期"],
+    ["差旅", 1250, new Date(Date.UTC(2026, 0, 15))],
+    ["合计", 1250, ""],
+  ]);
+  XLSX.utils.book_append_sheet(book, budget, "预算");
+  const notes = XLSX.utils.aoa_to_sheet([["备注"], ["第二张表"]]);
+  XLSX.utils.book_append_sheet(book, notes, "备注");
   return Buffer.from(
-    zipSync({
-      "xl/workbook.xml": strToU8(
-        '<workbook><sheets><sheet name="预算" sheetId="1" r:id="rId1"/></sheets></workbook>',
-      ),
-      "xl/_rels/workbook.xml.rels": strToU8(
-        '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
-      ),
-      "xl/sharedStrings.xml": strToU8(
-        "<sst><si><t>项目</t></si><si><t>金额</t></si><si><t>差旅</t></si></sst>",
-      ),
-      "xl/worksheets/sheet1.xml": strToU8(
-        '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>1250</v></c></row></sheetData></worksheet>',
-      ),
-    }),
+    XLSX.write(book, { type: "array", bookType: "xlsx" }) as ArrayBuffer,
   );
 }
 const sheetBytes = workbookBytes();
@@ -1320,31 +1316,36 @@ test("an ambiguous nested path stays an explicit read error", async ({
   expect(mock.unexpected).toEqual([]);
 });
 
-test("worksheet parsing reads the first sheet, shared strings and numbers", () => {
-  const sheet = readSheet(new Uint8Array(sheetBytes));
-  expect(sheet.name).toBe("预算");
-  expect(sheet.columns).toBe(2);
-  expect(sheet.rows).toEqual([
-    ["项目", "金额"],
-    ["差旅", "1250"],
-  ]);
-  expect(sheet.truncated).toBe(false);
-  // A non-workbook payload fails loudly instead of rendering an empty table.
-  expect(() => readSheet(new Uint8Array([0x50, 0x4b, 0x03, 0x04]))).toThrow();
+test("workbook parsing keeps formats, dates and every sheet", async () => {
+  const book = await readWorkbook(new Uint8Array(sheetBytes));
+  expect(book.sheets.map((sheet) => sheet.name)).toEqual(["预算", "备注"]);
+  const [budget] = book.sheets;
+  expect(budget.rows[0]).toEqual(["项目", "金额", "日期"]);
+  expect(budget.rows[1][1]).toBe("1250");
+  // `raw: false` keeps the date format instead of the numeric serial.
+  expect(budget.rows[1][2]).toMatch(/^\d{1,2}\/\d{1,2}\/\d{2,4}$/);
+  expect(book.truncated).toBe(false);
+  await expect(
+    readWorkbook(new Uint8Array([0x50, 0x4b, 0x03, 0x04])),
+  ).rejects.toThrow();
 });
 
-test("xlsx links render a read-only sheet table", async ({ page }) => {
+test("xlsx links render a read-only sheet table with tabs", async ({
+  page,
+}) => {
   const mock = await host(page, "[Budget](docs/budget.xlsx)", project.path);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Budget", exact: true }).click();
   const dialog = preview(page);
   const sheet = dialog.locator(".file-preview-sheet");
   await expect(sheet).toBeVisible();
-  await expect(sheet.locator(".file-preview-sheet-heading")).toContainText(
-    "预算",
-  );
   await expect(sheet.locator("tr").nth(1)).toContainText("差旅");
   await expect(sheet.locator("tr").nth(1)).toContainText("1250");
+  const tabs = sheet.getByRole("tab");
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs.first()).toHaveAttribute("aria-selected", "true");
+  await tabs.nth(1).click();
+  await expect(sheet.locator("tr").nth(1)).toContainText("第二张表");
   await expect(dialog.locator(".file-preview-office")).toHaveCount(0);
   await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
   expect(mock.documents).toEqual([

@@ -11,11 +11,12 @@ import {
   Link2,
   Maximize2,
   Minimize2,
+  Upload,
   X,
 } from "lucide-react";
 import { api, ApiError, type Project } from "./api";
 import { resolveProjectPath } from "./fileLookup";
-import { readSheet, type SheetPreview } from "./spreadsheet";
+import { readWorkbook, type WorkbookPreview } from "./spreadsheet";
 import { translate, type Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
 import { MarkdownBody } from "./MarkdownBody";
@@ -37,6 +38,39 @@ function documentKind(path: string): "pdf" | "sheet" | "office" | null {
   if (/\.pdf$/i.test(path)) return "pdf";
   if (/\.xlsx$/i.test(path)) return "sheet";
   return /\.(?:docx?|xls|pptx?)$/i.test(path) ? "office" : null;
+}
+
+function SheetTable({
+  table,
+  language,
+}: {
+  table: WorkbookPreview["sheets"][number];
+  language: Language;
+}) {
+  const zh = language === "zh";
+  return (
+    <div
+      className="file-preview-sheet-scroll"
+      tabIndex={0}
+      role="region"
+      aria-label={zh ? "表格内容" : "Sheet content"}
+    >
+      <table>
+        <tbody>
+          {table.rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              <th scope="row" aria-hidden="true">
+                {rowIndex + 1}
+              </th>
+              {row.map((cell, columnIndex) => (
+                <td key={columnIndex}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 /** Mounted only by an explicit click. The deferred effect avoids StrictMode's probe I/O. */
@@ -71,7 +105,27 @@ export function FilePreview({
   const markdown = isMarkdownPath(file.path);
   const documentType = image ? null : documentKind(file.path);
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<SheetPreview | null>(null);
+  const [workbook, setWorkbook] = useState<WorkbookPreview | null>(null);
+  const [activeSheet, setActiveSheet] = useState(0);
+  const localInput = useRef<HTMLInputElement>(null);
+  const localUrls = useRef<string[]>([]);
+  /** Pure-frontend path: the browser reads a file the user selects itself. */
+  async function useLocalFile(picked: File) {
+    setError("");
+    if (documentType === "sheet") {
+      try {
+        setWorkbook(
+          await readWorkbook(new Uint8Array(await picked.arrayBuffer())),
+        );
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+      return;
+    }
+    const url = URL.createObjectURL(picked);
+    localUrls.current.push(url);
+    setDocumentUrl(url);
+  }
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
   // A line deep link is only visible in the numbered source, so it wins over
@@ -84,6 +138,8 @@ export function FilePreview({
     dialog.showModal();
     return () => {
       dialog.close();
+      for (const url of localUrls.current) URL.revokeObjectURL(url);
+      localUrls.current = [];
       if (previousFocus instanceof HTMLElement && previousFocus.isConnected)
         previousFocus.focus({ preventScroll: true });
     };
@@ -95,7 +151,8 @@ export function FilePreview({
     setContent(null);
     setImageUrl(null);
     setDocumentUrl(null);
-    setSheet(null);
+    setWorkbook(null);
+    setActiveSheet(0);
     setError("");
     setCopied("");
     setResolved(null);
@@ -119,7 +176,9 @@ export function FilePreview({
               });
               if (controller.signal.aborted) return;
               if (documentType === "sheet") {
-                setSheet(readSheet(new Uint8Array(await blob.arrayBuffer())));
+                setWorkbook(
+                  await readWorkbook(new Uint8Array(await blob.arrayBuffer())),
+                );
                 return;
               }
               documentObjectUrl = URL.createObjectURL(blob);
@@ -371,17 +430,43 @@ export function FilePreview({
           </span>
         )}
       </div>
+      <input
+        ref={localInput}
+        type="file"
+        className="file-preview-local-input"
+        aria-label={zh ? "选择本地文件" : "Choose a local file"}
+        accept={
+          documentType === "pdf"
+            ? ".pdf,application/pdf"
+            : documentType === "sheet"
+              ? ".xlsx"
+              : ".doc,.docx,.xls,.xlsx,.ppt,.pptx"
+        }
+        onChange={(event) => {
+          const picked = event.target.files?.[0];
+          event.target.value = "";
+          if (picked) void useLocalFile(picked);
+        }}
+      />
       {error ? (
         <div className="file-preview-status" role="alert">
           <p>
             {zh ? "文件读取失败" : "Could not load file"}: {error}
           </p>
-          <button
-            type="button"
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            {zh ? "重试" : "Retry"}
-          </button>
+          <div className="file-preview-status-actions">
+            <button
+              type="button"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              {zh ? "重试" : "Retry"}
+            </button>
+            {documentType && (
+              <button type="button" onClick={() => localInput.current?.click()}>
+                <Upload size={14} aria-hidden="true" />
+                {zh ? "选择本地文件预览" : "Preview a local copy"}
+              </button>
+            )}
+          </div>
         </div>
       ) : image && imageUrl ? (
         <div className="file-preview-image">
@@ -408,38 +493,47 @@ export function FilePreview({
             aria-label={zh ? "PDF 预览" : "PDF preview"}
           />
         </div>
-      ) : documentType === "sheet" && sheet ? (
+      ) : documentType === "sheet" && workbook ? (
         <div className="file-preview-sheet">
           <div className="file-preview-sheet-heading">
             <FileText size={13} aria-hidden="true" />
-            <span>{sheet.name || (zh ? "工作表" : "Sheet")}</span>
-            {sheet.truncated && (
+            {workbook.sheets.length > 1 ? (
+              <div
+                className="file-preview-sheet-tabs"
+                role="tablist"
+                aria-label={zh ? "工作表" : "Worksheets"}
+              >
+                {workbook.sheets.map((table, index) => (
+                  <button
+                    key={table.name}
+                    type="button"
+                    role="tab"
+                    aria-selected={index === activeSheet}
+                    className={
+                      index === activeSheet
+                        ? "file-preview-sheet-tab selected"
+                        : "file-preview-sheet-tab"
+                    }
+                    onClick={() => setActiveSheet(index)}
+                  >
+                    {table.name}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <span>{workbook.sheets[0].name}</span>
+            )}
+            {(workbook.truncated ||
+              workbook.sheets[activeSheet]?.truncated) && (
               <span className="file-preview-sheet-note">
                 {zh ? "已截断预览" : "preview truncated"}
               </span>
             )}
           </div>
-          <div
-            className="file-preview-sheet-scroll"
-            tabIndex={0}
-            role="region"
-            aria-label={zh ? "表格内容" : "Sheet content"}
-          >
-            <table>
-              <tbody>
-                {sheet.rows.map((row, rowIndex) => (
-                  <tr key={rowIndex}>
-                    <th scope="row" aria-hidden="true">
-                      {rowIndex + 1}
-                    </th>
-                    {row.map((cell, columnIndex) => (
-                      <td key={columnIndex}>{cell}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <SheetTable
+            table={workbook.sheets[activeSheet] ?? workbook.sheets[0]}
+            language={language}
+          />
         </div>
       ) : documentType === "office" && documentUrl ? (
         <div className="file-preview-office">
@@ -450,14 +544,24 @@ export function FilePreview({
               ? "Office 文档不能内嵌预览，可下载后用本地 Office 或 WPS 打开。"
               : "Office documents cannot be previewed inline. Download the file and open it in Office or WPS."}
           </p>
-          <a
-            className="file-preview-download"
-            href={documentUrl}
-            download={shownPath.split("/").pop()}
-          >
-            <Download size={14} aria-hidden="true" />
-            {zh ? "下载文件" : "Download"}
-          </a>
+          <div className="file-preview-office-actions">
+            <a
+              className="file-preview-download"
+              href={documentUrl}
+              download={shownPath.split("/").pop()}
+            >
+              <Download size={14} aria-hidden="true" />
+              {zh ? "下载文件" : "Download"}
+            </a>
+            <button
+              type="button"
+              className="file-preview-download"
+              onClick={() => localInput.current?.click()}
+            >
+              <Upload size={14} aria-hidden="true" />
+              {zh ? "换个本地文件" : "Preview a local copy"}
+            </button>
+          </div>
         </div>
       ) : content === null ? (
         <p className="file-preview-status" role="status">

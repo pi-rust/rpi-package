@@ -225,6 +225,18 @@
   min-height: 420px;
   border: 0;
 }
+.file-preview-local-input {
+  display: none;
+}
+.file-preview-status-actions,
+.file-preview-office-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.file-preview-office-actions button.file-preview-download {
+  cursor: pointer;
+}
 .file-preview-sheet {
   flex: 1;
   min-height: 0;
@@ -238,6 +250,37 @@
   gap: 6px;
   color: var(--muted);
   font-size: 12px;
+}
+.file-preview-sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.file-preview-sheet-tabs::-webkit-scrollbar {
+  display: none;
+}
+.file-preview-sheet-tab {
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.file-preview-sheet-tab:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.file-preview-sheet-tab.selected {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
 }
 .file-preview-sheet-note {
   margin-left: auto;
