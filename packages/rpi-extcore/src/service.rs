@@ -433,6 +433,13 @@ pub async fn project_image(
 ) -> Result<workspace::ProjectImage, (ReplyKind, Value)> {
     workspace::image_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
 }
+pub async fn project_document(
+    state: &Service,
+    id: String,
+    query: FileQuery,
+) -> Result<workspace::ProjectDocument, (ReplyKind, Value)> {
+    workspace::document_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
+}
 pub async fn project_status(state: &Service, id: String) -> workspace::Reply {
     workspace::status(&project_by_id(state, &id).await?).await
 }

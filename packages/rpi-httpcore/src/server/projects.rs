@@ -198,6 +198,31 @@ pub(super) async fn project_image(
     }
 }
 
+pub(super) async fn project_document(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<FileQuery>,
+) -> axum::response::Response {
+    match service::project_document(&state.backend, id, query).await {
+        Ok(document) => (
+            [
+                (axum::http::header::CONTENT_TYPE, document.media_type),
+                (
+                    axum::http::header::CONTENT_DISPOSITION,
+                    "inline",
+                ),
+                (
+                    axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                    "nosniff",
+                ),
+            ],
+            document.bytes,
+        )
+            .into_response(),
+        Err(error) => HttpReply(error.into_reply()).into_response(),
+    }
+}
+
 pub(super) async fn project_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -257,6 +282,10 @@ pub(super) fn routes() -> axum::Router<AppState> {
         .route(
             "/api/v1/projects/{id}/image",
             axum::routing::get(project_image),
+        )
+        .route(
+            "/api/v1/projects/{id}/document",
+            axum::routing::get(project_document),
         )
         .route(
             "/api/v1/projects/{id}/resources",

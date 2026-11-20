@@ -23,6 +23,9 @@ const project = {
   path: "/workspace/links",
 };
 const win = { ...project, path: "D:\\Work\\项目" };
+// Minimal bytes with the signatures the document route validates.
+const pdfBytes = Buffer.from("%PDF-1.7\n% mock pdf\n");
+const docxBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
 
 test("absolute paths follow the server root's platform, not the browser", () => {
   // Unix: a backslash is a legal filename character and must be preserved.
@@ -240,6 +243,12 @@ async function host(
     Array<{ name: string; path: string; kind: "directory" | "file" }>
   > = {};
   const missing = new Set<string>();
+  const documents: Array<{
+    project: string;
+    path: string;
+    root: string | null;
+  }> = [];
+  let documentsUnsupported = false;
   const unexpected: string[] = [];
   let fail = false;
   let held: (() => void) | null = null;
@@ -318,6 +327,39 @@ async function host(
           imageMode === "decode" ? Buffer.from("not a decodable image") : png,
       });
     }
+    if (
+      /\/projects\/[^/]\w+\/document$/.test(path) ||
+      /\/projects\/[^/]+\/document$/.test(path)
+    ) {
+      const target = url.searchParams.get("path") ?? "";
+      documents.push({
+        project: path.split("/")[4],
+        path: target,
+        root: url.searchParams.get("root"),
+      });
+      if (documentsUnsupported)
+        return route.fulfill({
+          status: 404,
+          json: { error: "not found" },
+        });
+      if (target.toLowerCase().endsWith(".pdf"))
+        return route.fulfill({
+          status: 200,
+          contentType: "application/pdf",
+          body: pdfBytes,
+        });
+      if (/\.docx$/i.test(target))
+        return route.fulfill({
+          status: 200,
+          contentType:
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          body: docxBytes,
+        });
+      return route.fulfill({
+        status: 415,
+        json: { error: "unsupported document format" },
+      });
+    }
     if (/\/projects\/[^/]+\/files$/.test(path)) {
       const read = url.searchParams.get("path") ?? "";
       return json({ path: read, entries: listings[read] ?? [] });
@@ -332,7 +374,7 @@ async function host(
         await new Promise<void>((resolve) => {
           held = resolve;
         });
-      if (url.searchParams.get("path")?.endsWith(".pdf"))
+      if (/\.(?:pdf|bin)$/i.test(url.searchParams.get("path") ?? ""))
         return route.fulfill({
           status: 400,
           json: { error: "Binary file cannot be previewed as text" },
@@ -436,6 +478,10 @@ async function host(
     files,
     listings,
     missing,
+    documents,
+    unsupportedDocuments: () => {
+      documentsUnsupported = true;
+    },
     imageReads,
     imageMode: (mode: typeof imageMode) => {
       imageMode = mode;
@@ -749,7 +795,7 @@ test("read errors retry; close aborts; navigation cannot show a stale project fi
 });
 
 const imagePath = "assets/中文 photo.PNG";
-const imageMarkdown = `[Photo](assets/%E4%B8%AD%E6%96%87%20photo.PNG) [Binary](assets/manual.pdf)`;
+const imageMarkdown = `[Photo](assets/%E4%B8%AD%E6%96%87%20photo.PNG) [Binary](assets/manual.bin)`;
 type ImageAudit = {
   created: string[];
   revoked: string[];
@@ -989,9 +1035,76 @@ test("unsupported binary links retain the text error route, never an image", asy
     "Binary file cannot be previewed as text",
   );
   await expect(preview(page).locator("img")).toHaveCount(0);
+  await expect(preview(page).locator(".file-preview-pdf")).toHaveCount(0);
   expect(mock.imageReads).toEqual([]);
+  expect(mock.documents).toEqual([]);
   expect(mock.reads).toEqual([
-    { project: project.id, path: "assets/manual.pdf", root: null },
+    { project: project.id, path: "assets/manual.bin", root: null },
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("PDF links stream bytes into the browser viewer", async ({ page }) => {
+  const mock = await host(
+    page,
+    "[Report](docs/report.pdf)",
+    project.path,
+    "zh",
+  );
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "文件预览", exact: true });
+  const pdf = dialog.locator("embed.file-preview-pdf");
+  await expect(pdf).toBeVisible();
+  await expect(pdf).toHaveAttribute("type", "application/pdf");
+  await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.documents).toEqual([
+    { project: project.id, path: "docs/report.pdf", root: null },
+  ]);
+  // No text read is attempted for a document the browser renders itself.
+  expect(mock.reads).toEqual([]);
+  await expect(
+    dialog.getByRole("button", { name: "关闭", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("an older backend without the document route explains the file instead", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Report](docs/report.pdf)", project.path);
+  mock.unsupportedDocuments();
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Binary file cannot be previewed as text",
+  );
+  await expect(dialog.locator(".file-preview-pdf")).toHaveCount(0);
+  expect(mock.reads).toEqual([
+    { project: project.id, path: "docs/report.pdf", root: null },
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("Office documents offer a download instead of pretending to render", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Spec](docs/spec.docx)", project.path);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Spec", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-office")).toContainText(
+    "spec.docx",
+  );
+  const download = dialog.getByRole("link", { name: "Download", exact: true });
+  await expect(download).toHaveAttribute("download", "spec.docx");
+  await expect(download).toHaveAttribute("href", /^blob:/);
+  await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.documents).toEqual([
+    { project: project.id, path: "docs/spec.docx", root: null },
   ]);
   expect(mock.unexpected).toEqual([]);
 });

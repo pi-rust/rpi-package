@@ -211,6 +211,63 @@
   color: var(--muted);
   font-size: 11px;
 }
+.file-preview-document {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--soft);
+}
+.file-preview-pdf {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  border: 0;
+}
+.file-preview-office {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 28px;
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--muted);
+  text-align: center;
+}
+.file-preview-office strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.file-preview-office p {
+  max-width: 46ch;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.file-preview-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-decoration: none;
+}
+.file-preview-download:hover {
+  background: var(--hover);
+}
 .file-preview-status {
   overflow: auto;
 }

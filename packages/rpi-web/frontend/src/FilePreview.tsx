@@ -4,8 +4,10 @@ import hljs from "highlight.js/lib/common";
 import {
   Code2,
   Copy,
+  Download,
   Eye,
   FileCode2,
+  FileText,
   Link2,
   Maximize2,
   Minimize2,
@@ -24,6 +26,12 @@ import "./file-preview.css";
 /** Rendered Markdown is the default reading view; other files stay source-only. */
 function isMarkdownPath(path: string) {
   return /\.(?:md|markdown|mdx)$/i.test(path);
+}
+
+/** Browsers render PDF themselves; Office formats are handed to a desktop app. */
+function documentKind(path: string): "pdf" | "office" | null {
+  if (/\.pdf$/i.test(path)) return "pdf";
+  return /\.(?:docx?|xlsx?|pptx?)$/i.test(path) ? "office" : null;
 }
 
 /** Mounted only by an explicit click. The deferred effect avoids StrictMode's probe I/O. */
@@ -56,6 +64,8 @@ export function FilePreview({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const image = isProjectImagePath(file.path);
   const markdown = isMarkdownPath(file.path);
+  const documentType = image ? null : documentKind(file.path);
+  const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
   // A line deep link is only visible in the numbered source, so it wins over
@@ -75,8 +85,10 @@ export function FilePreview({
   useEffect(() => {
     const controller = new AbortController();
     let objectUrl: string | undefined;
+    let documentObjectUrl: string | undefined;
     setContent(null);
     setImageUrl(null);
+    setDocumentUrl(null);
     setError("");
     setCopied("");
     setResolved(null);
@@ -92,6 +104,31 @@ export function FilePreview({
             if (controller.signal.aborted) return;
             objectUrl = URL.createObjectURL(blob);
             setImageUrl(objectUrl);
+          } else if (documentType) {
+            try {
+              const blob = await api.document(project.id, file.path, {
+                root: file.root,
+                signal: controller.signal,
+              });
+              if (controller.signal.aborted) return;
+              documentObjectUrl = URL.createObjectURL(blob);
+              setDocumentUrl(documentObjectUrl);
+            } catch (cause) {
+              // An older backend has no document route; the text route still
+              // explains why the file cannot be previewed.
+              if (
+                cause instanceof ApiError &&
+                [404, 405].includes(cause.status)
+              ) {
+                const result = await api.file(project.id, file.path, {
+                  root: file.root,
+                  signal: controller.signal,
+                });
+                if (!controller.signal.aborted) setContent(result.content);
+                return;
+              }
+              throw cause;
+            }
           } else {
             const result = await api.file(project.id, file.path, {
               root: file.root,
@@ -131,6 +168,7 @@ export function FilePreview({
       window.clearTimeout(timer);
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (documentObjectUrl) URL.revokeObjectURL(documentObjectUrl);
     };
   }, [
     project.id,
@@ -138,6 +176,7 @@ export function FilePreview({
     file.path,
     file.root,
     image,
+    documentType,
     markdown,
     file.line,
     attempt,
@@ -348,6 +387,33 @@ export function FilePreview({
               )
             }
           />
+        </div>
+      ) : documentType === "pdf" && documentUrl ? (
+        <div className="file-preview-document">
+          <embed
+            className="file-preview-pdf"
+            src={documentUrl}
+            type="application/pdf"
+            aria-label={zh ? "PDF 预览" : "PDF preview"}
+          />
+        </div>
+      ) : documentType === "office" && documentUrl ? (
+        <div className="file-preview-office">
+          <FileText size={26} aria-hidden="true" />
+          <strong>{shownPath.split("/").pop()}</strong>
+          <p>
+            {zh
+              ? "Office 文档不能内嵌预览，可下载后用本地 Office 或 WPS 打开。"
+              : "Office documents cannot be previewed inline. Download the file and open it in Office or WPS."}
+          </p>
+          <a
+            className="file-preview-download"
+            href={documentUrl}
+            download={shownPath.split("/").pop()}
+          >
+            <Download size={14} aria-hidden="true" />
+            {zh ? "下载文件" : "Download"}
+          </a>
         </div>
       ) : content === null ? (
         <p className="file-preview-status" role="status">

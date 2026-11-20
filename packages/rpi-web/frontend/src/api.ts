@@ -738,6 +738,34 @@ export const api = {
       { signal: options.signal },
     );
   },
+  /** Raw bytes for a document the browser can display or the user can open. */
+  document: async (
+    projectId: string,
+    path: string,
+    options: { root?: string; signal?: AbortSignal } = {},
+  ) => {
+    const query = new URLSearchParams({ path });
+    if (options.root) query.set("root", options.root);
+    const response = await fetch(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/document?${query}`,
+      {
+        signal: options.signal,
+        headers: { "x-rpi-web": "1" },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) {
+      const value = (await response.json().catch((cause) => {
+        if (options.signal?.aborted) throw cause;
+        return null;
+      })) as { error?: unknown } | null;
+      throw new ApiError(
+        String(value?.error ?? `HTTP ${response.status}`),
+        response.status,
+      );
+    }
+    return response.blob();
+  },
   image: async (
     projectId: string,
     path: string,
