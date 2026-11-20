@@ -3218,6 +3218,121 @@ test("the working indicator does not resize the transcript", async ({
   hold();
 });
 
+test("streamed assistant text keeps a monotonic transcript height", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await page.route(snapshotRoute, (route) =>
+    route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        lastSeq: 4,
+        events: [],
+        messages: [
+          {
+            role: "user",
+            entryId: "stream-height-user",
+            content: "Check the streamed answer",
+          },
+        ],
+      },
+    }),
+  );
+  // Replay Markdown frames that cross a fenced-code boundary: the old renderer
+  // reflowed an already rendered paragraph into one line, shrinking the followed
+  // transcript between frames. The last frame also ends the assistant turn, so
+  // the test covers releasing the held height at message_end.
+  const frames = [
+    "Here is the plan",
+    "Here is the plan\n\n- step one\n- step t",
+    "Here is the plan\n\n- step one\n- step two\n\n```ts\nconst id = 1;\n```",
+    "Here is the plan\n\n- step one\n- step two\n\n```ts\nconst id = 1;\n```\n\nDone with a very long closing line that would otherwise reflow into a single paragraph and shrink the transcript on the next frame.",
+  ];
+  const message = (text: string) =>
+    JSON.stringify({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text }],
+      },
+    });
+  let streams = 0;
+  let releaseUpdates!: () => void;
+  const readyForUpdates = new Promise<void>((resolve) => {
+    releaseUpdates = resolve;
+  });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/events**`,
+    async (route) => {
+      streams++;
+      if (streams === 1)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            "retry: 10\n" +
+            'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n' +
+            'id: 6\nevent: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n' +
+            `id: 7\nevent: message_update\ndata: ${message(frames[0])}\n\n`,
+          headers: { "cache-control": "no-store" },
+        });
+      await readyForUpdates;
+      const finalMessage = JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: frames[frames.length - 1] }],
+        },
+      });
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body:
+          "retry: 60000\n" +
+          frames
+            .slice(1)
+            .map(
+              (frame, index) =>
+                `id: ${8 + index}\nevent: message_update\ndata: ${message(frame)}\n\n`,
+            )
+            .join("") +
+          `id: ${8 + frames.length - 1}\nevent: message_end\ndata: ${finalMessage}\n\n`,
+        headers: { "cache-control": "no-store" },
+      });
+    },
+  );
+  await page.goto("/");
+  const transcript = page.locator(".transcript");
+  const body = page.locator(".message.assistant .markdown-body");
+  await expect(body).toContainText("Here is the plan");
+  await transcript.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  await page.evaluate(() => {
+    const heights: number[] = [];
+    (
+      window as Window & { __transcriptHeights?: number[] }
+    ).__transcriptHeights = heights;
+    const sample = () => {
+      const node = document.querySelector(".transcript");
+      if (node) heights.push(node.scrollHeight);
+      requestAnimationFrame(sample);
+    };
+    sample();
+  });
+  releaseUpdates();
+  await expect(body).toContainText("Done with a very long closing line");
+  await expect(body).toHaveCSS("min-height", "0px");
+  await page.waitForTimeout(100);
+  const heights = await page.evaluate(
+    () =>
+      (window as Window & { __transcriptHeights?: number[] })
+        .__transcriptHeights ?? [],
+  );
+  expect(heights.length).toBeGreaterThan(2);
+  expect(Math.min(...heights)).toBe(heights[0]);
+  expect(Math.max(...heights)).toBeGreaterThan(heights[0]);
+});
+
 test("streaming thinking does not resize the transcript", async ({ page }) => {
   await mockHost(page);
   await page.route(snapshotRoute, (route) =>
@@ -3298,8 +3413,8 @@ test("streaming thinking does not resize the transcript", async ({ page }) => {
     .locator(".thinking-row-viewport")
     .evaluate((node) => node.clientHeight);
   releaseUpdate();
-  await expect(row.locator(".thinking-row-viewport strong")).toHaveText(
-    "检查思路",
+  await expect(row.locator(".thinking-row-viewport")).toContainText(
+    "long_line_long_line",
   );
   const secondHeight = await transcript.evaluate((node) => node.scrollHeight);
   expect(secondHeight).toBe(firstHeight);
