@@ -363,6 +363,7 @@ exercise the same tests against the public dev frontend; omit it for local Vite.
 | Create a session | Ctrl / Cmd + N |
 | Search chats (sessions) | Ctrl / Cmd + K |
 | Search messages in the open chat | Ctrl / Cmd + F |
+| Toggle immersive reading (mobile with a keyboard) | Ctrl / Cmd + Shift + F |
 | Toggle the sidebar | Ctrl / Cmd + B |
 | Open settings | Ctrl / Cmd + , |
 
