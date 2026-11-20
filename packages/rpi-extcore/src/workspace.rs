@@ -339,6 +339,69 @@ pub struct ProjectDocument {
 /// truthful media type. Text-like and raster formats keep their own routes.
 const DOCUMENT_LIMIT: u64 = 40 * 1024 * 1024;
 
+/// Bounded, opaque bytes for a browser download.
+#[derive(Debug)]
+pub struct ProjectDownload {
+    pub bytes: Vec<u8>,
+    pub file_name: String,
+}
+
+/// Read any regular project file as an opaque attachment.
+///
+/// Unlike the inline document route this accepts every extension, because the
+/// transport hands it to the operating system with `Content-Disposition:
+/// attachment` and `application/octet-stream`; nothing is rendered in the page.
+pub async fn download_at(
+    project: &Project,
+    root: &str,
+    relative: &str,
+) -> Result<ProjectDownload, (ReplyKind, Value)> {
+    let path = resolve(&browse_root(project, root).await?, relative)?;
+    fn check(metadata: &std::fs::Metadata) -> Result<(), (ReplyKind, Value)> {
+        if !metadata.is_file() {
+            return Err(failure(ReplyKind::InvalidInput, "select a regular file"));
+        }
+        if metadata.len() > DOCUMENT_LIMIT {
+            return Err(failure(
+                ReplyKind::LimitExceeded,
+                "downloads are limited to 40 MiB",
+            ));
+        }
+        Ok(())
+    }
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| failure(ReplyKind::NotFound, "file not found"))?;
+    check(&metadata)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download")
+        .to_string();
+    let handle = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| failure(ReplyKind::NotFound, "file not found"))?;
+    check(
+        &handle
+            .metadata()
+            .await
+            .map_err(|_| failure(ReplyKind::AccessDenied, "cannot inspect file"))?,
+    )?;
+    let mut bytes = Vec::new();
+    handle
+        .take(DOCUMENT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| failure(ReplyKind::AccessDenied, "cannot read file"))?;
+    if bytes.len() as u64 > DOCUMENT_LIMIT {
+        return Err(failure(
+            ReplyKind::LimitExceeded,
+            "downloads are limited to 40 MiB",
+        ));
+    }
+    Ok(ProjectDownload { bytes, file_name })
+}
+
 /// Read a project-relative document from the project root or a linked worktree.
 ///
 /// The extension whitelist keeps this route from becoming a generic binary
@@ -855,6 +918,32 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(kind, ReplyKind::AccessDenied);
+    }
+
+    #[tokio::test]
+    async fn downloads_are_opaque_bounded_project_files() {
+        let root = fixture();
+        let project = Project::new(&root).unwrap();
+        // Any extension downloads; it never claims a renderable media type.
+        std::fs::write(root.join("report.zip"), b"PK\x03\x04binary").unwrap();
+        let download = download_at(&project, "", "report.zip").await.unwrap();
+        assert_eq!(download.file_name, "report.zip");
+        assert_eq!(download.bytes, b"PK\x03\x04binary");
+        std::fs::write(root.join("photo.PNG"), PNG).unwrap();
+        assert_eq!(
+            download_at(&project, "", "photo.PNG").await.unwrap().bytes,
+            PNG
+        );
+        let (kind, _) = download_at(&project, "", "missing.zip").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::NotFound);
+        // The same browsable boundary guards downloads.
+        for blocked in [".git/config", ".rpi/sessions/a.jsonl", "../escape.zip"] {
+            let (kind, _) = download_at(&project, "", blocked).await.unwrap_err();
+            assert_eq!(kind, ReplyKind::AccessDenied, "{blocked}");
+        }
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+        let (kind, _) = download_at(&project, "", "folder").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::InvalidInput);
     }
 
     #[tokio::test]

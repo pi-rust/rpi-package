@@ -267,6 +267,8 @@ async function host(
     root: string | null;
   }> = [];
   let documentsUnsupported = false;
+  const downloads: Array<{ path: string; root: string | null }> = [];
+  let downloadsUnsupported = false;
   const unexpected: string[] = [];
   let fail = false;
   let held: (() => void) | null = null;
@@ -383,6 +385,21 @@ async function host(
       return route.fulfill({
         status: 415,
         json: { error: "unsupported document format" },
+      });
+    }
+    if (/\/projects\/[^/]+\/download$/.test(path)) {
+      downloads.push({
+        path: url.searchParams.get("path") ?? "",
+        root: url.searchParams.get("root"),
+      });
+      if (downloadsUnsupported) return route.fulfill({ status: 404, body: "" });
+      return route.fulfill({
+        status: 200,
+        contentType: "application/octet-stream",
+        headers: {
+          "content-disposition": 'attachment; filename="manual.bin"',
+        },
+        body: Buffer.from([0x00, 0x01, 0x02]),
       });
     }
     if (/\/projects\/[^/]+\/files$/.test(path)) {
@@ -504,8 +521,12 @@ async function host(
     listings,
     missing,
     documents,
+    downloads,
     unsupportedDocuments: () => {
       documentsUnsupported = true;
+    },
+    unsupportedDownloads: () => {
+      downloadsUnsupported = true;
     },
     imageReads,
     imageMode: (mode: typeof imageMode) => {
@@ -1131,9 +1152,13 @@ test("Office documents offer a download instead of pretending to render", async 
   await expect(dialog.locator(".file-preview-office")).toContainText(
     "spec.docx",
   );
-  const download = dialog.getByRole("link", { name: "Download", exact: true });
-  await expect(download).toHaveAttribute("download", "spec.docx");
-  await expect(download).toHaveAttribute("href", /^blob:/);
+  // The card never pretends to render; both actions stay available.
+  await expect(
+    dialog.getByRole("button", { name: "Download", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Preview a local copy", exact: true }),
+  ).toBeVisible();
   await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
   expect(mock.documents).toEqual([
     { project: project.id, path: "docs/spec.docx", root: null },
@@ -1388,5 +1413,48 @@ test("xlsx links render a read-only sheet table with tabs", async ({
     { project: project.id, path: "docs/budget.xlsx", root: null },
   ]);
   expect(mock.reads).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("a binary that cannot be previewed downloads instead", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Archive](assets/manual.bin)", project.path);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Binary file cannot be previewed as text",
+  );
+  await dialog.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("Download started");
+  expect(mock.downloads).toEqual([{ path: "assets/manual.bin", root: null }]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("Office cards download the original document", async ({ page }) => {
+  const mock = await host(page, "[Spec](docs/spec.docx)", project.path);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Spec", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-office")).toBeVisible();
+  await dialog.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("Download started");
+  expect(mock.downloads).toEqual([{ path: "docs/spec.docx", root: null }]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("an older host explains that it cannot download either", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Archive](assets/manual.bin)", project.path);
+  mock.unsupportedDownloads();
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  const dialog = preview(page);
+  await dialog.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "This service cannot download files",
+  );
   expect(mock.unexpected).toEqual([]);
 });

@@ -132,6 +132,42 @@ export function FilePreview({
   }
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
+  const [downloading, setDownloading] = useState(false);
+  /** Fetch opaque attachment bytes and hand them to the browser's downloader. */
+  async function downloadToLocal() {
+    if (downloading) return;
+    setDownloading(true);
+    setCopied("");
+    try {
+      const blob = await api.download(project.id, shownPath, {
+        root: file.root,
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = shownPath.split("/").pop() || "download";
+      anchor.rel = "noopener";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      setCopied(zh ? "已开始下载" : "Download started");
+    } catch (cause) {
+      const routeMissing =
+        cause instanceof ApiError && cause.code === "route-missing";
+      setError(
+        routeMissing
+          ? zh
+            ? "当前服务版本不支持下载，请选择本地文件"
+            : "This service cannot download files; pick a local copy instead"
+          : cause instanceof Error
+            ? cause.message
+            : String(cause),
+      );
+    } finally {
+      setDownloading(false);
+    }
+  }
   // A line deep link is only visible in the numbered source, so it wins over
   // the rendered reading view the first time the preview opens.
   const [source, setSource] = useState(!markdown || !!file.line);
@@ -489,6 +525,10 @@ export function FilePreview({
             </ul>
           )}
           <div className="file-preview-status-actions">
+            <button type="button" onClick={() => void downloadToLocal()}>
+              <Download size={14} aria-hidden="true" />
+              {zh ? "下载到本地" : "Download"}
+            </button>
             <button
               type="button"
               onClick={() => setAttempt((value) => value + 1)}
@@ -580,14 +620,14 @@ export function FilePreview({
               : "Office documents cannot be previewed inline. Download the file and open it in Office or WPS."}
           </p>
           <div className="file-preview-office-actions">
-            <a
+            <button
+              type="button"
               className="file-preview-download"
-              href={documentUrl}
-              download={shownPath.split("/").pop()}
+              onClick={() => void downloadToLocal()}
             >
               <Download size={14} aria-hidden="true" />
               {zh ? "下载文件" : "Download"}
-            </a>
+            </button>
             <button
               type="button"
               className="file-preview-download"

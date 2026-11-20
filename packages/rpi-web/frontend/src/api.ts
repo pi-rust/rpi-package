@@ -738,6 +738,35 @@ export const api = {
       { signal: options.signal },
     );
   },
+  /** Opaque attachment bytes; the server marks them as a download. */
+  download: async (
+    projectId: string,
+    path: string,
+    options: { root?: string; signal?: AbortSignal } = {},
+  ) => {
+    const query = new URLSearchParams({ path });
+    if (options.root) query.set("root", options.root);
+    const response = await fetch(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/download?${query}`,
+      {
+        signal: options.signal,
+        headers: { "x-rpi-web": "1" },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) {
+      const value = (await response.json().catch((cause) => {
+        if (options.signal?.aborted) throw cause;
+        return null;
+      })) as { error?: unknown } | null;
+      throw new ApiError(
+        String(value?.error ?? `HTTP ${response.status}`),
+        response.status,
+        value ? undefined : "route-missing",
+      );
+    }
+    return response.blob();
+  },
   /** Raw bytes for a document the browser can display or the user can open. */
   document: async (
     projectId: string,
@@ -819,7 +848,11 @@ export const api = {
     return image;
   },
   /** Read-only native resource catalog for one explicit scope. */
-  resources: (projectId: string, scope: "global" | "project", signal?: AbortSignal) =>
+  resources: (
+    projectId: string,
+    scope: "global" | "project",
+    signal?: AbortSignal,
+  ) =>
     request<ResourceCatalog>(
       `/projects/${projectId}/resources?${new URLSearchParams({ scope })}`,
       { signal },
