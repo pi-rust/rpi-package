@@ -1631,61 +1631,103 @@ test("a message typed during a run queues as a follow-up without a kind selector
 test.describe("touch composer", () => {
   test.use({ hasTouch: true });
 
-  test("a running task offers a queue button because Enter inserts a newline", async ({
-    page,
-  }) => {
-    await mockHost(page);
-    const queued: Array<{ message: string; deliverAs: string }> = [];
-    await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
-      route.fulfill({
-        contentType: "text/event-stream",
-        body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
-      }),
-    );
-    await page.route(
-      `**/api/v1/sessions/${sessionId}/commands`,
-      async (route) => {
-        const body = route.request().postDataJSON();
-        if (body.type !== "queue_message") return route.fallback();
-        queued.push({ message: body.message, deliverAs: body.deliverAs });
-        return route.fulfill({
-          json: response(
-            { accepted: true, entryId: "touch-queued" },
-            body.type,
-          ),
-        });
-      },
-    );
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/");
-    const input = page.getByRole("textbox", {
-      name: "Send a prompt, or type / for commands…",
+  for (const sendVia of [
+    "Enter",
+    "insertLineBreak",
+    "insertParagraph",
+    "button",
+  ]) {
+    test(`a running task queues from a touch keyboard via ${sendVia}`, async ({
+      page,
+    }) => {
+      await mockHost(page);
+      const queued: Array<{ message: string; deliverAs: string }> = [];
+      await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
+        route.fulfill({
+          contentType: "text/event-stream",
+          body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+        }),
+      );
+      await page.route(
+        `**/api/v1/sessions/${sessionId}/commands`,
+        async (route) => {
+          const body = route.request().postDataJSON();
+          if (body.type !== "queue_message") return route.fallback();
+          queued.push({ message: body.message, deliverAs: body.deliverAs });
+          return route.fulfill({
+            json: response(
+              { accepted: true, entryId: "touch-queued" },
+              body.type,
+            ),
+          });
+        },
+      );
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto("/");
+      const input = page.getByRole("textbox", {
+        name: "Send a prompt, or type / for commands…",
+      });
+      const queueButton = page.getByRole("button", {
+        name: "Queue",
+        exact: true,
+      });
+      // Nothing queued yet: only the stop action is offered.
+      await expect(
+        page.getByRole("button", { name: "Abort", exact: true }),
+      ).toBeEnabled();
+      await expect(queueButton).toHaveCount(0);
+      await expect(input).toHaveAttribute("enterkeyhint", "send");
+      await input.fill("继续补充需求");
+      await expect(queueButton).toBeVisible();
+      // Shift+Enter and IME confirmation must not submit, even on touch devices.
+      await input.press("Shift+Enter");
+      await expect(input).toHaveValue("继续补充需求\n");
+      await input.dispatchEvent("compositionstart", { data: "需" });
+      await input.dispatchEvent("keydown", {
+        key: "Enter",
+        isComposing: true,
+        keyCode: 229,
+      });
+      await input.evaluate((element) =>
+        element.dispatchEvent(
+          new InputEvent("beforeinput", {
+            inputType: "insertLineBreak",
+            isComposing: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        ),
+      );
+      await input.dispatchEvent("compositionend", { data: "需" });
+      await input.dispatchEvent("keydown", { key: "Enter", keyCode: 229 });
+      await expect.poll(() => queued).toEqual([]);
+      await input.fill("继续补充需求");
+      if (sendVia === "Enter") {
+        await input.press("Enter");
+      } else if (sendVia === "button") {
+        await queueButton.click();
+      } else {
+        // Soft keyboards can send only beforeinput, with no keydown event.
+        const allowed = await input.evaluate(
+          (element, inputType) =>
+            element.dispatchEvent(
+              new InputEvent("beforeinput", {
+                inputType,
+                bubbles: true,
+                cancelable: true,
+              }),
+            ),
+          sendVia,
+        );
+        expect(allowed).toBe(false);
+      }
+      await expect
+        .poll(() => queued)
+        .toEqual([{ message: "继续补充需求", deliverAs: "followUp" }]);
+      await expect(input).toHaveValue("");
+      await expect(queueButton).toHaveCount(0);
     });
-    const queueButton = page.getByRole("button", {
-      name: "Queue",
-      exact: true,
-    });
-    // Nothing queued yet: only the stop action is offered.
-    await expect(
-      page.getByRole("button", { name: "Abort", exact: true }),
-    ).toBeEnabled();
-    await expect(queueButton).toHaveCount(0);
-    await input.fill("继续补充需求");
-    await expect(queueButton).toBeVisible();
-    await page.screenshot({
-      path: test.info().outputPath("touch-queue-buttons.png"),
-    });
-    // Enter still inserts a newline on a touch keyboard.
-    await input.press("Enter");
-    await expect(input).toHaveValue("继续补充需求\n");
-    await expect.poll(() => queued).toEqual([]);
-    await queueButton.click();
-    await expect
-      .poll(() => queued)
-      .toEqual([{ message: "继续补充需求", deliverAs: "followUp" }]);
-    await expect(input).toHaveValue("");
-    await expect(queueButton).toHaveCount(0);
-  });
+  }
 });
 
 test("send now steers a waiting message into the running task", async ({
@@ -17744,12 +17786,11 @@ test.describe("retirement", () => {
   });
 });
 
-test("mobile composer inserts a newline on Enter without sending", async ({
+test("mobile composer sends on Enter and keeps Shift+Enter for newlines", async ({
   browser,
 }) => {
   let prompts = 0;
-  // Mobile devices report a coarse pointer and have no Shift key on the soft
-  // keyboard, so Enter must fall through to the textarea's native newline.
+  // A coarse pointer must not disable Enter submission.
   const context = await browser.newContext({
     ...devices["iPhone 13"],
     baseURL: process.env.BASE_URL ?? "http://127.0.0.1:4191",
@@ -17767,12 +17808,12 @@ test("mobile composer inserts a newline on Enter without sending", async ({
   await mobilePage.goto("/");
   const input = mobilePage.locator(".composer textarea");
   await input.fill("first line");
-  await input.press("Enter");
+  await input.press("Shift+Enter");
   await input.type("second line");
   await expect(input).toHaveValue("first line\nsecond line");
   expect(prompts).toBe(0);
-  await expect(
-    mobilePage.getByRole("button", { name: "Send message", exact: true }),
-  ).toBeEnabled();
+  await input.press("Enter");
+  await expect.poll(() => prompts).toBe(1);
+  await expect(input).toHaveValue("");
   await context.close();
 });
