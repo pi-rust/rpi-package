@@ -23,6 +23,7 @@ async fn fixture(
             relation: None,
             created_at: 0,
             updated_at: 0,
+            last_turn_ended_at: None,
         })
         .unwrap();
     state.sessions.write().await.insert(id.into(), host.clone());

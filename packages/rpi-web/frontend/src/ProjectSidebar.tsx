@@ -1168,8 +1168,15 @@ export function ProjectSidebar({
               )}
             </span>
           )}
-          <time dateTime={new Date(session.updatedAt).toISOString()}>
-            {shortTime(session.updatedAt, language)}
+          <time
+            dateTime={new Date(
+              (recent ? session.lastTurnEndedAt : null) ?? session.updatedAt,
+            ).toISOString()}
+          >
+            {shortTime(
+              (recent ? session.lastTurnEndedAt : null) ?? session.updatedAt,
+              language,
+            )}
           </time>
         </button>
         {!recent && (canManage || canFork) && (
@@ -1385,9 +1392,13 @@ export function ProjectSidebar({
         >
           <div className="recent-wrap" ref={recentScroll.host}>
             <div className="recent-session-list">
-              {sessions
+              {[...sessions]
                 .filter((session) => !session.archived && !session.deleting)
-                .sort((a, b) => b.updatedAt - a.updatedAt)
+                .sort((a, b) => {
+                  const endedDelta =
+                    (b.lastTurnEndedAt ?? 0) - (a.lastTurnEndedAt ?? 0);
+                  return endedDelta || b.updatedAt - a.updatedAt;
+                })
                 .slice(0, 10)
                 .map((session) => sessionRow(session, { recent: true }))}
             </div>

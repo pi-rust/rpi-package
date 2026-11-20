@@ -35,6 +35,11 @@ pub struct RegistryEntry {
     pub created_at: u64,
     #[serde(rename = "updatedAt", default)]
     pub updated_at: u64,
+    /// Unix milliseconds of the most recent authoritative run settlement.
+    /// Unlike `updated_at`, ordinary activity, metadata edits and reads do not
+    /// change this value. Older registries omit the field and are read as `None`.
+    #[serde(rename = "lastTurnEndedAt", default)]
+    pub last_turn_ended_at: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -161,6 +166,7 @@ impl Registry {
             // project/relation metadata with a resource helper's placeholder.
             // A fully prepared publication may only refresh activity time.
             existing.updated_at = existing.updated_at.max(entry.updated_at);
+            Self::merge_last_turn_ended_at(existing, entry.last_turn_ended_at);
         } else {
             self.entries.push(entry.clone());
         }
@@ -241,6 +247,7 @@ impl Registry {
                     existing.relation = entry.relation;
                 }
                 existing.updated_at = existing.updated_at.max(entry.updated_at);
+                Self::merge_last_turn_ended_at(existing, entry.last_turn_ended_at);
             }
             None => self.entries.push(entry),
         }
@@ -272,6 +279,42 @@ impl Registry {
             }
         }
         Ok(removed)
+    }
+
+    /// Record the end of a completed run. The caller supplies the settlement
+    /// time; the registry never fabricates one and never lets an older event
+    /// move the timestamp backwards.
+    pub fn note_turn_ended(&mut self, session_id: &str, ended_at: u64) -> Result<bool, String> {
+        let previous = self.entries.clone();
+        let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.session_id == session_id)
+        else {
+            return Ok(false);
+        };
+        let changed = entry
+            .last_turn_ended_at
+            .map_or(true, |value| ended_at > value);
+        if changed {
+            entry.last_turn_ended_at = Some(ended_at);
+            if let Err(error) = self.save_result() {
+                self.entries = previous;
+                return Err(error);
+            }
+        }
+        Ok(changed)
+    }
+
+    fn merge_last_turn_ended_at(existing: &mut RegistryEntry, incoming: Option<u64>) {
+        if let Some(incoming) = incoming {
+            if existing
+                .last_turn_ended_at
+                .map_or(true, |value| incoming > value)
+            {
+                existing.last_turn_ended_at = Some(incoming);
+            }
+        }
     }
 
     pub fn rename(&mut self, session_id: &str, title: String) -> Result<bool, String> {
@@ -511,6 +554,53 @@ mod tests {
     }
 
     #[test]
+    fn last_turn_ended_at_survives_legacy_loads_and_ignores_older_settlements() {
+        let dir =
+            std::env::temp_dir().join(format!("rpi-web-settle-time-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+        std::fs::write(
+            &path,
+            r#"{"sessions":[{"sessionId":"legacy","createdAt":1,"updatedAt":9}]}"#,
+        )
+        .unwrap();
+        let mut registry = Registry::load(path.clone()).unwrap();
+        assert_eq!(registry.get("legacy").unwrap().last_turn_ended_at, None);
+
+        assert!(registry.note_turn_ended("legacy", 12_000).unwrap());
+        assert!(!registry.note_turn_ended("legacy", 11_000).unwrap());
+        assert_eq!(
+            registry.get("legacy").unwrap().last_turn_ended_at,
+            Some(12_000)
+        );
+        assert!(!registry.note_turn_ended("missing", 13_000).unwrap());
+
+        registry
+            .upsert(RegistryEntry {
+                session_id: "legacy".into(),
+                project_id: None,
+                title: None,
+                parent_session_id: None,
+                fork_entry_id: None,
+                relation: None,
+                created_at: 1,
+                updated_at: 13_000,
+                last_turn_ended_at: Some(10_000),
+            })
+            .unwrap();
+        assert_eq!(
+            registry.get("legacy").unwrap().last_turn_ended_at,
+            Some(12_000)
+        );
+        let reloaded = Registry::load(path).unwrap();
+        assert_eq!(
+            reloaded.get("legacy").unwrap().last_turn_ended_at,
+            Some(12_000)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn upsert_merges_and_removes() {
         let dir = std::env::temp_dir().join(format!("rpi-web-registry-{}", uuid::Uuid::new_v4()));
         let mut registry = Registry::load(dir.join("sessions.json")).unwrap();
@@ -524,6 +614,7 @@ mod tests {
                 relation: None,
                 created_at: 1,
                 updated_at: 1,
+                last_turn_ended_at: None,
             })
             .unwrap();
         registry
@@ -536,6 +627,7 @@ mod tests {
                 relation: None,
                 created_at: 1,
                 updated_at: 5,
+                last_turn_ended_at: None,
             })
             .unwrap();
         let entry = registry.get("a").unwrap();
@@ -579,6 +671,7 @@ mod tests {
                 relation: None,
                 created_at: 2,
                 updated_at: 2,
+                last_turn_ended_at: None,
             })
             .unwrap();
         let reloaded = Registry::load(path).unwrap();
@@ -616,6 +709,7 @@ mod tests {
                 relation: None,
                 created_at: 1,
                 updated_at: 1,
+                last_turn_ended_at: None,
             })
             .unwrap();
         registry
@@ -670,6 +764,7 @@ mod tests {
             relation: None,
             created_at: 1,
             updated_at: 1,
+            last_turn_ended_at: None,
         };
         registry.upsert(entry.clone()).unwrap();
         registry

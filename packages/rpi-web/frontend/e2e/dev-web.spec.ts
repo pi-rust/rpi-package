@@ -124,7 +124,11 @@ async function mockHost(
     },
   ];
   const sessions: Array<
-    typeof session & { pinned?: boolean; archived?: boolean }
+    typeof session & {
+      pinned?: boolean;
+      archived?: boolean;
+      lastTurnEndedAt?: number | null;
+    }
   > = [{ ...session, pinned: false, archived: false }];
   for (let index = 0; index < (options.additionalSessions ?? 0); index += 1) {
     sessions.push({
@@ -1203,6 +1207,82 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   await expect(heading).toHaveAttribute("aria-expanded", "true");
   await expect(recent).toBeVisible();
   await expect(recent.locator(".recent-session-link")).toHaveCount(10);
+});
+
+test("recent chats sort by last completed turn, not recent activity", async ({
+  page,
+}) => {
+  const lastTurnEndedAtById: Record<string, number> = {
+    "session-2": 3_000,
+    "session-3": 9_000,
+  };
+  await page.route("**/api/v1/sessions", async (route: Route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const sessions = [
+      {
+        sessionId: "session-1",
+        projectId: "project-a",
+        title: "Mock session",
+        tags: ["frontend"],
+        status: "ready",
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_000_100,
+        lastSeq: 4,
+        error: null,
+        relation: null,
+        parentSessionId: null,
+        forkEntryId: null,
+        latestSettlement: null,
+        pinned: false,
+        archived: false,
+      },
+      {
+        sessionId: "session-2",
+        projectId: "project-a",
+        title: "Recent session 1",
+        tags: [],
+        status: "ready",
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_000_101,
+        lastSeq: 4,
+        error: null,
+        relation: null,
+        parentSessionId: null,
+        forkEntryId: null,
+        latestSettlement: null,
+        pinned: false,
+        archived: false,
+      },
+      {
+        sessionId: "session-3",
+        projectId: "project-b",
+        title: "Recent session 2",
+        tags: [],
+        status: "ready",
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_000_102,
+        lastSeq: 4,
+        error: null,
+        relation: null,
+        parentSessionId: null,
+        forkEntryId: null,
+        latestSettlement: null,
+        pinned: false,
+        archived: false,
+      },
+    ].map((entry) => ({
+      ...entry,
+      lastTurnEndedAt: lastTurnEndedAtById[entry.sessionId] ?? null,
+    }));
+    return route.fulfill({ status: 200, json: { sessions } });
+  });
+  await mockHost(page, { additionalSessions: 2 });
+  await page.goto("/");
+  const titles = page
+    .getByRole("region", { name: "Recent chats" })
+    .locator(".recent-session-link .session-title");
+  await expect(titles.first()).toHaveAttribute("data-title", "Recent session 2");
+  await expect(titles.nth(1)).toHaveAttribute("data-title", "Recent session 1");
 });
 
 test("details jump is right-aligned in the slim metrics strip (#306)", async ({

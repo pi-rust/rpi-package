@@ -56,6 +56,7 @@ fn entry(id: &str, project: &Project) -> RegistryEntry {
         relation: None,
         created_at: 0,
         updated_at: 0,
+        last_turn_ended_at: None,
     }
 }
 pub(super) async fn prepare_create(
@@ -707,6 +708,7 @@ impl Service {
                 candidate.shutdown().await;
                 return Err(error);
             }
+            self.watch_turn_ends(&id, &candidate);
             self.sessions.write().await.insert(id.clone(), candidate);
             self.touch_session(&id).await;
             Ok(())

@@ -36,6 +36,8 @@ export interface SessionSummary {
   status: string;
   createdAt: number;
   updatedAt: number;
+  /** Unix milliseconds of the latest authoritative run settlement, if any. */
+  lastTurnEndedAt?: number | null;
   lastSeq: number;
   error: string | null;
   parentSessionId?: string | null;

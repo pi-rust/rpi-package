@@ -266,6 +266,9 @@ pub struct HostSnapshot {
     pub status: String,
     pub last_error: Option<String>,
     pub latest_settlement: Option<Value>,
+    /// Unix milliseconds of the most recent authoritative run settlement in
+    /// this live host. `None` means no run has settled since it was opened.
+    pub last_turn_ended_at: Option<u64>,
     pub pending_dialog: Option<Value>,
     pub pending_dialogs: Vec<Value>,
     pub title: Option<String>,
@@ -485,6 +488,7 @@ struct HostState {
     status: String,
     last_error: Option<String>,
     latest_settlement: Option<Value>,
+    last_turn_ended_at: Option<u64>,
     pending_dialogs: Vec<Value>,
     resource_unsettled: bool,
     title: Option<String>,
@@ -826,6 +830,7 @@ impl HostSession {
             status: "ready".into(),
             last_error: None,
             latest_settlement: None,
+            last_turn_ended_at: None,
             pending_dialogs: Vec::new(),
             resource_unsettled: false,
             title: None,
@@ -1219,6 +1224,7 @@ impl HostSession {
                     status: "ready".into(),
                     last_error: None,
                     latest_settlement: None,
+                    last_turn_ended_at: None,
                     pending_dialogs: vec![],
                     resource_unsettled: false,
                     title: None,
@@ -1570,6 +1576,15 @@ impl HostSession {
         Ok(())
     }
 
+    pub(crate) fn runtime_snapshot_last_turn_ended_at(&self) -> Option<u64> {
+        self.runtime
+            .state
+            .try_read()
+            .map(|state| state.last_turn_ended_at)
+            .ok()
+            .flatten()
+    }
+
     pub async fn snapshot(&self) -> HostSnapshot {
         let state = self.runtime.state.read().await;
         HostSnapshot {
@@ -1577,6 +1592,7 @@ impl HostSession {
             status: state.status.clone(),
             last_error: state.last_error.clone(),
             latest_settlement: state.latest_settlement.clone(),
+            last_turn_ended_at: state.last_turn_ended_at,
             pending_dialog: state.pending_dialogs.first().cloned(),
             pending_dialogs: state.pending_dialogs.clone(),
             title: state.title.clone(),
@@ -1850,6 +1866,16 @@ async fn publish(
                     .get("error")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
+                let ended_at = value
+                    .get("timestamp")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(now_ms);
+                if state
+                    .last_turn_ended_at
+                    .map_or(true, |previous| ended_at > previous)
+                {
+                    state.last_turn_ended_at = Some(ended_at);
+                }
             }
             "host_closed" => {
                 state.status = "closed".into();
@@ -2294,6 +2320,7 @@ mod tests {
             status: "ready".into(),
             last_error: None,
             latest_settlement: None,
+            last_turn_ended_at: None,
             pending_dialogs: Vec::new(),
             resource_unsettled: false,
             title: None,
