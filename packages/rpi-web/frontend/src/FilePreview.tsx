@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { api, ApiError, type Project } from "./api";
 import { resolveProjectPath } from "./fileLookup";
+import { readSheet, type SheetPreview } from "./spreadsheet";
 import { translate, type Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
 import { MarkdownBody } from "./MarkdownBody";
@@ -28,10 +29,14 @@ function isMarkdownPath(path: string) {
   return /\.(?:md|markdown|mdx)$/i.test(path);
 }
 
-/** Browsers render PDF themselves; Office formats are handed to a desktop app. */
-function documentKind(path: string): "pdf" | "office" | null {
+/**
+ * Browsers render PDF themselves and `.xlsx` sheets are parsed in the page;
+ * legacy binaries and Word/PowerPoint are handed to a desktop app.
+ */
+function documentKind(path: string): "pdf" | "sheet" | "office" | null {
   if (/\.pdf$/i.test(path)) return "pdf";
-  return /\.(?:docx?|xlsx?|pptx?)$/i.test(path) ? "office" : null;
+  if (/\.xlsx$/i.test(path)) return "sheet";
+  return /\.(?:docx?|xls|pptx?)$/i.test(path) ? "office" : null;
 }
 
 /** Mounted only by an explicit click. The deferred effect avoids StrictMode's probe I/O. */
@@ -66,6 +71,7 @@ export function FilePreview({
   const markdown = isMarkdownPath(file.path);
   const documentType = image ? null : documentKind(file.path);
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<SheetPreview | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
   // A line deep link is only visible in the numbered source, so it wins over
@@ -89,6 +95,7 @@ export function FilePreview({
     setContent(null);
     setImageUrl(null);
     setDocumentUrl(null);
+    setSheet(null);
     setError("");
     setCopied("");
     setResolved(null);
@@ -111,6 +118,10 @@ export function FilePreview({
                 signal: controller.signal,
               });
               if (controller.signal.aborted) return;
+              if (documentType === "sheet") {
+                setSheet(readSheet(new Uint8Array(await blob.arrayBuffer())));
+                return;
+              }
               documentObjectUrl = URL.createObjectURL(blob);
               setDocumentUrl(documentObjectUrl);
             } catch (cause) {
@@ -396,6 +407,39 @@ export function FilePreview({
             type="application/pdf"
             aria-label={zh ? "PDF 预览" : "PDF preview"}
           />
+        </div>
+      ) : documentType === "sheet" && sheet ? (
+        <div className="file-preview-sheet">
+          <div className="file-preview-sheet-heading">
+            <FileText size={13} aria-hidden="true" />
+            <span>{sheet.name || (zh ? "工作表" : "Sheet")}</span>
+            {sheet.truncated && (
+              <span className="file-preview-sheet-note">
+                {zh ? "已截断预览" : "preview truncated"}
+              </span>
+            )}
+          </div>
+          <div
+            className="file-preview-sheet-scroll"
+            tabIndex={0}
+            role="region"
+            aria-label={zh ? "表格内容" : "Sheet content"}
+          >
+            <table>
+              <tbody>
+                {sheet.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    <th scope="row" aria-hidden="true">
+                      {rowIndex + 1}
+                    </th>
+                    {row.map((cell, columnIndex) => (
+                      <td key={columnIndex}>{cell}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : documentType === "office" && documentUrl ? (
         <div className="file-preview-office">

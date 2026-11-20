@@ -5,6 +5,8 @@ import {
   browserLink,
 } from "../src/messageLinks";
 import { projectImageSource } from "../src/projectImages";
+import { readSheet } from "../src/spreadsheet";
+import { strToU8, zipSync } from "fflate";
 import { absoluteProjectPath } from "../src/projectPaths";
 
 test.use({
@@ -26,6 +28,26 @@ const win = { ...project, path: "D:\\Work\\项目" };
 // Minimal bytes with the signatures the document route validates.
 const pdfBytes = Buffer.from("%PDF-1.7\n% mock pdf\n");
 const docxBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
+/** Minimal single-sheet workbook: shared strings plus one numeric cell. */
+function workbookBytes() {
+  return Buffer.from(
+    zipSync({
+      "xl/workbook.xml": strToU8(
+        '<workbook><sheets><sheet name="预算" sheetId="1" r:id="rId1"/></sheets></workbook>',
+      ),
+      "xl/_rels/workbook.xml.rels": strToU8(
+        '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+      ),
+      "xl/sharedStrings.xml": strToU8(
+        "<sst><si><t>项目</t></si><si><t>金额</t></si><si><t>差旅</t></si></sst>",
+      ),
+      "xl/worksheets/sheet1.xml": strToU8(
+        '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>1250</v></c></row></sheetData></worksheet>',
+      ),
+    }),
+  );
+}
+const sheetBytes = workbookBytes();
 
 test("absolute paths follow the server root's platform, not the browser", () => {
   // Unix: a backslash is a legal filename character and must be preserved.
@@ -347,6 +369,13 @@ async function host(
           status: 200,
           contentType: "application/pdf",
           body: pdfBytes,
+        });
+      if (/\.xlsx$/i.test(target))
+        return route.fulfill({
+          status: 200,
+          contentType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          body: sheetBytes,
         });
       if (/\.docx$/i.test(target))
         return route.fulfill({
@@ -1288,5 +1317,39 @@ test("an ambiguous nested path stays an explicit read error", async ({
     "file not found",
   );
   await expect(preview(page).locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("worksheet parsing reads the first sheet, shared strings and numbers", () => {
+  const sheet = readSheet(new Uint8Array(sheetBytes));
+  expect(sheet.name).toBe("预算");
+  expect(sheet.columns).toBe(2);
+  expect(sheet.rows).toEqual([
+    ["项目", "金额"],
+    ["差旅", "1250"],
+  ]);
+  expect(sheet.truncated).toBe(false);
+  // A non-workbook payload fails loudly instead of rendering an empty table.
+  expect(() => readSheet(new Uint8Array([0x50, 0x4b, 0x03, 0x04]))).toThrow();
+});
+
+test("xlsx links render a read-only sheet table", async ({ page }) => {
+  const mock = await host(page, "[Budget](docs/budget.xlsx)", project.path);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Budget", exact: true }).click();
+  const dialog = preview(page);
+  const sheet = dialog.locator(".file-preview-sheet");
+  await expect(sheet).toBeVisible();
+  await expect(sheet.locator(".file-preview-sheet-heading")).toContainText(
+    "预算",
+  );
+  await expect(sheet.locator("tr").nth(1)).toContainText("差旅");
+  await expect(sheet.locator("tr").nth(1)).toContainText("1250");
+  await expect(dialog.locator(".file-preview-office")).toHaveCount(0);
+  await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.documents).toEqual([
+    { project: project.id, path: "docs/budget.xlsx", root: null },
+  ]);
+  expect(mock.reads).toEqual([]);
   expect(mock.unexpected).toEqual([]);
 });
