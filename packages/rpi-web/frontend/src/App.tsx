@@ -918,6 +918,8 @@ export default function App() {
   const [queueDraft, setQueueDraft] = useState("");
   const queueInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  const composerComposing = useRef(false);
+  const composerShiftEnter = useRef(false);
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   function updateDraft(
@@ -3584,6 +3586,30 @@ export default function App() {
     }
   }
 
+  // Some soft keyboards emit beforeinput without an Enter keydown. Listen to
+  // the native event: React's synthetic before-input normalization can omit
+  // inputType. Rebind after renders to use the current draft/session and to
+  // handle the textarea mounting after authentication.
+  useEffect(() => {
+    const input = composerInputRef.current;
+    if (!input) return;
+    const onBeforeInput = (event: InputEvent) => {
+      if (
+        !window.matchMedia("(pointer: coarse)").matches ||
+        !["insertLineBreak", "insertParagraph"].includes(event.inputType) ||
+        event.isComposing ||
+        composerComposing.current ||
+        composerShiftEnter.current ||
+        !event.cancelable
+      )
+        return;
+      event.preventDefault();
+      void submit();
+    };
+    input.addEventListener("beforeinput", onBeforeInput);
+    return () => input.removeEventListener("beforeinput", onBeforeInput);
+  });
+
   async function resumePending() {
     if (
       !sessionId ||
@@ -6183,12 +6209,26 @@ export default function App() {
                   onChange={(event) => {
                     updateDraft(event.target.value, sessionId);
                   }}
+                  enterKeyHint="send"
+                  onCompositionStart={() => {
+                    composerComposing.current = true;
+                  }}
+                  onCompositionEnd={() => {
+                    composerComposing.current = false;
+                  }}
+                  onBlur={() => {
+                    composerComposing.current = false;
+                    composerShiftEnter.current = false;
+                  }}
+                  onKeyUp={(event) => {
+                    composerShiftEnter.current = event.shiftKey;
+                  }}
                   onKeyDown={(event) => {
+                    composerShiftEnter.current = event.shiftKey;
                     if (
                       event.key === "Enter" &&
                       !event.shiftKey &&
-                      // Touch keyboards have no Shift; Enter must insert a newline there.
-                      !window.matchMedia("(pointer: coarse)").matches &&
+                      !composerComposing.current &&
                       !event.nativeEvent.isComposing &&
                       event.nativeEvent.keyCode !== 229
                     ) {
