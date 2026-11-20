@@ -121,20 +121,46 @@ for (const width of [1280, 390]) {
       const response = await page.request.get(src!);
       expect(response.status()).toBe(200);
       expect(response.headers()["content-type"]).toContain("image/png");
-      const iconHref = await page
+      const iconLinks = await page
         .locator('link[rel="icon"]')
-        .getAttribute("href");
-      expect(iconHref).toBe("/favicon.svg");
-      const faviconResponse = await page.request.get(iconHref!);
+        .evaluateAll((links) =>
+          links.map((link) => ({
+            href: link.getAttribute("href") ?? "",
+            sizes: link.getAttribute("sizes") ?? "",
+            type: link.getAttribute("type") ?? "",
+          })),
+        );
+      // Browser tabs rasterize icons at 16/32px. Serve pre-sized PNGs derived
+      // from the README logo so the browser never downscales the 600px image.
+      expect(iconLinks).toEqual(
+        expect.arrayContaining([
+          {
+            href: "/favicon.svg",
+            sizes: "",
+            type: "image/svg+xml",
+          },
+          {
+            href: expect.stringMatching(
+              /^data:image\/png;base64,[A-Za-z0-9+/=]+$/,
+            ),
+            sizes: "16x16",
+            type: "image/png",
+          },
+          {
+            href: expect.stringMatching(
+              /^data:image\/png;base64,[A-Za-z0-9+/=]+$/,
+            ),
+            sizes: "32x32",
+            type: "image/png",
+          },
+        ]),
+      );
+      const faviconResponse = await page.request.get("/favicon.svg");
       expect(faviconResponse.status()).toBe(200);
       expect(faviconResponse.headers()["content-type"]).toContain(
         "image/svg+xml",
       );
       const faviconSvg = await faviconResponse.text();
-      // The browser tab renders this at 16–32px. Keep the favicon as real SVG
-      // geometry instead of embedding a 600px raster that becomes blurry.
-      expect(faviconSvg).not.toMatch(/<image\b/i);
-      expect(faviconSvg).not.toMatch(/base64/i);
       expect(faviconSvg).toContain('viewBox="0 0 32 32"');
       if (!authenticated)
         await expect(page.locator(".login-mark .rpi-logo")).toBeVisible();
