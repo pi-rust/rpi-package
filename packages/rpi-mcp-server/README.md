@@ -245,6 +245,18 @@ SSE for `rpi_prompt`, interrupted-stream resumption via `Last-Event-ID`, unknown
 stream `404`) plus the WebSocket bridge (session hello, initialize, tools/list,
 reattach, rejection).
 
+`tests/mcp_conformance.py` drives a **live** HTTP endpoint with the Python
+standard library and prints PASS/FAIL per check (initialize, session header,
+catalog, resources, standalone stream, `202`/`400`/`404`, optional `rpi_state`,
+DELETE). Start a server, then:
+
+```bash
+task mcp-conformance MCP_URL=http://127.0.0.1:8080/mcp
+# or: python3 packages/rpi-mcp-server/tests/mcp_conformance.py --url … --call-state
+```
+
+It is a wire-contract check, not a substitute for a real MCP client.
+
 Live checks against `rpi 0.24.0` covered `initialize`, `tools/list`,
 `rpi_state`, `rpi_available_models`, `rpi_thinking_levels`,
 `rpi_set_thinking_level`, `rpi_compact`, `resources/list`, `resources/read`

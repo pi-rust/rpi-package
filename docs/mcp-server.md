@@ -119,6 +119,17 @@ events per stream, 256 KiB of model-visible text per result, 600 s per request,
 ## Validation
 
 Fixtures cover the dispatcher (against a scripted native host), the HTTP/WebSocket
-lifecycle, stream resumption and cancellation; see the package README. They do not
-prove behaviour with a real client UI or a real model, so run your client against
-a real workspace before relying on it.
+lifecycle, stream resumption, cancellation and elicitation; see the package
+README.
+
+For a live endpoint, run the wire-contract script against a running server:
+
+```bash
+rpi-mcp-bridge --http 127.0.0.1:8080 --cwd /path/to/workspace &
+python3 packages/rpi-mcp-server/tests/mcp_conformance.py --url http://127.0.0.1:8080/mcp --call-state
+```
+
+It reports 19 checks (initialize, session header, catalog, resources, standalone
+stream, `202`/`400`/`404`, `rpi_state`, DELETE). Neither the fixtures nor the
+script exercise a real client UI or a model conversation, so try your own client
+against a real workspace before relying on it.
