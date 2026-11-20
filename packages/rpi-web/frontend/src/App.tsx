@@ -5384,6 +5384,15 @@ export default function App() {
               onMetadata={updateSessionMetadata}
             />
             <div className="sidebar-bottom slim-bottom">
+              {/* Build-time only: set VITE_PREVIEW_BUILD=1 for preview builds. */}
+              {import.meta.env.VITE_PREVIEW_BUILD === "1" && (
+                <div
+                  className="slim-preview-badge"
+                  title={`rpi-web preview · ${import.meta.env.VITE_PREVIEW_COMMIT ?? "local build"}`}
+                >
+                  <span aria-hidden="true" /> rpi-web preview
+                </div>
+              )}
               <button
                 type="button"
                 className="slim-settings"
