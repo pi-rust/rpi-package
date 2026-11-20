@@ -1585,45 +1585,6 @@ test("mobile session actions keep the ellipsis control compact", async ({
   ).toBeVisible();
 });
 
-test("messages sent during a run default to steering the current task", async ({
-  page,
-}) => {
-  await mockHost(page);
-  const queued: string[] = [];
-  await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) =>
-    route.fulfill({
-      contentType: "text/event-stream",
-      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
-    }),
-  );
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/commands`,
-    async (route) => {
-      const body = route.request().postDataJSON();
-      if (body.type !== "queue_message") return route.fallback();
-      queued.push(body.message);
-      // A typed interjection should reach the model before the next request,
-      // not wait for the final answer as `followUp` did.
-      expect(body.deliverAs).toBe("steer");
-      return route.fulfill({
-        json: response({ accepted: true, entryId: "queued-test" }, body.type),
-      });
-    },
-  );
-  await page.goto("/");
-  await expect(
-    page.getByRole("button", { name: "Abort", exact: true }),
-  ).toBeEnabled();
-  const input = page.getByRole("textbox", {
-    name: "Send a prompt, or type / for commands…",
-  });
-  await input.fill("Next task");
-  await input.press("Enter");
-  await expect.poll(() => queued).toEqual(["Next task"]);
-  await expect(page.locator(".message.user")).toHaveCount(0);
-  await expect(input).toHaveValue("");
-});
-
 test("a message typed during a run queues as a follow-up without a kind selector", async ({
   page,
 }) => {
@@ -6926,10 +6887,9 @@ test("an unknown slash word is sent as a prompt, not rejected", async ({
   await page.goto("/");
   await input.fill("/modle sumo");
   await input.press("Enter");
-  await expect.poll(() => prompts).toEqual([
-    "/modelx please explain this",
-    "/modle sumo",
-  ]);
+  await expect
+    .poll(() => prompts)
+    .toEqual(["/modelx please explain this", "/modle sumo"]);
   // A known command is still routed to the slash handler, not the model.
   // ("/abort" while idle is advertised by the mock host and notes without
   // sending a prompt; "/help" lists commands.)

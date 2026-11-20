@@ -2941,13 +2941,19 @@ export default function App() {
             ? previous.filter(isEditableQueueItem)
             : items,
         );
-      } catch {
-        // A failed poll keeps the last known list; the next one retries.
+      } catch (cause) {
+        // A revoked session must log out exactly like any other read.
+        if (cause instanceof ApiError && cause.status === 401) {
+          controller.abort();
+          clearAccess();
+          return;
+        }
+        // Any other failure keeps the last known list; the next poll retries.
       } finally {
         if (queueAbort.current === controller) queueAbort.current = null;
       }
     },
-    [showQueueHistory, supported],
+    [clearAccess, showQueueHistory, supported],
   );
 
   const refreshDiagnostics = useCallback(
