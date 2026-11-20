@@ -1212,23 +1212,71 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
 test("recent chats sort by last completed turn, not recent activity", async ({
   page,
 }) => {
-  await mockHost(page, { additionalSessions: 2 });
+  const lastTurnEndedAtById: Record<string, number> = {
+    "session-2": 3_000,
+    "session-3": 9_000,
+  };
   await page.route("**/api/v1/sessions", async (route: Route) => {
     if (route.request().method() !== "GET") return route.continue();
-    const response = await route.fetch();
-    const payload = (await response.json()) as {
-      sessions: Array<{
-        sessionId: string;
-        updatedAt: number;
-        lastTurnEndedAt?: number | null;
-      }>;
-    };
-    for (const item of payload.sessions) {
-      if (item.sessionId === "session-2") item.lastTurnEndedAt = 3_000;
-      if (item.sessionId === "session-3") item.lastTurnEndedAt = 9_000;
-    }
-    return route.fulfill({ status: 200, json: payload });
+    const sessions = [
+      {
+        sessionId: "session-1",
+        projectId: "project-a",
+        title: "Mock session",
+        tags: ["frontend"],
+        status: "ready",
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_000_100,
+        lastSeq: 4,
+        error: null,
+        relation: null,
+        parentSessionId: null,
+        forkEntryId: null,
+        latestSettlement: null,
+        pinned: false,
+        archived: false,
+      },
+      {
+        sessionId: "session-2",
+        projectId: "project-a",
+        title: "Recent session 1",
+        tags: [],
+        status: "ready",
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_000_101,
+        lastSeq: 4,
+        error: null,
+        relation: null,
+        parentSessionId: null,
+        forkEntryId: null,
+        latestSettlement: null,
+        pinned: false,
+        archived: false,
+      },
+      {
+        sessionId: "session-3",
+        projectId: "project-b",
+        title: "Recent session 2",
+        tags: [],
+        status: "ready",
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_000_102,
+        lastSeq: 4,
+        error: null,
+        relation: null,
+        parentSessionId: null,
+        forkEntryId: null,
+        latestSettlement: null,
+        pinned: false,
+        archived: false,
+      },
+    ].map((entry) => ({
+      ...entry,
+      lastTurnEndedAt: lastTurnEndedAtById[entry.sessionId] ?? null,
+    }));
+    return route.fulfill({ status: 200, json: { sessions } });
   });
+  await mockHost(page, { additionalSessions: 2 });
   await page.goto("/");
   const titles = page
     .getByRole("region", { name: "Recent chats" })
