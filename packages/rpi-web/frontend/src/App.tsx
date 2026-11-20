@@ -699,6 +699,13 @@ export default function App() {
   const [sessionId, setSessionId] = useState("");
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [immersive, setImmersive] = useState(false);
+  const isMobileViewport = () => window.matchMedia("(pointer: coarse)").matches;
+  // Mobile keeps the whole page visible (including the composer) and only
+  // asks the browser to hide its own chrome. Desktop keeps the CSS immersive
+  // reading mode; the two paths are deliberately independent.
+  const [browserFullscreen, setBrowserFullscreen] = useState(false);
+  const browserFullscreenRef = useRef(false);
+  const immersiveActionsRef = useRef<{ exit: () => void } | null>(null);
   useEffect(() => {
     setTimelineOpen(false);
   }, [sessionId]);
@@ -706,11 +713,25 @@ export default function App() {
   useEffect(() => {
     if (!immersive) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") exitImmersive();
+      if (event.key === "Escape") immersiveActionsRef.current?.exit();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [immersive]);
+
+  // Only observes browser fullscreen we requested. A system gesture or Esc
+  // that leaves fullscreen just resets the toggle; page UI is never hidden.
+  useEffect(() => {
+    const onChange = () => {
+      const active = Boolean(document.fullscreenElement);
+      if (!active && browserFullscreenRef.current) {
+        browserFullscreenRef.current = false;
+        setBrowserFullscreen(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsRoot, setProjectsRoot] = useState("");
   const [projectDialog, setProjectDialog] = useState(false);
@@ -934,6 +955,33 @@ export default function App() {
     workbenchOpen: boolean;
   } | null>(null);
 
+  // Mobile: hide only the browser's own chrome (URL bar / bottom toolbar) by
+  // requesting fullscreen on the document. No page panel is hidden, so the
+  // composer stays visible. iOS Safari and WebViews without the native
+  // callback simply reject and leave the page unchanged.
+  async function toggleBrowserFullscreen() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen?.();
+        browserFullscreenRef.current = false;
+        setBrowserFullscreen(false);
+      } else if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+        browserFullscreenRef.current = true;
+        setBrowserFullscreen(true);
+      }
+    } catch {
+      browserFullscreenRef.current = false;
+      setBrowserFullscreen(false);
+    }
+  }
+
+  function toggleView() {
+    if (isMobileViewport()) void toggleBrowserFullscreen();
+    else if (immersive) exitImmersive();
+    else enterImmersive();
+  }
+
   function enterImmersive() {
     immersiveSnapshot.current = {
       sidebar,
@@ -961,6 +1009,7 @@ export default function App() {
     setTraceOpen(snapshot.traceOpen);
     setWorkbenchOpen(snapshot.workbenchOpen);
   }
+  immersiveActionsRef.current = { exit: exitImmersive };
   const traceButtonRef = useRef<HTMLButtonElement>(null);
   const [seen, setSeen] = useState(0);
   const [settleTick, setSettleTick] = useState(0);
@@ -2136,6 +2185,11 @@ export default function App() {
         event.preventDefault();
         setSettingsOpen(true);
       }
+      if (key === "f" && event.shiftKey && isMobileViewport()) {
+        event.preventDefault();
+        if (sessionId) void toggleBrowserFullscreen();
+        return;
+      }
       if (key === "f") {
         event.preventDefault();
         if (activeSessionRef.current) setMessageSearchOpen(true);
@@ -2143,7 +2197,13 @@ export default function App() {
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [createSession, authChecked, authRequired, authenticated]);
+  }, [
+    createSession,
+    authChecked,
+    authRequired,
+    authenticated,
+    sessionId,
+  ]);
 
   useEffect(() => {
     if (!authChecked || (authRequired && !authenticated)) return;
@@ -5020,12 +5080,32 @@ export default function App() {
           <div className="toolbar-actions">
             <button
               type="button"
-              className={`icon-button ${immersive ? "selected" : ""}`}
+              className={`icon-button ${
+                (isMobileViewport() ? browserFullscreen : immersive)
+                  ? "selected"
+                  : ""
+              }`}
               disabled={!sessionId}
-              aria-label={t("immersiveView")}
-              title={t("immersiveView")}
-              aria-pressed={immersive}
-              onClick={enterImmersive}
+              aria-label={t(
+                isMobileViewport()
+                  ? browserFullscreen
+                    ? "exitFullscreenView"
+                    : "fullscreenView"
+                  : immersive
+                    ? "exitImmersiveView"
+                    : "immersiveView",
+              )}
+              title={t(
+                isMobileViewport()
+                  ? browserFullscreen
+                    ? "exitFullscreenView"
+                    : "fullscreenView"
+                  : immersive
+                    ? "exitImmersiveView"
+                    : "immersiveView",
+              )}
+              aria-pressed={isMobileViewport() ? browserFullscreen : immersive}
+              onClick={toggleView}
             >
               <Maximize2 size={17} aria-hidden="true" />
             </button>
