@@ -21,6 +21,10 @@ fn default_service_name() -> &'static str {
 pub struct AppConfig {
     #[serde(skip, default = "default_service_name")]
     pub service_name: &'static str,
+    /// Installed build served by this process, reported to clients so a page
+    /// can identify the running version instead of guessing from its bundle.
+    #[serde(skip)]
+    pub service_version: Option<&'static str>,
     pub project: PathBuf,
     /// Additional workspace roots explicitly made available to clients.
     pub projects: Vec<PathBuf>,
@@ -45,6 +49,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             service_name: "rpi-http",
+            service_version: None,
             project: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             projects: Vec::new(),
             projects_root: None,

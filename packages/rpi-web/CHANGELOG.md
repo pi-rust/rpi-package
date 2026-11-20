@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.1.66](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.65...rpi-web-v0.1.66) - 2026-11-20
+
+### Added
+
+- *(web)* remember a session's last-used model and thinking level: new sessions use the web-set defaults (per project), historical sessions keep the model/thinking of their last round, and a reopened native host restores them before the composer is usable ([#335](https://github.com/pi-rust/rpi-package/pull/335))
+
+### Fixed
+
+- *(web)* let Enter insert a newline in the mobile composer instead of sending ([#332](https://github.com/pi-rust/rpi-package/pull/332))
+- *(web)* send unknown slash words as prompts instead of an error ([#334](https://github.com/pi-rust/rpi-package/pull/334))
+
 ## [0.1.65](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.64...rpi-web-v0.1.65) - 2026-11-19
 
 ### Changed

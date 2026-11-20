@@ -1,4 +1,6 @@
 export interface Capabilities {
+  /** Installed build reported by the host; absent on older services. */
+  version?: string;
   protocol: string;
   piCompatibilityTarget?: string;
   supportedCommands: string[];
@@ -723,10 +725,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(metadata),
     }),
-  files: (projectId: string, path = "") =>
-    request<{ path: string; entries: FileEntry[] }>(
-      `/projects/${projectId}/files?${new URLSearchParams({ path })}`,
-    ),
+  files: (projectId: string, path = "", root?: string) => {
+    const query = new URLSearchParams({ path });
+    if (root) query.set("root", root);
+    return request<{ path: string; entries: FileEntry[] }>(
+      `/projects/${projectId}/files?${query}`,
+    );
+  },
   /** `root` selects a linked worktree; it defaults to the project root. */
   file: (
     projectId: string,
@@ -739,6 +744,65 @@ export const api = {
       `/projects/${projectId}/file?${query}`,
       { signal: options.signal },
     );
+  },
+  /** Opaque attachment bytes; the server marks them as a download. */
+  download: async (
+    projectId: string,
+    path: string,
+    options: { root?: string; signal?: AbortSignal } = {},
+  ) => {
+    const query = new URLSearchParams({ path });
+    if (options.root) query.set("root", options.root);
+    const response = await fetch(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/download?${query}`,
+      {
+        signal: options.signal,
+        headers: { "x-rpi-web": "1" },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) {
+      const value = (await response.json().catch((cause) => {
+        if (options.signal?.aborted) throw cause;
+        return null;
+      })) as { error?: unknown } | null;
+      throw new ApiError(
+        String(value?.error ?? `HTTP ${response.status}`),
+        response.status,
+        value ? undefined : "route-missing",
+      );
+    }
+    return response.blob();
+  },
+  /** Raw bytes for a document the browser can display or the user can open. */
+  document: async (
+    projectId: string,
+    path: string,
+    options: { root?: string; signal?: AbortSignal } = {},
+  ) => {
+    const query = new URLSearchParams({ path });
+    if (options.root) query.set("root", options.root);
+    const response = await fetch(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/document?${query}`,
+      {
+        signal: options.signal,
+        headers: { "x-rpi-web": "1" },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) {
+      const value = (await response.json().catch((cause) => {
+        if (options.signal?.aborted) throw cause;
+        return null;
+      })) as { error?: unknown } | null;
+      throw new ApiError(
+        String(value?.error ?? `HTTP ${response.status}`),
+        response.status,
+        // A host without this route answers with an empty, non-JSON body.
+        value ? undefined : "route-missing",
+      );
+    }
+    return response.blob();
   },
   image: async (
     projectId: string,
@@ -791,7 +855,11 @@ export const api = {
     return image;
   },
   /** Read-only native resource catalog for one explicit scope. */
-  resources: (projectId: string, scope: "global" | "project", signal?: AbortSignal) =>
+  resources: (
+    projectId: string,
+    scope: "global" | "project",
+    signal?: AbortSignal,
+  ) =>
     request<ResourceCatalog>(
       `/projects/${projectId}/resources?${new URLSearchParams({ scope })}`,
       { signal },

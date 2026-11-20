@@ -139,8 +139,12 @@ export function PromptDialog({
           onChange={(event) => setValue(event.target.value)}
         />
         <div className="dialog-actions">
-          <button type="button" onClick={onClose}>{t("cancel")}</button>
-          <button type="submit" className="primary">{t("submit")}</button>
+          <button type="button" onClick={onClose}>
+            {t("cancel")}
+          </button>
+          <button type="submit" className="primary">
+            {t("submit")}
+          </button>
         </div>
       </form>
     </Modal>
@@ -172,7 +176,12 @@ export function ConfirmDialog({
           <button type="button" onClick={onClose}>
             {translate(language, "cancel")}
           </button>
-          <button type="button" className="danger" disabled={busy} onClick={onConfirm}>
+          <button
+            type="button"
+            className="danger"
+            disabled={busy}
+            onClick={onConfirm}
+          >
             {confirmLabel ?? translate(language, "submit")}
           </button>
         </div>
@@ -218,7 +227,14 @@ export function ProjectDialog({
       node.path === parentPath
         ? { ...node, children }
         : node.children
-          ? { ...node, children: updateFolderChildren(node.children, parentPath, children) }
+          ? {
+              ...node,
+              children: updateFolderChildren(
+                node.children,
+                parentPath,
+                children,
+              ),
+            }
           : node,
     );
   }
@@ -232,7 +248,9 @@ export function ProjectDialog({
         path: folder.path,
       }));
       setFolderNodes((previous) =>
-        relative ? updateFolderChildren(previous, relative, children) : children,
+        relative
+          ? updateFolderChildren(previous, relative, children)
+          : children,
       );
       setExpandedFolders((previous) => new Set(previous).add(relative));
     } catch (cause) {
@@ -279,10 +297,15 @@ export function ProjectDialog({
     }
   }
   const allFolders = (nodes: FolderNode[]): FolderNode[] =>
-    nodes.flatMap((node) => [node, ...(node.children ? allFolders(node.children) : [])]);
+    nodes.flatMap((node) => [
+      node,
+      ...(node.children ? allFolders(node.children) : []),
+    ]);
   const folderMatches = folderQuery.trim()
     ? allFolders(folderNodes).filter((folder) =>
-        `${folder.name} ${folder.path}`.toLowerCase().includes(folderQuery.trim().toLowerCase()),
+        `${folder.name} ${folder.path}`
+          .toLowerCase()
+          .includes(folderQuery.trim().toLowerCase()),
       )
     : [];
   function chooseFolder(folder: FolderNode) {
@@ -294,7 +317,11 @@ export function ProjectDialog({
     setFolderQuery(value);
     setPath(value);
     if (!nameEdited) {
-      const candidate = value.replace(/[\/]+$/, "").split(/[\/]/).pop() ?? "";
+      const candidate =
+        value
+          .replace(/[\/]+$/, "")
+          .split(/[\/]/)
+          .pop() ?? "";
       if (candidate) setName(candidate);
     }
   }
@@ -309,21 +336,49 @@ export function ProjectDialog({
   function renderFolder(folder: FolderNode, depth = 0): ReactNode {
     const expanded = expandedFolders.has(folder.path);
     const loading = loadingFolders.has(folder.path);
-    const hasChildren = folder.children === undefined || folder.children.length > 0;
+    const hasChildren =
+      folder.children === undefined || folder.children.length > 0;
     return (
-      <div className="folder-tree-node" role="treeitem" aria-expanded={expanded} key={folder.path}>
-        <div className="folder-option-row" style={{ paddingLeft: 4 + depth * 16 }}>
+      <div
+        className="folder-tree-node"
+        role="treeitem"
+        aria-expanded={expanded}
+        key={folder.path}
+      >
+        <div
+          className="folder-option-row"
+          style={{ paddingLeft: 4 + depth * 16 }}
+        >
           <button
             type="button"
             className="folder-toggle"
-            aria-label={expanded ? (zh ? "折叠目录" : "Collapse folder") : (zh ? "展开目录" : "Expand folder")}
+            aria-label={
+              expanded
+                ? zh
+                  ? "折叠目录"
+                  : "Collapse folder"
+                : zh
+                  ? "展开目录"
+                  : "Expand folder"
+            }
             disabled={!hasChildren || loading || !!created}
             onClick={() => {
-              if (!expanded && folder.children === undefined) void loadFolders(folder.path);
+              if (!expanded && folder.children === undefined)
+                void loadFolders(folder.path);
               toggleFolder(folder.path);
             }}
           >
-            {loading ? <Loader2 size={13} className="spin" /> : hasChildren ? (expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />) : <span className="folder-toggle-placeholder" />}
+            {loading ? (
+              <Loader2 size={13} className="spin" />
+            ) : hasChildren ? (
+              expanded ? (
+                <ChevronDown size={13} />
+              ) : (
+                <ChevronRight size={13} />
+              )
+            ) : (
+              <span className="folder-toggle-placeholder" />
+            )}
           </button>
           <button
             type="button"
@@ -334,11 +389,15 @@ export function ProjectDialog({
             disabled={busy || !!created}
           >
             <Folder size={14} />
-            <span><strong>{folder.name}</strong><small>{folder.path}</small></span>
+            <span>
+              <strong>{folder.name}</strong>
+              <small>{folder.path}</small>
+            </span>
             {path === folder.path && <Check size={14} />}
           </button>
         </div>
-        {expanded && folder.children?.map((child) => renderFolder(child, depth + 1))}
+        {expanded &&
+          folder.children?.map((child) => renderFolder(child, depth + 1))}
       </div>
     );
   }
@@ -404,7 +463,9 @@ export function ProjectDialog({
               value={folderQuery}
               onChange={(event) => updateFolderQuery(event.target.value)}
               placeholder={
-                zh ? "搜索文件夹，或粘贴路径…" : "Search folders or paste a path…"
+                zh
+                  ? "搜索文件夹，或粘贴路径…"
+                  : "Search folders or paste a path…"
               }
               autoComplete="off"
               spellCheck={false}
@@ -433,13 +494,18 @@ export function ProjectDialog({
                       disabled={busy || !!created}
                     >
                       <Folder size={14} />
-                      <span><strong>{folder.name}</strong><small>{folder.path}</small></span>
+                      <span>
+                        <strong>{folder.name}</strong>
+                        <small>{folder.path}</small>
+                      </span>
                       {path === folder.path && <Check size={14} />}
                     </button>
                   ))
                 ) : (
                   <p className="folder-picker-empty muted">
-                    {zh ? "没有匹配的文件夹；也可以直接粘贴路径。" : "No matching folder; you can also paste a path directly."}
+                    {zh
+                      ? "没有匹配的文件夹；也可以直接粘贴路径。"
+                      : "No matching folder; you can also paste a path directly."}
                   </p>
                 )
               ) : folderNodes.length > 0 ? (
@@ -631,7 +697,9 @@ export function ProjectRenameDialog({
             });
         }}
       >
-        <label htmlFor="project-rename">{zh ? "项目名称" : "Project name"}</label>
+        <label htmlFor="project-rename">
+          {zh ? "项目名称" : "Project name"}
+        </label>
         <input
           id="project-rename"
           autoFocus
@@ -640,13 +708,21 @@ export function ProjectRenameDialog({
           onChange={(event) => setName(event.target.value)}
           disabled={busy}
         />
-        {error && <p role="alert" className="form-error">{error}</p>}
+        {error && (
+          <p role="alert" className="form-error">
+            {error}
+          </p>
+        )}
         <div className="dialog-actions">
           <button type="button" disabled={busy} onClick={onClose}>
             {zh ? "取消" : "Cancel"}
           </button>
           <button className="primary" disabled={busy || !name.trim()}>
-            {busy ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
+            {busy ? (
+              <Loader2 className="spin" size={14} />
+            ) : (
+              <Check size={14} />
+            )}
             {zh ? "保存" : "Save"}
           </button>
         </div>
@@ -684,7 +760,14 @@ export function TagsDialog({
         onSubmit={(event) => {
           event.preventDefault();
           if (busy) return;
-          const tags = [...new Set(value.split(",").map((tag) => tag.trim()).filter(Boolean))];
+          const tags = [
+            ...new Set(
+              value
+                .split(",")
+                .map((tag) => tag.trim())
+                .filter(Boolean),
+            ),
+          ];
           setBusy(true);
           setError("");
           void onSave(tags)
@@ -709,15 +792,25 @@ export function TagsDialog({
           disabled={busy}
         />
         <p className="form-hint">
-          {zh ? "使用逗号分隔多个标签。" : "Separate multiple tags with commas."}
+          {zh
+            ? "使用逗号分隔多个标签。"
+            : "Separate multiple tags with commas."}
         </p>
-        {error && <p className="form-error" role="alert">{error}</p>}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
         <div className="dialog-actions">
           <button type="button" disabled={busy} onClick={onClose}>
             {zh ? "取消" : "Cancel"}
           </button>
           <button className="primary" disabled={busy}>
-            {busy ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
+            {busy ? (
+              <Loader2 className="spin" size={14} />
+            ) : (
+              <Check size={14} />
+            )}
             {translate(language, "saveTags")}
           </button>
         </div>
@@ -768,9 +861,13 @@ function useAutoHideScrollbar() {
       bar.style.height = `${Math.min(track, size)}px`;
       bar.style.transform = `translateY(${(list.scrollTop / max) * (track - size)}px)`;
     };
-    const onScroll = () => { show(); sync(); };
+    const onScroll = () => {
+      show();
+      sync();
+    };
     const leave = () => {
-      if (!dragging) window.clearTimeout(timer), list.classList.remove("scrolling");
+      if (!dragging)
+        (window.clearTimeout(timer), list.classList.remove("scrolling"));
     };
     const down = (event: PointerEvent) => {
       if (!(event.target as Element).closest(".scroll-thumb")) return;
@@ -785,9 +882,13 @@ function useAutoHideScrollbar() {
       const max = list.scrollHeight - list.clientHeight;
       const track = list.clientHeight;
       const size = bar.getBoundingClientRect().height;
-      list.scrollTop = startTop + ((event.clientY - startY) / Math.max(1, track - size)) * max;
+      list.scrollTop =
+        startTop + ((event.clientY - startY) / Math.max(1, track - size)) * max;
     };
-    const up = () => { dragging = false; show(); };
+    const up = () => {
+      dragging = false;
+      show();
+    };
     list.addEventListener("scroll", onScroll, { passive: true });
     list.addEventListener("pointerleave", leave);
     bar.addEventListener("pointerdown", down);
@@ -874,6 +975,9 @@ export function ProjectSidebar({
   const [menu, setMenu] = useState("");
   const [pending, setPending] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  // The inline recent list is a shortcut; collapsing it gives the project tree
+  // its height back without losing cross-project recency.
+  const [recentOpen, setRecentOpen] = useState(true);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const recentScroll = useAutoHideScrollbar();
   useEffect(() => {
@@ -952,20 +1056,23 @@ export function ProjectSidebar({
       setPending("");
     }
   }
-  function sessionRow(session: SessionSummary, options: { recent?: boolean } = {}) {
+  function sessionRow(
+    session: SessionSummary,
+    options: { recent?: boolean } = {},
+  ) {
     const recent = options.recent === true;
     const title = session.title || (zh ? "新会话" : "New session");
     const relationKind =
-      session.relation === "clone"
-        ? "clone"
-        : session.relation
-          ? "fork"
-          : null;
+      session.relation === "clone" ? "clone" : session.relation ? "fork" : null;
     const awaitingAnswer = session.status === "awaiting_input";
     const running = ["running", "starting"].includes(session.status);
     return (
       <div
-        className={recent ? "recent-session-row" : `project-session${session.sessionId === sessionId ? " active" : ""}`}
+        className={
+          recent
+            ? "recent-session-row"
+            : `project-session${session.sessionId === sessionId ? " active" : ""}`
+        }
         key={session.sessionId}
         onContextMenu={(event) => {
           if (recent || (!canManage && !canFork)) return;
@@ -981,12 +1088,18 @@ export function ProjectSidebar({
           className={recent ? "recent-session-link" : "project-session-link"}
           onClick={() => onSelectSession(session)}
           title={title}
-          aria-current={!recent && session.sessionId === sessionId ? "page" : undefined}
+          aria-current={
+            !recent && session.sessionId === sessionId ? "page" : undefined
+          }
           aria-hidden={recent ? true : undefined}
           tabIndex={recent ? -1 : undefined}
         >
           {awaitingAnswer ? (
-            <span className="session-answer-dot" title={translate(language, "sessionAwaitingAnswer")} aria-hidden="true" />
+            <span
+              className="session-answer-dot"
+              title={translate(language, "sessionAwaitingAnswer")}
+              aria-hidden="true"
+            />
           ) : running ? (
             <span
               className="session-running-dot"
@@ -1011,7 +1124,11 @@ export function ProjectSidebar({
               }
               aria-hidden="true"
             >
-              {relationKind === "clone" ? <GitBranch size={12} /> : <GitFork size={12} />}
+              {relationKind === "clone" ? (
+                <GitBranch size={12} />
+              ) : (
+                <GitFork size={12} />
+              )}
             </span>
           )}
           <span
@@ -1020,8 +1137,12 @@ export function ProjectSidebar({
           >
             {!recent && title}
           </span>
-          {!recent && <SessionAnswerBadge session={session} language={language} />}
-          {!recent && <SessionIssueBadge session={session} language={language} />}
+          {!recent && (
+            <SessionAnswerBadge session={session} language={language} />
+          )}
+          {!recent && (
+            <SessionIssueBadge session={session} language={language} />
+          )}
           {!recent && draftSessionIds.has(session.sessionId) && (
             <span
               className="session-draft"
@@ -1031,12 +1152,19 @@ export function ProjectSidebar({
             </span>
           )}
           {!recent && (session.tags ?? []).length > 0 && (
-            <span className="session-tags" aria-label={translate(language, "tags")}>
+            <span
+              className="session-tags"
+              aria-label={translate(language, "tags")}
+            >
               {(session.tags ?? []).slice(0, 2).map((tag) => (
-                <span className="session-tag" key={tag}>{tag}</span>
+                <span className="session-tag" key={tag}>
+                  {tag}
+                </span>
               ))}
               {(session.tags ?? []).length > 2 && (
-                <span className="session-tag-more">+{(session.tags ?? []).length - 2}</span>
+                <span className="session-tag-more">
+                  +{(session.tags ?? []).length - 2}
+                </span>
               )}
             </span>
           )}
@@ -1102,64 +1230,74 @@ export function ProjectSidebar({
                           onRename(session);
                         }}
                       >
-                    <SquarePen size={14} />
-                    {zh ? "重命名" : "Rename"}
-                  </button>
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setMenu("");
-                      onEditTags(session);
-                    }}
-                  >
-                    <Tag size={14} />
-                    {translate(language, "editTags")}
-                  </button>
-                  <button
-                    role="menuitem"
-                    onClick={() =>
-                      void metadata(session, { pinned: !session.pinned })
-                    }
-                  >
-                    {session.pinned ? <PinOff size={14} /> : <Pin size={14} />}
-                    {session.pinned
-                      ? zh
-                        ? "取消置顶"
-                        : "Unpin"
-                      : zh
-                        ? "置顶"
-                        : "Pin"}
-                  </button>
-                  <button
-                    role="menuitem"
-                    onClick={() =>
-                      void metadata(session, { archived: !session.archived })
-                    }
-                  >
-                    {session.archived ? (
-                      <ArchiveRestore size={14} />
-                    ) : (
-                      <Archive size={14} />
-                    )}
-                    {session.archived
-                      ? zh
-                        ? "恢复会话"
-                        : "Restore chat"
-                      : zh
-                        ? "归档"
-                        : "Archive"}
-                  </button>
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setMenu("");
-                      onDelete(session);
-                    }}
-                  >
-                    <X size={14} />
+                        <SquarePen size={14} />
+                        {zh ? "重命名" : "Rename"}
+                      </button>
+                      <button
+                        role="menuitem"
+                        onClick={() => {
+                          setMenu("");
+                          onEditTags(session);
+                        }}
+                      >
+                        <Tag size={14} />
+                        {translate(language, "editTags")}
+                      </button>
+                      <button
+                        role="menuitem"
+                        onClick={() =>
+                          void metadata(session, { pinned: !session.pinned })
+                        }
+                      >
+                        {session.pinned ? (
+                          <PinOff size={14} />
+                        ) : (
+                          <Pin size={14} />
+                        )}
+                        {session.pinned
+                          ? zh
+                            ? "取消置顶"
+                            : "Unpin"
+                          : zh
+                            ? "置顶"
+                            : "Pin"}
+                      </button>
+                      <button
+                        role="menuitem"
+                        onClick={() =>
+                          void metadata(session, {
+                            archived: !session.archived,
+                          })
+                        }
+                      >
+                        {session.archived ? (
+                          <ArchiveRestore size={14} />
+                        ) : (
+                          <Archive size={14} />
+                        )}
+                        {session.archived
+                          ? zh
+                            ? "恢复会话"
+                            : "Restore chat"
+                          : zh
+                            ? "归档"
+                            : "Archive"}
+                      </button>
+                      <button
+                        role="menuitem"
+                        onClick={() => {
+                          setMenu("");
+                          onDelete(session);
+                        }}
+                      >
+                        <X size={14} />
                         {session.deleting
-                          ? zh ? "重试永久删除" : "Retry permanent deletion"
-                          : zh ? "永久删除" : "Delete permanently"}
+                          ? zh
+                            ? "重试永久删除"
+                            : "Retry permanent deletion"
+                          : zh
+                            ? "永久删除"
+                            : "Delete permanently"}
                       </button>
                     </>
                   )}
@@ -1232,27 +1370,43 @@ export function ProjectSidebar({
           type="button"
           className="sidebar-new-chat recent-chats-heading"
           aria-label={translate(language, "recentChats")}
+          aria-expanded={recentOpen}
+          aria-controls="sidebar-recent-sessions"
           title={translate(language, "recentChats")}
+          onClick={() => setRecentOpen((open) => !open)}
         >
           <Clock3 size={16} />
           <span>{translate(language, "recentChats")}</span>
+          <ChevronDown
+            size={14}
+            aria-hidden="true"
+            className="recent-chats-chevron"
+          />
         </button>
       </div>
-      {!archived && (
-        <section className="recent-sessions" aria-label={translate(language, "recentChats")}>
+      {!archived && recentOpen && (
+        <section
+          id="sidebar-recent-sessions"
+          className="recent-sessions"
+          aria-label={translate(language, "recentChats")}
+        >
           <div className="recent-wrap" ref={recentScroll.host}>
-          <div className="recent-session-list">
-            {[...sessions]
-              .filter((session) => !session.archived && !session.deleting)
-              .sort((a, b) => {
-                const endedDelta =
-                  (b.lastTurnEndedAt ?? 0) - (a.lastTurnEndedAt ?? 0);
-                return endedDelta || b.updatedAt - a.updatedAt;
-              })
-              .slice(0, 15)
-              .map((session) => sessionRow(session, { recent: true }))}
-          </div>
-          <div className="scroll-thumb" ref={recentScroll.thumb} aria-hidden="true" />
+            <div className="recent-session-list">
+              {[...sessions]
+                .filter((session) => !session.archived && !session.deleting)
+                .sort((a, b) => {
+                  const endedDelta =
+                    (b.lastTurnEndedAt ?? 0) - (a.lastTurnEndedAt ?? 0);
+                  return endedDelta || b.updatedAt - a.updatedAt;
+                })
+                .slice(0, 10)
+                .map((session) => sessionRow(session, { recent: true }))}
+            </div>
+            <div
+              className="scroll-thumb"
+              ref={recentScroll.thumb}
+              aria-hidden="true"
+            />
           </div>
         </section>
       )}
@@ -1361,10 +1515,20 @@ export function ProjectSidebar({
                       onClick={(event) => {
                         const box = event.currentTarget.getBoundingClientRect();
                         setMenuPosition({
-                          top: Math.min(box.bottom + 4, window.innerHeight - 100),
-                          left: Math.max(8, Math.min(box.right - 165, window.innerWidth - 180)),
+                          top: Math.min(
+                            box.bottom + 4,
+                            window.innerHeight - 100,
+                          ),
+                          left: Math.max(
+                            8,
+                            Math.min(box.right - 165, window.innerWidth - 180),
+                          ),
                         });
-                        setMenu(menu === `project:${project.id}` ? "" : `project:${project.id}`);
+                        setMenu(
+                          menu === `project:${project.id}`
+                            ? ""
+                            : `project:${project.id}`,
+                        );
                       }}
                     >
                       <MoreHorizontal size={15} />

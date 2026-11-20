@@ -477,7 +477,7 @@ pub struct FileQuery {
     pub staged: bool,
 }
 pub async fn project_files(state: &Service, id: String, query: FileQuery) -> workspace::Reply {
-    workspace::files(&project_by_id(state, &id).await?, &query.path).await
+    workspace::files_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
 }
 pub async fn project_file(state: &Service, id: String, query: FileQuery) -> workspace::Reply {
     workspace::file_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
@@ -488,6 +488,20 @@ pub async fn project_image(
     query: FileQuery,
 ) -> Result<workspace::ProjectImage, (ReplyKind, Value)> {
     workspace::image_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
+}
+pub async fn project_download(
+    state: &Service,
+    id: String,
+    query: FileQuery,
+) -> Result<workspace::ProjectDownload, (ReplyKind, Value)> {
+    workspace::download_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
+}
+pub async fn project_document(
+    state: &Service,
+    id: String,
+    query: FileQuery,
+) -> Result<workspace::ProjectDocument, (ReplyKind, Value)> {
+    workspace::document_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
 }
 pub async fn project_status(state: &Service, id: String) -> workspace::Reply {
     workspace::status(&project_by_id(state, &id).await?).await

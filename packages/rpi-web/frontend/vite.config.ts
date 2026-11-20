@@ -1,7 +1,22 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+/** The installed build identifies itself in the UI; read the crate version once. */
+function webVersion() {
+  try {
+    const toml = readFileSync(
+      new URL("../Cargo.toml", import.meta.url),
+      "utf8",
+    );
+    return /^version\s*=\s*"([^"]+)"/m.exec(toml)?.[1] ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export default defineConfig({
+  define: { __RPI_WEB_VERSION__: JSON.stringify(webVersion()) },
   plugins: [react()],
   build: {
     outDir: "../assets",

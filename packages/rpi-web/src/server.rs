@@ -76,6 +76,7 @@ pub(crate) async fn run_until(
         });
     let http = rpi_httpcore::AppConfig {
         service_name: "rpi-web",
+        service_version: Some(env!("CARGO_PKG_VERSION")),
         project: config.project.clone(),
         projects: config.projects.clone(),
         projects_root: config.projects_root.clone(),

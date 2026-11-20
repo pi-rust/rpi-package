@@ -198,7 +198,12 @@ pub async fn browse_root(project: &Project, root: &str) -> Result<PathBuf, (Repl
 }
 
 pub async fn files(project: &Project, relative: &str) -> Reply {
-    let path = resolve(&project.root, relative)?;
+    files_at(project, "", relative).await
+}
+
+/// List one directory of the project root or of a linked worktree.
+pub async fn files_at(project: &Project, root: &str, relative: &str) -> Reply {
+    let path = resolve(&browse_root(project, root).await?, relative)?;
     let mut directory = tokio::fs::read_dir(path)
         .await
         .map_err(|_| failure(ReplyKind::NotFound, "directory not found"))?;
@@ -326,6 +331,163 @@ pub async fn upload(project: &Project, filename: &str, bytes: &[u8]) -> Reply {
 pub struct ProjectImage {
     pub bytes: Vec<u8>,
     pub media_type: &'static str,
+}
+
+/// Bounded document content a browser can display or hand to a desktop app.
+#[derive(Debug)]
+pub struct ProjectDocument {
+    pub bytes: Vec<u8>,
+    pub media_type: &'static str,
+}
+
+/// Documents a browser can preview natively (PDF) or at least download with a
+/// truthful media type. Text-like and raster formats keep their own routes.
+const DOCUMENT_LIMIT: u64 = 40 * 1024 * 1024;
+
+/// Bounded, opaque bytes for a browser download.
+#[derive(Debug)]
+pub struct ProjectDownload {
+    pub bytes: Vec<u8>,
+    pub file_name: String,
+}
+
+/// Read any regular project file as an opaque attachment.
+///
+/// Unlike the inline document route this accepts every extension, because the
+/// transport hands it to the operating system with `Content-Disposition:
+/// attachment` and `application/octet-stream`; nothing is rendered in the page.
+pub async fn download_at(
+    project: &Project,
+    root: &str,
+    relative: &str,
+) -> Result<ProjectDownload, (ReplyKind, Value)> {
+    let path = resolve(&browse_root(project, root).await?, relative)?;
+    fn check(metadata: &std::fs::Metadata) -> Result<(), (ReplyKind, Value)> {
+        if !metadata.is_file() {
+            return Err(failure(ReplyKind::InvalidInput, "select a regular file"));
+        }
+        if metadata.len() > DOCUMENT_LIMIT {
+            return Err(failure(
+                ReplyKind::LimitExceeded,
+                "downloads are limited to 40 MiB",
+            ));
+        }
+        Ok(())
+    }
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| failure(ReplyKind::NotFound, "file not found"))?;
+    check(&metadata)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download")
+        .to_string();
+    let handle = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| failure(ReplyKind::NotFound, "file not found"))?;
+    check(
+        &handle
+            .metadata()
+            .await
+            .map_err(|_| failure(ReplyKind::AccessDenied, "cannot inspect file"))?,
+    )?;
+    let mut bytes = Vec::new();
+    handle
+        .take(DOCUMENT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| failure(ReplyKind::AccessDenied, "cannot read file"))?;
+    if bytes.len() as u64 > DOCUMENT_LIMIT {
+        return Err(failure(
+            ReplyKind::LimitExceeded,
+            "downloads are limited to 40 MiB",
+        ));
+    }
+    Ok(ProjectDownload { bytes, file_name })
+}
+
+/// Read a project-relative document from the project root or a linked worktree.
+///
+/// The extension whitelist keeps this route from becoming a generic binary
+/// download: only formats the UI knows how to name are served.
+pub async fn document_at(
+    project: &Project,
+    root: &str,
+    relative: &str,
+) -> Result<ProjectDocument, (ReplyKind, Value)> {
+    let path = resolve(&browse_root(project, root).await?, relative)?;
+    let extension = Path::new(relative)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let media_type = match extension.as_str() {
+        "pdf" => "application/pdf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => {
+            return Err(failure(
+                ReplyKind::UnsupportedContent,
+                "unsupported document format",
+            ))
+        }
+    };
+    fn check(metadata: &std::fs::Metadata) -> Result<(), (ReplyKind, Value)> {
+        if !metadata.is_file() {
+            return Err(failure(ReplyKind::InvalidInput, "select a regular file"));
+        }
+        if metadata.len() > DOCUMENT_LIMIT {
+            return Err(failure(
+                ReplyKind::LimitExceeded,
+                "documents are limited to 40 MiB",
+            ));
+        }
+        Ok(())
+    }
+    // Same handle discipline as image reads: reject devices/FIFOs, then recheck.
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| failure(ReplyKind::NotFound, "document not found"))?;
+    check(&metadata)?;
+    let handle = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| failure(ReplyKind::NotFound, "document not found"))?;
+    check(
+        &handle
+            .metadata()
+            .await
+            .map_err(|_| failure(ReplyKind::AccessDenied, "cannot inspect document"))?,
+    )?;
+    let mut bytes = Vec::new();
+    handle
+        .take(DOCUMENT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| failure(ReplyKind::AccessDenied, "cannot read document"))?;
+    if bytes.len() as u64 > DOCUMENT_LIMIT {
+        return Err(failure(
+            ReplyKind::LimitExceeded,
+            "documents are limited to 40 MiB",
+        ));
+    }
+    // A renamed file must not be served under a media type its bytes contradict.
+    let matches = match &extension[..] {
+        "pdf" => bytes.starts_with(b"%PDF-"),
+        "doc" | "xls" | "ppt" => bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]),
+        _ => bytes.starts_with(b"PK\x03\x04"),
+    };
+    if !matches {
+        return Err(failure(
+            ReplyKind::UnsupportedContent,
+            "document signature does not match extension",
+        ));
+    }
+    Ok(ProjectDocument { bytes, media_type })
 }
 
 /// Read a project-relative raster image. Errors use the existing neutral reply contract.
@@ -711,6 +873,133 @@ mod tests {
             "an uncationicalized root must fail closed rather than escape"
         );
         std::fs::remove_file(&link).unwrap();
+    }
+
+    #[tokio::test]
+    async fn documents_are_whitelisted_and_signature_checked() {
+        let root = fixture();
+        let project = Project::new(&root).unwrap();
+        for (name, bytes, media_type) in [
+            ("report.pdf", &b"%PDF-1.7\n"[..], "application/pdf"),
+            (
+                "spec.docx",
+                &b"PK\x03\x04docx"[..],
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            (
+                "sheet.xlsx",
+                &b"PK\x03\x04xlsx"[..],
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            // Legacy Office formats are OLE compound files.
+            (
+                "old.doc",
+                &[0xD0, 0xCF, 0x11, 0xE0][..],
+                "application/msword",
+            ),
+        ] {
+            std::fs::write(root.join(name), bytes).unwrap();
+            let document = document_at(&project, "", name).await.unwrap();
+            assert_eq!(document.media_type, media_type, "{name}");
+            assert_eq!(document.bytes, bytes, "{name}");
+        }
+        // Only whitelisted formats are served; a text file keeps its own route.
+        std::fs::write(root.join("notes.txt"), b"plain").unwrap();
+        let (kind, _) = document_at(&project, "", "notes.txt").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::UnsupportedContent);
+        // A renamed file must not be served under a media type its bytes deny.
+        std::fs::write(root.join("fake.pdf"), b"plain text").unwrap();
+        let (kind, _) = document_at(&project, "", "fake.pdf").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::UnsupportedContent);
+        std::fs::write(root.join("fake.docx"), b"%PDF-1.7").unwrap();
+        let (kind, _) = document_at(&project, "", "fake.docx").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::UnsupportedContent);
+        let (kind, _) = document_at(&project, "", "missing.pdf").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::NotFound);
+        // The shared path guards still apply.
+        let (kind, _) = document_at(&project, "", ".rpi/sessions/a.pdf")
+            .await
+            .unwrap_err();
+        assert_eq!(kind, ReplyKind::AccessDenied);
+        let (kind, _) = document_at(&project, "", "../escape.pdf")
+            .await
+            .unwrap_err();
+        assert_eq!(kind, ReplyKind::AccessDenied);
+    }
+
+    #[tokio::test]
+    async fn linked_worktree_directories_are_listable() {
+        let root = fixture();
+        let project = Project::new(&root).unwrap();
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            assert!(git(&project, &args).await.unwrap().0);
+        }
+        let linked = root.with_extension("list-worktree");
+        assert!(
+            git(
+                &project,
+                &["worktree", "add", "-b", "listing", linked.to_str().unwrap()]
+            )
+            .await
+            .unwrap()
+            .0
+        );
+        std::fs::create_dir(linked.join("nested")).unwrap();
+        std::fs::write(linked.join("nested/only.txt"), b"worktree").unwrap();
+        let canonical = std::fs::canonicalize(&linked).unwrap();
+        let branch = display_root(&canonical);
+
+        // The project root lists its own directory only.
+        let listed = files_at(&project, "", "").await.unwrap();
+        let names: Vec<String> = listed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap().to_string())
+            .collect();
+        // The worktree's directories are not part of the project root listing.
+        assert!(!names.contains(&"nested".to_string()), "{names:?}");
+
+        // The linked checkout lists its own files under the same project.
+        let listed = files_at(&project, &branch, "nested").await.unwrap();
+        assert_eq!(
+            listed["entries"][0]["path"].as_str().unwrap(),
+            "nested/only.txt"
+        );
+
+        // Anything else stays outside the browsable project.
+        assert!(files_at(&project, "/", "").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn downloads_are_opaque_bounded_project_files() {
+        let root = fixture();
+        let project = Project::new(&root).unwrap();
+        // Any extension downloads; it never claims a renderable media type.
+        std::fs::write(root.join("report.zip"), b"PK\x03\x04binary").unwrap();
+        let download = download_at(&project, "", "report.zip").await.unwrap();
+        assert_eq!(download.file_name, "report.zip");
+        assert_eq!(download.bytes, b"PK\x03\x04binary");
+        std::fs::write(root.join("photo.PNG"), PNG).unwrap();
+        assert_eq!(
+            download_at(&project, "", "photo.PNG").await.unwrap().bytes,
+            PNG
+        );
+        let (kind, _) = download_at(&project, "", "missing.zip").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::NotFound);
+        // The same browsable boundary guards downloads.
+        for blocked in [".git/config", ".rpi/sessions/a.jsonl", "../escape.zip"] {
+            let (kind, _) = download_at(&project, "", blocked).await.unwrap_err();
+            assert_eq!(kind, ReplyKind::AccessDenied, "{blocked}");
+        }
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+        let (kind, _) = download_at(&project, "", "folder").await.unwrap_err();
+        assert_eq!(kind, ReplyKind::InvalidInput);
     }
 
     #[tokio::test]
