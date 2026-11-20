@@ -57,6 +57,46 @@ preference is retained. Choose an available model in Runtime settings before
 sending, or clear the preference for future sessions. No retry or prompt is
 sent automatically.
 
+### File-reference guidance for model replies
+
+When the native host **loads the `rpi-web` extension**, its `BeforeAgentStart`
+hook appends a short file-reference guide to the current system prompt on each
+run. It preserves the entire original prompt and other extensions' additions;
+a marker prevents duplicate sections. Missing/malformed prompt envelopes are
+left unchanged. The initial native process directory is included as JSON-quoted
+path data, not inferred from the browser or a shell's temporary `cd`.
+
+The guide asks the model to use verified project-root-relative paths for the
+main checkout, absolute paths for other Git worktrees, and standard Markdown
+links (including `[README.md](README.md)` for root-level files). It discourages
+bare filenames, package-cwd-relative abbreviations, invented preview URLs and
+claims that outside/sensitive files can be opened. This is advisory formatting,
+not permission to read files or a guarantee that model output is correct;
+existing server path validation and bounded fallback search remain authoritative.
+
+The hook does not start a Web listener and also runs in TUI/ACP/RPC hosts that
+explicitly or automatically load this extension. Conversely, a standalone Web
+server does **not** force-load it into native children. With exact resource
+selection, include `rpi-web` in the selected extensions if this guidance is
+wanted; unselected extensions and `--no-extensions` remain respected. No native
+startup prompt flags, resource selections, user messages, transcripts or project
+instruction files are rewritten. Installing/loading the updated extension is a
+separate step; frontend HMR alone cannot update this Rust hook in live hosts.
+
+A real-native, loopback-only regression checks prompt preservation, repeated
+runs, exact selection with/without the extension, and unchanged user text:
+
+```bash
+cargo build --locked -p rpi-web
+python3 packages/rpi-web/scripts/verify-file-links.py \
+  --rpi /absolute/path/to/rpi \
+  --extension /absolute/path/to/built/librpi_web_extension.dylib
+```
+
+Use the platform's built library suffix (`.dll` on Windows). The script creates
+an isolated profile, temporary transcripts and deterministic local model; it
+neither installs the extension nor restarts a running service.
+
 ### Idle session timeout
 
 Web automatically releases an **idle native host** after 30 minutes without a
