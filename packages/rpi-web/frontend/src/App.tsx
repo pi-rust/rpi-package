@@ -699,6 +699,13 @@ export default function App() {
   const [sessionId, setSessionId] = useState("");
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [immersive, setImmersive] = useState(false);
+  const immersiveRef = useRef(immersive);
+  immersiveRef.current = immersive;
+  const immersiveActionsRef = useRef<{
+    enter: () => void;
+    exit: () => void;
+  } | null>(null);
+  const mobileFullscreenRef = useRef(false);
   useEffect(() => {
     setTimelineOpen(false);
   }, [sessionId]);
@@ -706,11 +713,29 @@ export default function App() {
   useEffect(() => {
     if (!immersive) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") exitImmersive();
+      if (event.key === "Escape") immersiveActionsRef.current?.exit();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [immersive]);
+
+  // Keep an uninterrupted native-fullscreen exit (browser chrome or gesture)
+  // in sync with the CSS immersive state. Desktop never requests native
+  // fullscreen, so this only observes mobile fullscreen sessions we entered.
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      if (
+        !document.fullscreenElement &&
+        immersiveRef.current &&
+        mobileFullscreenRef.current
+      ) {
+        immersiveActionsRef.current?.exit();
+      }
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsRoot, setProjectsRoot] = useState("");
   const [projectDialog, setProjectDialog] = useState(false);
@@ -934,6 +959,15 @@ export default function App() {
     workbenchOpen: boolean;
   } | null>(null);
 
+  // Native fullscreen is a mobile-only progressive enhancement: desktop keeps
+  // CSS-only immersive reading. Mobile covers both a browser tab and the
+  // Android WebView shell; the latter needs a native fullscreen callback, so a
+  // rejected request still leaves the CSS immersive state intact.
+  function toggleImmersive() {
+    if (immersive) exitImmersive();
+    else enterImmersive();
+  }
+
   function enterImmersive() {
     immersiveSnapshot.current = {
       sidebar,
@@ -948,12 +982,30 @@ export default function App() {
     setPanel(false);
     setTraceOpen(false);
     setWorkbenchOpen(false);
+    if (!window.matchMedia("(pointer: coarse)").matches) return;
+    mobileFullscreenRef.current = true;
+    const root = document.documentElement;
+    if (root.requestFullscreen) {
+      void root
+        .requestFullscreen()
+        .catch(() => {
+          mobileFullscreenRef.current = false;
+        });
+    } else {
+      mobileFullscreenRef.current = false;
+    }
   }
 
   function exitImmersive() {
     const snapshot = immersiveSnapshot.current;
     immersiveSnapshot.current = null;
     setImmersive(false);
+    if (mobileFullscreenRef.current) {
+      mobileFullscreenRef.current = false;
+      if (document.fullscreenElement && document.exitFullscreen) {
+        void document.exitFullscreen().catch(() => {});
+      }
+    }
     if (!snapshot) return;
     setSidebar(snapshot.sidebar);
     setTimelineOpen(snapshot.timelineOpen);
@@ -961,6 +1013,7 @@ export default function App() {
     setTraceOpen(snapshot.traceOpen);
     setWorkbenchOpen(snapshot.workbenchOpen);
   }
+  immersiveActionsRef.current = { enter: enterImmersive, exit: exitImmersive };
   const traceButtonRef = useRef<HTMLButtonElement>(null);
   const [seen, setSeen] = useState(0);
   const [settleTick, setSettleTick] = useState(0);
@@ -2136,6 +2189,11 @@ export default function App() {
         event.preventDefault();
         setSettingsOpen(true);
       }
+      if (key === "f" && event.shiftKey && window.matchMedia("(pointer: coarse)").matches) {
+        event.preventDefault();
+        if (sessionId) toggleImmersive();
+        return;
+      }
       if (key === "f") {
         event.preventDefault();
         if (activeSessionRef.current) setMessageSearchOpen(true);
@@ -2143,7 +2201,14 @@ export default function App() {
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [createSession, authChecked, authRequired, authenticated]);
+  }, [
+    createSession,
+    authChecked,
+    authRequired,
+    authenticated,
+    sessionId,
+    immersive,
+  ]);
 
   useEffect(() => {
     if (!authChecked || (authRequired && !authenticated)) return;

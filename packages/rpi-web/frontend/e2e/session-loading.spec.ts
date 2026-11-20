@@ -420,6 +420,16 @@ test("conversation supports immersive full-screen viewing and Escape exit", asyn
   page,
   host,
 }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Element.prototype, "requestFullscreen", {
+      configurable: true,
+      value: () => {
+        (window as Window & { desktopFullscreenRequested?: boolean }).desktopFullscreenRequested =
+          true;
+        return Promise.resolve();
+      },
+    });
+  });
   await page.setViewportSize({ width: 390, height: 844 });
   await start(page, host);
   const workspace = page.locator(".workspace");
@@ -427,6 +437,13 @@ test("conversation supports immersive full-screen viewing and Escape exit", asyn
     .getByRole("button", { name: "Immersive view", exact: true })
     .click();
   await expect(workspace).toHaveClass(/workspace--immersive/);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as Window & { desktopFullscreenRequested?: boolean })
+          .desktopFullscreenRequested,
+    ),
+  ).toBeUndefined();
   await expect(page.locator(".toolbar")).toBeHidden();
   await expect(page.locator(".composer-area")).toBeHidden();
   await expect(page.locator(".sidebar")).toHaveCount(0);
@@ -437,6 +454,100 @@ test("conversation supports immersive full-screen viewing and Escape exit", asyn
   await page.keyboard.press("Escape");
   await expect(workspace).not.toHaveClass(/workspace--immersive/);
   await expect(page.locator(".toolbar")).toBeVisible();
+});
+
+test("mobile immersive view requests native fullscreen and exits together", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    isMobile: true,
+    hasTouch: true,
+    viewport: { width: 390, height: 844 },
+  });
+  try {
+    const page = await context.newPage();
+    await page.addInitScript(() => {
+      const state = { entered: 0, exited: 0 };
+      (window as Window & { fullscreenProbe?: typeof state }).fullscreenProbe =
+        state;
+      Object.defineProperty(Element.prototype, "requestFullscreen", {
+        configurable: true,
+        value: () => {
+          state.entered++;
+          Object.defineProperty(document, "fullscreenElement", {
+            configurable: true,
+            value: document.documentElement,
+          });
+          document.dispatchEvent(new Event("fullscreenchange"));
+          return Promise.resolve();
+        },
+      });
+      Object.defineProperty(Document.prototype, "exitFullscreen", {
+        configurable: true,
+        value: () => {
+          state.exited++;
+          Object.defineProperty(document, "fullscreenElement", {
+            configurable: true,
+            value: null,
+          });
+          document.dispatchEvent(new Event("fullscreenchange"));
+          return Promise.resolve();
+        },
+      });
+    });
+    const embeddedHost = new MockHost(page);
+    await embeddedHost.install();
+    try {
+      await start(page, embeddedHost);
+      const workspace = page.locator(".workspace");
+      await page
+        .getByRole("button", { name: "Immersive view", exact: true })
+        .click();
+      await expect(workspace).toHaveClass(/workspace--immersive/);
+      expect(
+        await page.evaluate(() =>
+          matchMedia("(pointer: coarse)").matches,
+        ),
+      ).toBe(true);
+      expect(
+        await page.evaluate(
+          () =>
+            (window as Window & { fullscreenProbe: { entered: number } })
+              .fullscreenProbe.entered,
+        ),
+      ).toBe(1);
+
+      await page
+        .getByRole("button", { name: "Exit immersive view", exact: true })
+        .click();
+      await expect(workspace).not.toHaveClass(/workspace--immersive/);
+      expect(
+        await page.evaluate(
+          () =>
+            (window as Window & { fullscreenProbe: { exited: number } })
+              .fullscreenProbe.exited,
+        ),
+      ).toBe(1);
+
+      await page
+        .getByRole("button", { name: "Immersive view", exact: true })
+        .click();
+      await expect(workspace).toHaveClass(/workspace--immersive/);
+      await page.evaluate(() => {
+        Object.defineProperty(document, "fullscreenElement", {
+          configurable: true,
+          value: null,
+        });
+        document.dispatchEvent(new Event("fullscreenchange"));
+      });
+      await expect(workspace).not.toHaveClass(/workspace--immersive/);
+    } finally {
+      await embeddedHost.dispose();
+      expect(embeddedHost.unexpected).toEqual([]);
+    }
+  } finally {
+    await context.close();
+  }
 });
 
 test("open finishes before a bounded snapshot, and snapshot paints/connects before state", async ({
