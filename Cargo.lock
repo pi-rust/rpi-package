@@ -2731,7 +2731,7 @@ name = "rpi-office"
 version = "0.1.1"
 dependencies = [
  "futures-util",
- "rpi-plugin-sdk 0.26.0",
+ "rpi-plugin-sdk 0.26.1",
  "serde",
  "serde_json",
  "tokio",
@@ -2820,9 +2820,9 @@ dependencies = [
 
 [[package]]
 name = "rpi-plugin-sdk"
-version = "0.26.0"
+version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "667addb1a8ff749d5b914c8566a50ee90ae7e1a6a9395698bb9d962d48399f74"
+checksum = "03f309a8a2d8e6e6ba5cde0a0ff3619361fc1616ef84a08cfcf17b6873201c01"
 dependencies = [
  "serde_json",
 ]

@@ -486,8 +486,8 @@ mod tests {
             .expect("entry");
         let schema = catalog_schema(entry);
         let parameters: Value =
-            serde_json::from_str(&crate::abi::text(&schema.parameters)).unwrap();
-        assert_eq!(crate::abi::text(&schema.name), entry.name);
+            serde_json::from_str(&rpi_plugin_sdk::stb_text!(schema.parameters)).unwrap();
+        assert_eq!(rpi_plugin_sdk::stb_text!(schema.name), entry.name);
         assert!(parameters["properties"]["document"].is_object());
         assert!(parameters["properties"]["range"].is_object());
         let required = parameters["required"]
@@ -501,8 +501,8 @@ mod tests {
     fn list_schema_is_a_valid_object() {
         let schema = list_schema();
         let parameters: Value =
-            serde_json::from_str(&crate::abi::text(&schema.parameters)).unwrap();
-        assert_eq!(crate::abi::text(&schema.name), OFFICE_LIST_TOOL);
+            serde_json::from_str(&rpi_plugin_sdk::stb_text!(schema.parameters)).unwrap();
+        assert_eq!(rpi_plugin_sdk::stb_text!(schema.name), OFFICE_LIST_TOOL);
         assert_eq!(
             parameters["properties"]["host"]["enum"],
             json!(["excel", "word", "powerpoint"])

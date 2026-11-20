@@ -45,10 +45,10 @@ static COMMAND_COMPLETIONS: Mutex<Vec<(String, CommandArgumentCompletionFn)>> =
 
 /// Copy a host-owned string lent to a registration callback.
 fn borrowed_text(value: &StbString) -> String {
-    // SAFETY: the host keeps the schema strings alive for this call.
-    unsafe { value.to_string_lossy() }
+    rpi_plugin_sdk::stb_text!(*value)
 }
 
+#[allow(unsafe_code)] // the host is the side that dereferences the schema
 extern "C" fn register_tool(
     schema: *const StableToolSchema,
     execute: ToolExecuteFn,
@@ -95,28 +95,21 @@ extern "C" fn register_command(
     _description: StbStringRef,
     handler: CommandHandlerFn,
 ) -> i32 {
-    // SAFETY: the host owns the string for the duration of the call.
-    COMMANDS
-        .lock()
-        .unwrap()
-        .push((unsafe { name.as_str() }.to_string(), handler));
+    let name = rpi_plugin_sdk::stb_text!(name);
+    COMMANDS.lock().unwrap().push((name, handler));
     0
 }
 
 extern "C" fn register_flag(name: StbStringRef, _description: StbStringRef) -> i32 {
-    // SAFETY: the host owns the string for the duration of the call.
-    FLAGS
-        .lock()
-        .unwrap()
-        .push(unsafe { name.as_str() }.to_string());
+    let name = rpi_plugin_sdk::stb_text!(name);
+    FLAGS.lock().unwrap().push(name);
     0
 }
 
 extern "C" fn register_tool_prompt(name: StbStringRef, metadata: StbStringRef) -> i32 {
-    // SAFETY: the host owns both strings for the duration of the call.
-    let name = unsafe { name.as_str() }.to_string();
-    let metadata: Value =
-        serde_json::from_str(unsafe { metadata.as_str() }).expect("prompt metadata is JSON");
+    let name = rpi_plugin_sdk::stb_text!(name);
+    let metadata: Value = serde_json::from_str(&rpi_plugin_sdk::stb_text!(metadata))
+        .expect("prompt metadata is JSON");
     PROMPTS.lock().unwrap().push((name, metadata));
     0
 }
@@ -145,11 +138,8 @@ extern "C" fn register_command_completions(
     _free: FreeStringFn,
     _user_data: *mut std::ffi::c_void,
 ) -> i32 {
-    // SAFETY: the host owns the string for the duration of the call.
-    COMMAND_COMPLETIONS
-        .lock()
-        .unwrap()
-        .push((unsafe { name.as_str() }.to_string(), handler));
+    let name = rpi_plugin_sdk::stb_text!(name);
+    COMMAND_COMPLETIONS.lock().unwrap().push((name, handler));
     0
 }
 
@@ -320,8 +310,10 @@ pub fn run_autocomplete(text: &str, line_prefix: &str) -> Option<Value> {
         std::ptr::null_mut(),
     );
     // SAFETY: the provider produced `out`; read then free it exactly once.
-    let text = unsafe { out.to_string_lossy() };
-    unsafe { rpi_plugin_sdk::callbacks::free_string(out) };
+    let text = rpi_plugin_sdk::stb_take!(
+        out,
+        Some(rpi_plugin_sdk::callbacks::free_string as rpi_plugin_sdk::FreeStringFn)
+    );
     if rc != 0 || text.trim().is_empty() {
         return None;
     }
@@ -345,8 +337,10 @@ pub fn run_command_completions(command: &str, prefix: &str) -> Option<Value> {
         std::ptr::null_mut(),
     );
     // SAFETY: the handler produced `out`; read then free it exactly once.
-    let text = unsafe { out.to_string_lossy() };
-    unsafe { rpi_plugin_sdk::callbacks::free_string(out) };
+    let text = rpi_plugin_sdk::stb_take!(
+        out,
+        Some(rpi_plugin_sdk::callbacks::free_string as rpi_plugin_sdk::FreeStringFn)
+    );
     if rc != 0 || text.trim().is_empty() {
         return None;
     }
@@ -392,8 +386,10 @@ pub fn run_command(name: &str, args: &str) -> Value {
         std::ptr::null_mut(),
     );
     // SAFETY: the host produced `out`; read then free it exactly once.
-    let text = unsafe { out.to_string_lossy() };
-    unsafe { rpi_plugin_sdk::callbacks::free_string(out) };
+    let text = rpi_plugin_sdk::stb_take!(
+        out,
+        Some(rpi_plugin_sdk::callbacks::free_string as rpi_plugin_sdk::FreeStringFn)
+    );
     assert_eq!(rc, 0);
     serde_json::from_str(&text).expect("command returns JSON")
 }
@@ -438,8 +434,10 @@ pub fn run_before_agent_start(system_prompt: &str) -> Option<String> {
         std::ptr::null_mut(),
     );
     // SAFETY: the host produced `out`; read then free it exactly once.
-    let text = unsafe { out.to_string_lossy() };
-    unsafe { rpi_plugin_sdk::callbacks::free_string(out) };
+    let text = rpi_plugin_sdk::stb_take!(
+        out,
+        Some(rpi_plugin_sdk::callbacks::free_string as rpi_plugin_sdk::FreeStringFn)
+    );
     assert_eq!(rc, 0);
     if text.trim().is_empty() {
         None
