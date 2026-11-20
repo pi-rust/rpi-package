@@ -198,6 +198,54 @@ pub(super) async fn project_image(
     }
 }
 
+pub(super) async fn project_download(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<FileQuery>,
+) -> axum::response::Response {
+    match service::project_download(&state.backend, id, query).await {
+        Ok(download) => {
+            // An opaque attachment: the browser must never render these bytes.
+            let disposition = format!(
+                "attachment; filename=\"{}\"",
+                download.file_name.replace(['"', '\\'], "_")
+            );
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        disposition.as_str(),
+                    ),
+                    (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                ],
+                download.bytes,
+            )
+                .into_response()
+        }
+        Err(error) => HttpReply(error.into_reply()).into_response(),
+    }
+}
+
+pub(super) async fn project_document(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<FileQuery>,
+) -> axum::response::Response {
+    match service::project_document(&state.backend, id, query).await {
+        Ok(document) => (
+            [
+                (axum::http::header::CONTENT_TYPE, document.media_type),
+                (axum::http::header::CONTENT_DISPOSITION, "inline"),
+                (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            document.bytes,
+        )
+            .into_response(),
+        Err(error) => HttpReply(error.into_reply()).into_response(),
+    }
+}
+
 pub(super) async fn project_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -257,6 +305,14 @@ pub(super) fn routes() -> axum::Router<AppState> {
         .route(
             "/api/v1/projects/{id}/image",
             axum::routing::get(project_image),
+        )
+        .route(
+            "/api/v1/projects/{id}/document",
+            axum::routing::get(project_document),
+        )
+        .route(
+            "/api/v1/projects/{id}/download",
+            axum::routing::get(project_download),
         )
         .route(
             "/api/v1/projects/{id}/resources",

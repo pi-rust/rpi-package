@@ -18,8 +18,12 @@ async function openTimeline(page: Page) {
   while (await notices.count()) await notices.first().click();
   const button = timelineToggle(page);
   await expect(button).toBeVisible();
-  await expect(button).toHaveAttribute("aria-controls", "conversation-timeline-navigation");
-  if (await button.getAttribute("aria-expanded") === "false") await button.click();
+  await expect(button).toHaveAttribute(
+    "aria-controls",
+    "conversation-timeline-navigation",
+  );
+  if ((await button.getAttribute("aria-expanded")) === "false")
+    await button.click();
   await expect(button).toHaveAttribute("aria-expanded", "true");
 }
 
@@ -105,8 +109,18 @@ async function mockHost(
     },
   );
   const projects = [
-    { id: "project-a", name: "pi-rust", path: "/workspace/pi-rust", archived: false },
-    { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package", archived: false },
+    {
+      id: "project-a",
+      name: "pi-rust",
+      path: "/workspace/pi-rust",
+      archived: false,
+    },
+    {
+      id: "project-b",
+      name: "rpi-package",
+      path: "/workspace/rpi-package",
+      archived: false,
+    },
   ];
   const sessions: Array<
     typeof session & { pinned?: boolean; archived?: boolean }
@@ -471,9 +485,13 @@ test("message search finds loaded conversation text", async ({ page }) => {
   await page.goto("/?session=session-1");
   await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
   await page.keyboard.press("Control+f");
-  await page.getByRole("textbox", { name: "Search this conversation…", exact: true }).fill("loaded message");
+  await page
+    .getByRole("textbox", { name: "Search this conversation…", exact: true })
+    .fill("loaded message");
   await expect(page.locator(".message-search-result")).toHaveCount(1);
-  await expect(page.locator(".message-search-result")).toContainText("Please search this loaded message");
+  await expect(page.locator(".message-search-result")).toContainText(
+    "Please search this loaded message",
+  );
   await page.locator(".message-search-result").click();
   await expect(page.locator('[data-transcript-row="message-1"]')).toBeVisible();
 });
@@ -494,9 +512,13 @@ test("message search pages older user messages", async ({ page }) => {
   await page.goto("/?session=session-1");
   await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
   await page.keyboard.press("Control+f");
-  await page.getByRole("textbox", { name: "Search this conversation…", exact: true }).fill("older message");
+  await page
+    .getByRole("textbox", { name: "Search this conversation…", exact: true })
+    .fill("older message");
   await expect(page.locator(".message-search-result")).toHaveCount(1);
-  await expect(page.locator(".message-search-result")).toContainText("An older message to find");
+  await expect(page.locator(".message-search-result")).toContainText(
+    "An older message to find",
+  );
   await page.locator(".message-search-result").click();
   await expect(page.locator(".history-window-status")).toBeVisible();
 });
@@ -569,6 +591,15 @@ test("a stopped session can send a selected queued message now", async ({
   );
   await page.goto("/");
   await openRuntimePanel(page);
+  await writeFile(
+    "/tmp/dbg-queue.json",
+    JSON.stringify({
+      inspector: await page.locator(".inspector").count(),
+      items: await page.locator(".queue-item").count(),
+      panel: await page.locator(".composer-queue-panel").count(),
+      text: (await page.locator("body").innerText()).slice(0, 600),
+    }),
+  );
   await page
     .locator(".inspector .queue-item")
     .getByRole("button", { name: "Send now: pending", exact: true })
@@ -587,6 +618,7 @@ test("sending one queued message keeps later waiting messages visible", async ({
       const body = route.request().postDataJSON();
       if (body.type === "get_queue") {
         queueReads++;
+        // The host drops the entry that was sent now and keeps the rest.
         const items =
           queueReads === 1
             ? [
@@ -603,7 +635,14 @@ test("sending one queued message keeps later waiting messages visible", async ({
                   text: "second pending",
                 },
               ]
-            : [];
+            : [
+                {
+                  entryId: "queue-2",
+                  queue: "followUp",
+                  status: "queued",
+                  text: "second pending",
+                },
+              ];
         return route.fulfill({
           json: response({ items, count: items.length }, body.type),
         });
@@ -675,10 +714,17 @@ test("failed queue cancellation restores the removed message", async ({
 });
 
 for (const width of [1440, 1100, 1024, 390]) {
-  test(`right sidebar starts closed and remains manually toggleable at ${width}px`, async ({ page }) => {
+  test(`right sidebar starts closed and remains manually toggleable at ${width}px`, async ({
+    page,
+  }) => {
     await mockHost(page);
-    const workbench = page.getByRole("complementary", { name: "Project files and changes" });
-    const toggle = page.getByRole("button", { name: "Toggle project files", exact: true });
+    const workbench = page.getByRole("complementary", {
+      name: "Project files and changes",
+    });
+    const toggle = page.getByRole("button", {
+      name: "Toggle project files",
+      exact: true,
+    });
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
@@ -687,7 +733,9 @@ for (const width of [1440, 1100, 1024, 390]) {
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
     await expect(workbench).toBeVisible();
-    await workbench.getByRole("button", { name: "Close project panel", exact: true }).click();
+    await workbench
+      .getByRole("button", { name: "Close project panel", exact: true })
+      .click();
     await expect(workbench).toHaveCount(0);
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await toggle.click();
@@ -702,14 +750,18 @@ for (const width of [1440, 1100, 1024, 390]) {
   });
 }
 
-test("editing a next-run queued message re-enqueues it as nextTurn", async ({
+test("editing a queued message re-enqueues it as a follow-up", async ({
   page,
 }) => {
   await mockHost(page);
-  const commands: Array<{ type: string; deliverAs?: string; entryId?: string }> = [];
+  const commands: Array<{
+    type: string;
+    deliverAs?: string;
+    entryId?: string;
+  }> = [];
   // Editing a queued message returns its text to the composer and cancels the
   // entry. A run is still active, so re-submitting it goes back through
-  // `queue_message` with the restored kind instead of a new prompt.
+  // `queue_message`; without a kind selector the default follow-up applies.
   await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) =>
     route.fulfill({
       contentType: "text/event-stream",
@@ -771,7 +823,7 @@ test("editing a next-run queued message re-enqueues it as nextTurn", async ({
     .poll(() => commands.map((entry) => [entry.type, entry.deliverAs]))
     .toEqual([
       ["cancel_queued", undefined],
-      ["queue_message", "nextTurn"],
+      ["queue_message", "followUp"],
     ]);
 });
 
@@ -794,7 +846,9 @@ test("file previews, staged diffs and project switching use the selected root", 
 }) => {
   await mockHost(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Toggle project files", exact: true })
+    .click();
   const workbench = page.getByRole("complementary", {
     name: "Project files and changes",
   });
@@ -885,7 +939,9 @@ test("clicking a project folder only expands it without opening a session", asyn
   await folder.click();
   await expect(folder).toHaveAttribute("aria-expanded", "false");
   await expect(project.locator(".project-session-link")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Mock session" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Mock session" }),
+  ).toBeVisible();
   expect(new URL(page.url()).searchParams.get("session")).toBe(sessionId);
   await folder.click();
   await expect(folder).toHaveAttribute("aria-expanded", "true");
@@ -925,31 +981,43 @@ test("projects can be archived and restored from the project actions menu", asyn
   await page
     .getByRole("button", { name: "Project actions: pi-rust", exact: true })
     .click();
-  await page.getByRole("menuitem", { name: "Archive project", exact: true }).click();
+  await page
+    .getByRole("menuitem", { name: "Archive project", exact: true })
+    .click();
   await expect(
     page.getByRole("region", { name: "pi-rust", exact: true }),
   ).toHaveCount(0);
-  await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Show archived chats", exact: true })
+    .click();
   await expect(
     page.getByRole("region", { name: "pi-rust", exact: true }),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Project actions: pi-rust", exact: true })
     .click();
-  await page.getByRole("menuitem", { name: "Restore project", exact: true }).click();
-  await page.getByRole("button", { name: "Show projects", exact: true }).click();
+  await page
+    .getByRole("menuitem", { name: "Restore project", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Show projects", exact: true })
+    .click();
   await expect(
     page.getByRole("region", { name: "pi-rust", exact: true }),
   ).toBeVisible();
 });
 
 for (const width of [1280, 390]) {
-  test(`project actions are visible without hover at ${width}px`, async ({ page }) => {
+  test(`project actions are visible without hover at ${width}px`, async ({
+    page,
+  }) => {
     await page.setViewportSize({ width, height: 844 });
     await mockHost(page);
     await page.goto("/");
     if (width < 768) {
-      await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Toggle sidebar", exact: true })
+        .click();
     }
     await page.mouse.move(width - 1, 843);
     const actions = page.getByRole("button", {
@@ -1061,7 +1129,11 @@ test("fork is available from a session context menu", async ({ page }) => {
     forkBody = route.request().postDataJSON();
     return route.fulfill({
       status: 201,
-      json: { sessionId: "fork-session", sourceSessionId: sessionId, status: "ready" },
+      json: {
+        sessionId: "fork-session",
+        sourceSessionId: sessionId,
+        status: "ready",
+      },
     });
   });
   await page.goto("/");
@@ -1070,7 +1142,10 @@ test("fork is available from a session context menu", async ({ page }) => {
     page.getByRole("menuitem", { name: "Fork", exact: true }),
   ).toBeVisible();
   await page.getByRole("menuitem", { name: "Fork", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Name the new fork", exact: true });
+  const dialog = page.getByRole("dialog", {
+    name: "Name the new fork",
+    exact: true,
+  });
   await expect(dialog.getByRole("textbox")).toHaveValue("Fork of Mock session");
   await dialog.getByRole("textbox").fill("Design fork");
   await dialog.getByRole("button", { name: "Submit", exact: true }).click();
@@ -1085,8 +1160,8 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   const recent = page.getByRole("region", { name: "Recent chats" });
   await expect(recent).toBeVisible();
   const rows = recent.locator(".recent-session-link");
-  await expect(rows).toHaveCount(15);
-  await expect(recent.locator(".recent-session-link")).toHaveCount(15);
+  await expect(rows).toHaveCount(10);
+  await expect(recent.locator(".recent-session-link")).toHaveCount(10);
   const wrap = recent.locator(".recent-wrap");
   const geometry = await wrap.evaluate((element) => {
     const list = element.querySelector(".recent-session-list") as HTMLElement;
@@ -1096,7 +1171,11 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
       const rect = row.getBoundingClientRect();
       return rect.top >= box.top - 0.5 && rect.bottom <= box.bottom + 0.5;
     });
-    return { firstFiveFit, clientHeight: list.clientHeight, scrollHeight: list.scrollHeight };
+    return {
+      firstFiveFit,
+      clientHeight: list.clientHeight,
+      scrollHeight: list.scrollHeight,
+    };
   });
   expect(geometry.firstFiveFit).toBe(true);
   // Exactly five rows occupy the list; the rest scroll inside it.
@@ -1104,6 +1183,25 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
   // Recent rows must never take the selected/active state from the project tree.
   await expect(recent.locator(".recent-session-row.active")).toHaveCount(0);
+  // The heading collapses and restores the list without touching the tree.
+  const heading = page.getByRole("button", {
+    name: "Recent chats",
+    exact: true,
+  });
+  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "false");
+  await expect(recent).toHaveCount(0);
+  await expect(
+    page.getByRole("button", {
+      name: "Collapse project: pi-rust",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await expect(recent).toBeVisible();
+  await expect(recent.locator(".recent-session-link")).toHaveCount(10);
 });
 
 test("details jump is right-aligned in the slim metrics strip (#306)", async ({
@@ -1120,14 +1218,13 @@ test("details jump is right-aligned in the slim metrics strip (#306)", async ({
       const buttonRect = element
         .querySelector(".slim-metrics-more")
         ?.getBoundingClientRect();
-      const metrics = [
-        ...element.querySelectorAll(".composer-metric"),
-      ].map((metric) => metric.getBoundingClientRect().right);
+      const metrics = [...element.querySelectorAll(".composer-metric")].map(
+        (metric) => metric.getBoundingClientRect().right,
+      );
       return {
         // Right edge of the strip's *content box* — margin-left:auto pushes
         // the button flush against it, no matter the strip padding.
-        contentRight:
-          stripRect.right - parseFloat(style.paddingRight || "0"),
+        contentRight: stripRect.right - parseFloat(style.paddingRight || "0"),
         buttonRight: buttonRect?.right ?? 0,
         buttonLeft: buttonRect?.left ?? 0,
         lastMetricRight: metrics.length ? metrics[metrics.length - 1] : 0,
@@ -1160,7 +1257,9 @@ test("sessions can be permanently deleted from the session actions menu", async 
   await mockHost(page);
   await page.goto("/");
   await clickRowAction(page, "Session actions: Mock session");
-  await page.getByRole("menuitem", { name: "Delete permanently", exact: true }).click();
+  await page
+    .getByRole("menuitem", { name: "Delete permanently", exact: true })
+    .click();
   await expect(
     page.getByRole("dialog", { name: "Delete session permanently" }),
   ).toContainText("This cannot be undone.");
@@ -1168,19 +1267,27 @@ test("sessions can be permanently deleted from the session actions menu", async 
     .getByRole("dialog", { name: "Delete session permanently" })
     .getByRole("button", { name: "Delete permanently", exact: true })
     .click();
-  await expect(page.getByRole("heading", { name: "Mock session" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Mock session" })).toHaveCount(
+    0,
+  );
 });
 test("project navigation collapses and remembers appearance", async ({
   page,
 }) => {
   await mockHost(page);
   await page.goto("/");
+  // The installed build identifies itself beside the logo.
+  await expect(page.locator(".sidebar-brand .brand-version")).toHaveText(
+    /^v\d+\.\d+\.\d+/,
+  );
   await page
     .getByRole("button", { name: "Collapse project: pi-rust", exact: true })
     .click();
   await expect(page.locator(".project-session")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Expand project: pi-rust", exact: true }).first(),
+    page
+      .getByRole("button", { name: "Expand project: pi-rust", exact: true })
+      .first(),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Expand project: pi-rust", exact: true })
@@ -1199,7 +1306,9 @@ test("project navigation collapses and remembers appearance", async ({
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
 
-test("system appearance follows live OS changes without losing the draft", async ({ page }) => {
+test("system appearance follows live OS changes without losing the draft", async ({
+  page,
+}) => {
   await page.emulateMedia({ colorScheme: "dark" });
   await mockHost(page);
   await page.goto("/");
@@ -1209,7 +1318,9 @@ test("system appearance follows live OS changes without losing the draft", async
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(draft).toHaveValue("Unsent system theme draft");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("rpi-theme"))).toBe("system");
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("rpi-theme")))
+    .toBe("system");
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(draft).toHaveValue("Unsent system theme draft");
@@ -1217,26 +1328,38 @@ test("system appearance follows live OS changes without losing the draft", async
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
 
-test("appearance preserves explicit legacy choices and can return to system", async ({ page }, testInfo) => {
+test("appearance preserves explicit legacy choices and can return to system", async ({
+  page,
+}, testInfo) => {
   await page.addInitScript(() => {
-    if (!localStorage.getItem("rpi-theme")) localStorage.setItem("rpi-theme", "light");
+    if (!localStorage.getItem("rpi-theme"))
+      localStorage.setItem("rpi-theme", "light");
   });
   await page.emulateMedia({ colorScheme: "dark" });
   await mockHost(page);
   await page.goto("/");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.getByRole("button", { name: "Settings Ctrl ," }).click();
-  const appearance = page.getByRole("group", { name: "Appearance", exact: true });
-  await expect(appearance.getByRole("button", { name: "Light", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const appearance = page.getByRole("group", {
+    name: "Appearance",
+    exact: true,
+  });
+  await expect(
+    appearance.getByRole("button", { name: "Light", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   await appearance.getByRole("button", { name: "Dark", exact: true }).click();
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await appearance.getByRole("button", { name: "System", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await expect(appearance.getByRole("button", { name: "System", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    appearance.getByRole("button", { name: "System", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("rpi-theme"))).toBe("system");
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("rpi-theme")))
+    .toBe("system");
   await page.screenshot({ path: testInfo.outputPath("system-theme-dark.png") });
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
@@ -1244,11 +1367,17 @@ test("appearance preserves explicit legacy choices and can return to system", as
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
-test("system appearance works without localStorage and on mobile", async ({ page }, testInfo) => {
+test("system appearance works without localStorage and on mobile", async ({
+  page,
+}, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(() => {
-    Storage.prototype.getItem = () => { throw new Error("Storage disabled"); };
-    Storage.prototype.setItem = () => { throw new Error("Storage disabled"); };
+    Storage.prototype.getItem = () => {
+      throw new Error("Storage disabled");
+    };
+    Storage.prototype.setItem = () => {
+      throw new Error("Storage disabled");
+    };
   });
   await mockHost(page);
   await page.emulateMedia({ colorScheme: "dark" });
@@ -1256,8 +1385,16 @@ test("system appearance works without localStorage and on mobile", async ({ page
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe("light");
-  await page.screenshot({ path: testInfo.outputPath("system-theme-mobile-light.png") });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => getComputedStyle(document.documentElement).colorScheme,
+      ),
+    )
+    .toBe("light");
+  await page.screenshot({
+    path: testInfo.outputPath("system-theme-mobile-light.png"),
+  });
 });
 
 test("split widths persist and separators support the keyboard", async ({
@@ -1265,14 +1402,18 @@ test("split widths persist and separators support the keyboard", async ({
 }) => {
   await mockHost(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Toggle project files", exact: true })
+    .click();
   const split = page.getByRole("separator", { name: "Resize project panel" });
   await expect(split).toHaveAttribute("aria-valuenow", "440");
   await split.focus();
   await split.press("ArrowLeft");
   await expect(split).toHaveAttribute("aria-valuenow", "460");
   await page.reload();
-  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Toggle project files", exact: true })
+    .click();
   await expect(
     page.getByRole("separator", { name: "Resize project panel" }),
   ).toHaveAttribute("aria-valuenow", "460");
@@ -1301,7 +1442,9 @@ test("rejected prompts restore the draft and remove the optimistic message", asy
     name: "Send a prompt, or type / for commands…",
   });
   await input.fill("Keep this draft");
-  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Send message", exact: true }),
+  ).toBeEnabled();
   await input.press("Enter");
   await expect(page.locator(".error-banner")).toContainText(
     "a run is already active",
@@ -1442,46 +1585,7 @@ test("mobile session actions keep the ellipsis control compact", async ({
   ).toBeVisible();
 });
 
-test("messages sent during a run default to steering the current task", async ({
-  page,
-}) => {
-  await mockHost(page);
-  const queued: string[] = [];
-  await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) =>
-    route.fulfill({
-      contentType: "text/event-stream",
-      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
-    }),
-  );
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/commands`,
-    async (route) => {
-      const body = route.request().postDataJSON();
-      if (body.type !== "queue_message") return route.fallback();
-      queued.push(body.message);
-      // A typed interjection should reach the model before the next request,
-      // not wait for the final answer as `followUp` did.
-      expect(body.deliverAs).toBe("steer");
-      return route.fulfill({
-        json: response({ accepted: true, entryId: "queued-test" }, body.type),
-      });
-    },
-  );
-  await page.goto("/");
-  await expect(
-    page.getByRole("button", { name: "Abort", exact: true }),
-  ).toBeEnabled();
-  const input = page.getByRole("textbox", {
-    name: "Send a prompt, or type / for commands…",
-  });
-  await input.fill("Next task");
-  await input.press("Enter");
-  await expect.poll(() => queued).toEqual(["Next task"]);
-  await expect(page.locator(".message.user")).toHaveCount(0);
-  await expect(input).toHaveValue("");
-});
-
-test("the composer can steer into a running task without opening the inspector", async ({
+test("a message typed during a run queues as a follow-up without a kind selector", async ({
   page,
 }) => {
   await mockHost(page);
@@ -1507,49 +1611,195 @@ test("the composer can steer into a running task without opening the inspector",
   await expect(
     page.getByRole("button", { name: "Abort", exact: true }),
   ).toBeEnabled();
-  // The Inspector stays collapsed: the delivery selector has to be reachable
-  // from the composer, where the interjection is actually typed.
+  // The Inspector stays collapsed and there is no delivery selector: typing
+  // during a run always queues the durable follow-up kind.
   await expect(page.locator(".inspector")).toHaveCount(0);
-  await chooseMenuOption(page, "Queue type", "steer");
+  await expect(
+    page.locator(".composer-queue-kind, .queue-compose .select-menu"),
+  ).toHaveCount(0);
   const input = page.getByRole("textbox", {
     name: "Send a prompt, or type / for commands…",
   });
   await input.fill("Change course now");
   await input.press("Enter");
-  await expect.poll(() => queued).toEqual([
-    { message: "Change course now", deliverAs: "steer" },
-  ]);
+  await expect
+    .poll(() => queued)
+    .toEqual([{ message: "Change course now", deliverAs: "followUp" }]);
+});
+
+test("send now steers a waiting message into the running task", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const commands: Array<{
+    type: string;
+    message?: string;
+    deliverAs?: string;
+    entryId?: string;
+  }> = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (!["queue_message", "cancel_queued", "prompt"].includes(body.type))
+        return route.fallback();
+      commands.push({
+        type: body.type,
+        message: body.message,
+        deliverAs: body.deliverAs,
+        entryId: body.entryId,
+      });
+      return route.fulfill({
+        json: response(
+          body.type === "queue_message"
+            ? { accepted: true, entryId: "steered-now", queue: "steer" }
+            : { accepted: true },
+          body.type,
+        ),
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Abort", exact: true }),
+  ).toBeEnabled();
+  await openRuntimePanel(page);
+  await page
+    .locator(".inspector .queue-item")
+    .getByRole("button", { name: "Send now: pending", exact: true })
+    .click();
+  await expect
+    .poll(() => commands)
+    .toEqual([
+      {
+        type: "queue_message",
+        message: "pending",
+        deliverAs: "steer",
+        entryId: undefined,
+      },
+      {
+        type: "cancel_queued",
+        message: undefined,
+        deliverAs: undefined,
+        entryId: "queue-2",
+      },
+    ]);
+});
+
+test("a delivered queued message leaves the list", async ({ page }) => {
+  await mockHost(page);
+  // Serialize the two sources: the host stops listing an entry once delivered.
+  let delivered = false;
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) => {
+    delivered = true;
+    return route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: message_start\ndata: {"type":"message_start","message":{"role":"user","content":"pending"}}\n\n',
+    });
+  });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_queue") return route.fallback();
+      const items = delivered
+        ? []
+        : [
+            {
+              entryId: "queue-2",
+              queue: "followUp",
+              status: "queued",
+              text: "pending",
+            },
+          ];
+      return route.fulfill({
+        json: response({ items, count: items.length }, body.type),
+      });
+    },
+  );
+  await page.goto("/");
+  await openRuntimePanel(page);
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(0);
+  await expect(page.locator(".composer-queue-panel")).toHaveCount(0);
+});
+
+test("a running session re-reads the queue so delivered entries disappear", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let reads = 0;
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_queue") return route.fallback();
+      reads += 1;
+      const items =
+        reads <= 1
+          ? [
+              {
+                entryId: "queue-drain",
+                queue: "followUp",
+                status: "queued",
+                text: "drained by the run",
+              },
+            ]
+          : [];
+      return route.fulfill({
+        json: response({ items, count: items.length }, body.type),
+      });
+    },
+  );
+  await page.goto("/");
+  await openRuntimePanel(page);
+  await expect(page.locator(".inspector .queue-item")).toContainText(
+    "drained by the run",
+  );
+  // The bounded poll runs while work is active; no settle is required.
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(0, {
+    timeout: 5000,
+  });
+  expect(reads).toBeGreaterThan(1);
 });
 
 test("an event replay gap reloads the native snapshot", async ({ page }) => {
   await mockHost(page);
   let snapshots = 0;
   let streams = 0;
-  await page.route(
-    snapshotRoute,
-    async (route) => {
-      snapshots++;
-      return route.fulfill({
-        json: {
-          sessionId,
-          messages:
-            snapshots > 1
-              ? [
-                  {
-                    role: "user",
-                    entryId: "restored",
-                    content: "Recovered transcript",
-                  },
-                ]
-              : [],
-          events: [],
-          lastSeq: 4,
-          total: 1,
-          hasMore: false,
-        },
-      });
-    },
-  );
+  await page.route(snapshotRoute, async (route) => {
+    snapshots++;
+    return route.fulfill({
+      json: {
+        sessionId,
+        messages:
+          snapshots > 1
+            ? [
+                {
+                  role: "user",
+                  entryId: "restored",
+                  content: "Recovered transcript",
+                },
+              ]
+            : [],
+        events: [],
+        lastSeq: 4,
+        total: 1,
+        hasMore: false,
+      },
+    });
+  });
   await page.route(
     `**/api/v1/sessions/${sessionId}/events**`,
     async (route) => {
@@ -1725,7 +1975,10 @@ test("markdown preserves chat line breaks, readable code and contained layouts",
   await expect(
     page.getByRole("button", { name: "Copy as Markdown", exact: true }).first(),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Copy as Markdown", exact: true }).first().click();
+  await page
+    .getByRole("button", { name: "Copy as Markdown", exact: true })
+    .first()
+    .click();
   const table = prose.getByRole("region", {
     name: "Table, scroll horizontally",
   });
@@ -1831,93 +2084,156 @@ test("previews image attachments when the browser omits the MIME type", async ({
 });
 
 test.describe("clipboard attachment upload", () => {
-  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const png =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   type PastedFile = { name: string; type: string; base64: string };
   const document = (name = "notes.txt"): PastedFile => ({
-    name, type: "text/plain", base64: Buffer.from("hello").toString("base64"),
+    name,
+    type: "text/plain",
+    base64: Buffer.from("hello").toString("base64"),
   });
-  async function pasteFiles(page: Page, files: PastedFile[], itemsOnly = false) {
-    return page.locator(".composer textarea").evaluate((input, data) => {
-      const clipboard = new DataTransfer();
-      for (const file of data.files) {
-        const bytes = Uint8Array.from(atob(file.base64), char => char.charCodeAt(0));
-        clipboard.items.add(new File([bytes], file.name, { type: file.type }));
-      }
-      if (data.itemsOnly)
-        Object.defineProperty(clipboard, "files", { value: new DataTransfer().files });
-      const event = new ClipboardEvent("paste", { clipboardData: clipboard, bubbles: true, cancelable: true });
-      input.dispatchEvent(event);
-      return event.defaultPrevented;
-    }, { files, itemsOnly });
+  async function pasteFiles(
+    page: Page,
+    files: PastedFile[],
+    itemsOnly = false,
+  ) {
+    return page.locator(".composer textarea").evaluate(
+      (input, data) => {
+        const clipboard = new DataTransfer();
+        for (const file of data.files) {
+          const bytes = Uint8Array.from(atob(file.base64), (char) =>
+            char.charCodeAt(0),
+          );
+          clipboard.items.add(
+            new File([bytes], file.name, { type: file.type }),
+          );
+        }
+        if (data.itemsOnly)
+          Object.defineProperty(clipboard, "files", {
+            value: new DataTransfer().files,
+          });
+        const event = new ClipboardEvent("paste", {
+          clipboardData: clipboard,
+          bubbles: true,
+          cancelable: true,
+        });
+        input.dispatchEvent(event);
+        return event.defaultPrevented;
+      },
+      { files, itemsOnly },
+    );
   }
   async function ready(page: Page) {
     await page.goto("/");
     await page.locator(".composer textarea").fill("Please inspect");
-    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Send message", exact: true }),
+    ).toBeEnabled();
   }
-  async function uploadMock(page: Page, handler?: (route: Route, name: string, count: number) => Promise<void>) {
+  async function uploadMock(
+    page: Page,
+    handler?: (route: Route, name: string, count: number) => Promise<void>,
+  ) {
     const names: string[] = [];
-    await page.route("**/api/v1/projects/*/upload", async route => {
+    await page.route("**/api/v1/projects/*/upload", async (route) => {
       const body = route.request().postDataBuffer()!.toString();
       const name = /filename="([^"]+)"/.exec(body)![1];
       expect(body).toContain('name="file"');
       names.push(name);
       if (handler) return handler(route, name, names.length);
-      await route.fulfill({ json: { name, path: `.rpi/uploads/${name}`, size: 5 } });
+      await route.fulfill({
+        json: { name, path: `.rpi/uploads/${name}`, size: 5 },
+      });
     });
     return names;
   }
 
-  test("pastes a document exactly once and sends its uploaded path with the existing draft", async ({ page }) => {
+  test("pastes a document exactly once and sends its uploaded path with the existing draft", async ({
+    page,
+  }) => {
     await mockHost(page);
     const names = await uploadMock(page);
     await ready(page);
     expect(await pasteFiles(page, [document("report.pdf")])).toBe(true);
-    await expect(page.locator(".composer-attachment")).toContainText("report.pdf");
-    await expect(page.locator(".composer textarea")).toHaveValue("Please inspect");
-    const request = page.waitForRequest(request => request.url().endsWith(`/sessions/${sessionId}/commands`) && request.postDataJSON()?.type === "prompt");
-    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect(page.locator(".composer-attachment")).toContainText(
+      "report.pdf",
+    );
+    await expect(page.locator(".composer textarea")).toHaveValue(
+      "Please inspect",
+    );
+    const request = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(`/sessions/${sessionId}/commands`) &&
+        request.postDataJSON()?.type === "prompt",
+    );
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
     const message = (await request).postDataJSON().message;
     expect(message).toContain("Please inspect");
     expect(message.match(/\.rpi\/uploads\/report\.pdf/g)).toHaveLength(1);
     expect(names).toEqual(["report.pdf"]);
   });
 
-  test("pastes a real clipboard screenshot with a removable local preview", async ({ page }) => {
+  test("pastes a real clipboard screenshot with a removable local preview", async ({
+    page,
+  }) => {
     await mockHost(page);
     const names = await uploadMock(page);
     await ready(page);
-    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-    await page.evaluate(async base64 => {
-      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([bytes], { type: "image/png" }) })]);
+    await page
+      .context()
+      .grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.evaluate(async (base64) => {
+      const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "image/png": new Blob([bytes], { type: "image/png" }),
+        }),
+      ]);
     }, png);
     await page.locator(".composer textarea").focus();
     await page.keyboard.press("ControlOrMeta+V");
     const card = page.locator(".composer-attachment");
     await expect(card).toHaveCount(1);
-    await expect.poll(() => card.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    await expect
+      .poll(() =>
+        card
+          .locator("img")
+          .evaluate((image: HTMLImageElement) => image.naturalWidth),
+      )
+      .toBeGreaterThan(0);
     expect(names).toHaveLength(1);
     await card.getByRole("button").click();
     await expect(card).toHaveCount(0);
-    await expect(page.locator(".composer textarea")).toHaveValue("Please inspect");
+    await expect(page.locator(".composer textarea")).toHaveValue(
+      "Please inspect",
+    );
   });
 
-  test("keeps native text paste and selection replacement without any upload", async ({ page }) => {
+  test("keeps native text paste and selection replacement without any upload", async ({
+    page,
+  }) => {
     await mockHost(page);
     const names = await uploadMock(page);
     await ready(page);
-    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page
+      .context()
+      .grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.evaluate(() => navigator.clipboard.writeText("pasted text"));
     const input = page.locator(".composer textarea");
     await input.focus();
-    await input.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(7, 14));
+    await input.evaluate((node: HTMLTextAreaElement) =>
+      node.setSelectionRange(7, 14),
+    );
     await page.keyboard.press("ControlOrMeta+V");
     await expect(input).toHaveValue("Please pasted text");
     expect(names).toEqual([]);
   });
 
-  test("accepts file-only clipboard items when the files list is empty", async ({ page }) => {
+  test("accepts file-only clipboard items when the files list is empty", async ({
+    page,
+  }) => {
     await mockHost(page);
     const names = await uploadMock(page);
     await ready(page);
@@ -1926,92 +2242,145 @@ test.describe("clipboard attachment upload", () => {
     expect(names).toEqual(["notes.txt"]);
   });
 
-  test("queues repeated pastes and blocks both button and Enter until every file is uploaded", async ({ page }) => {
+  test("queues repeated pastes and blocks both button and Enter until every file is uploaded", async ({
+    page,
+  }) => {
     await mockHost(page);
     let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const names = await uploadMock(page, async (route, name, count) => {
       if (count === 1) await gate;
-      await route.fulfill({ json: { name, path: `.rpi/uploads/${name}`, size: 5 } });
+      await route.fulfill({
+        json: { name, path: `.rpi/uploads/${name}`, size: 5 },
+      });
     });
     const prompts: unknown[] = [];
-    page.on("request", request => {
-      if (request.url().endsWith("/commands") && request.method() === "POST" && request.postDataJSON()?.type === "prompt") prompts.push(request.postDataJSON());
+    page.on("request", (request) => {
+      if (
+        request.url().endsWith("/commands") &&
+        request.method() === "POST" &&
+        request.postDataJSON()?.type === "prompt"
+      )
+        prompts.push(request.postDataJSON());
     });
     await ready(page);
     await pasteFiles(page, [document("first.txt")]);
     await expect.poll(() => names).toEqual(["first.txt"]);
     await pasteFiles(page, [document("second.txt"), document("third.txt")]);
-    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Send message", exact: true }),
+    ).toBeDisabled();
     await page.locator(".composer textarea").press("Enter");
     expect(prompts).toEqual([]);
     release();
     await expect(page.locator(".composer-attachment")).toHaveCount(3);
-    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Send message", exact: true }),
+    ).toBeEnabled();
     expect(names).toEqual(["first.txt", "second.txt", "third.txt"]);
-    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
     await expect.poll(() => prompts.length).toBe(1);
     const message = (prompts[0] as { message: string }).message;
-    for (const name of names) expect(message.split(`.rpi/uploads/${name}`)).toHaveLength(2);
+    for (const name of names)
+      expect(message.split(`.rpi/uploads/${name}`)).toHaveLength(2);
   });
 
-  test("a delayed prompt acknowledgement preserves files pasted for the next message", async ({ page }) => {
+  test("a delayed prompt acknowledgement preserves files pasted for the next message", async ({
+    page,
+  }) => {
     await mockHost(page);
     await uploadMock(page);
     let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    await page.route("**/api/v1/sessions/*/commands", async route => {
-      if (route.request().postDataJSON()?.type !== "prompt") return route.fallback();
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/v1/sessions/*/commands", async (route) => {
+      if (route.request().postDataJSON()?.type !== "prompt")
+        return route.fallback();
       await gate;
       await route.fulfill({ json: response({}, "prompt") });
     });
     await ready(page);
     await pasteFiles(page, [document("submitted.txt")]);
     await expect(page.locator(".composer-attachment")).toHaveCount(1);
-    const started = page.waitForRequest(request => request.url().endsWith("/commands") && request.postDataJSON()?.type === "prompt");
-    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    const started = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/commands") &&
+        request.postDataJSON()?.type === "prompt",
+    );
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click();
     const request = await started;
     await page.locator(".composer textarea").fill("Next message");
     await pasteFiles(page, [document("next.txt")]);
     await expect(page.locator(".composer-attachment")).toHaveCount(2);
-    const finished = page.waitForEvent("requestfinished", { predicate: candidate => candidate === request });
+    const finished = page.waitForEvent("requestfinished", {
+      predicate: (candidate) => candidate === request,
+    });
     release();
     await finished;
     await expect(page.locator(".composer-attachment")).toHaveCount(1);
-    await expect(page.locator(".composer-attachment")).toContainText("next.txt");
-    await expect(page.locator(".composer textarea")).toHaveValue("Next message");
+    await expect(page.locator(".composer-attachment")).toContainText(
+      "next.txt",
+    );
+    await expect(page.locator(".composer textarea")).toHaveValue(
+      "Next message",
+    );
   });
 
-  test("keeps successful files and draft when a later pasted file fails", async ({ page }) => {
+  test("keeps successful files and draft when a later pasted file fails", async ({
+    page,
+  }) => {
     await mockHost(page);
     await uploadMock(page, async (route, name, count) => {
-      await route.fulfill(count === 2
-        ? { status: 413, json: { error: "File too large" } }
-        : { json: { name, path: `.rpi/uploads/${name}`, size: 5 } });
+      await route.fulfill(
+        count === 2
+          ? { status: 413, json: { error: "File too large" } }
+          : { json: { name, path: `.rpi/uploads/${name}`, size: 5 } },
+      );
     });
     await ready(page);
     await pasteFiles(page, [document("ok.txt"), document("too-large.txt")]);
     await expect(page.locator(".composer-attachment")).toHaveCount(1);
     await expect(page.locator(".composer-attachment")).toContainText("ok.txt");
     await expect(page.getByText(/Upload failed.*File too large/)).toBeVisible();
-    await expect(page.locator(".composer textarea")).toHaveValue("Please inspect");
-    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(page.locator(".composer textarea")).toHaveValue(
+      "Please inspect",
+    );
+    await expect(
+      page.getByRole("button", { name: "Send message", exact: true }),
+    ).toBeEnabled();
   });
 
-  test("attachment chooser can reselect the identical file after its upload is cancelled by navigation", async ({ page }, testInfo) => {
+  test("attachment chooser can reselect the identical file after its upload is cancelled by navigation", async ({
+    page,
+  }, testInfo) => {
     await mockHost(page);
     const name = "rpi-review159-file.txt";
     const filePath = testInfo.outputPath(name);
     await writeFile(filePath, "hello");
     let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const names = await uploadMock(page, async (route, file, count) => {
       if (count === 1) await gate;
-      await route.fulfill({ json: { name: file, path: `.rpi/uploads/${file}`, size: 5 } }).catch(() => {});
+      await route
+        .fulfill({
+          json: { name: file, path: `.rpi/uploads/${file}`, size: 5 },
+        })
+        .catch(() => {});
     });
     const chooseFile = async () => {
       const chooser = page.waitForEvent("filechooser");
-      await page.getByRole("button", { name: "Attach files", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Attach files", exact: true })
+        .click();
       // Use a real disk file, not a payload or a synthetic change event: the
       // browser must decide whether selecting the identical file fires change.
       await (await chooser).setFiles(filePath);
@@ -2020,11 +2389,19 @@ test.describe("clipboard attachment upload", () => {
     await chooseFile();
     await expect.poll(() => names).toEqual([name]);
     const cancelled = page.waitForEvent("requestfailed", {
-      predicate: request => request.url().endsWith("/projects/project-a/upload"),
+      predicate: (request) =>
+        request.url().endsWith("/projects/project-a/upload"),
     });
-    await page.getByRole("button", { name: "New session", exact: false }).first().click();
-    await expect(page.getByRole("heading", { name: "New session", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Attach files", exact: true })).toBeEnabled();
+    await page
+      .getByRole("button", { name: "New session", exact: false })
+      .first()
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "New session", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Attach files", exact: true }),
+    ).toBeEnabled();
     // The old response is still held when the same chooser file is selected.
     await chooseFile();
     await expect.poll(() => names).toEqual([name, name]);
@@ -2033,33 +2410,54 @@ test.describe("clipboard attachment upload", () => {
     await cancelled;
     await expect(page.locator(".composer-attachment")).toHaveCount(1);
     await expect(page.locator(".composer-attachment")).toContainText(name);
-    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Send message", exact: true }),
+    ).toBeEnabled();
     expect(await page.locator('input[type="file"]').inputValue()).toBe("");
   });
 
-  test("cancels pending and queued uploads on session change without leaking an attachment", async ({ page }) => {
+  test("cancels pending and queued uploads on session change without leaking an attachment", async ({
+    page,
+  }) => {
     await mockHost(page);
     let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const names = await uploadMock(page, async (route, name) => {
       await gate;
-      await route.fulfill({ json: { name, path: `.rpi/uploads/${name}`, size: 5 } }).catch(() => {});
+      await route
+        .fulfill({ json: { name, path: `.rpi/uploads/${name}`, size: 5 } })
+        .catch(() => {});
     });
     await ready(page);
-    await pasteFiles(page, [document("old-session.txt"), document("never-upload.txt")]);
+    await pasteFiles(page, [
+      document("old-session.txt"),
+      document("never-upload.txt"),
+    ]);
     await expect.poll(() => names).toEqual(["old-session.txt"]);
     const cancelled = page.waitForEvent("requestfailed", {
-      predicate: request => request.url().endsWith("/projects/project-a/upload"),
+      predicate: (request) =>
+        request.url().endsWith("/projects/project-a/upload"),
     });
-    await page.getByRole("button", { name: "New session", exact: false }).first().click();
-    await expect(page.getByRole("heading", { name: "New session", exact: true })).toBeVisible();
+    await page
+      .getByRole("button", { name: "New session", exact: false })
+      .first()
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "New session", exact: true }),
+    ).toBeVisible();
     release();
     await cancelled;
     await page.locator(".composer textarea").fill("New draft");
-    await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Send message", exact: true }),
+    ).toBeEnabled();
     await expect(page.locator(".composer-attachment")).toHaveCount(0);
     expect(names).toEqual(["old-session.txt"]);
-    await expect(page.getByRole("button", { name: "Attach files", exact: true })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Attach files", exact: true }),
+    ).toBeEnabled();
   });
 });
 
@@ -2162,10 +2560,16 @@ test("Markdown data images decode without allowing unsafe links or HTML", async 
     .poll(() => image.evaluate((e: HTMLImageElement) => e.naturalWidth))
     .toBeGreaterThan(0);
   for (const label of ["unsafe link", "script link", "image link"]) {
-    await expect(page.locator(".prose").getByText(label, { exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: label, exact: true })).toHaveCount(0);
+    await expect(
+      page.locator(".prose").getByText(label, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: label, exact: true }),
+    ).toHaveCount(0);
   }
-  await expect(page.locator('.prose a[href^="data:"], .prose a[href^="javascript:"]')).toHaveCount(0);
+  await expect(
+    page.locator('.prose a[href^="data:"], .prose a[href^="javascript:"]'),
+  ).toHaveCount(0);
   await expect(page.getByAltText("unsafe image")).not.toHaveAttribute(
     "src",
     /^data:/i,
@@ -2807,7 +3211,9 @@ test("the working indicator does not resize the transcript", async ({
   await indicator.evaluate((node) => {
     (node as HTMLElement).style.display = "none";
   });
-  const withoutIndicator = await transcript.evaluate((node) => node.scrollHeight);
+  const withoutIndicator = await transcript.evaluate(
+    (node) => node.scrollHeight,
+  );
   expect(withoutIndicator).toBe(busyHeight);
   hold();
 });
@@ -2873,8 +3279,13 @@ test("streaming thinking does not resize the transcript", async ({ page }) => {
     },
   );
   await page.goto("/");
-  await expect(page.locator(".message.user")).toContainText("Check the streamed reasoning");
-  await expect(page.locator(".transcript")).not.toHaveAttribute("data-history-window", "true");
+  await expect(page.locator(".message.user")).toContainText(
+    "Check the streamed reasoning",
+  );
+  await expect(page.locator(".transcript")).not.toHaveAttribute(
+    "data-history-window",
+    "true",
+  );
   const transcript = page.locator(".transcript");
   const row = page.locator(".thinking-row-streaming");
   await expect(row).toBeVisible();
@@ -2882,9 +3293,7 @@ test("streaming thinking does not resize the transcript", async ({ page }) => {
     "overflow-y",
     "auto",
   );
-  const firstHeight = await transcript.evaluate(
-    (node) => node.scrollHeight,
-  );
+  const firstHeight = await transcript.evaluate((node) => node.scrollHeight);
   const viewportHeight = await row
     .locator(".thinking-row-viewport")
     .evaluate((node) => node.clientHeight);
@@ -2892,9 +3301,7 @@ test("streaming thinking does not resize the transcript", async ({ page }) => {
   await expect(row.locator(".thinking-row-viewport strong")).toHaveText(
     "检查思路",
   );
-  const secondHeight = await transcript.evaluate(
-    (node) => node.scrollHeight,
-  );
+  const secondHeight = await transcript.evaluate((node) => node.scrollHeight);
   expect(secondHeight).toBe(firstHeight);
   expect(
     await row
@@ -2994,8 +3401,8 @@ for (const language of ["en", "zh"] as const) {
       const pill = document
         .querySelector(".working-indicator")!
         .getBoundingClientRect();
-      const rows = [...document.querySelectorAll(".transcript-row")].map((row) =>
-        row.getBoundingClientRect(),
+      const rows = [...document.querySelectorAll(".transcript-row")].map(
+        (row) => row.getBoundingClientRect(),
       );
       const contentBottom = Math.max(...rows.map((row) => row.bottom));
       const covered = rows.filter(
@@ -3724,44 +4131,90 @@ test.describe("mobile fork regression", () => {
   const forkEntryId = "chosen-history-leaf";
   const forkError = "Mock fork failed without changing the selection";
   const toolbarFork = (page: Page) => page.locator(".toolbar-fork");
-  const historyFork = (page: Page) => page.getByTitle("Fork from this point", { exact: true });
-  const titleDialog = (page: Page) => page.getByRole("dialog", { name: "Name the new fork", exact: true });
+  const historyFork = (page: Page) =>
+    page.getByTitle("Fork from this point", { exact: true });
+  const titleDialog = (page: Page) =>
+    page.getByRole("dialog", { name: "Name the new fork", exact: true });
 
-  async function host(page: Page, options: { hold?: boolean; error?: boolean } = {}) {
+  async function host(
+    page: Page,
+    options: { hold?: boolean; error?: boolean } = {},
+  ) {
     await mockHost(page);
     const entries = [
       { ...session },
       { ...session, sessionId: "session-2", title: "Other chat" },
     ];
-    const requests: Array<{ method: string; source: string; body: unknown }> = [];
+    const requests: Array<{ method: string; source: string; body: unknown }> =
+      [];
     let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const history = {
-      records: [{ id: "fork-record", seq: 4, type: "operation_finished", sourceLeafId: forkEntryId, outcome: "completed" }],
-      total: 1, hasMore: false, openOperations: [],
-    };
-    await page.route("**/api/v1/sessions", route => route.request().method() === "GET"
-      ? route.fulfill({ json: { sessions: entries } }) : route.fallback());
-    await page.route("**/api/v1/sessions/*/snapshot*", route => {
-      const id = new URL(route.request().url()).pathname.split("/")[4];
-      return route.fulfill({ json: {
-        sessionId: id, lastSeq: 4, events: [], leafId: "leaf-1", history,
-        messages: [{ role: "user", entryId: `message-${id}`, content: `Transcript: ${id}` }],
-      } });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    await page.route("**/api/v1/sessions/*/commands", route => {
+    const history = {
+      records: [
+        {
+          id: "fork-record",
+          seq: 4,
+          type: "operation_finished",
+          sourceLeafId: forkEntryId,
+          outcome: "completed",
+        },
+      ],
+      total: 1,
+      hasMore: false,
+      openOperations: [],
+    };
+    await page.route("**/api/v1/sessions", (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ json: { sessions: entries } })
+        : route.fallback(),
+    );
+    await page.route("**/api/v1/sessions/*/snapshot*", (route) => {
+      const id = new URL(route.request().url()).pathname.split("/")[4];
+      return route.fulfill({
+        json: {
+          sessionId: id,
+          lastSeq: 4,
+          events: [],
+          leafId: "leaf-1",
+          history,
+          messages: [
+            {
+              role: "user",
+              entryId: `message-${id}`,
+              content: `Transcript: ${id}`,
+            },
+          ],
+        },
+      });
+    });
+    await page.route("**/api/v1/sessions/*/commands", (route) => {
       const body = route.request().postDataJSON();
       return body.type === "get_history"
-        ? route.fulfill({ json: response(history, body.type) }) : route.fallback();
+        ? route.fulfill({ json: response(history, body.type) })
+        : route.fallback();
     });
-    await page.route("**/api/v1/sessions/*/fork", async route => {
+    await page.route("**/api/v1/sessions/*/fork", async (route) => {
       const request = route.request();
       const body = request.postDataJSON();
-      requests.push({ method: request.method(), source: new URL(request.url()).pathname.split("/")[4], body });
+      requests.push({
+        method: request.method(),
+        source: new URL(request.url()).pathname.split("/")[4],
+        body,
+      });
       if (options.hold) await gate;
-      if (options.error) return route.fulfill({ status: 500, json: { error: forkError } });
+      if (options.error)
+        return route.fulfill({ status: 500, json: { error: forkError } });
       entries.push({ ...session, sessionId: "fork-new", title: body.title });
-      return route.fulfill({ status: 201, json: { sessionId: "fork-new", sourceSessionId: sessionId, status: "ready" } });
+      return route.fulfill({
+        status: 201,
+        json: {
+          sessionId: "fork-new",
+          sourceSessionId: sessionId,
+          status: "ready",
+        },
+      });
     });
     return { requests, release };
   }
@@ -3779,25 +4232,44 @@ test.describe("mobile fork regression", () => {
     }
   }
 
-  async function navigate(page: Page, destination: "project" | "session", behindDialog = false) {
-    const target = destination === "project"
-      ? page.getByRole("button", { name: "Expand project: rpi-package", exact: true })
-      : page.locator(".project-session-link").filter({ hasText: "Other chat" });
+  async function navigate(
+    page: Page,
+    destination: "project" | "session",
+    behindDialog = false,
+  ) {
+    const target =
+      destination === "project"
+        ? page.getByRole("button", {
+            name: "Expand project: rpi-package",
+            exact: true,
+          })
+        : page
+            .locator(".project-session-link")
+            .filter({ hasText: "Other chat" });
     // Exercise navigation while a prompt is outstanding, without pretending a
     // pointer can pass through the modal backdrop.
-    if (behindDialog) await target.evaluate((element: HTMLElement) => element.click());
+    if (behindDialog)
+      await target.evaluate((element: HTMLElement) => element.click());
     else await target.click();
     if (destination === "project") {
-      await expect(page.locator(".toolbar .breadcrumb")).toContainText("rpi-package");
-      await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+      await expect(page.locator(".toolbar .breadcrumb")).toContainText(
+        "rpi-package",
+      );
+      await expect
+        .poll(() => new URL(page.url()).searchParams.has("session"))
+        .toBe(false);
     } else {
       await expect(page).toHaveURL(/session=session-2/);
-      await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+      await expect(page.locator(".message.user")).toContainText(
+        "Transcript: session-2",
+      );
     }
   }
 
   for (const width of [320, 375, 768, 1280]) {
-    test(`fork is reachable without horizontal overflow at ${width}px`, async ({ page }) => {
+    test(`fork is reachable without horizontal overflow at ${width}px`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width, height: 844 });
       const mock = await host(page);
       await page.goto("/?session=session-1");
@@ -3805,7 +4277,10 @@ test.describe("mobile fork regression", () => {
       await expect(button).toHaveAccessibleName("Fork current session");
       await expect(button).toBeVisible();
       await expect(button).toBeEnabled();
-      const clone = page.getByRole("button", { name: "Clone current session", exact: true });
+      const clone = page.getByRole("button", {
+        name: "Clone current session",
+        exact: true,
+      });
       if (width < 768) await expect(clone).toBeHidden();
       else await expect(clone).toBeVisible();
       const bounds = await button.boundingBox();
@@ -3817,61 +4292,102 @@ test.describe("mobile fork regression", () => {
       expect(bounds!.y).toBeGreaterThanOrEqual(0);
       expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
       expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(844);
-      await expect.poll(() => page.evaluate(() => ({
-        document: document.documentElement.scrollWidth <= innerWidth,
-        body: document.body.scrollWidth <= innerWidth,
-        toolbar: document.querySelector(".toolbar")!.scrollWidth <= document.querySelector(".toolbar")!.clientWidth,
-      }))).toEqual({ document: true, body: true, toolbar: true });
+      await expect
+        .poll(() =>
+          page.evaluate(() => ({
+            document: document.documentElement.scrollWidth <= innerWidth,
+            body: document.body.scrollWidth <= innerWidth,
+            toolbar:
+              document.querySelector(".toolbar")!.scrollWidth <=
+              document.querySelector(".toolbar")!.clientWidth,
+          })),
+        )
+        .toEqual({ document: true, body: true, toolbar: true });
       await button.click(); // Hit-tested, including the narrowest phone.
       await expect(titleDialog(page)).toBeVisible();
-      await expect(titleDialog(page).getByRole("textbox")).toHaveValue("Fork of Mock session");
-      await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(titleDialog(page).getByRole("textbox")).toHaveValue(
+        "Fork of Mock session",
+      );
+      await titleDialog(page)
+        .getByRole("button", { name: "Cancel", exact: true })
+        .click();
       await expect(button).toBeEnabled();
       expect(mock.requests).toEqual([]);
     });
   }
 
   for (const origin of ["toolbar", "history"] as const) {
-    test(`${origin} fork is single-flight through title and API, preserving source and chosen entry`, async ({ page }) => {
-      await page.setViewportSize({ width: origin === "toolbar" ? 375 : 1280, height: 844 });
+    test(`${origin} fork is single-flight through title and API, preserving source and chosen entry`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: origin === "toolbar" ? 375 : 1280,
+        height: 844,
+      });
       const mock = await host(page, { hold: true });
       try {
         await page.goto("/?session=session-1");
         await openHistory(page);
         // Same-task activation covers the ref guard before React publishes the
         // disabled state; another entry point must not replace the first prompt.
-        await page.evaluate(origin => {
-          const toolbar = document.querySelector<HTMLButtonElement>(".toolbar-fork")!;
-          const history = document.querySelector<HTMLButtonElement>(".history-actions button")!;
+        await page.evaluate((origin) => {
+          const toolbar =
+            document.querySelector<HTMLButtonElement>(".toolbar-fork")!;
+          const history = document.querySelector<HTMLButtonElement>(
+            ".history-actions button",
+          )!;
           const first = origin === "toolbar" ? toolbar : history;
           const second = origin === "toolbar" ? history : toolbar;
-          first.click(); second.click(); first.click();
+          first.click();
+          second.click();
+          first.click();
         }, origin);
         await expect(titleDialog(page)).toBeVisible();
         await assertLocked(page, true);
         expect(mock.requests).toEqual([]);
         await titleDialog(page).getByRole("textbox").fill("Chosen fork title");
-        await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+        await titleDialog(page)
+          .getByRole("button", { name: "Submit", exact: true })
+          .click();
         await expect.poll(() => mock.requests.length).toBe(1);
         await expect(titleDialog(page)).toHaveCount(0);
         await assertLocked(page, true);
-        await toolbarFork(page).evaluate((button: HTMLButtonElement) => button.click());
-        await historyFork(page).evaluate((button: HTMLButtonElement) => button.click());
-        expect(mock.requests).toEqual([{ method: "POST", source: sessionId, body: {
-          title: "Chosen fork title", ...(origin === "history" ? { entryId: forkEntryId } : {}),
-        } }]);
+        await toolbarFork(page).evaluate((button: HTMLButtonElement) =>
+          button.click(),
+        );
+        await historyFork(page).evaluate((button: HTMLButtonElement) =>
+          button.click(),
+        );
+        expect(mock.requests).toEqual([
+          {
+            method: "POST",
+            source: sessionId,
+            body: {
+              title: "Chosen fork title",
+              ...(origin === "history" ? { entryId: forkEntryId } : {}),
+            },
+          },
+        ]);
         mock.release();
         await expect(page).toHaveURL(/session=fork-new/);
-        await expect(page.locator(".toolbar .breadcrumb")).toContainText("Chosen fork title");
-        await expect(page.locator(".message.user")).toContainText("Transcript: fork-new");
+        await expect(page.locator(".toolbar .breadcrumb")).toContainText(
+          "Chosen fork title",
+        );
+        await expect(page.locator(".message.user")).toContainText(
+          "Transcript: fork-new",
+        );
         await expect(toolbarFork(page)).toBeEnabled();
         expect(mock.requests).toHaveLength(1);
-      } finally { mock.release(); }
+      } finally {
+        mock.release();
+      }
     });
   }
 
   for (const outcome of ["cancel", "error"] as const) {
-    test(`${outcome} unlocks both fork entry points for an explicit retry`, async ({ page }) => {
+    test(`${outcome} unlocks both fork entry points for an explicit retry`, async ({
+      page,
+    }) => {
       const mock = await host(page, { hold: true, error: true });
       try {
         await page.goto("/?session=session-1");
@@ -3879,9 +4395,13 @@ test.describe("mobile fork regression", () => {
         await historyFork(page).click();
         await assertLocked(page, true);
         if (outcome === "cancel") {
-          await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+          await titleDialog(page)
+            .getByRole("button", { name: "Cancel", exact: true })
+            .click();
         } else {
-          await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+          await titleDialog(page)
+            .getByRole("button", { name: "Submit", exact: true })
+            .click();
           await expect.poll(() => mock.requests.length).toBe(1);
           await assertLocked(page, true);
           mock.release();
@@ -3889,128 +4409,211 @@ test.describe("mobile fork regression", () => {
         }
         await assertLocked(page, false);
         await expect(page).toHaveURL(/session=session-1/);
-        await expect(page.locator(".message.user")).toContainText("Transcript: session-1");
+        await expect(page.locator(".message.user")).toContainText(
+          "Transcript: session-1",
+        );
         await toolbarFork(page).click();
         await expect(titleDialog(page)).toBeVisible();
         await assertLocked(page, true);
-        await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+        await titleDialog(page)
+          .getByRole("button", { name: "Cancel", exact: true })
+          .click();
         await assertLocked(page, false);
         expect(mock.requests).toHaveLength(outcome === "cancel" ? 0 : 1);
-      } finally { mock.release(); }
+      } finally {
+        mock.release();
+      }
     });
   }
 
   for (const origin of ["toolbar", "history"] as const) {
     for (const outcome of ["cancel", "submit"] as const) {
-      test(`${origin} fork unlocks when a keyboard-opened clone replaces its prompt (${outcome})`, async ({ page }) => {
+      test(`${origin} fork unlocks when a keyboard-opened clone replaces its prompt (${outcome})`, async ({
+        page,
+      }) => {
         await page.setViewportSize({ width: 1280, height: 844 });
         const mock = await host(page);
-        const cloneRequests: Array<{ method: string; source: string; body: unknown }> = [];
-        await page.route("**/api/v1/sessions/*/clone", route => {
+        const cloneRequests: Array<{
+          method: string;
+          source: string;
+          body: unknown;
+        }> = [];
+        await page.route("**/api/v1/sessions/*/clone", (route) => {
           const request = route.request();
           cloneRequests.push({
-            method: request.method(), source: new URL(request.url()).pathname.split("/")[4],
+            method: request.method(),
+            source: new URL(request.url()).pathname.split("/")[4],
             body: request.postDataJSON(),
           });
           // Reuse the host's other mocked session; never contact a real clone API.
-          return route.fulfill({ status: 201, json: { sessionId: "session-2" } });
+          return route.fulfill({
+            status: 201,
+            json: { sessionId: "session-2" },
+          });
         });
         await page.goto("/?session=session-1");
         await openHistory(page);
-        await (origin === "toolbar" ? toolbarFork(page) : historyFork(page)).click();
+        await (
+          origin === "toolbar" ? toolbarFork(page) : historyFork(page)
+        ).click();
         await expect(titleDialog(page)).toBeVisible();
-        await titleDialog(page).getByRole("textbox").fill("Abandoned fork title");
+        await titleDialog(page)
+          .getByRole("textbox")
+          .fill("Abandoned fork title");
         await assertLocked(page, true);
 
-        const clone = page.getByRole("button", { name: "Clone current session", exact: true });
+        const clone = page.getByRole("button", {
+          name: "Clone current session",
+          exact: true,
+        });
         // The modal currently has no focus trap/inert background. Exercise real
         // desktop Tab + Enter activation, not a pointer through its backdrop.
-        for (let tabs = 0; tabs < 80 && !(await clone.evaluate(button => button === document.activeElement)); tabs++) {
+        for (
+          let tabs = 0;
+          tabs < 80 &&
+          !(await clone.evaluate(
+            (button) => button === document.activeElement,
+          ));
+          tabs++
+        ) {
           await page.keyboard.press("Tab");
         }
         await expect(clone).toBeFocused();
         await page.keyboard.press("Enter");
-        const cloneDialog = page.getByRole("dialog", { name: "Name the cloned session", exact: true });
+        const cloneDialog = page.getByRole("dialog", {
+          name: "Name the cloned session",
+          exact: true,
+        });
         await expect(cloneDialog).toBeVisible();
         await expect(titleDialog(page)).toHaveCount(0);
         // Replacement must settle the abandoned fork, even before clone finishes.
         await assertLocked(page, false);
         expect(mock.requests).toEqual([]);
         if (outcome === "submit") {
-          await cloneDialog.getByRole("textbox").fill("Replacement clone title");
-          await cloneDialog.getByRole("button", { name: "Submit", exact: true }).click();
+          await cloneDialog
+            .getByRole("textbox")
+            .fill("Replacement clone title");
+          await cloneDialog
+            .getByRole("button", { name: "Submit", exact: true })
+            .click();
           await expect(page).toHaveURL(/session=session-2/);
-          await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+          await expect(page.locator(".message.user")).toContainText(
+            "Transcript: session-2",
+          );
           // The right-hand slot is per session, so navigation closes it. A new
           // session starts with its history details collapsed.
           await openRuntimePanel(page);
           await page.locator(".history-timeline-item summary").click();
           await expect(historyFork(page)).toBeVisible();
         } else {
-          await cloneDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+          await cloneDialog
+            .getByRole("button", { name: "Cancel", exact: true })
+            .click();
           await expect(page).toHaveURL(/session=session-1/);
         }
         await expect(cloneDialog).toHaveCount(0);
         await assertLocked(page, false);
         // Retry through the opposite entry point proves the shared ref lock cleared.
-        await (origin === "toolbar" ? historyFork(page) : toolbarFork(page)).click();
+        await (
+          origin === "toolbar" ? historyFork(page) : toolbarFork(page)
+        ).click();
         await expect(titleDialog(page)).toBeVisible();
         await assertLocked(page, true);
-        await titleDialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+        await titleDialog(page)
+          .getByRole("button", { name: "Cancel", exact: true })
+          .click();
         await assertLocked(page, false);
         expect(mock.requests).toEqual([]);
-        expect(cloneRequests).toEqual(outcome === "submit" ? [{
-          method: "POST", source: sessionId, body: { title: "Replacement clone title" },
-        }] : []);
+        expect(cloneRequests).toEqual(
+          outcome === "submit"
+            ? [
+                {
+                  method: "POST",
+                  source: sessionId,
+                  body: { title: "Replacement clone title" },
+                },
+              ]
+            : [],
+        );
         await expect(page.locator(".error-banner")).toHaveCount(0);
       });
     }
   }
 
   for (const destination of ["project", "session"] as const) {
-    test(`${destination} navigation during the title prompt sends no stale fork`, async ({ page }) => {
+    test(`${destination} navigation during the title prompt sends no stale fork`, async ({
+      page,
+    }) => {
       const mock = await host(page);
       await page.goto("/?session=session-1");
       await toolbarFork(page).click();
       await expect(titleDialog(page)).toBeVisible();
       await navigate(page, destination, true);
       await titleDialog(page).getByRole("textbox").fill("Stale fork title");
-      await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+      await titleDialog(page)
+        .getByRole("button", { name: "Submit", exact: true })
+        .click();
       await expect(titleDialog(page)).toHaveCount(0);
       await chooseLanguage(page, "zh");
-      if (destination === "session") await expect(toolbarFork(page)).toBeEnabled();
+      if (destination === "session")
+        await expect(toolbarFork(page)).toBeEnabled();
       else await expect(toolbarFork(page)).toBeDisabled();
       expect(mock.requests).toEqual([]);
-      await expect(page.locator(".toolbar .breadcrumb")).toContainText(destination === "project" ? "rpi-package" : "Other chat");
+      await expect(page.locator(".toolbar .breadcrumb")).toContainText(
+        destination === "project" ? "rpi-package" : "Other chat",
+      );
       await expect(page.locator(".error-banner")).toHaveCount(0);
     });
 
     for (const outcome of ["success", "error"] as const) {
-      test(`late fork ${outcome} preserves newer ${destination} navigation`, async ({ page }) => {
-        const mock = await host(page, { hold: true, error: outcome === "error" });
+      test(`late fork ${outcome} preserves newer ${destination} navigation`, async ({
+        page,
+      }) => {
+        const mock = await host(page, {
+          hold: true,
+          error: outcome === "error",
+        });
         try {
           await page.goto("/?session=session-1");
           await toolbarFork(page).click();
           await titleDialog(page).getByRole("textbox").fill("Late fork title");
-          await titleDialog(page).getByRole("button", { name: "Submit", exact: true }).click();
+          await titleDialog(page)
+            .getByRole("button", { name: "Submit", exact: true })
+            .click();
           await expect.poll(() => mock.requests.length).toBe(1);
           await navigate(page, destination);
-          const completed = page.waitForResponse(res => res.url().endsWith("/fork"));
+          const completed = page.waitForResponse((res) =>
+            res.url().endsWith("/fork"),
+          );
           mock.release();
           await (await completed).finished();
           // A UI round trip after delivery lets the fetch continuation and React
           // settle before negative assertions (no arbitrary timeout or sleep).
           await chooseLanguage(page, "zh");
-          await expect(page.locator(".toolbar .breadcrumb")).toContainText(destination === "project" ? "rpi-package" : "Other chat");
-          expect(new URL(page.url()).searchParams.get("session")).toBe(destination === "project" ? null : "session-2");
+          await expect(page.locator(".toolbar .breadcrumb")).toContainText(
+            destination === "project" ? "rpi-package" : "Other chat",
+          );
+          expect(new URL(page.url()).searchParams.get("session")).toBe(
+            destination === "project" ? null : "session-2",
+          );
           if (destination === "session") {
-            await expect(page.locator(".message.user")).toContainText("Transcript: session-2");
+            await expect(page.locator(".message.user")).toContainText(
+              "Transcript: session-2",
+            );
             await expect(toolbarFork(page)).toBeEnabled();
           }
           await expect(page.locator(".error-banner")).toHaveCount(0);
           await expect(page.getByRole("dialog")).toHaveCount(0);
-          expect(mock.requests).toEqual([{ method: "POST", source: sessionId, body: { title: "Late fork title" } }]);
-        } finally { mock.release(); }
+          expect(mock.requests).toEqual([
+            {
+              method: "POST",
+              source: sessionId,
+              body: { title: "Late fork title" },
+            },
+          ]);
+        } finally {
+          mock.release();
+        }
       });
     }
   }
@@ -4084,7 +4687,9 @@ test("late file contents cannot replace the newly selected project preview", asy
     });
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Toggle project files", exact: true })
+    .click();
   const workbench = page.getByRole("complementary", {
     name: "Project files and changes",
   });
@@ -4196,9 +4801,15 @@ test("markdown keeps executable URLs and raw HTML inert", async ({ page }) => {
   await expect(page.locator(".markdown-body pre code")).toContainText(
     "<script>literal code</script>",
   );
-  await expect(page.locator(".markdown-body").getByText("Unsafe link", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Unsafe link", exact: true })).toHaveCount(0);
-  await expect(page.locator('.markdown-body a[href^="javascript:"]')).toHaveCount(0);
+  await expect(
+    page.locator(".markdown-body").getByText("Unsafe link", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Unsafe link", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.locator('.markdown-body a[href^="javascript:"]'),
+  ).toHaveCount(0);
   await expect(
     page.locator(".markdown-body script, .markdown-body img"),
   ).toHaveCount(0);
@@ -4365,7 +4976,9 @@ test("an old prompt acknowledgement does not block a new chat or unlock its pend
     name: "Send a prompt, or type / for commands…",
   });
   await composer.fill("First chat request");
-  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Send message", exact: true }),
+  ).toBeEnabled();
   await composer.press("Enter");
   await expect.poll(() => pending.length).toBe(1);
   await page
@@ -4376,7 +4989,9 @@ test("an old prompt acknowledgement does not block a new chat or unlock its pend
     page.getByRole("heading", { name: "New session" }),
   ).toBeVisible();
   await composer.fill("Second chat request");
-  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Send message", exact: true }),
+  ).toBeEnabled();
   await composer.press("Enter");
   await expect.poll(() => pending).toEqual([sessionId, "session-2"]);
   const oldFinished = page.waitForResponse(
@@ -4509,7 +5124,7 @@ test("history renders before the model catalog finishes loading", async ({
   );
   await page.goto("/");
   try {
-  await expect(page.locator(".transcript-note")).toHaveCount(0);
+    await expect(page.locator(".transcript-note")).toHaveCount(0);
     await expect(
       page.getByRole("status", { name: "Loading conversation" }),
     ).toBeHidden();
@@ -5072,28 +5687,25 @@ test("a boundary snapshot buffers live assistant events while restoring a native
     release = resolve;
   });
   let snapshots = 0;
-  await page.route(
-    snapshotRoute,
-    async (route) => {
-      if (++snapshots === 1) return route.fallback();
-      await held;
-      return route.fulfill({
-        json: {
-          sessionId,
-          messages: [
-            {
-              role: "user",
-              content: "Native-only prompt",
-              entryId: "native-user",
-              timestamp: 123,
-            },
-          ],
-          lastSeq: 5,
-          events: [],
-        },
-      });
-    },
-  );
+  await page.route(snapshotRoute, async (route) => {
+    if (++snapshots === 1) return route.fallback();
+    await held;
+    return route.fulfill({
+      json: {
+        sessionId,
+        messages: [
+          {
+            role: "user",
+            content: "Native-only prompt",
+            entryId: "native-user",
+            timestamp: 123,
+          },
+        ],
+        lastSeq: 5,
+        events: [],
+      },
+    });
+  });
   const events = [
     { type: "agent_start" },
     {
@@ -5134,75 +5746,150 @@ test("a boundary snapshot buffers live assistant events while restoring a native
   );
 });
 
-test("ask_user input opens during a held boundary snapshot and preserves its draft", async ({ page }) => {
+test("ask_user input opens during a held boundary snapshot and preserves its draft", async ({
+  page,
+}) => {
   await mockHost(page);
   let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   let snapshots = 0;
   await page.route(snapshotRoute, async (route) => {
     if (++snapshots === 1) return route.fallback();
     await held;
-    return route.fulfill({ json: {
-      sessionId, status: "running", messages: [], lastSeq: 6, events: [], pendingDialogs: [],
-    } });
+    return route.fulfill({
+      json: {
+        sessionId,
+        status: "running",
+        messages: [],
+        lastSeq: 6,
+        events: [],
+        pendingDialogs: [],
+      },
+    });
   });
   const events = [
     { type: "agent_start" },
-    { type: "ui_dialog_request", requestId: "ask-during-refresh", ui: {
-      kind: "input", question: "请提供当前页面的完整网址", allowFreeform: true, timeout: 90,
-    } },
+    {
+      type: "ui_dialog_request",
+      requestId: "ask-during-refresh",
+      ui: {
+        kind: "input",
+        question: "请提供当前页面的完整网址",
+        allowFreeform: true,
+        timeout: 90,
+      },
+    },
   ];
   await page.route(`**/api/v1/sessions/${sessionId}/events?*`, (route) =>
-    route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n\n" + events.map((event, index) =>
-      `id: ${index + 5}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
-    ).join("") }),
+    route.fulfill({
+      contentType: "text/event-stream",
+      body:
+        "retry: 60000\n\n" +
+        events
+          .map(
+            (event, index) =>
+              `id: ${index + 5}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+          )
+          .join(""),
+    }),
   );
   await page.goto("/");
   await expect.poll(() => snapshots).toBe(2);
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("heading", { name: "请提供当前页面的完整网址" })).toBeVisible();
+  await expect(
+    dialog.getByRole("heading", { name: "请提供当前页面的完整网址" }),
+  ).toBeVisible();
   await dialog.getByRole("textbox").fill("https://example.com/products");
-  const refreshed = page.waitForResponse((response) => snapshotRoute(new URL(response.url())));
+  const refreshed = page.waitForResponse((response) =>
+    snapshotRoute(new URL(response.url())),
+  );
   release();
   await (await refreshed).finished();
-  await expect(dialog.getByRole("textbox")).toHaveValue("https://example.com/products");
+  await expect(dialog.getByRole("textbox")).toHaveValue(
+    "https://example.com/products",
+  );
 });
 
 for (const nextQuestion of [false, true]) {
-  test(`ask_user can answer during a held snapshot without replaying ${nextQuestion ? "the previous question" : "a closed question"}`, async ({ page }) => {
+  test(`ask_user can answer during a held snapshot without replaying ${nextQuestion ? "the previous question" : "a closed question"}`, async ({
+    page,
+  }) => {
     await mockHost(page);
     let releaseSnapshot!: () => void;
     let answered!: () => void;
-    const held = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
-    const answerReceived = new Promise<void>((resolve) => { answered = resolve; });
-    const first = { type: "ui_dialog_request", requestId: "first-held", ui: {
-      kind: "input", question: "First held question", allowFreeform: true,
-    } };
+    const held = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const answerReceived = new Promise<void>((resolve) => {
+      answered = resolve;
+    });
+    const first = {
+      type: "ui_dialog_request",
+      requestId: "first-held",
+      ui: {
+        kind: "input",
+        question: "First held question",
+        allowFreeform: true,
+      },
+    };
     const controls = [
       { seq: 6, event: first },
       { seq: 7, event: { type: "ui_dialog_closed", requestId: "first-held" } },
-      ...(nextQuestion ? [{ seq: 8, event: { ...first, requestId: "second-held", ui: { ...first.ui, question: "Second held question" } } }] : []),
+      ...(nextQuestion
+        ? [
+            {
+              seq: 8,
+              event: {
+                ...first,
+                requestId: "second-held",
+                ui: { ...first.ui, question: "Second held question" },
+              },
+            },
+          ]
+        : []),
     ];
     let snapshots = 0;
     await page.route(snapshotRoute, async (route) => {
       if (++snapshots === 1) return route.fallback();
       await held;
-      return route.fulfill({ json: {
-        sessionId, status: "awaiting_input", messages: [], lastSeq: nextQuestion ? 8 : 7,
-        pendingDialogs: [first], events: controls,
-      } });
+      return route.fulfill({
+        json: {
+          sessionId,
+          status: "awaiting_input",
+          messages: [],
+          lastSeq: nextQuestion ? 8 : 7,
+          pendingDialogs: [first],
+          events: controls,
+        },
+      });
     });
     let streams = 0;
-    const frames = (events: { seq: number; event: { type: string } }[]) => events.map(({ seq, event }) =>
-      `id: ${seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
-    ).join("");
-    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async (route) => {
-      if (++streams === 1) return route.fulfill({ contentType: "text/event-stream", body: "retry: 10\n\n" + frames([
-        { seq: 5, event: { type: "agent_start" } }, controls[0],
-      ]) });
-      await answerReceived;
-      return route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n\n" + frames(controls.slice(1)) });
-    });
+    const frames = (events: { seq: number; event: { type: string } }[]) =>
+      events
+        .map(
+          ({ seq, event }) =>
+            `id: ${seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+        )
+        .join("");
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        if (++streams === 1)
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body:
+              "retry: 10\n\n" +
+              frames([{ seq: 5, event: { type: "agent_start" } }, controls[0]]),
+          });
+        await answerReceived;
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: "retry: 60000\n\n" + frames(controls.slice(1)),
+        });
+      },
+    );
     let submitted: unknown;
     await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
       const body = route.request().postDataJSON();
@@ -5213,20 +5900,35 @@ for (const nextQuestion of [false, true]) {
     });
     await page.goto("/");
     const dialog = page.getByRole("dialog");
-    await expect(dialog.getByRole("heading", { name: "First held question" })).toBeVisible();
+    await expect(
+      dialog.getByRole("heading", { name: "First held question" }),
+    ).toBeVisible();
     await dialog.getByRole("textbox").fill("https://example.com/products");
     await dialog.getByRole("button", { name: "Submit", exact: true }).click();
-    await expect.poll(() => submitted).toMatchObject({ requestId: "first-held", answer: {
-      values: ["https://example.com/products"], text: "https://example.com/products",
-    } });
+    await expect
+      .poll(() => submitted)
+      .toMatchObject({
+        requestId: "first-held",
+        answer: {
+          values: ["https://example.com/products"],
+          text: "https://example.com/products",
+        },
+      });
     if (nextQuestion) {
-      await expect(dialog.getByRole("heading", { name: "Second held question" })).toBeVisible();
+      await expect(
+        dialog.getByRole("heading", { name: "Second held question" }),
+      ).toBeVisible();
       await dialog.getByRole("textbox").fill("Second answer draft");
     } else await expect(dialog).toHaveCount(0);
-    const refreshed = page.waitForResponse((res) => snapshotRoute(new URL(res.url())));
+    const refreshed = page.waitForResponse((res) =>
+      snapshotRoute(new URL(res.url())),
+    );
     releaseSnapshot();
     await (await refreshed).finished();
-    if (nextQuestion) await expect(dialog.getByRole("textbox")).toHaveValue("Second answer draft");
+    if (nextQuestion)
+      await expect(dialog.getByRole("textbox")).toHaveValue(
+        "Second answer draft",
+      );
     else await expect(dialog).toHaveCount(0);
   });
 }
@@ -6185,10 +6887,9 @@ test("an unknown slash word is sent as a prompt, not rejected", async ({
   await page.goto("/");
   await input.fill("/modle sumo");
   await input.press("Enter");
-  await expect.poll(() => prompts).toEqual([
-    "/modelx please explain this",
-    "/modle sumo",
-  ]);
+  await expect
+    .poll(() => prompts)
+    .toEqual(["/modelx please explain this", "/modle sumo"]);
   // A known command is still routed to the slash handler, not the model.
   // ("/abort" while idle is advertised by the mock host and notes without
   // sending a prompt; "/help" lists commands.)
@@ -6393,14 +7094,11 @@ test("initial snapshot preserves slash feedback entered while history is loading
     release = resolve;
   });
   let requested = false;
-  await page.route(
-    snapshotRoute,
-    async (route) => {
-      requested = true;
-      await held;
-      await route.fallback();
-    },
-  );
+  await page.route(snapshotRoute, async (route) => {
+    requested = true;
+    await held;
+    await route.fallback();
+  });
   await page.goto("/");
   await expect.poll(() => requested).toBe(true);
   const input = page.locator(".composer textarea");
@@ -7953,7 +8651,6 @@ test("opening a running shell tool survives elapsed ticks and its completed SSE 
   }
 });
 
-
 for (const name of ["todo", "plan"]) {
   test(`a manually opened ${name} stays open when its result selects a structured renderer`, async ({
     page,
@@ -8184,8 +8881,7 @@ test.describe("attachment cards", () => {
       // The app's own bundle assets (the brand logo now ships under /assets)
       // are not attachment fetches; the copy path must fetch no document.
       const ownAsset =
-        url.pathname === "/favicon.svg" ||
-        url.pathname.startsWith("/assets/");
+        url.pathname === "/favicon.svg" || url.pathname.startsWith("/assets/");
       if (
         (request.resourceType() === "image" && !ownAsset) ||
         /\.docx$/i.test(url.pathname) ||
@@ -8881,7 +9577,8 @@ test.describe("run timing regressions", () => {
       });
     });
     const unsupported = page.waitForResponse(
-      (response) => timingRoute.test(response.url()) && response.status() === 404,
+      (response) =>
+        timingRoute.test(response.url()) && response.status() === 404,
     );
     await page.goto("/");
     expect(await (await unsupported).finished()).toBeNull();
@@ -8890,17 +9587,25 @@ test.describe("run timing regressions", () => {
     // Loaded-tick navigation positions the reader without triggering automatic
     // paging. Only the subsequent ordinary button click should load a page.
     await openTimeline(page);
-    await page.getByRole("button", {
-      name: "Go to message 1: Loaded timing question 1", exact: true,
-    }).click();
+    await page
+      .getByRole("button", {
+        name: "Go to message 1: Loaded timing question 1",
+        exact: true,
+      })
+      .click();
     expect(pages).toEqual([]);
-    await page.getByRole("button", {
-      name: "Load earlier messages", exact: true,
-    }).click();
+    await page
+      .getByRole("button", {
+        name: "Load earlier messages",
+        exact: true,
+      })
+      .click();
     await expect(page.locator(".message.assistant").first()).toContainText(
       "Older native answer",
     );
-    expect(pages).toMatchObject([{ beforeId: questions[0].entryId, limit: 48 }]);
+    expect(pages).toMatchObject([
+      { beforeId: questions[0].entryId, limit: 48 },
+    ]);
     expect(pages).toHaveLength(1);
     await chooseLanguage(page, "zh");
     await expect(page.locator(".run-elapsed")).toHaveCount(0);
@@ -8961,7 +9666,10 @@ test.describe("run timing regressions", () => {
       const index = queries.length - 1;
       const pass = Math.floor(index / 2);
       if (pass >= conflicts.length)
-        return route.fulfill({ status: 500, json: { error: "retry budget exceeded" } });
+        return route.fulfill({
+          status: 500,
+          json: { error: "retry budget exceeded" },
+        });
       if (index % 2 === 0)
         return route.fulfill({
           json: timingPage([nativeTiming("elapsed-final", `pass-${pass}`)], {
@@ -9020,19 +9728,24 @@ test.describe("run timing regressions", () => {
         hasMore: olderPage,
       });
       if (olderPage)
-        await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
-          const body = route.request().postDataJSON();
-          if (body.type !== "get_messages") return route.fallback();
-          expect(body.beforeId).toBe("terminal-result");
-          return route.fulfill({
-            json: response(
-              { messages: [call], firstId: "terminal-call", hasMore: false },
-              "get_messages",
-            ),
-          });
-        });
+        await page.route(
+          `**/api/v1/sessions/${sessionId}/commands`,
+          (route) => {
+            const body = route.request().postDataJSON();
+            if (body.type !== "get_messages") return route.fallback();
+            expect(body.beforeId).toBe("terminal-result");
+            return route.fulfill({
+              json: response(
+                { messages: [call], firstId: "terminal-call", hasMore: false },
+                "get_messages",
+              ),
+            });
+          },
+        );
       await page.route(timingRoute, (route) => {
-        expect(route.request().postDataJSON().entryIds).toContain("terminal-result");
+        expect(route.request().postDataJSON().entryIds).toContain(
+          "terminal-result",
+        );
         return route.fulfill({
           json: timingPage([
             nativeTiming("terminal-result", "terminal-run", "aborted"),
@@ -9049,23 +9762,34 @@ test.describe("run timing regressions", () => {
         await expect(page.locator(".message.assistant")).toContainText(
           "Trailing visible assistant text",
         );
-        await expect(page.locator(".tool-card")).toContainText("Terminal tool output");
+        await expect(page.locator(".tool-card")).toContainText(
+          "Terminal tool output",
+        );
         await expect(page.locator(".run-elapsed")).toHaveCount(1);
-        await expect(footer).toHaveAttribute("data-entry-id", "terminal-result");
+        await expect(footer).toHaveAttribute(
+          "data-entry-id",
+          "terminal-result",
+        );
         await expect(footer).toHaveText("Worked for 2m 18s · Stopped");
         await expect(page.locator(".tool-card .run-elapsed")).toHaveCount(0);
-        await expect.poll(async () => {
-          const bounds = await footer.boundingBox();
-          const outputs = await page.locator(".tool-card, .message.assistant").all();
-          if (!bounds || outputs.length < 2) return false;
-          for (const output of outputs) {
-            const box = await output.boundingBox();
-            if (!box || bounds.y < box.y + box.height - 1) return false;
-          }
-          return true;
-        }).toBe(true);
+        await expect
+          .poll(async () => {
+            const bounds = await footer.boundingBox();
+            const outputs = await page
+              .locator(".tool-card, .message.assistant")
+              .all();
+            if (!bounds || outputs.length < 2) return false;
+            for (const output of outputs) {
+              const box = await output.boundingBox();
+              if (!box || bounds.y < box.y + box.height - 1) return false;
+            }
+            return true;
+          })
+          .toBe(true);
         await expect(
-          page.locator(".transcript-row").filter({ has: footer })
+          page
+            .locator(".transcript-row")
+            .filter({ has: footer })
             .locator("xpath=following-sibling::*[@data-transcript-row]"),
         ).toHaveCount(0);
       }
@@ -9147,30 +9871,55 @@ test.describe("run timing regressions", () => {
     await assertFits();
   });
 
-  test("run timing batches over 400 entry IDs and restarts earlier batches on a later conflict", async ({ page }) => {
+  test("run timing batches over 400 entry IDs and restarts earlier batches on a later conflict", async ({
+    page,
+  }) => {
     await mockHost(page);
-    await history(page, Array.from({ length: 401 }, (_, i) => finalMessage(`batch-${i}`, `Answer ${i}`)));
+    await history(
+      page,
+      Array.from({ length: 401 }, (_, i) =>
+        finalMessage(`batch-${i}`, `Answer ${i}`),
+      ),
+    );
     const conflict = gate();
     const refreshed = gate();
     const queries: Array<{ entryIds: string[]; cursor?: string }> = [];
-    await page.route(timingRoute, async route => {
+    await page.route(timingRoute, async (route) => {
       const query = route.request().postDataJSON();
       queries.push(query);
-      if (queries.length === 1) return route.fulfill({ json: timingPage([nativeTiming("batch-0", "old-first")], { cursor: "g1" }) });
+      if (queries.length === 1)
+        return route.fulfill({
+          json: timingPage([nativeTiming("batch-0", "old-first")], {
+            cursor: "g1",
+          }),
+        });
       if (queries.length === 2) {
         await conflict.promise;
-        return route.fulfill({ status: 409, json: { error: "generation replaced" } });
+        return route.fulfill({
+          status: 409,
+          json: { error: "generation replaced" },
+        });
       }
       if (queries.length === 3) {
         await refreshed.promise;
-        return route.fulfill({ json: timingPage([nativeTiming("batch-0", "fresh-first")], { cursor: "g2" }) });
+        return route.fulfill({
+          json: timingPage([nativeTiming("batch-0", "fresh-first")], {
+            cursor: "g2",
+          }),
+        });
       }
-      return route.fulfill({ json: timingPage([nativeTiming("batch-400", "fresh-last")], { cursor: "g2" }) });
+      return route.fulfill({
+        json: timingPage([nativeTiming("batch-400", "fresh-last")], {
+          cursor: "g2",
+        }),
+      });
     });
     await page.goto("/");
-    await expect(page.locator('.run-elapsed[data-run-id="old-first"]')).toHaveCount(1);
+    await expect(
+      page.locator('.run-elapsed[data-run-id="old-first"]'),
+    ).toHaveCount(1);
     await expect.poll(() => queries.length).toBe(2);
-    expect(queries.map(q => q.entryIds.length)).toEqual([400, 1]);
+    expect(queries.map((q) => q.entryIds.length)).toEqual([400, 1]);
     expect(queries[1].cursor).toBe("g1");
     conflict.release();
     await expect.poll(() => queries.length).toBe(3);
@@ -9178,9 +9927,15 @@ test.describe("run timing regressions", () => {
     expect(queries[2].cursor).toBeUndefined();
     expect(queries[2].entryIds).toEqual(queries[0].entryIds);
     refreshed.release();
-    await expect(page.locator('.run-elapsed[data-run-id="fresh-first"]')).toHaveCount(1);
-    await expect(page.locator('.run-elapsed[data-run-id="fresh-last"]')).toHaveCount(1);
-    await expect(page.locator('.run-elapsed[data-run-id="old-first"]')).toHaveCount(0);
+    await expect(
+      page.locator('.run-elapsed[data-run-id="fresh-first"]'),
+    ).toHaveCount(1);
+    await expect(
+      page.locator('.run-elapsed[data-run-id="fresh-last"]'),
+    ).toHaveCount(1);
+    await expect(
+      page.locator('.run-elapsed[data-run-id="old-first"]'),
+    ).toHaveCount(0);
     expect(queries[3].cursor).toBe("g2");
     expect(queries[3].entryIds).toEqual(["batch-400"]);
     expect(queries).toHaveLength(4);
@@ -9212,12 +9967,14 @@ test.describe("shell command previews", () => {
           messages: commands.flatMap((command, index) => [
             {
               role: "assistant",
-              content: [{
-                type: "toolCall",
-                id: `preview-${index}`,
-                name: "bash",
-                arguments: { command },
-              }],
+              content: [
+                {
+                  type: "toolCall",
+                  id: `preview-${index}`,
+                  name: "bash",
+                  arguments: { command },
+                },
+              ],
             },
             {
               role: "toolResult",
@@ -9233,15 +9990,23 @@ test.describe("shell command previews", () => {
   }
 
   async function assertFits(page: Page) {
-    await expect.poll(() => page.evaluate(() =>
-      document.documentElement.scrollWidth <= innerWidth,
-    )).toBe(true);
-    await expect.poll(() => page.locator(".transcript").evaluate((node) =>
-      node.scrollWidth <= node.clientWidth + 1,
-    )).toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        page
+          .locator(".transcript")
+          .evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
+      )
+      .toBe(true);
   }
 
-  test("clips wrapped and heredoc commands to four rendered lines on desktop and mobile until explicitly expanded", async ({ page }) => {
+  test("clips wrapped and heredoc commands to four rendered lines on desktop and mobile until explicitly expanded", async ({
+    page,
+  }) => {
     await commandSnapshot(page, [wrapped, heredoc, "pwd"]);
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 844 });
@@ -9256,7 +10021,10 @@ test.describe("shell command previews", () => {
         const code = preview.locator("code");
         await expect(code).toBeVisible();
         expect(await code.textContent()).toBe(command);
-        const show = card.getByRole("button", { name: "Show full command", exact: true });
+        const show = card.getByRole("button", {
+          name: "Show full command",
+          exact: true,
+        });
         if (index === 2) {
           await expect(show).toHaveCount(0);
           continue;
@@ -9265,23 +10033,44 @@ test.describe("shell command previews", () => {
         const codeId = await code.getAttribute("id");
         expect(codeId).toBeTruthy();
         await expect(show).toHaveAttribute("aria-controls", codeId!);
-        expect(await show.evaluate((node) => node.closest("pre") === null)).toBe(true);
+        expect(
+          await show.evaluate((node) => node.closest("pre") === null),
+        ).toBe(true);
         const assertClipped = async () => {
-          await expect.poll(() => preview.evaluate((node) => {
-            const style = getComputedStyle(node);
-            const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-            return node.scrollHeight > node.clientHeight + 1 &&
-              Math.abs(node.clientHeight - padding - 4 * parseFloat(style.lineHeight)) <= 2;
-          })).toBe(true);
+          await expect
+            .poll(() =>
+              preview.evaluate((node) => {
+                const style = getComputedStyle(node);
+                const padding =
+                  parseFloat(style.paddingTop) +
+                  parseFloat(style.paddingBottom);
+                return (
+                  node.scrollHeight > node.clientHeight + 1 &&
+                  Math.abs(
+                    node.clientHeight -
+                      padding -
+                      4 * parseFloat(style.lineHeight),
+                  ) <= 2
+                );
+              }),
+            )
+            .toBe(true);
         };
         await assertClipped();
         await show.click();
-        const collapse = card.getByRole("button", { name: "Collapse command", exact: true });
+        const collapse = card.getByRole("button", {
+          name: "Collapse command",
+          exact: true,
+        });
         await expect(collapse).toHaveAttribute("aria-expanded", "true");
         await expect(collapse).toHaveAttribute("aria-controls", codeId!);
-        await expect.poll(() => preview.evaluate((node) =>
-          node.scrollHeight <= node.clientHeight + 1,
-        )).toBe(true);
+        await expect
+          .poll(() =>
+            preview.evaluate(
+              (node) => node.scrollHeight <= node.clientHeight + 1,
+            ),
+          )
+          .toBe(true);
         expect(await code.textContent()).toBe(command);
         await assertFits(page);
         await collapse.click();
@@ -9293,13 +10082,17 @@ test.describe("shell command previews", () => {
     }
   });
 
-  test("copies the exact full collapsed command and supports Enter and Space expansion", async ({ page }) => {
+  test("copies the exact full collapsed command and supports Enter and Space expansion", async ({
+    page,
+  }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
           writeText: async (text: string) => {
-            (window as Window & { shellCopiedCommand?: string }).shellCopiedCommand = text;
+            (
+              window as Window & { shellCopiedCommand?: string }
+            ).shellCopiedCommand = text;
           },
         },
       });
@@ -9309,21 +10102,39 @@ test.describe("shell command previews", () => {
     const card = page.locator(".shell-card");
     await expect(card).toHaveJSProperty("open", false);
     await card.locator(":scope > summary").click();
-    const show = card.getByRole("button", { name: "Show full command", exact: true });
+    const show = card.getByRole("button", {
+      name: "Show full command",
+      exact: true,
+    });
     await expect(show).toHaveAttribute("aria-expanded", "false");
-    await card.getByRole("button", { name: "Copy command", exact: true }).click();
-    await expect.poll(() => page.evaluate(() =>
-      (window as Window & { shellCopiedCommand?: string }).shellCopiedCommand,
-    )).toBe(heredoc);
+    await card
+      .getByRole("button", { name: "Copy command", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { shellCopiedCommand?: string })
+              .shellCopiedCommand,
+        ),
+      )
+      .toBe(heredoc);
     await expect(show).toHaveAttribute("aria-expanded", "false");
     for (const key of ["Enter", "Space"]) {
       await show.focus();
       await page.keyboard.press(key);
-      const collapse = card.getByRole("button", { name: "Collapse command", exact: true });
+      const collapse = card.getByRole("button", {
+        name: "Collapse command",
+        exact: true,
+      });
       await expect(collapse).toHaveAttribute("aria-expanded", "true");
-      await expect.poll(() => card.locator("pre.shell-input").evaluate((node) =>
-        node.scrollHeight <= node.clientHeight + 1,
-      )).toBe(true);
+      await expect
+        .poll(() =>
+          card
+            .locator("pre.shell-input")
+            .evaluate((node) => node.scrollHeight <= node.clientHeight + 1),
+        )
+        .toBe(true);
       await collapse.focus();
       await page.keyboard.press(key);
       await expect(show).toHaveAttribute("aria-expanded", "false");
@@ -9332,14 +10143,20 @@ test.describe("shell command previews", () => {
     expect(await card.locator(".shell-input code").textContent()).toBe(heredoc);
   });
 
-  test("localizes command controls in Chinese and detects overflow after a mobile resize without changing native text", async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+  test("localizes command controls in Chinese and detects overflow after a mobile resize without changing native text", async ({
+    page,
+  }) => {
+    await page.addInitScript(() =>
+      localStorage.setItem("rpi-web-language", "zh"),
+    );
     // Under four rendered lines at 1280px, but over four at 390px.
     const command = `printf '%s\n' ${Array.from({ length: 24 }, () => "token").join(" ")}`;
     await page.setViewportSize({ width: 1280, height: 844 });
     await commandSnapshot(page, [command]);
     await page.goto("/");
-    await expect(page.getByRole("button", { name: "关闭项目面板", exact: true })).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "关闭项目面板", exact: true }),
+    ).toHaveCount(0);
     const card = page.locator(".shell-card");
     await expect(card).toHaveJSProperty("open", false);
     await card.locator(":scope > summary").click();
@@ -9347,25 +10164,37 @@ test.describe("shell command previews", () => {
     const code = preview.locator("code");
     await expect(code).toBeVisible();
     expect(await code.textContent()).toBe(command);
-    await expect.poll(() => preview.evaluate((node) =>
-      node.scrollHeight <= node.clientHeight + 1,
-    )).toBe(true);
-    const show = card.getByRole("button", { name: "展开完整命令", exact: true });
+    await expect
+      .poll(() =>
+        preview.evaluate((node) => node.scrollHeight <= node.clientHeight + 1),
+      )
+      .toBe(true);
+    const show = card.getByRole("button", {
+      name: "展开完整命令",
+      exact: true,
+    });
     await expect(show).toHaveCount(0);
     // No navigation or new snapshot: ResizeObserver must remeasure the same command.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator(".sidebar .sidebar-brand button").click();
     await expect(show).toHaveAttribute("aria-expanded", "false");
-    await expect.poll(() => preview.evaluate((node) =>
-      node.scrollHeight > node.clientHeight + 1,
-    )).toBe(true);
+    await expect
+      .poll(() =>
+        preview.evaluate((node) => node.scrollHeight > node.clientHeight + 1),
+      )
+      .toBe(true);
     expect(await code.textContent()).toBe(command);
     await show.click();
-    const collapse = card.getByRole("button", { name: "收起命令", exact: true });
+    const collapse = card.getByRole("button", {
+      name: "收起命令",
+      exact: true,
+    });
     await expect(collapse).toHaveAttribute("aria-expanded", "true");
-    await expect.poll(() => preview.evaluate((node) =>
-      node.scrollHeight <= node.clientHeight + 1,
-    )).toBe(true);
+    await expect
+      .poll(() =>
+        preview.evaluate((node) => node.scrollHeight <= node.clientHeight + 1),
+      )
+      .toBe(true);
     await assertFits(page);
     await collapse.click();
     await expect(show).toHaveAttribute("aria-expanded", "false");
@@ -9377,27 +10206,50 @@ test.describe("shell command previews", () => {
 });
 
 test.describe("Mermaid diagrams", () => {
-  const flow = 'flowchart TD\n  start[开始] --> process[处理数据]\n  process --> done[完成]\n  classDef milestone fill:#eef2ff,stroke:#4f46e5\n  class start,done milestone\n';
-  const sequence = 'sequenceDiagram\n  participant A as 用户\n  participant B as 服务\n  A->>B: 你好\n  B-->>A: 收到\n';
-  const failure = "Unable to render this diagram. The syntax may be incomplete or unsupported; source is shown below.";
+  const flow =
+    "flowchart TD\n  start[开始] --> process[处理数据]\n  process --> done[完成]\n  classDef milestone fill:#eef2ff,stroke:#4f46e5\n  class start,done milestone\n";
+  const sequence =
+    "sequenceDiagram\n  participant A as 用户\n  participant B as 服务\n  A->>B: 你好\n  B-->>A: 收到\n";
+  const failure =
+    "Unable to render this diagram. The syntax may be incomplete or unsupported; source is shown below.";
   const fence = (source: string) => `\`\`\`mermaid\n${source}\`\`\``;
 
   async function diagramSnapshot(page: Page, text: string) {
     await mockHost(page);
-    await page.route(snapshotRoute, (route) => route.fulfill({
-      json: {
-        sessionId,
-        messages: [{ role: "assistant", entryId: "mermaid-message", content: [{ type: "text", text }] }],
-        events: [], lastSeq: 4, total: 1, hasMore: false,
-      },
-    }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          messages: [
+            {
+              role: "assistant",
+              entryId: "mermaid-message",
+              content: [{ type: "text", text }],
+            },
+          ],
+          events: [],
+          lastSeq: 4,
+          total: 1,
+          hasMore: false,
+        },
+      }),
+    );
   }
 
   async function decodedDiagram(image: ReturnType<Page["locator"]>) {
     await expect(image).toHaveAttribute("src", /^data:image\/svg\+xml/);
-    await expect.poll(() => image.evaluate(async (node: HTMLImageElement) => {
-      try { await node.decode(); return node.naturalWidth; } catch { return 0; }
-    })).toBeGreaterThan(0);
+    await expect
+      .poll(() =>
+        image.evaluate(async (node: HTMLImageElement) => {
+          try {
+            await node.decode();
+            return node.naturalWidth;
+          } catch {
+            return 0;
+          }
+        }),
+      )
+      .toBeGreaterThan(0);
     return image.evaluate((node: HTMLImageElement) => {
       const svg = decodeURIComponent(node.src.slice(node.src.indexOf(",") + 1));
       const document = new DOMParser().parseFromString(svg, "image/svg+xml");
@@ -9411,64 +10263,122 @@ test.describe("Mermaid diagrams", () => {
   }
 
   async function fits(page: Page) {
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
-    await expect.poll(() => page.locator(".transcript").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth + 1,
+        ),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        page
+          .locator(".transcript")
+          .evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
+      )
+      .toBe(true);
   }
 
   // Reconnection gates mirror the existing streamed Markdown tests. No native host
   // or Mermaid stub is involved; each stage is a real protocol message patch.
   async function streamStages(page: Page, stages: string[]) {
     const releases: Array<() => void> = [];
-    const gates = stages.map(() => new Promise<void>((resolve) => releases.push(resolve)));
+    const gates = stages.map(
+      () => new Promise<void>((resolve) => releases.push(resolve)),
+    );
     let connection = 0;
-    await page.route(`**/api/v1/sessions/${sessionId}/events**`, async (route) => {
-      const index = connection++;
-      if (index >= stages.length) {
-        return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
-      }
-      await gates[index];
-      const message = { role: "assistant", content: [{ type: "text", text: stages[index] }] };
-      const event = (seq: number, type: string) =>
-        `id: ${seq}\nevent: ${type}\ndata: ${JSON.stringify({ type, message })}\n\n`;
-      return route.fulfill({
-        contentType: "text/event-stream",
-        body: "retry: 20\n" + event(5 + index * 2, index === 0 ? "message_start" : "message_update") +
-          (index === stages.length - 1 ? event(6 + index * 2, "message_end") : ""),
-      });
-    });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events**`,
+      async (route) => {
+        const index = connection++;
+        if (index >= stages.length) {
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+          });
+        }
+        await gates[index];
+        const message = {
+          role: "assistant",
+          content: [{ type: "text", text: stages[index] }],
+        };
+        const event = (seq: number, type: string) =>
+          `id: ${seq}\nevent: ${type}\ndata: ${JSON.stringify({ type, message })}\n\n`;
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            "retry: 20\n" +
+            event(
+              5 + index * 2,
+              index === 0 ? "message_start" : "message_update",
+            ) +
+            (index === stages.length - 1
+              ? event(6 + index * 2, "message_end")
+              : ""),
+        });
+      },
+    );
     return releases;
   }
 
-  test("renders Chinese flowcharts and sequences as decoded SVG images beside ordinary code, with exact source and copy", async ({ page }) => {
+  test("renders Chinese flowcharts and sequences as decoded SVG images beside ordinary code, with exact source and copy", async ({
+    page,
+  }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
-        value: { writeText: async (text: string) => { (window as Window & { mermaidCopied?: string }).mermaidCopied = text; } },
+        value: {
+          writeText: async (text: string) => {
+            (window as Window & { mermaidCopied?: string }).mermaidCopied =
+              text;
+          },
+        },
       });
     });
-    await diagramSnapshot(page, `${fence(flow)}\n\n${fence(sequence)}\n\n\`\`\`js\nconst answer = 42;\n\`\`\``);
+    await diagramSnapshot(
+      page,
+      `${fence(flow)}\n\n${fence(sequence)}\n\n\`\`\`js\nconst answer = 42;\n\`\`\``,
+    );
     await page.goto("/");
     const blocks = page.locator(".mermaid-block");
     await expect(blocks).toHaveCount(2);
     for (const [index, label] of ["开始", "用户"].entries()) {
       const block = blocks.nth(index);
       await expect(block).toHaveClass(/markdown-code-block/);
-      const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+      const decoded = await decodedDiagram(
+        block.locator(".mermaid-diagram img"),
+      );
       expect(decoded.parseErrors).toBe(0);
       expect(decoded.text).toContain(label);
       expect(decoded.viewBox).toMatch(/\S+\s+\S+\s+\S+\s+\S+/);
       expect(decoded.svg).not.toContain("<foreignObject");
-      await expect(block.locator(".mermaid-diagram svg, object, iframe")).toHaveCount(0);
+      await expect(
+        block.locator(".mermaid-diagram svg, object, iframe"),
+      ).toHaveCount(0);
     }
-    await expect(page.locator(".markdown-code-block:not(.mermaid-block) pre code")).toHaveText("const answer = 42;\n");
+    await expect(
+      page.locator(".markdown-code-block:not(.mermaid-block) pre code"),
+    ).toHaveText("const answer = 42;\n");
     const first = blocks.first();
     await expect(first.locator(".mermaid-source")).toHaveCount(0);
-    await first.getByRole("button", { name: "View source", exact: true }).click();
+    await first
+      .getByRole("button", { name: "View source", exact: true })
+      .click();
     await expect(first.locator(".mermaid-source")).toBeVisible();
-    expect(await first.locator(".mermaid-source code").textContent()).toBe(flow);
+    expect(await first.locator(".mermaid-source code").textContent()).toBe(
+      flow,
+    );
     await first.getByRole("button", { name: "Copy code", exact: true }).click();
-    await expect.poll(() => page.evaluate(() => (window as Window & { mermaidCopied?: string }).mermaidCopied)).toBe(flow);
-    await first.getByRole("button", { name: "View diagram", exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as Window & { mermaidCopied?: string }).mermaidCopied,
+        ),
+      )
+      .toBe(flow);
+    await first
+      .getByRole("button", { name: "View diagram", exact: true })
+      .click();
     await decodedDiagram(first.locator(".mermaid-diagram img"));
     await expect(first.locator(".mermaid-source")).toHaveCount(0);
   });
@@ -9507,7 +10417,9 @@ test.describe("Mermaid diagrams", () => {
     await expect(block.locator(".mermaid-status")).toHaveCount(0);
   });
 
-  test("follows root theme mutations on desktop and 390px, fits the keyboard image viewer and restores focus", async ({ page }) => {
+  test("follows root theme mutations on desktop and 390px, fits the keyboard image viewer and restores focus", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 844 });
     await page.addInitScript(() => localStorage.setItem("rpi-theme", "light"));
     await diagramSnapshot(page, fence(flow));
@@ -9518,7 +10430,9 @@ test.describe("Mermaid diagrams", () => {
     await expect(block).toHaveAttribute("data-theme", "light");
     await fits(page);
     const lightSource = await image.getAttribute("src");
-    await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "dark";
+    });
     await expect(block).toHaveAttribute("data-theme", "dark");
     await expect(image).not.toHaveAttribute("src", lightSource!);
     const dark = await decodedDiagram(image);
@@ -9528,26 +10442,40 @@ test.describe("Mermaid diagrams", () => {
     }
     await page.setViewportSize({ width: 390, height: 844 });
     await fits(page);
-    const enlarge = block.getByRole("button", { name: "Enlarge image: Mermaid diagram", exact: true });
+    const enlarge = block.getByRole("button", {
+      name: "Enlarge image: Mermaid diagram",
+      exact: true,
+    });
     await enlarge.scrollIntoViewIfNeeded();
     await enlarge.focus();
     await page.keyboard.press("Enter");
-    const viewer = page.getByRole("dialog", { name: "Image viewer", exact: true });
+    const viewer = page.getByRole("dialog", {
+      name: "Image viewer",
+      exact: true,
+    });
     await expect(viewer).toBeVisible();
     await decodedDiagram(viewer.locator("img"));
     const box = await viewer.locator("img").boundingBox();
     expect(box!.width).toBeLessThan(390);
     expect(box!.height).toBeLessThan(844);
-    await viewer.getByRole("button", { name: "Original size", exact: true }).click();
-    await viewer.getByRole("button", { name: "Fit to window", exact: true }).click();
+    await viewer
+      .getByRole("button", { name: "Original size", exact: true })
+      .click();
+    await viewer
+      .getByRole("button", { name: "Fit to window", exact: true })
+      .click();
     await page.keyboard.press("Escape");
     await expect(viewer).toHaveCount(0);
     await expect(enlarge).toBeFocused();
     await fits(page);
   });
 
-  test("localizes source, diagram and image controls in Chinese", async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+  test("localizes source, diagram and image controls in Chinese", async ({
+    page,
+  }) => {
+    await page.addInitScript(() =>
+      localStorage.setItem("rpi-web-language", "zh"),
+    );
     await diagramSnapshot(page, fence(flow));
     await page.goto("/");
     const block = page.locator(".mermaid-block");
@@ -9555,17 +10483,26 @@ test.describe("Mermaid diagrams", () => {
     await decodedDiagram(image);
     await expect(image).toHaveAttribute("alt", "Mermaid 流程图");
     await block.getByRole("button", { name: "查看源码", exact: true }).click();
-    expect(await block.locator(".mermaid-source code").textContent()).toBe(flow);
-    await expect(block.getByRole("button", { name: "复制代码", exact: true })).toBeVisible();
+    expect(await block.locator(".mermaid-source code").textContent()).toBe(
+      flow,
+    );
+    await expect(
+      block.getByRole("button", { name: "复制代码", exact: true }),
+    ).toBeVisible();
     await block.getByRole("button", { name: "查看图表", exact: true }).click();
     await image.click();
-    const viewer = page.getByRole("dialog", { name: "图片查看器", exact: true });
+    const viewer = page.getByRole("dialog", {
+      name: "图片查看器",
+      exact: true,
+    });
     await expect(viewer).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(viewer).toHaveCount(0);
   });
 
-  test("shows exact invalid source and recovers when SSE repairs the diagram without render orphans", async ({ page }) => {
+  test("shows exact invalid source and recovers when SSE repairs the diagram without render orphans", async ({
+    page,
+  }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const invalid = "flowchart TD\n  start[unfinished\n";
@@ -9577,14 +10514,22 @@ test.describe("Mermaid diagrams", () => {
       const block = page.locator(".mermaid-block");
       await expect(block).toHaveCount(1);
       await expect(block.locator(".mermaid-status")).toHaveText(failure);
-      expect(await block.locator(".mermaid-source code").textContent()).toBe(invalid);
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(
+        invalid,
+      );
       await expect(block.locator(".mermaid-diagram img")).toHaveCount(0);
       release[1]();
-      const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+      const decoded = await decodedDiagram(
+        block.locator(".mermaid-diagram img"),
+      );
       expect(decoded.text).toContain("开始");
       await expect(block.locator(".mermaid-status")).toHaveCount(0);
-      await block.getByRole("button", { name: "View source", exact: true }).click();
-      expect(await block.locator(".mermaid-source code").textContent()).toBe(flow);
+      await block
+        .getByRole("button", { name: "View source", exact: true })
+        .click();
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(
+        flow,
+      );
       await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
       expect(errors).toEqual([]);
     } finally {
@@ -9593,18 +10538,25 @@ test.describe("Mermaid diagrams", () => {
     }
   });
 
-  test("rejects source-owned config and external resources while rendering strict click links only as an image", async ({ page, baseURL }) => {
+  test("rejects source-owned config and external resources while rendering strict click links only as an image", async ({
+    page,
+    baseURL,
+  }) => {
     expect(baseURL).toBeTruthy();
     const origin = new URL(baseURL!).origin;
     const externalRequests: string[] = [];
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.addInitScript(() => {
-      (window as Window & { mermaidAttack?: string }).mermaidAttack = "untouched";
+      (window as Window & { mermaidAttack?: string }).mermaidAttack =
+        "untouched";
     });
     await page.route("**/*", async (route) => {
       const url = new URL(route.request().url());
-      if (/^https?:$/.test(url.protocol) && (url.origin !== origin || url.pathname.startsWith("/mermaid-attack/"))) {
+      if (
+        /^https?:$/.test(url.protocol) &&
+        (url.origin !== origin || url.pathname.startsWith("/mermaid-attack/"))
+      ) {
         externalRequests.push(url.href);
         return route.abort();
       }
@@ -9612,15 +10564,16 @@ test.describe("Mermaid diagrams", () => {
     });
     const attacks = [
       '%%{init: {"securityLevel": "loose", "flowchart": {"htmlLabels": true}}}%%\nflowchart TD\n  A --> B\n',
-      'flowchart TD\n  A["<img src=\'https://mermaid-attack.invalid/remote.png\' onerror=\'window.mermaidAttack=1\'>"]\n',
+      "flowchart TD\n  A[\"<img src='https://mermaid-attack.invalid/remote.png' onerror='window.mermaidAttack=1'>\"]\n",
       'flowchart TD\n  A@{ img: "https://mermaid-attack.invalid/shape.png", label: "Remote" }\n  style A fill:url(https://mermaid-attack.invalid/fill.svg)\n',
       'flowchart TD\n  A@{ "img": "/mermaid-attack/pending.png" }\n',
       'flowchart TD\n  A@{ "\\u0069mg": "https://mermaid-attack.invalid/escaped.png" }\n',
-      'flowchart TD\n  A --> B\n  classDef default fill:u\\72l(/mermaid-attack/fill.svg)\n',
+      "flowchart TD\n  A --> B\n  classDef default fill:u\\72l(/mermaid-attack/fill.svg)\n",
       'flowchart TD\n  A --> B\n  style A background-image:image-set("/mermaid-attack/background.png")\n',
-      'flowchart TD\n  中[Node]\n  style 中 filter:u\\72l(/mermaid-attack/filter.svg#f)\n',
+      "flowchart TD\n  中[Node]\n  style 中 filter:u\\72l(/mermaid-attack/filter.svg#f)\n",
     ];
-    const strict = 'flowchart TD\n  A[Safe] --> B[Done]\n  click A "javascript:window.mermaidAttack=1" "Unsafe link"\n';
+    const strict =
+      'flowchart TD\n  A[Safe] --> B[Done]\n  click A "javascript:window.mermaidAttack=1" "Unsafe link"\n';
     await diagramSnapshot(page, [...attacks, strict].map(fence).join("\n\n"));
     await page.goto("/");
     const blocks = page.locator(".mermaid-block");
@@ -9628,24 +10581,40 @@ test.describe("Mermaid diagrams", () => {
     for (const [index, source] of attacks.entries()) {
       const block = blocks.nth(index);
       await expect(block.locator(".mermaid-status")).toHaveText(failure);
-      expect(await block.locator(".mermaid-source code").textContent()).toBe(source);
+      expect(await block.locator(".mermaid-source code").textContent()).toBe(
+        source,
+      );
       await expect(block.locator(".mermaid-diagram img")).toHaveCount(0);
     }
     const normal = blocks.nth(attacks.length);
-    const decoded = await decodedDiagram(normal.locator(".mermaid-diagram img"));
+    const decoded = await decodedDiagram(
+      normal.locator(".mermaid-diagram img"),
+    );
     expect(decoded.parseErrors).toBe(0);
     expect(decoded.text).toContain("Safe");
     // Never activate the untrusted link: the SVG must stay in inert image mode.
-    await expect(blocks.locator(".mermaid-diagram svg, script, iframe, object, embed, a, [onclick], [onerror], [onload]")).toHaveCount(0);
+    await expect(
+      blocks.locator(
+        ".mermaid-diagram svg, script, iframe, object, embed, a, [onclick], [onerror], [onload]",
+      ),
+    ).toHaveCount(0);
     // The image's React click handler opens our viewer, never a diagram callback.
-    await expect(normal.locator(".mermaid-diagram img")).not.toHaveAttribute("onclick");
+    await expect(normal.locator(".mermaid-diagram img")).not.toHaveAttribute(
+      "onclick",
+    );
     await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
-    expect(await page.evaluate(() => (window as Window & { mermaidAttack?: string }).mermaidAttack)).toBe("untouched");
+    expect(
+      await page.evaluate(
+        () => (window as Window & { mermaidAttack?: string }).mermaidAttack,
+      ),
+    ).toBe("untouched");
     expect(externalRequests).toEqual([]);
     expect(errors).toEqual([]);
   });
 
-  test("preserves all oversized source and still renders the following bounded diagram without orphans", async ({ page }) => {
+  test("preserves all oversized source and still renders the following bounded diagram without orphans", async ({
+    page,
+  }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     // A small line count isolates the character bound from the line-count bound.
@@ -9657,9 +10626,13 @@ test.describe("Mermaid diagrams", () => {
     await expect(blocks).toHaveCount(2);
     const rejected = blocks.first();
     await expect(rejected.locator(".mermaid-status")).toHaveText(failure);
-    expect(await rejected.locator(".mermaid-source code").textContent()).toBe(oversized);
+    expect(await rejected.locator(".mermaid-source code").textContent()).toBe(
+      oversized,
+    );
     await expect(rejected.locator(".mermaid-diagram img")).toHaveCount(0);
-    const decoded = await decodedDiagram(blocks.nth(1).locator(".mermaid-diagram img"));
+    const decoded = await decodedDiagram(
+      blocks.nth(1).locator(".mermaid-diagram img"),
+    );
     expect(decoded.parseErrors).toBe(0);
     expect(decoded.text).toContain("开始");
     await expect(page.locator(".mermaid-render-scratch")).toHaveCount(0);
@@ -9682,7 +10655,9 @@ test.describe("Codex tool summary layout", () => {
       route.fulfill({
         json: {
           sessionId,
-          status: tools.some((tool) => tool.state === "running") ? "running" : "ready",
+          status: tools.some((tool) => tool.state === "running")
+            ? "running"
+            : "ready",
           lastSeq: 9,
           events: [],
           messages: [
@@ -9700,14 +10675,18 @@ test.describe("Codex tool summary layout", () => {
               })),
             },
             ...tools.flatMap((tool, index) =>
-              tool.state === "running" || tool.state === "pending" ? [] : [{
-                role: "toolResult",
-                toolCallId: `codex-summary-${index}`,
-                toolName: tool.name,
-                isError: tool.state === "error",
-                content: [{ type: "text", text: tool.result }],
-                webTiming: { elapsedMs: 1234, running: false },
-              }],
+              tool.state === "running" || tool.state === "pending"
+                ? []
+                : [
+                    {
+                      role: "toolResult",
+                      toolCallId: `codex-summary-${index}`,
+                      toolName: tool.name,
+                      isError: tool.state === "error",
+                      content: [{ type: "text", text: tool.result }],
+                      webTiming: { elapsedMs: 1234, running: false },
+                    },
+                  ],
             ),
           ],
         },
@@ -9717,8 +10696,12 @@ test.describe("Codex tool summary layout", () => {
 
   async function expectSummaryGeometry(summary: ReturnType<Page["locator"]>) {
     await summary.scrollIntoViewIfNeeded();
-    await expect(summary.locator(":scope > :first-child")).toHaveClass("tool-status");
-    await expect(summary.locator(":scope > :last-child")).toHaveClass(/tool-chevron/);
+    await expect(summary.locator(":scope > :first-child")).toHaveClass(
+      "tool-status",
+    );
+    await expect(summary.locator(":scope > :last-child")).toHaveClass(
+      /tool-chevron/,
+    );
     const geometry = await summary.evaluate((node) => {
       const box = (element: Element) => {
         const rect = element.getBoundingClientRect();
@@ -9729,8 +10712,13 @@ test.describe("Codex tool summary layout", () => {
         viewport: window.innerWidth,
         parts: [
           // Measure the stable icon slot, not a spinner's rotating SVG bounds.
-          ".tool-status", ".tool-action", ".tool-target",
-          ".tool-summary-meta", ".tool-elapsed", ".tool-success-mark", ".tool-chevron",
+          ".tool-status",
+          ".tool-action",
+          ".tool-target",
+          ".tool-summary-meta",
+          ".tool-elapsed",
+          ".tool-success-mark",
+          ".tool-chevron",
         ].flatMap((selector) => {
           const element = node.querySelector(selector);
           return element ? [{ selector, ...box(element) }] : [];
@@ -9741,12 +10729,21 @@ test.describe("Codex tool summary layout", () => {
     expect(geometry.bounds.right).toBeLessThanOrEqual(geometry.viewport + 1);
     for (const [index, part] of geometry.parts.entries()) {
       expect(part.width, part.selector).toBeGreaterThan(0);
-      expect(part.x, part.selector).toBeGreaterThanOrEqual(geometry.bounds.x - 1);
-      expect(part.right, part.selector).toBeLessThanOrEqual(geometry.bounds.right + 1);
+      expect(part.x, part.selector).toBeGreaterThanOrEqual(
+        geometry.bounds.x - 1,
+      );
+      expect(part.right, part.selector).toBeLessThanOrEqual(
+        geometry.bounds.right + 1,
+      );
       if (index > 0) {
         const previous = geometry.parts[index - 1];
-        expect(part.x, `${previous.selector} precedes ${part.selector}`).toBeGreaterThan(previous.x);
-        expect(part.x, "summary parts do not overlap").toBeGreaterThanOrEqual(previous.right - 1);
+        expect(
+          part.x,
+          `${previous.selector} precedes ${part.selector}`,
+        ).toBeGreaterThan(previous.x);
+        expect(part.x, "summary parts do not overlap").toBeGreaterThanOrEqual(
+          previous.right - 1,
+        );
       }
     }
     const status = summary.locator(".tool-status");
@@ -9755,20 +10752,73 @@ test.describe("Codex tool summary layout", () => {
     await expect(status.locator(".sr-only")).toHaveText(label!);
     await expect(summary).toHaveAccessibleName(new RegExp(label!));
     await expect(status.locator("svg")).toHaveAttribute("aria-hidden", "true");
-    await expect(summary.locator(".tool-chevron")).toHaveAttribute("aria-hidden", "true");
+    await expect(summary.locator(".tool-chevron")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
   }
 
-  test("completed tool icons lead and native chevrons trail at desktop and mobile widths", async ({ page }) => {
+  test("completed tool icons lead and native chevrons trail at desktop and mobile widths", async ({
+    page,
+  }) => {
     const tools: Array<SummaryTool & { icon: string }> = [
-      { name: "read", args: { path: "src/example.ts" }, result: "export const answer = 42;", icon: "file-text" },
-      { name: "bash", args: { command: "printf summary" }, result: "summary", icon: "terminal" },
-      { name: "edit", args: { path: "src/edit.ts", edits: [{ oldText: "old", newText: "new" }] }, result: "Edited src/edit.ts", icon: "pencil" },
-      { name: "write", args: { path: "src/write.ts", content: "new" }, result: "Wrote src/write.ts", icon: "pencil" },
-      { name: "websearch", args: { query: "summary layout" }, result: "Search result", icon: "search" },
-      { name: "plan", args: { plan: "# Summary plan\n\n- Inspect icons\n- Verify layout" }, result: "# Summary plan\n\n- Inspect icons\n- Verify layout", icon: "list-checks" },
-      { name: "todo", args: {}, result: "1/2 completed\n[✓] #0: Inspect icons\n[ ] #1: Verify layout", icon: "list-checks" },
-      { name: "webfetch", args: { url: "https://example.com" }, result: "Fetched page", icon: "globe" },
-      { name: "custom_summary_probe", args: { path: "probe.txt" }, result: "Unknown tool payload", icon: "wrench" },
+      {
+        name: "read",
+        args: { path: "src/example.ts" },
+        result: "export const answer = 42;",
+        icon: "file-text",
+      },
+      {
+        name: "bash",
+        args: { command: "printf summary" },
+        result: "summary",
+        icon: "terminal",
+      },
+      {
+        name: "edit",
+        args: {
+          path: "src/edit.ts",
+          edits: [{ oldText: "old", newText: "new" }],
+        },
+        result: "Edited src/edit.ts",
+        icon: "pencil",
+      },
+      {
+        name: "write",
+        args: { path: "src/write.ts", content: "new" },
+        result: "Wrote src/write.ts",
+        icon: "pencil",
+      },
+      {
+        name: "websearch",
+        args: { query: "summary layout" },
+        result: "Search result",
+        icon: "search",
+      },
+      {
+        name: "plan",
+        args: { plan: "# Summary plan\n\n- Inspect icons\n- Verify layout" },
+        result: "# Summary plan\n\n- Inspect icons\n- Verify layout",
+        icon: "list-checks",
+      },
+      {
+        name: "todo",
+        args: {},
+        result: "1/2 completed\n[✓] #0: Inspect icons\n[ ] #1: Verify layout",
+        icon: "list-checks",
+      },
+      {
+        name: "webfetch",
+        args: { url: "https://example.com" },
+        result: "Fetched page",
+        icon: "globe",
+      },
+      {
+        name: "custom_summary_probe",
+        args: { path: "probe.txt" },
+        result: "Unknown tool payload",
+        icon: "wrench",
+      },
     ];
     await summarySnapshot(page, tools);
     for (const width of [1280, 390]) {
@@ -9781,58 +10831,114 @@ test.describe("Codex tool summary layout", () => {
         const summary = card.locator(":scope > summary");
         await expect(card).toHaveClass(/tool-done/);
         await expect(card).toHaveJSProperty("open", false);
-        await expect(summary.locator(`.tool-status > svg.lucide-${tool.icon}`)).toHaveCount(1);
+        await expect(
+          summary.locator(`.tool-status > svg.lucide-${tool.icon}`),
+        ).toHaveCount(1);
         await expect(summary.locator(".tool-success-mark")).toHaveCount(1);
-        await expect(summary.locator(":scope > .tool-success-mark + .tool-chevron:last-child")).toHaveCount(1);
+        await expect(
+          summary.locator(
+            ":scope > .tool-success-mark + .tool-chevron:last-child",
+          ),
+        ).toHaveCount(1);
         await expect(summary.locator(".tool-success-mark")).toBeVisible();
-        await expect(summary.locator(".tool-success-mark")).toHaveAttribute("aria-hidden", "true");
-        await expect(summary.locator(".tool-status .spin, .tool-status .lucide-circle-alert")).toHaveCount(0);
+        await expect(summary.locator(".tool-success-mark")).toHaveAttribute(
+          "aria-hidden",
+          "true",
+        );
+        await expect(
+          summary.locator(
+            ".tool-status .spin, .tool-status .lucide-circle-alert",
+          ),
+        ).toHaveCount(0);
         await expect(summary.locator(".tool-elapsed")).toHaveText("1.2s");
         await expectSummaryGeometry(summary);
       }
       // Metadata is still in the middle, not replaced by either icon.
-      await expect(cards.nth(2).locator("summary .edit-count")).toContainText("+1");
-      await expect(cards.nth(2).locator("summary .edit-count")).toContainText("−1");
-      await expect(cards.nth(5).locator("summary .tool-summary-meta")).not.toBeEmpty();
-      await expect(cards.nth(6).locator("summary .tool-summary-meta")).toContainText("1/2");
+      await expect(cards.nth(2).locator("summary .edit-count")).toContainText(
+        "+1",
+      );
+      await expect(cards.nth(2).locator("summary .edit-count")).toContainText(
+        "−1",
+      );
+      await expect(
+        cards.nth(5).locator("summary .tool-summary-meta"),
+      ).not.toBeEmpty();
+      await expect(
+        cards.nth(6).locator("summary .tool-summary-meta"),
+      ).toContainText("1/2");
       const read = cards.first();
       const summary = read.locator(":scope > summary");
       await summary.locator(":scope > .tool-chevron:last-child").click();
       await expect(read).toHaveJSProperty("open", true);
-      await expect(read.getByText("export const answer = 42;", { exact: false })).toBeVisible();
+      await expect(
+        read.getByText("export const answer = 42;", { exact: false }),
+      ).toBeVisible();
       await summary.focus();
       await page.keyboard.press("Enter");
       await expect(read).toHaveJSProperty("open", false);
       await summary.locator(":scope > .tool-status:first-child").click();
       await expect(read).toHaveJSProperty("open", true);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
     }
   });
 
   for (const language of ["en", "zh"] as const) {
     for (const mode of ["native", "mapped"] as const) {
-      test(`skill names stay original with status icons in ${language}/${mode}`, async ({ page }) => {
+      test(`skill names stay original with status icons in ${language}/${mode}`, async ({
+        page,
+      }) => {
         const mobile = (language === "zh") === (mode === "native");
         await page.setViewportSize({ width: mobile ? 390 : 1280, height: 844 });
-        await page.addInitScript(({ language, mode }) => {
-          localStorage.setItem("rpi-web-language", language);
-          localStorage.setItem("rpi-web-tool-name-mode", mode);
-        }, { language, mode });
-        const names = ["router", "rpi-architecture-boundaries", "工具-规范", "Ui-Review"];
+        await page.addInitScript(
+          ({ language, mode }) => {
+            localStorage.setItem("rpi-web-language", language);
+            localStorage.setItem("rpi-web-tool-name-mode", mode);
+          },
+          { language, mode },
+        );
+        const names = [
+          "router",
+          "rpi-architecture-boundaries",
+          "工具-规范",
+          "Ui-Review",
+        ];
         const states = ["done", "pending", "running", "error"] as const;
         const aliases = ["read", "functions.read_file", "cat", "ReadFile"];
-        const paths = names.map(name => language === "en"
-          ? `C:\\skills\\${name}\\SKILL.md`
-          : `/workspace/skills/${name}/SKILL.md`);
-        const labels = language === "en"
-          ? { done: "done", pending: "queued", running: "running", error: "failed" }
-          : { done: "已完成", pending: "排队中", running: "执行中", error: "失败" };
+        const paths = names.map((name) =>
+          language === "en"
+            ? `C:\\skills\\${name}\\SKILL.md`
+            : `/workspace/skills/${name}/SKILL.md`,
+        );
+        const labels =
+          language === "en"
+            ? {
+                done: "done",
+                pending: "queued",
+                running: "running",
+                error: "failed",
+              }
+            : {
+                done: "已完成",
+                pending: "排队中",
+                running: "执行中",
+                error: "失败",
+              };
         await summarySnapshot(page, [
           ...states.map((state, index) => ({
-            name: aliases[index], args: { path: paths[index] },
-            result: "Original skill fixture contents", state,
+            name: aliases[index],
+            args: { path: paths[index] },
+            result: "Original skill fixture contents",
+            state,
           })),
-          { name: "read", args: { path: "src/readme.md" }, result: "Ordinary read fixture" },
+          {
+            name: "read",
+            args: { path: "src/readme.md" },
+            result: "Ordinary read fixture",
+          },
         ]);
         await page.goto("/");
         const cards = page.locator(".tool-card");
@@ -9842,40 +10948,87 @@ test.describe("Codex tool summary layout", () => {
           const summary = card.locator(":scope > summary");
           await expect(card).toHaveClass(new RegExp(`tool-${state}`));
           await expect(card).toHaveJSProperty("open", state === "error");
-          await expect(summary.locator(".tool-action")).toHaveText(names[index]);
-          await expect(summary.locator(".tool-action")).toHaveAttribute("title", aliases[index]);
-          await expect(summary.locator(".tool-target")).toHaveText(paths[index]);
-          await expect(summary.locator(".tool-target")).toHaveAttribute("title", paths[index]);
-          await expect(summary.locator(".tool-status")).toHaveAttribute("title", labels[state]);
-          await expect(summary.locator(".tool-status .lucide-book-open")).toHaveCount(state === "done" ? 1 : 0);
-          await expect(summary.locator(".tool-status .spin")).toHaveCount(state === "running" || state === "pending" ? 1 : 0);
-          await expect(summary.locator(".tool-status .lucide-circle-alert")).toHaveCount(state === "error" ? 1 : 0);
-          await expect(summary.locator(":scope > .tool-success-mark + .tool-chevron:last-child")).toHaveCount(state === "done" ? 1 : 0);
+          await expect(summary.locator(".tool-action")).toHaveText(
+            names[index],
+          );
+          await expect(summary.locator(".tool-action")).toHaveAttribute(
+            "title",
+            aliases[index],
+          );
+          await expect(summary.locator(".tool-target")).toHaveText(
+            paths[index],
+          );
+          await expect(summary.locator(".tool-target")).toHaveAttribute(
+            "title",
+            paths[index],
+          );
+          await expect(summary.locator(".tool-status")).toHaveAttribute(
+            "title",
+            labels[state],
+          );
+          await expect(
+            summary.locator(".tool-status .lucide-book-open"),
+          ).toHaveCount(state === "done" ? 1 : 0);
+          await expect(summary.locator(".tool-status .spin")).toHaveCount(
+            state === "running" || state === "pending" ? 1 : 0,
+          );
+          await expect(
+            summary.locator(".tool-status .lucide-circle-alert"),
+          ).toHaveCount(state === "error" ? 1 : 0);
+          await expect(
+            summary.locator(
+              ":scope > .tool-success-mark + .tool-chevron:last-child",
+            ),
+          ).toHaveCount(state === "done" ? 1 : 0);
           await expectSummaryGeometry(summary);
         }
         const normal = cards.last().locator(":scope > summary");
-        await expect(normal.locator(".tool-action")).toHaveText(mode === "native" ? "read" : language === "en" ? "Read" : "已读取");
-        await expect(normal.locator(".tool-status .lucide-file-text")).toHaveCount(1);
+        await expect(normal.locator(".tool-action")).toHaveText(
+          mode === "native" ? "read" : language === "en" ? "Read" : "已读取",
+        );
+        await expect(
+          normal.locator(".tool-status .lucide-file-text"),
+        ).toHaveCount(1);
         const done = cards.first();
         await done.locator(":scope > summary").click();
         await expect(done).toHaveJSProperty("open", true);
-        await expect(done.locator(".tool-arguments")).toContainText(paths[0].replace(/\\/g, "\\\\"));
-        await expect(done.locator(".tool-detail")).toContainText("Original skill fixture contents");
+        await expect(done.locator(".tool-arguments")).toContainText(
+          paths[0].replace(/\\/g, "\\\\"),
+        );
+        await expect(done.locator(".tool-detail")).toContainText(
+          "Original skill fixture contents",
+        );
         await done.locator(":scope > summary").focus();
         await page.keyboard.press("Enter");
         await expect(done).toHaveJSProperty("open", false);
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
       });
     }
   }
 
-  test("long targets ellipsize without losing edit metadata or elapsed time on desktop and mobile", async ({ page }) => {
+  test("long targets ellipsize without losing edit metadata or elapsed time on desktop and mobile", async ({
+    page,
+  }) => {
     const path = `src/${"very-long-directory-segment/".repeat(30)}summary.ts`;
-    await summarySnapshot(page, [{
-      name: "edit",
-      args: { path, edits: [{ oldText: "const before = 1;", newText: "const after = 2;\nexport { after };" }] },
-      result: `Edited ${path}`,
-    }]);
+    await summarySnapshot(page, [
+      {
+        name: "edit",
+        args: {
+          path,
+          edits: [
+            {
+              oldText: "const before = 1;",
+              newText: "const after = 2;\nexport { after };",
+            },
+          ],
+        },
+        result: `Edited ${path}`,
+      },
+    ]);
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 844 });
       await page.goto("/");
@@ -9888,23 +11041,46 @@ test.describe("Codex tool summary layout", () => {
       await expect(target).toHaveCSS("text-overflow", "ellipsis");
       await expect(target).toHaveCSS("overflow-x", "hidden");
       await expect(target).toHaveCSS("white-space", "nowrap");
-      expect(await target.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
+      expect(
+        await target.evaluate((node) => node.scrollWidth > node.clientWidth),
+      ).toBe(true);
       await expect(summary.locator(".edit-count")).toContainText("+2");
       await expect(summary.locator(".edit-count")).toContainText("−1");
       await expect(summary.locator(".tool-elapsed")).toHaveText("1.2s");
       await expectSummaryGeometry(summary);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
       await summary.locator(".tool-chevron").click();
       await expect(card.locator(".edit-line.add")).toHaveCount(2);
       await expect(card.locator(".edit-line.remove")).toHaveCount(1);
     }
   });
 
-  test("running spinner and error alert preserve status labels, auto-open, manual collapse and Enter", async ({ page }) => {
+  test("running spinner and error alert preserve status labels, auto-open, manual collapse and Enter", async ({
+    page,
+  }) => {
     await summarySnapshot(page, [
-      { name: "bash", args: { command: "sleep 10" }, result: "", state: "running" },
-      { name: "read", args: { path: "missing.txt" }, result: "Missing file: summary regression", state: "error" },
-      { name: "read", args: { path: "queued.txt" }, result: "", state: "pending" },
+      {
+        name: "bash",
+        args: { command: "sleep 10" },
+        result: "",
+        state: "running",
+      },
+      {
+        name: "read",
+        args: { path: "missing.txt" },
+        result: "Missing file: summary regression",
+        state: "error",
+      },
+      {
+        name: "read",
+        args: { path: "queued.txt" },
+        result: "",
+        state: "pending",
+      },
     ]);
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 844 });
@@ -9917,19 +11093,35 @@ test.describe("Codex tool summary layout", () => {
       const errorSummary = error.locator(":scope > summary");
       const pending = page.locator(".tool-card.tool-pending");
       await expect(pending).toHaveJSProperty("open", false);
-      await expect(pending.locator("summary .tool-status > svg.spin")).toHaveCount(1);
+      await expect(
+        pending.locator("summary .tool-status > svg.spin"),
+      ).toHaveCount(1);
       await expect(page.locator(".tool-success-mark")).toHaveCount(0);
       await expectSummaryGeometry(pending.locator(":scope > summary"));
-      await expect(runningSummary.locator(".tool-status > svg.spin")).toHaveCount(1);
-      await expect(runningSummary.locator(".tool-status .lucide-terminal")).toHaveCount(0);
-      await expect(errorSummary.locator(".tool-status > svg.lucide-circle-alert")).toHaveCount(1);
-      await expect(errorSummary.locator(".tool-status .lucide-file-text, .tool-status .spin")).toHaveCount(0);
+      await expect(
+        runningSummary.locator(".tool-status > svg.spin"),
+      ).toHaveCount(1);
+      await expect(
+        runningSummary.locator(".tool-status .lucide-terminal"),
+      ).toHaveCount(0);
+      await expect(
+        errorSummary.locator(".tool-status > svg.lucide-circle-alert"),
+      ).toHaveCount(1);
+      await expect(
+        errorSummary.locator(
+          ".tool-status .lucide-file-text, .tool-status .spin",
+        ),
+      ).toHaveCount(0);
       await expectSummaryGeometry(runningSummary);
       await expectSummaryGeometry(errorSummary);
-      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeVisible();
+      await expect(
+        error.getByText("Missing file: summary regression", { exact: false }),
+      ).toBeVisible();
       await errorSummary.locator(":scope > .tool-chevron:last-child").click();
       await expect(error).toHaveJSProperty("open", false);
-      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeHidden();
+      await expect(
+        error.getByText("Missing file: summary regression", { exact: false }),
+      ).toBeHidden();
       // A live elapsed tick in the sibling must not undo the reader's collapse.
       const timer = runningSummary.locator(".tool-elapsed");
       const initial = await timer.innerText();
@@ -9938,17 +11130,28 @@ test.describe("Codex tool summary layout", () => {
       await errorSummary.focus();
       await page.keyboard.press("Enter");
       await expect(error).toHaveJSProperty("open", true);
-      await expect(error.getByText("Missing file: summary regression", { exact: false })).toBeVisible();
+      await expect(
+        error.getByText("Missing file: summary regression", { exact: false }),
+      ).toBeVisible();
       await runningSummary.locator(".tool-chevron").click();
       await expect(running).toHaveJSProperty("open", true);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
     }
   });
 });
 
 for (const language of ["en", "zh"] as const) {
-  test(`composer queue omits its visible title but keeps controls and accessible names in ${language}`, async ({ page }) => {
-    await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+  test(`composer queue omits its visible title but keeps controls and accessible names in ${language}`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      (lang) => localStorage.setItem("rpi-web-language", lang),
+      language,
+    );
     await mockHost(page);
     const close = language === "zh" ? "关闭队列" : "Close queue";
     const view = language === "zh" ? "查看排队消息" : "View queued messages";
@@ -9961,21 +11164,34 @@ for (const language of ["en", "zh"] as const) {
       await expect(heading).toHaveAccessibleName(close);
       await expect(heading).toHaveText("1");
       await expect(heading.locator("strong")).toHaveCount(0);
-      await expect(panel.locator(".composer-queue-item")).toContainText("pending");
-      const edit = panel.getByRole("button", { name: language === "zh" ? "编辑排队消息" : "Edit queued message", exact: true });
+      await expect(panel.locator(".composer-queue-item")).toContainText(
+        "pending",
+      );
+      const edit = panel.getByRole("button", {
+        name: language === "zh" ? "编辑排队消息" : "Edit queued message",
+        exact: true,
+      });
       await expect(edit).toBeVisible();
       await heading.click();
       await expect(heading).toHaveAccessibleName(view);
       await expect(heading).toHaveAttribute("aria-expanded", "false");
-      await expect(heading.locator(".composer-queue-preview")).toHaveText("pending");
-      expect(await heading.innerText()).not.toContain(language === "zh" ? "队列" : "Queue");
+      await expect(heading.locator(".composer-queue-preview")).toHaveText(
+        "pending",
+      );
+      expect(await heading.innerText()).not.toContain(
+        language === "zh" ? "队列" : "Queue",
+      );
       await heading.focus();
       await page.keyboard.press("Enter");
       await expect(heading).toHaveAccessibleName(close);
       await expect(heading).toHaveAttribute("aria-expanded", "true");
       await expect(heading).toHaveText("1");
       await expect(edit).toBeVisible();
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
     }
   });
 }
@@ -9985,116 +11201,227 @@ test.describe("session issue badges", () => {
   const rawError = "PRIVATE_HOST_ERROR_do_not_render";
   function seed(): Summary[] {
     const other = (id: string, extra: Partial<Summary>): Summary => ({
-      ...session, sessionId: id, title: id, tags: [], ...extra,
+      ...session,
+      sessionId: id,
+      title: id,
+      tags: [],
+      ...extra,
     });
     return [
       { ...session },
       other("known-failed", { latestSettlement: { outcome: "failed" } }),
-      other("known-interrupted", { latestSettlement: { outcome: "interrupted" } }),
+      other("known-interrupted", {
+        latestSettlement: { outcome: "interrupted" },
+      }),
       other("host-error", { error: rawError }),
       other("error-status", { status: "error" }),
-      other("recoverable", { status: "error", error: rawError, latestSettlement: { outcome: "interrupted", pendingResume: true } }),
+      other("recoverable", {
+        status: "error",
+        error: rawError,
+        latestSettlement: { outcome: "interrupted", pendingResume: true },
+      }),
       other("normal-completed", { latestSettlement: { outcome: "completed" } }),
-      other("normal-aborted", { error: rawError, latestSettlement: { outcome: "aborted" } }),
-      other("normal-declined", { error: rawError, latestSettlement: { outcome: "declined" } }),
+      other("normal-aborted", {
+        error: rawError,
+        latestSettlement: { outcome: "aborted" },
+      }),
+      other("normal-declined", {
+        error: rawError,
+        latestSettlement: { outcome: "declined" },
+      }),
       other("offline-unknown", { status: "offline" }),
       other("closed-normal", { status: "closed" }),
-      ...["running", "starting", "awaiting_input"].map(status => other(`${status}-with-old-failed`, {
-        status, error: rawError, latestSettlement: { outcome: "failed", pendingResume: true },
-      })),
+      ...["running", "starting", "awaiting_input"].map((status) =>
+        other(`${status}-with-old-failed`, {
+          status,
+          error: rawError,
+          latestSettlement: { outcome: "failed", pendingResume: true },
+        }),
+      ),
     ];
   }
   async function setup(page: Page) {
     await mockHost(page);
-    const state = { sessions: seed(), listReads: 0, otherRequests: [] as string[] };
+    const state = {
+      sessions: seed(),
+      listReads: 0,
+      otherRequests: [] as string[],
+    };
     const listRoute = (url: URL) => url.pathname === "/api/v1/sessions";
-    await page.route(listRoute, route => {
+    await page.route(listRoute, (route) => {
       if (route.request().method() !== "GET") return route.fallback();
       state.listReads++;
       return route.fulfill({ json: { sessions: state.sessions } });
     });
-    page.on("request", request => {
+    page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
       const match = path.match(/^\/api\/v1\/sessions\/([^/]+)(?:\/|$)/);
       if (match && match[1] !== sessionId) state.otherRequests.push(path);
     });
     return state;
   }
-  const row = (page: Page, title: string) => page.locator(".project-session")
-    .filter({ has: page.locator(".session-title", { hasText: title }) });
+  const row = (page: Page, title: string) =>
+    page
+      .locator(".project-session")
+      .filter({ has: page.locator(".session-title", { hasText: title }) });
 
-  test("desktop shows summary evidence before opening sessions without leaking errors", async ({ page }) => {
+  test("desktop shows summary evidence before opening sessions without leaking errors", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     const state = await setup(page);
     await page.goto("/");
     const sidebar = page.locator(".project-tree");
     await expect(sidebar.locator(".session-issue-failed")).toHaveCount(4);
     await expect(sidebar.locator(".session-issue-resume")).toHaveCount(1);
-    for (const title of ["known-failed", "known-interrupted", "host-error", "error-status"]) {
+    for (const title of [
+      "known-failed",
+      "known-interrupted",
+      "host-error",
+      "error-status",
+    ]) {
       const badge = row(page, title).locator(".session-issue-failed");
       await expect(badge).toBeVisible();
       await expect(badge).toHaveText("Interrupted");
-      await expect(badge).toHaveAccessibleName("Interrupted. This session reported an error or failed run. Open it to review and retry.");
-      await expect(badge).toHaveAttribute("title", "This session reported an error or failed run. Open it to review and retry.");
-      await expect(row(page, title).locator(".project-session-link")).toHaveAttribute("title", title);
+      await expect(badge).toHaveAccessibleName(
+        "Interrupted. This session reported an error or failed run. Open it to review and retry.",
+      );
+      await expect(badge).toHaveAttribute(
+        "title",
+        "This session reported an error or failed run. Open it to review and retry.",
+      );
+      await expect(
+        row(page, title).locator(".project-session-link"),
+      ).toHaveAttribute("title", title);
     }
-    await expect(row(page, "recoverable").locator(".session-issue-resume")).toHaveText("Needs resume");
-    for (const title of ["Mock session", "normal-completed", "normal-aborted", "normal-declined", "offline-unknown", "closed-normal", "running-with-old-failed", "starting-with-old-failed", "awaiting_input-with-old-failed"])
+    await expect(
+      row(page, "recoverable").locator(".session-issue-resume"),
+    ).toHaveText("Needs resume");
+    for (const title of [
+      "Mock session",
+      "normal-completed",
+      "normal-aborted",
+      "normal-declined",
+      "offline-unknown",
+      "closed-normal",
+      "running-with-old-failed",
+      "starting-with-old-failed",
+      "awaiting_input-with-old-failed",
+    ])
       await expect(row(page, title).locator(".session-issue")).toHaveCount(0);
     await expect(page.locator("body")).not.toContainText(rawError);
-    expect(await sidebar.locator("[title]").evaluateAll(elements => elements.map(el => el.getAttribute("title")).join("\n"))).not.toContain(rawError);
+    expect(
+      await sidebar
+        .locator("[title]")
+        .evaluateAll((elements) =>
+          elements.map((el) => el.getAttribute("title")).join("\n"),
+        ),
+    ).not.toContain(rawError);
     expect(state.otherRequests).toEqual([]);
     await row(page, "known-failed").locator(".project-session-link").click();
     await expect(row(page, "known-failed")).toHaveClass(/active/);
   });
 
-  test("English and Chinese labels agree in desktop rows and the 390px mobile picker", async ({ page }) => {
+  test("English and Chinese labels agree in desktop rows and the 390px mobile picker", async ({
+    page,
+  }) => {
     const state = await setup(page);
     await page.goto("/");
     for (const language of ["en", "zh"] as const) {
-      await page.evaluate(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.evaluate(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await page.setViewportSize({ width: 1280, height: 844 });
       await page.reload();
       const failed = language === "zh" ? "异常中断" : "Interrupted";
       const resume = language === "zh" ? "待恢复" : "Needs resume";
-      await expect(row(page, "known-failed").locator(".session-issue-failed")).toHaveText(failed);
-      await expect(row(page, "recoverable").locator(".session-issue-resume")).toHaveText(resume);
+      await expect(
+        row(page, "known-failed").locator(".session-issue-failed"),
+      ).toHaveText(failed);
+      await expect(
+        row(page, "recoverable").locator(".session-issue-resume"),
+      ).toHaveText(resume);
       await page.setViewportSize({ width: 390, height: 844 });
       // Start with the mobile defaults instead of desktop overlays left open.
       await page.reload();
-      await page.getByRole("button", { name: language === "zh" ? "切换会话" : "Switch session", exact: true }).click();
+      await page
+        .getByRole("button", {
+          name: language === "zh" ? "切换会话" : "Switch session",
+          exact: true,
+        })
+        .click();
       const picker = page.locator(".mobile-session-sheet");
       await expect(picker).toBeVisible();
-      await expect(picker.locator(".session-issue-failed")).toHaveText([failed, failed, failed, failed]);
+      await expect(picker.locator(".session-issue-failed")).toHaveText([
+        failed,
+        failed,
+        failed,
+        failed,
+      ]);
       await expect(picker.locator(".session-issue-resume")).toHaveText(resume);
       for (const badge of await picker.locator(".session-issue").all()) {
         await expect(badge).toBeVisible();
         await expect(badge).toHaveAccessibleName(/.+/);
       }
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      await expect(picker.locator(".mobile-session-option").filter({ hasText: "known-failed" })).toContainText(failed);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await expect(
+        picker
+          .locator(".mobile-session-option")
+          .filter({ hasText: "known-failed" }),
+      ).toContainText(failed);
       await expect(picker).not.toContainText(rawError);
-      expect(await picker.locator(".session-issue").evaluateAll(elements => elements.map(el => el.getAttribute("title")).join("\n"))).not.toContain(rawError);
-      await page.getByRole("button", { name: language === "zh" ? "关闭面板" : "Close panel", exact: true }).click();
+      expect(
+        await picker
+          .locator(".session-issue")
+          .evaluateAll((elements) =>
+            elements.map((el) => el.getAttribute("title")).join("\n"),
+          ),
+      ).not.toContain(rawError);
+      await page
+        .getByRole("button", {
+          name: language === "zh" ? "关闭面板" : "Close panel",
+          exact: true,
+        })
+        .click();
     }
     expect(state.otherRequests).toEqual([]);
   });
 
-  test("list refresh clears a noncurrent failure for running and completed summaries", async ({ page }) => {
+  test("list refresh clears a noncurrent failure for running and completed summaries", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     const state = await setup(page);
-    state.sessions = [state.sessions[0], { ...state.sessions[1], error: rawError }];
+    state.sessions = [
+      state.sessions[0],
+      { ...state.sessions[1], error: rawError },
+    ];
     await page.goto("/");
     const failedRow = row(page, "known-failed");
-    await expect(failedRow.locator(".session-issue-failed")).toHaveText("Interrupted");
+    await expect(failedRow.locator(".session-issue-failed")).toHaveText(
+      "Interrupted",
+    );
     await expect(row(page, "Mock session")).toHaveClass(/active/);
     for (const update of [
       { status: "running" },
-      { status: "ready", error: null, latestSettlement: { outcome: "completed" } },
+      {
+        status: "ready",
+        error: null,
+        latestSettlement: { outcome: "completed" },
+      },
     ]) {
       state.sessions = [state.sessions[0], { ...state.sessions[1], ...update }];
       const reads = state.listReads;
-      const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/sessions" && response.request().method() === "GET");
+      const refreshed = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/v1/sessions" &&
+          response.request().method() === "GET",
+      );
       await refreshChats(page);
       await refreshed;
       expect(state.listReads).toBeGreaterThan(reads);
@@ -10107,65 +11434,128 @@ test.describe("session issue badges", () => {
 
 test.describe("session answer badges", () => {
   type Summary = import("../src/api").SessionSummary;
-  const background = "Background question with a deliberately long conversation title";
-  const row = (page: Page, title: string) => page.locator(".project-session")
-    .filter({ has: page.locator(".session-title", { hasText: title }) });
+  const background =
+    "Background question with a deliberately long conversation title";
+  const row = (page: Page, title: string) =>
+    page
+      .locator(".project-session")
+      .filter({ has: page.locator(".session-title", { hasText: title }) });
   const pending = (requestId: string, permission = false) => ({
-    type: "ui_dialog_request", requestId, ui: {
+    type: "ui_dialog_request",
+    requestId,
+    ui: {
       ...(permission ? { purpose: "permission" } : { kind: "selector" }),
-      question: `Question ${requestId}`, options: [{ title: "Answer now", value: "answer" }],
+      question: `Question ${requestId}`,
+      options: [{ title: "Answer now", value: "answer" }],
     },
   });
   async function setup(page: Page) {
     await mockHost(page);
     const state = {
-      sessions: [{ ...session }, { ...session, sessionId: "answer-background", title: background, tags: [],
-        status: "awaiting_input", error: "PRIVATE_OLD_FAILURE", latestSettlement: { outcome: "failed", pendingResume: true } },
-      ...["running", "starting", "ready", "offline", "closed"].map(status => ({ ...session,
-        sessionId: `answer-${status}`, title: `Control ${status}`, tags: [], status }))] as Summary[],
-      listReads: 0, reads: [] as string[],
+      sessions: [
+        { ...session },
+        {
+          ...session,
+          sessionId: "answer-background",
+          title: background,
+          tags: [],
+          status: "awaiting_input",
+          error: "PRIVATE_OLD_FAILURE",
+          latestSettlement: { outcome: "failed", pendingResume: true },
+        },
+        ...["running", "starting", "ready", "offline", "closed"].map(
+          (status) => ({
+            ...session,
+            sessionId: `answer-${status}`,
+            title: `Control ${status}`,
+            tags: [],
+            status,
+          }),
+        ),
+      ] as Summary[],
+      listReads: 0,
+      reads: [] as string[],
     };
-    await page.route(url => url.pathname === "/api/v1/sessions", route => {
-      if (route.request().method() !== "GET") return route.fallback();
-      state.listReads++;
-      return route.fulfill({ json: { sessions: state.sessions } });
-    });
-    page.on("request", request => {
+    await page.route(
+      (url) => url.pathname === "/api/v1/sessions",
+      (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        state.listReads++;
+        return route.fulfill({ json: { sessions: state.sessions } });
+      },
+    );
+    page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
-      if (/^\/api\/v1\/sessions\/[^/]+\/(snapshot|events|open)$/.test(path)) state.reads.push(path);
+      if (/^\/api\/v1\/sessions\/[^/]+\/(snapshot|events|open)$/.test(path))
+        state.reads.push(path);
     });
-    await page.route(snapshotRoute, route => route.fulfill({ json: {
-      sessionId, status: "ready", messages: [], events: [], lastSeq: 4, hasMore: false,
-    } }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          messages: [],
+          events: [],
+          lastSeq: 4,
+          hasMore: false,
+        },
+      }),
+    );
     return state;
   }
-  async function waiting(target: ReturnType<Page["locator"]>, language: "en" | "zh" = "en", mobile = false) {
+  async function waiting(
+    target: ReturnType<Page["locator"]>,
+    language: "en" | "zh" = "en",
+    mobile = false,
+  ) {
     const label = language === "zh" ? "等待回答" : "Waiting for answer";
     const badge = target.locator(".session-answer-badge");
     await expect(badge).toBeVisible();
     await expect(badge).toHaveText(label);
-    await expect(badge).toHaveAttribute("title", language === "zh" ? /回答|问题|权限/ : /answer|question|permission/i);
-    await expect(badge).toHaveAccessibleName(`${label}. ${await badge.getAttribute("title")}`);
-    await expect(target.locator(".session-issue, .session-running-dot")).toHaveCount(0);
-    const dot = target.locator(mobile ? ".mobile-session-option-status" : ".session-answer-dot");
+    await expect(badge).toHaveAttribute(
+      "title",
+      language === "zh" ? /回答|问题|权限/ : /answer|question|permission/i,
+    );
+    await expect(badge).toHaveAccessibleName(
+      `${label}. ${await badge.getAttribute("title")}`,
+    );
+    await expect(
+      target.locator(".session-issue, .session-running-dot"),
+    ).toHaveCount(0);
+    const dot = target.locator(
+      mobile ? ".mobile-session-option-status" : ".session-answer-dot",
+    );
     await expect(dot).toBeVisible();
     await expect(dot).toHaveCSS("animation-name", "none");
     if (mobile) {
       await expect(dot).toHaveClass(/awaiting-input/);
       await expect(dot).not.toHaveClass(/running/);
-      await expect(target.locator("small")).not.toContainText(language === "zh" ? "运行中" : /working/i);
+      await expect(target.locator("small")).not.toContainText(
+        language === "zh" ? "运行中" : /working/i,
+      );
     } else {
       await expect(dot).toHaveAttribute("title", label);
-      await expect(target.locator(".session-title + .session-answer-badge")).toHaveCount(1);
+      await expect(
+        target.locator(".session-title + .session-answer-badge"),
+      ).toHaveCount(1);
     }
   }
   async function bounds(target: ReturnType<Page["locator"]>) {
     await target.scrollIntoViewIfNeeded();
-    const geometry = await target.evaluate(element => {
+    const geometry = await target.evaluate((element) => {
       const box = element.getBoundingClientRect();
-      const badge = element.querySelector(".session-answer-badge")!.getBoundingClientRect();
-      return { left: box.left, right: box.right, badgeLeft: badge.left, badgeRight: badge.right,
-        width: badge.width, viewport: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth };
+      const badge = element
+        .querySelector(".session-answer-badge")!
+        .getBoundingClientRect();
+      return {
+        left: box.left,
+        right: box.right,
+        badgeLeft: badge.left,
+        badgeRight: badge.right,
+        width: badge.width,
+        viewport: innerWidth,
+        overflow: document.documentElement.scrollWidth > innerWidth,
+      };
     });
     expect(geometry.left).toBeGreaterThanOrEqual(0);
     expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
@@ -10175,24 +11565,45 @@ test.describe("session answer badges", () => {
     expect(geometry.overflow).toBe(false);
   }
 
-  test("unopened desktop summaries show waiting, not old failures, without opening background sessions", async ({ page }) => {
+  test("unopened desktop summaries show waiting, not old failures, without opening background sessions", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     const state = await setup(page);
     await page.goto("/");
     await waiting(row(page, background));
-    await expect(page.locator(".project-tree .session-answer-badge")).toHaveCount(1);
-    for (const status of ["running", "starting", "ready", "offline", "closed"]) {
+    await expect(
+      page.locator(".project-tree .session-answer-badge"),
+    ).toHaveCount(1);
+    for (const status of [
+      "running",
+      "starting",
+      "ready",
+      "offline",
+      "closed",
+    ]) {
       const control = row(page, `Control ${status}`);
-      await expect(control.locator(".session-answer-badge, .session-answer-dot")).toHaveCount(0);
-      await expect(control.locator(".session-running-dot")).toHaveCount(["running", "starting"].includes(status) ? 1 : 0);
+      await expect(
+        control.locator(".session-answer-badge, .session-answer-dot"),
+      ).toHaveCount(0);
+      await expect(control.locator(".session-running-dot")).toHaveCount(
+        ["running", "starting"].includes(status) ? 1 : 0,
+      );
     }
     await expect(page.locator("body")).not.toContainText("PRIVATE_OLD_FAILURE");
-    expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
+    expect(
+      state.reads.filter((path) => !path.includes(`/${sessionId}/`)),
+    ).toEqual([]);
   });
 
   for (const language of ["en", "zh"] as const) {
-    test(`desktop and 320/390px picker waiting labels are localized, accessible and bounded in ${language}`, async ({ page }) => {
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    test(`desktop and 320/390px picker waiting labels are localized, accessible and bounded in ${language}`, async ({
+      page,
+    }) => {
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       const state = await setup(page);
       for (const width of [1280, 320, 390]) {
         await page.setViewportSize({ width, height: 844 });
@@ -10201,59 +11612,119 @@ test.describe("session answer badges", () => {
           await waiting(row(page, background), language);
           await bounds(row(page, background).locator(".project-session-link"));
         } else {
-          await page.getByRole("button", { name: language === "zh" ? "切换会话" : "Switch session", exact: true }).click();
+          await page
+            .getByRole("button", {
+              name: language === "zh" ? "切换会话" : "Switch session",
+              exact: true,
+            })
+            .click();
           const picker = page.locator(".mobile-session-sheet");
-          const target = picker.locator(".mobile-session-option").filter({ hasText: background });
+          const target = picker
+            .locator(".mobile-session-option")
+            .filter({ hasText: background });
           await waiting(target, language, true);
           await bounds(target);
-          await expect(target).toHaveAccessibleName(new RegExp(language === "zh" ? "等待回答" : "Waiting for answer"));
+          await expect(target).toHaveAccessibleName(
+            new RegExp(language === "zh" ? "等待回答" : "Waiting for answer"),
+          );
           await expect(picker.locator(".session-answer-badge")).toHaveCount(1);
           for (const status of ["running", "starting"]) {
-            const control = picker.locator(".mobile-session-option").filter({ hasText: `Control ${status}` });
-            await expect(control.locator(".mobile-session-option-status")).toHaveClass(/running/);
-            await expect(control.locator("small")).toContainText(language === "zh" ? "运行中" : "working");
+            const control = picker
+              .locator(".mobile-session-option")
+              .filter({ hasText: `Control ${status}` });
+            await expect(
+              control.locator(".mobile-session-option-status"),
+            ).toHaveClass(/running/);
+            await expect(control.locator("small")).toContainText(
+              language === "zh" ? "运行中" : "working",
+            );
           }
           await expect(picker).not.toContainText("PRIVATE_OLD_FAILURE");
         }
       }
-      expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
+      expect(
+        state.reads.filter((path) => !path.includes(`/${sessionId}/`)),
+      ).toEqual([]);
     });
   }
 
-  for (const [status, field] of [["ready", "pendingDialog"], ["running", "pendingDialogs"]] as const) {
-    test(`current ${field} overrides stale ${status} snapshot and reconnecting transport`, async ({ page }) => {
+  for (const [status, field] of [
+    ["ready", "pendingDialog"],
+    ["running", "pendingDialogs"],
+  ] as const) {
+    test(`current ${field} overrides stale ${status} snapshot and reconnecting transport`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: 1280, height: 900 });
       await setup(page);
       const dialog = pending("snapshot", field === "pendingDialog");
-      await page.route(snapshotRoute, route => route.fulfill({ json: {
-        sessionId, status, messages: [], events: [], lastSeq: 4,
-        [field]: field === "pendingDialogs" ? [dialog] : dialog,
-      } }));
+      await page.route(snapshotRoute, (route) =>
+        route.fulfill({
+          json: {
+            sessionId,
+            status,
+            messages: [],
+            events: [],
+            lastSeq: 4,
+            [field]: field === "pendingDialogs" ? [dialog] : dialog,
+          },
+        }),
+      );
       await page.goto("/");
-      await expect(page.getByRole("heading", { name: "Question snapshot", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Question snapshot", exact: true }),
+      ).toBeVisible();
       // A finite mock SSE response disconnects; the actual dialog must still win.
       await waiting(row(page, "Mock session"));
     });
   }
 
-  test("live question and permission requests stay waiting after reply until the last authoritative close", async ({ page }) => {
+  test("live question and permission requests stay waiting after reply until the last authoritative close", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await setup(page);
-    const dialogs = [pending("live-question"), pending("live-permission", true)];
-    const frames = [dialogs, ...dialogs.map(dialog => [{ type: "ui_dialog_closed", requestId: dialog.requestId }])];
+    const dialogs = [
+      pending("live-question"),
+      pending("live-permission", true),
+    ];
+    const frames = [
+      dialogs,
+      ...dialogs.map((dialog) => [
+        { type: "ui_dialog_closed", requestId: dialog.requestId },
+      ]),
+    ];
     const releases: Array<() => void> = [];
-    const gates = frames.map(() => new Promise<void>(resolve => releases.push(resolve)));
+    const gates = frames.map(
+      () => new Promise<void>((resolve) => releases.push(resolve)),
+    );
     let connection = 0;
     let seq = 4;
-    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-      const index = connection++;
-      if (index >= gates.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
-      await gates[index];
-      return route.fulfill({ contentType: "text/event-stream", body: "retry: 10\n" + frames[index]
-        .map(event => `id: ${++seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("") });
-    });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        const index = connection++;
+        if (index >= gates.length)
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+          });
+        await gates[index];
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            "retry: 10\n" +
+            frames[index]
+              .map(
+                (event) =>
+                  `id: ${++seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+              )
+              .join(""),
+        });
+      },
+    );
     const answers: unknown[] = [];
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
       const body = route.request().postDataJSON();
       if (body.type !== "ui_dialog_response") return route.fallback();
       answers.push(body);
@@ -10261,114 +11732,228 @@ test.describe("session answer badges", () => {
     });
     try {
       await page.goto("/");
-      await expect(row(page, "Mock session").locator(".session-answer-badge")).toHaveCount(0);
+      await expect(
+        row(page, "Mock session").locator(".session-answer-badge"),
+      ).toHaveCount(0);
       releases[0]();
-      await expect(page.getByRole("heading", { name: "Question live-question", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("heading", {
+          name: "Question live-question",
+          exact: true,
+        }),
+      ).toBeVisible();
       await waiting(row(page, "Mock session"));
-      await page.getByRole("dialog").getByRole("button", { name: "Answer now", exact: true }).click();
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Answer now", exact: true })
+        .click();
       await expect.poll(() => answers.length).toBe(1);
       await waiting(row(page, "Mock session"));
       releases[1]();
-      await expect(page.getByRole("heading", { name: "Question live-permission", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("heading", {
+          name: "Question live-permission",
+          exact: true,
+        }),
+      ).toBeVisible();
       await waiting(row(page, "Mock session"));
       releases[2]();
       await expect(page.getByRole("dialog")).toHaveCount(0);
-      await expect(row(page, "Mock session").locator(".session-answer-badge, .session-answer-dot")).toHaveCount(0);
-    } finally { releases.forEach(release => release()); }
+      await expect(
+        row(page, "Mock session").locator(
+          ".session-answer-badge, .session-answer-dot",
+        ),
+      ).toHaveCount(0);
+    } finally {
+      releases.forEach((release) => release());
+    }
   });
 
-  test("host_closed clears a pending dialog and its waiting badge and dot", async ({ page }) => {
+  test("host_closed clears a pending dialog and its waiting badge and dot", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     const state = await setup(page);
-    await page.route(snapshotRoute, route => route.fulfill({ json: {
-      sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("host-close", true),
-    } }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "running",
+          messages: [],
+          events: [],
+          lastSeq: 4,
+          pendingDialog: pending("host-close", true),
+        },
+      }),
+    );
     let releaseClose!: () => void;
-    const close = new Promise<void>(resolve => { releaseClose = resolve; });
-    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-      await close;
-      return route.fulfill({ contentType: "text/event-stream",
-        body: 'retry: 60000\nid: 5\nevent: host_closed\ndata: {"type":"host_closed"}\n\n' });
+    const close = new Promise<void>((resolve) => {
+      releaseClose = resolve;
     });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        await close;
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'retry: 60000\nid: 5\nevent: host_closed\ndata: {"type":"host_closed"}\n\n',
+        });
+      },
+    );
     try {
       await page.goto("/");
-      await expect(page.getByRole("heading", { name: "Question host-close", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Question host-close", exact: true }),
+      ).toBeVisible();
       const target = row(page, "Mock session");
       await waiting(target);
       state.sessions[0] = { ...state.sessions[0], status: "closed" };
       releaseClose();
       await expect(page.getByRole("dialog")).toHaveCount(0);
-      await expect(target.locator(".session-answer-badge, .session-answer-dot, .session-running-dot")).toHaveCount(0);
-    } finally { releaseClose(); }
+      await expect(
+        target.locator(
+          ".session-answer-badge, .session-answer-dot, .session-running-dot",
+        ),
+      ).toHaveCount(0);
+    } finally {
+      releaseClose();
+    }
   });
 
-  for (const [language, theme] of [["en", "dark"], ["zh", "light"]] as const) {
-    test(`mobile active header shows a static waiting status with a pending dialog in ${language}/${theme}`, async ({ page }) => {
+  for (const [language, theme] of [
+    ["en", "dark"],
+    ["zh", "light"],
+  ] as const) {
+    test(`mobile active header shows a static waiting status with a pending dialog in ${language}/${theme}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: 320, height: 844 });
-      await page.addInitScript(({ language, theme }) => {
-        localStorage.setItem("rpi-web-language", language);
-        localStorage.setItem("rpi-theme", theme);
-      }, { language, theme });
+      await page.addInitScript(
+        ({ language, theme }) => {
+          localStorage.setItem("rpi-web-language", language);
+          localStorage.setItem("rpi-theme", theme);
+        },
+        { language, theme },
+      );
       await setup(page);
-      await page.route(snapshotRoute, route => route.fulfill({ json: {
-        sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("mobile-header"),
-      } }));
+      await page.route(snapshotRoute, (route) =>
+        route.fulfill({
+          json: {
+            sessionId,
+            status: "running",
+            messages: [],
+            events: [],
+            lastSeq: 4,
+            pendingDialog: pending("mobile-header"),
+          },
+        }),
+      );
       await page.goto("/");
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-      await expect(page.getByRole("heading", { name: "Question mobile-header", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("heading", {
+          name: "Question mobile-header",
+          exact: true,
+        }),
+      ).toBeVisible();
       // The pending native modal intercepts picker clicks, but the header remains visible.
       const header = page.locator(".mobile-session-switcher");
       const status = header.locator(".mobile-session-status");
       await expect(status).toBeVisible();
       await expect(status).toHaveClass(/awaiting-input/);
-      await expect(status).toHaveText(language === "zh" ? "等待回答" : "Waiting for answer");
-      await expect(status).not.toContainText(language === "zh" ? "运行中" : /working/i);
+      await expect(status).toHaveText(
+        language === "zh" ? "等待回答" : "Waiting for answer",
+      );
+      await expect(status).not.toContainText(
+        language === "zh" ? "运行中" : /working/i,
+      );
       await expect(status.locator(".status-dot")).toBeVisible();
-      await expect(status.locator(".status-dot")).toHaveCSS("animation-name", "none");
+      await expect(status.locator(".status-dot")).toHaveCSS(
+        "animation-name",
+        "none",
+      );
       await expect(header).toHaveAttribute("aria-expanded", "false");
       await expect(page.locator(".mobile-session-sheet")).toHaveCount(0);
     });
   }
 
-  test("a rejected permission answer retains the waiting badge and static dot for retry", async ({ page }) => {
+  test("a rejected permission answer retains the waiting badge and static dot for retry", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await setup(page);
-    await page.route(snapshotRoute, route => route.fulfill({ json: {
-      sessionId, status: "running", messages: [], events: [], lastSeq: 4, pendingDialog: pending("rejected", true),
-    } }));
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "running",
+          messages: [],
+          events: [],
+          lastSeq: 4,
+          pendingDialog: pending("rejected", true),
+        },
+      }),
+    );
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
       const body = route.request().postDataJSON();
       if (body.type !== "ui_dialog_response") return route.fallback();
-      return route.fulfill({ json: { ...response({}, body.type), success: false, error: "Answer rejected; retry" } });
+      return route.fulfill({
+        json: {
+          ...response({}, body.type),
+          success: false,
+          error: "Answer rejected; retry",
+        },
+      });
     });
     await page.goto("/");
     await waiting(row(page, "Mock session"));
     await page.getByRole("button", { name: "Answer now", exact: true }).click();
-    await expect(page.locator(".error-banner")).toContainText("Answer rejected; retry");
-    await expect(page.getByRole("button", { name: "Answer now", exact: true })).toBeEnabled();
+    await expect(page.locator(".error-banner")).toContainText(
+      "Answer rejected; retry",
+    );
+    await expect(
+      page.getByRole("button", { name: "Answer now", exact: true }),
+    ).toBeEnabled();
     await waiting(row(page, "Mock session"));
   });
 
-  test("switching away and back preserves a still-pending background summary", async ({ page }) => {
+  test("switching away and back preserves a still-pending background summary", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     const state = await setup(page);
     state.sessions[0] = { ...state.sessions[0], status: "awaiting_input" };
-    await page.route(snapshotRoute, route => route.fulfill({ json: {
-      sessionId, status: "awaiting_input", messages: [], events: [], lastSeq: 4, pendingDialog: pending("switch", true),
-    } }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "awaiting_input",
+          messages: [],
+          events: [],
+          lastSeq: 4,
+          pendingDialog: pending("switch", true),
+        },
+      }),
+    );
     await page.goto("/");
     await waiting(row(page, "Mock session"));
     // Exercise selection directly while the native modal intercepts pointers.
-    await row(page, "Control ready").locator(".project-session-link").dispatchEvent("click");
+    await row(page, "Control ready")
+      .locator(".project-session-link")
+      .dispatchEvent("click");
     await expect(row(page, "Control ready")).toHaveClass(/active/);
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await waiting(row(page, "Mock session"));
     await row(page, "Mock session").locator(".project-session-link").click();
-    await expect(page.getByRole("heading", { name: "Question switch", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Question switch", exact: true }),
+    ).toBeVisible();
     await waiting(row(page, "Mock session"));
   });
 
-  test("the existing five-second summary poll clears background waiting without opening it", async ({ page }) => {
+  test("the existing five-second summary poll clears background waiting without opening it", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.clock.install();
     const state = await setup(page);
@@ -10379,95 +11964,212 @@ test.describe("session answer badges", () => {
     state.sessions[1] = { ...state.sessions[1], status: "running" };
     await page.clock.runFor(5100);
     await expect.poll(() => state.listReads).toBeGreaterThan(reads);
-    await expect(target.locator(".session-answer-badge, .session-answer-dot, .session-issue")).toHaveCount(0);
+    await expect(
+      target.locator(
+        ".session-answer-badge, .session-answer-dot, .session-issue",
+      ),
+    ).toHaveCount(0);
     await expect(target.locator(".session-running-dot")).toBeVisible();
-    expect(state.reads.filter(path => !path.includes(`/${sessionId}/`))).toEqual([]);
-    expect(state.reads.filter(path => path.endsWith("/snapshot"))).toEqual([`/api/v1/sessions/${sessionId}/snapshot`]);
+    expect(
+      state.reads.filter((path) => !path.includes(`/${sessionId}/`)),
+    ).toEqual([]);
+    expect(state.reads.filter((path) => path.endsWith("/snapshot"))).toEqual([
+      `/api/v1/sessions/${sessionId}/snapshot`,
+    ]);
   });
 });
 
 test.describe("tool name display preference", () => {
   const key = "rpi-web-tool-name-mode";
   const tools = [
-    { name: "read", args: { path: "src/preference.ts" }, result: "export const preference = 42;" },
-    { name: "bash", args: { command: "printf preference" }, result: "preference" },
-    { name: "edit", args: { path: "src/edit.ts", edits: [{ oldText: "before", newText: "after" }] }, result: "Edited src/edit.ts" },
-    { name: "plan", args: { plan: "# Preference plan\n\n- Inspect names\n- Verify controls" }, result: "# Preference plan\n\n- Inspect names\n- Verify controls" },
-    { name: "todo", args: {}, result: "1/2 completed\n[✓] #0: Inspect names\n[ ] #1: Verify controls" },
-    { name: "Custom_Preference_Probe", args: { path: "probe.txt" }, result: "Custom preference payload" },
-    { name: "functions.Read_File", args: { path: "src/prefixed.ts" }, result: "export const prefixed = true;" },
+    {
+      name: "read",
+      args: { path: "src/preference.ts" },
+      result: "export const preference = 42;",
+    },
+    {
+      name: "bash",
+      args: { command: "printf preference" },
+      result: "preference",
+    },
+    {
+      name: "edit",
+      args: {
+        path: "src/edit.ts",
+        edits: [{ oldText: "before", newText: "after" }],
+      },
+      result: "Edited src/edit.ts",
+    },
+    {
+      name: "plan",
+      args: { plan: "# Preference plan\n\n- Inspect names\n- Verify controls" },
+      result: "# Preference plan\n\n- Inspect names\n- Verify controls",
+    },
+    {
+      name: "todo",
+      args: {},
+      result: "1/2 completed\n[✓] #0: Inspect names\n[ ] #1: Verify controls",
+    },
+    {
+      name: "Custom_Preference_Probe",
+      args: { path: "probe.txt" },
+      result: "Custom preference payload",
+    },
+    {
+      name: "functions.Read_File",
+      args: { path: "src/prefixed.ts" },
+      result: "export const prefixed = true;",
+    },
   ];
-  const native = tools.map(tool => tool.name);
-  const mapped = ["Read", "Ran", "Edited", "Plan", "Todos", "Custom_Preference_Probe", "Read"];
-  const chinese = ["已读取", "已运行", "已编辑", "计划", "待办", "Custom_Preference_Probe", "已读取"];
+  const native = tools.map((tool) => tool.name);
+  const mapped = [
+    "Read",
+    "Ran",
+    "Edited",
+    "Plan",
+    "Todos",
+    "Custom_Preference_Probe",
+    "Read",
+  ];
+  const chinese = [
+    "已读取",
+    "已运行",
+    "已编辑",
+    "计划",
+    "待办",
+    "Custom_Preference_Probe",
+    "已读取",
+  ];
 
   // Local copy: the summary-layout describe's fixture is scoped there.
   async function summarySnapshot(page: Page, entries = tools) {
     await mockHost(page);
-    await page.route(snapshotRoute, route => route.fulfill({ json: {
-      sessionId, status: "ready", lastSeq: 9, events: [],
-      messages: entries.length ? [
-        { role: "assistant", content: entries.map((tool, index) => ({
-          type: "toolCall", id: `name-preference-${index}`, name: tool.name, arguments: tool.args,
-          webTiming: { elapsedMs: 1234, running: false },
-        })) },
-        ...entries.map((tool, index) => ({
-          role: "toolResult", toolCallId: `name-preference-${index}`, toolName: tool.name,
-          isError: false, content: [{ type: "text", text: tool.result }],
-          webTiming: { elapsedMs: 1234, running: false },
-        })),
-      ] : [],
-    } }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          lastSeq: 9,
+          events: [],
+          messages: entries.length
+            ? [
+                {
+                  role: "assistant",
+                  content: entries.map((tool, index) => ({
+                    type: "toolCall",
+                    id: `name-preference-${index}`,
+                    name: tool.name,
+                    arguments: tool.args,
+                    webTiming: { elapsedMs: 1234, running: false },
+                  })),
+                },
+                ...entries.map((tool, index) => ({
+                  role: "toolResult",
+                  toolCallId: `name-preference-${index}`,
+                  toolName: tool.name,
+                  isError: false,
+                  content: [{ type: "text", text: tool.result }],
+                  webTiming: { elapsedMs: 1234, running: false },
+                })),
+              ]
+            : [],
+        },
+      }),
+    );
   }
   async function labels(page: Page, names: string[]) {
     const cards = page.locator(".tool-card");
     await expect(cards).toHaveCount(names.length);
-    await expect(cards.locator(":scope > summary .tool-action")).toHaveText(names);
+    await expect(cards.locator(":scope > summary .tool-action")).toHaveText(
+      names,
+    );
     for (const [index, name] of names.entries()) {
       const summary = cards.nth(index).locator(":scope > summary");
       expect(await summary.locator(".tool-action").textContent()).toBe(name);
-      await expect(summary.locator(".tool-action")).toHaveAttribute("title", name);
-      await expect(summary).toHaveAccessibleName(new RegExp(name.replaceAll(".", "\\.")));
+      await expect(summary.locator(".tool-action")).toHaveAttribute(
+        "title",
+        name,
+      );
+      await expect(summary).toHaveAccessibleName(
+        new RegExp(name.replaceAll(".", "\\.")),
+      );
     }
   }
   async function settings(page: Page, zh = false) {
     await page.keyboard.press("Control+,");
-    const group = page.getByRole("group", { name: zh ? "工具名称" : "Tool names", exact: true });
+    const group = page.getByRole("group", {
+      name: zh ? "工具名称" : "Tool names",
+      exact: true,
+    });
     await expect(group).toBeVisible();
     return group;
   }
   async function choose(page: Page, mode: "native" | "mapped", zh = false) {
     const group = await settings(page, zh);
-    const names = zh ? ["原生名称", "映射名称"] : ["Native names", "Mapped names"];
-    const selected = group.getByRole("button", { name: names[mode === "native" ? 0 : 1], exact: true });
+    const names = zh
+      ? ["原生名称", "映射名称"]
+      : ["Native names", "Mapped names"];
+    const selected = group.getByRole("button", {
+      name: names[mode === "native" ? 0 : 1],
+      exact: true,
+    });
     await selected.focus();
     await page.keyboard.press("Enter");
     await expect(selected).toHaveAttribute("aria-pressed", "true");
-    await expect(group.getByRole("button", { name: names[mode === "native" ? 1 : 0], exact: true })).toHaveAttribute("aria-pressed", "false");
+    await expect(
+      group.getByRole("button", {
+        name: names[mode === "native" ? 1 : 0],
+        exact: true,
+      }),
+    ).toHaveAttribute("aria-pressed", "false");
     await page.keyboard.press("Escape");
     await expect(group).toBeHidden();
   }
   async function savedState(page: Page, mode: "native" | "mapped") {
     const group = await settings(page);
-    await expect(group.getByRole("button", { name: "Native names", exact: true })).toHaveAttribute("aria-pressed", String(mode === "native"));
-    await expect(group.getByRole("button", { name: "Mapped names", exact: true })).toHaveAttribute("aria-pressed", String(mode === "mapped"));
+    await expect(
+      group.getByRole("button", { name: "Native names", exact: true }),
+    ).toHaveAttribute("aria-pressed", String(mode === "native"));
+    await expect(
+      group.getByRole("button", { name: "Mapped names", exact: true }),
+    ).toHaveAttribute("aria-pressed", String(mode === "mapped"));
     await page.keyboard.press("Escape");
   }
-  const unchanged = (page: Page) => page.locator(".tool-card").evaluateAll(cards => cards.map(card => ({
-    className: card.className,
-    parts: Array.from(card.querySelectorAll("summary .tool-target, summary .tool-summary-meta, summary .tool-elapsed, .tool-detail"))
-      .map(node => [node.className, node.textContent, node.getAttribute("title")]),
-    icon: card.querySelector("summary .tool-status svg")?.getAttribute("class"),
-    open: (card as HTMLDetailsElement).open,
-  })));
+  const unchanged = (page: Page) =>
+    page.locator(".tool-card").evaluateAll((cards) =>
+      cards.map((card) => ({
+        className: card.className,
+        parts: Array.from(
+          card.querySelectorAll(
+            "summary .tool-target, summary .tool-summary-meta, summary .tool-elapsed, .tool-detail",
+          ),
+        ).map((node) => [
+          node.className,
+          node.textContent,
+          node.getAttribute("title"),
+        ]),
+        icon: card
+          .querySelector("summary .tool-status svg")
+          ?.getAttribute("class"),
+        open: (card as HTMLDetailsElement).open,
+      })),
+    );
 
-  test("desktop native defaults, local keyboard toggles and reload persistence preserve all five renderers", async ({ page }) => {
+  test("desktop native defaults, local keyboard toggles and reload persistence preserve all five renderers", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "en"));
+    await page.addInitScript(() =>
+      localStorage.setItem("rpi-web-language", "en"),
+    );
     await summarySnapshot(page);
     const commands: unknown[] = [];
-    page.on("request", request => {
-      if (!new URL(request.url()).pathname.endsWith("/commands") || request.method() !== "POST") return;
+    page.on("request", (request) => {
+      if (
+        !new URL(request.url()).pathname.endsWith("/commands") ||
+        request.method() !== "POST"
+      )
+        return;
       const body = request.postDataJSON();
       // Independent inspector polling can overlap the local preference toggle.
       if (!String(body.type).startsWith("get_")) commands.push(body);
@@ -10476,18 +12178,33 @@ test.describe("tool name display preference", () => {
     await labels(page, native);
     await savedState(page, "native");
     const cards = page.locator(".tool-card");
-    for (const renderer of [".shell-card", ".edit-card", ".plan-card", ".todo-card"])
+    for (const renderer of [
+      ".shell-card",
+      ".edit-card",
+      ".plan-card",
+      ".todo-card",
+    ])
       await expect(page.locator(renderer)).toHaveCount(1);
-    await expect(cards.locator("summary .tool-elapsed")).toHaveText(tools.map(() => "1.2s"));
-    await expect(cards.nth(2).locator("summary .edit-count")).toContainText("+1");
-    await expect(cards.nth(2).locator("summary .edit-count")).toContainText("−1");
-    await expect(cards.nth(4).locator("summary .tool-summary-meta")).toContainText("1/2");
+    await expect(cards.locator("summary .tool-elapsed")).toHaveText(
+      tools.map(() => "1.2s"),
+    );
+    await expect(cards.nth(2).locator("summary .edit-count")).toContainText(
+      "+1",
+    );
+    await expect(cards.nth(2).locator("summary .edit-count")).toContainText(
+      "−1",
+    );
+    await expect(
+      cards.nth(4).locator("summary .tool-summary-meta"),
+    ).toContainText("1/2");
     for (let index = 0; index < 5; index++) {
       await cards.nth(index).locator(":scope > summary").focus();
       await page.keyboard.press("Enter");
       await expect(cards.nth(index)).toHaveJSProperty("open", true);
     }
-    await expect(cards.first().getByText(tools[0].result, { exact: false })).toBeVisible();
+    await expect(
+      cards.first().getByText(tools[0].result, { exact: false }),
+    ).toBeVisible();
     await expect(page.locator(".shell-output")).toHaveText("preference");
     await expect(page.locator(".edit-line.add")).toHaveCount(1);
     await expect(page.locator(".plan-outline li")).toHaveCount(2);
@@ -10498,7 +12215,9 @@ test.describe("tool name display preference", () => {
     await labels(page, mapped);
     expect(await unchanged(page)).toEqual(before);
     await expect(cards.first()).toHaveJSProperty("open", true);
-    await expect.poll(() => page.evaluate(k => localStorage.getItem(k), key)).toBe("mapped");
+    await expect
+      .poll(() => page.evaluate((k) => localStorage.getItem(k), key))
+      .toBe("mapped");
     expect(commands.slice(commandBoundary)).toEqual([]);
     await page.reload();
     await labels(page, mapped);
@@ -10507,39 +12226,69 @@ test.describe("tool name display preference", () => {
     await choose(page, "native");
     await labels(page, native);
     expect(commands.slice(reloadBoundary)).toEqual([]);
-    await expect.poll(() => page.evaluate(k => localStorage.getItem(k), key)).toBe("native");
+    await expect
+      .poll(() => page.evaluate((k) => localStorage.getItem(k), key))
+      .toBe("native");
     await page.reload();
     await labels(page, native);
     await savedState(page, "native");
   });
 
-  test("Chinese 390px fresh defaults stay native and keyboard settings localize only mapped actions", async ({ page }) => {
+  test("Chinese 390px fresh defaults stay native and keyboard settings localize only mapped actions", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    await page.addInitScript(() =>
+      localStorage.setItem("rpi-web-language", "zh"),
+    );
     await summarySnapshot(page);
     await page.goto("/");
     await labels(page, native);
     const group = await settings(page, true);
-    await expect(group.getByRole("button", { name: "原生名称", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await expect(group.getByRole("button", { name: "映射名称", exact: true })).toHaveAttribute("aria-pressed", "false");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(
+      group.getByRole("button", { name: "原生名称", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      group.getByRole("button", { name: "映射名称", exact: true }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
     await page.keyboard.press("Escape");
     await choose(page, "mapped", true);
     await labels(page, chinese);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
     await choose(page, "native", true);
     await labels(page, native);
-    await expect(page.locator(".tool-action").last()).toHaveText("functions.Read_File");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(page.locator(".tool-action").last()).toHaveText(
+      "functions.Read_File",
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
   });
 
-  test("invalid saved values and tool-key-only blocked storage fall back safely and toggle in memory", async ({ page }) => {
+  test("invalid saved values and tool-key-only blocked storage fall back safely and toggle in memory", async ({
+    page,
+  }) => {
     const errors: string[] = [];
-    page.on("pageerror", error => errors.push(error.message));
-    await page.addInitScript(k => {
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript((k) => {
       localStorage.setItem("rpi-web-language", "en");
       // Init-script order is unspecified when the blocked-storage phase reloads.
-      try { localStorage.setItem(k, "invalid-mode"); } catch { /* tool key blocked */ }
+      try {
+        localStorage.setItem(k, "invalid-mode");
+      } catch {
+        /* tool key blocked */
+      }
     }, key);
     await summarySnapshot(page);
     await page.goto("/");
@@ -10547,15 +12296,17 @@ test.describe("tool name display preference", () => {
     await savedState(page, "native");
     await choose(page, "mapped");
     await labels(page, mapped);
-    await page.addInitScript(k => {
+    await page.addInitScript((k) => {
       const get = Storage.prototype.getItem;
       const set = Storage.prototype.setItem;
       Storage.prototype.getItem = function (name) {
-        if (name === k) throw new DOMException("Tool preference blocked", "SecurityError");
+        if (name === k)
+          throw new DOMException("Tool preference blocked", "SecurityError");
         return get.call(this, name);
       };
       Storage.prototype.setItem = function (name, value) {
-        if (name === k) throw new DOMException("Tool preference blocked", "SecurityError");
+        if (name === k)
+          throw new DOMException("Tool preference blocked", "SecurityError");
         return set.call(this, name, value);
       };
     }, key);
@@ -10570,114 +12321,269 @@ test.describe("tool name display preference", () => {
     expect(errors).toEqual([]);
   });
 
-  test("live SSE preserves raw names running and done, with Reading to Read only when mapped", async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "en"));
+  test("live SSE preserves raw names running and done, with Reading to Read only when mapped", async ({
+    page,
+  }) => {
+    await page.addInitScript(() =>
+      localStorage.setItem("rpi-web-language", "en"),
+    );
     await summarySnapshot(page, []);
     const releases: Array<() => void> = [];
-    const gates = Array.from({ length: 4 }, () => new Promise<void>(resolve => releases.push(resolve)));
+    const gates = Array.from(
+      { length: 4 },
+      () => new Promise<void>((resolve) => releases.push(resolve)),
+    );
     let connection = 0;
-    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-      const index = connection++;
-      if (index >= gates.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
-      await gates[index];
-      const start = index % 2 === 0;
-      const event = {
-        type: start ? "tool_execution_start" : "tool_execution_end",
-        toolCallId: `live-preference-${Math.floor(index / 2)}`, toolName: "functions.Read_File",
-        ...(start ? { args: { path: "src/live.ts" } } : { result: "export const live = true;", isError: false }),
-        webTiming: { elapsedMs: start ? 100 : 1234, running: start },
-      };
-      await route.fulfill({ contentType: "text/event-stream", body: `retry: 20\nid: ${10 + index}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
-    });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        const index = connection++;
+        if (index >= gates.length)
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+          });
+        await gates[index];
+        const start = index % 2 === 0;
+        const event = {
+          type: start ? "tool_execution_start" : "tool_execution_end",
+          toolCallId: `live-preference-${Math.floor(index / 2)}`,
+          toolName: "functions.Read_File",
+          ...(start
+            ? { args: { path: "src/live.ts" } }
+            : { result: "export const live = true;", isError: false }),
+          webTiming: { elapsedMs: start ? 100 : 1234, running: start },
+        };
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body: `retry: 20\nid: ${10 + index}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+        });
+      },
+    );
     try {
       await page.goto("/");
       for (let index = 0; index < 4; index++) {
         if (index === 2) await choose(page, "mapped");
         releases[index]();
         const card = page.locator(".tool-card").nth(Math.floor(index / 2));
-        await expect(card).toHaveClass(index % 2 === 0 ? /tool-running/ : /tool-done/);
-        await expect(card.locator("summary .tool-action")).toHaveText(index < 2 ? "functions.Read_File" : index === 2 ? "Reading" : "Read");
-        await expect(card.locator("summary .tool-target")).toHaveText("src/live.ts");
-        if (index % 2 === 0) await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(1);
-        else await expect(card.locator("summary .tool-elapsed")).toHaveText("1.2s");
+        await expect(card).toHaveClass(
+          index % 2 === 0 ? /tool-running/ : /tool-done/,
+        );
+        await expect(card.locator("summary .tool-action")).toHaveText(
+          index < 2 ? "functions.Read_File" : index === 2 ? "Reading" : "Read",
+        );
+        await expect(card.locator("summary .tool-target")).toHaveText(
+          "src/live.ts",
+        );
+        if (index % 2 === 0)
+          await expect(
+            card.locator("summary .tool-status svg.spin"),
+          ).toHaveCount(1);
+        else
+          await expect(card.locator("summary .tool-elapsed")).toHaveText(
+            "1.2s",
+          );
       }
-    } finally { releases.forEach(release => release()); }
+    } finally {
+      releases.forEach((release) => release());
+    }
   });
 });
 
 test.describe("conversation timeline", () => {
-  const nodes = (page: Page) => page.locator("nav.timeline-panel .timeline-node");
-  const turns = (prefix = "turn", count = 3) => Array.from({ length: count }, (_, index) => [
-    { role: "user", entryId: `${prefix}-${index}`, content: `Question ${index}: ${"bounded preview ".repeat(12)}` },
-    { role: "assistant", entryId: `${prefix}-answer-${index}`, content: [{ type: "text", text: Array.from({ length: 32 }, (_, line) => `Answer ${index}, line ${line}: enough content to scroll.`).join("\n\n") }] },
-  ]).flat();
+  const nodes = (page: Page) =>
+    page.locator("nav.timeline-panel .timeline-node");
+  const turns = (prefix = "turn", count = 3) =>
+    Array.from({ length: count }, (_, index) => [
+      {
+        role: "user",
+        entryId: `${prefix}-${index}`,
+        content: `Question ${index}: ${"bounded preview ".repeat(12)}`,
+      },
+      {
+        role: "assistant",
+        entryId: `${prefix}-answer-${index}`,
+        content: [
+          {
+            type: "text",
+            text: Array.from(
+              { length: 32 },
+              (_, line) =>
+                `Answer ${index}, line ${line}: enough content to scroll.`,
+            ).join("\n\n"),
+          },
+        ],
+      },
+    ]).flat();
   async function snapshot(page: Page, messages: unknown[], extra = {}) {
     // Keep these ready-session fixtures free of a delayed queued-message banner.
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
       const body = route.request().postDataJSON();
-      if (body.type === "get_queue") return route.fulfill({ json: response({ items: [], count: 0 }, "get_queue") });
+      if (body.type === "get_queue")
+        return route.fulfill({
+          json: response({ items: [], count: 0 }, "get_queue"),
+        });
       return route.fallback();
     });
-    await page.route(snapshotRoute, route => route.fulfill({ json: { sessionId, status: "ready", messages, events: [], lastSeq: 4, hasMore: false, ...extra } }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          messages,
+          events: [],
+          lastSeq: 4,
+          hasMore: false,
+          ...extra,
+        },
+      }),
+    );
   }
   async function targetOffset(page: Page, id: string) {
     return page.locator(".transcript").evaluate((element, target) => {
-      const row = Array.from(element.querySelectorAll<HTMLElement>("[data-transcript-row]")).find(item => item.dataset.transcriptRow === target);
+      const row = Array.from(
+        element.querySelectorAll<HTMLElement>("[data-transcript-row]"),
+      ).find((item) => item.dataset.transcriptRow === target);
       if (!row) throw new Error(`Missing target ${target}`);
-      return row.getBoundingClientRect().top - element.getBoundingClientRect().top;
+      return (
+        row.getBoundingClientRect().top - element.getBoundingClientRect().top
+      );
     }, id);
   }
   async function jump(page: Page, index: number) {
-    const id = await nodes(page).nth(index).getAttribute("data-timeline-target");
+    const id = await nodes(page)
+      .nth(index)
+      .getAttribute("data-timeline-target");
     expect(id).toBeTruthy();
     const windowTop = await page.evaluate(() => window.scrollY);
     await nodes(page).nth(index).click();
-    await expect.poll(async () => Math.abs(await targetOffset(page, id!) - 12)).toBeLessThanOrEqual(3);
+    await expect
+      .poll(async () => Math.abs((await targetOffset(page, id!)) - 12))
+      .toBeLessThanOrEqual(3);
     expect(await page.evaluate(() => window.scrollY)).toBe(windowTop);
-    await expect(nodes(page).nth(index)).toHaveAttribute("aria-current", "location");
+    await expect(nodes(page).nth(index)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
     return id!;
   }
 
-  test("hides only generic completed settlements in English and Chinese, snapshot and live", async ({ page }) => {
+  test("hides only generic completed settlements in English and Chinese, snapshot and live", async ({
+    page,
+  }) => {
     test.setTimeout(60_000);
     await mockHost(page);
     const cases = [
       { source: "restored", event: { outcome: "completed" }, visible: false },
       { source: "snapshot", event: { outcome: "completed" }, visible: false },
       { source: "live", event: { outcome: "completed" }, visible: false },
-      { source: "snapshot", event: { outcome: "completed", summary: "Custom completion summary" }, visible: true },
-      { source: "live", event: { outcome: "failed", aborted: true }, visible: true },
+      {
+        source: "snapshot",
+        event: { outcome: "completed", summary: "Custom completion summary" },
+        visible: true,
+      },
+      {
+        source: "live",
+        event: { outcome: "failed", aborted: true },
+        visible: true,
+      },
       { source: "snapshot", event: { outcome: "aborted" }, visible: true },
-      { source: "snapshot", event: { outcome: "completed", error: "Meaningful failure reason" }, visible: true },
+      {
+        source: "snapshot",
+        event: { outcome: "completed", error: "Meaningful failure reason" },
+        visible: true,
+      },
     ];
     let current = cases[0];
-    await page.route(snapshotRoute, route => route.fulfill({ json: {
-      sessionId, messages: [{ role: "assistant", entryId: "real-output", content: [{ type: "text", text: "Real assistant output remains" }] }],
-      lastSeq: current.source === "snapshot" ? 5 : 4,
-      events: current.source === "snapshot" ? [{ seq: 5, event: { type: "agent_settled", runId: "timeline-run", ...current.event } }] : [],
-      history: { records: [{ type: "operation_finished", seq: 4, outcome: current.source === "restored" ? current.event.outcome : "completed" }], total: 1, hasMore: false, openOperations: [] },
-    } }));
-    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, route => route.fulfill({ contentType: "text/event-stream", body: current.source === "live"
-      ? `retry: 60000\nid: 5\nevent: agent_settled\ndata: ${JSON.stringify({ type: "agent_settled", runId: "timeline-run", ...current.event })}\n\n`
-      : 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          messages: [
+            {
+              role: "assistant",
+              entryId: "real-output",
+              content: [
+                { type: "text", text: "Real assistant output remains" },
+              ],
+            },
+          ],
+          lastSeq: current.source === "snapshot" ? 5 : 4,
+          events:
+            current.source === "snapshot"
+              ? [
+                  {
+                    seq: 5,
+                    event: {
+                      type: "agent_settled",
+                      runId: "timeline-run",
+                      ...current.event,
+                    },
+                  },
+                ]
+              : [],
+          history: {
+            records: [
+              {
+                type: "operation_finished",
+                seq: 4,
+                outcome:
+                  current.source === "restored"
+                    ? current.event.outcome
+                    : "completed",
+              },
+            ],
+            total: 1,
+            hasMore: false,
+            openOperations: [],
+          },
+        },
+      }),
+    );
+    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, (route) =>
+      route.fulfill({
+        contentType: "text/event-stream",
+        body:
+          current.source === "live"
+            ? `retry: 60000\nid: 5\nevent: agent_settled\ndata: ${JSON.stringify({ type: "agent_settled", runId: "timeline-run", ...current.event })}\n\n`
+            : 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+      }),
+    );
     for (const language of ["en", "zh"] as const) {
       for (const scenario of cases) {
         current = scenario;
         await page.goto("/");
-        if (language === "zh" && scenario === cases[0]) await chooseLanguage(page, "zh");
-        await expect(page.locator(".message.assistant")).toContainText("Real assistant output remains");
-        if (scenario.source === "live") await expect(page.locator(".connection")).toContainText(language === "zh" ? "重新连接中" : "reconnecting");
+        if (language === "zh" && scenario === cases[0])
+          await chooseLanguage(page, "zh");
+        await expect(page.locator(".message.assistant")).toContainText(
+          "Real assistant output remains",
+        );
+        if (scenario.source === "live")
+          await expect(page.locator(".connection")).toContainText(
+            language === "zh" ? "重新连接中" : "reconnecting",
+          );
         await expect(page.locator(".conversation-timeline")).toHaveCount(0);
         const notes = page.locator(".transcript-note");
-        if (!scenario.visible) await expect(page.locator(".transcript-note.run-status")).toHaveCount(0);
-        else if ("summary" in scenario.event) await expect(notes).toContainText("Custom completion summary");
-        else if ("error" in scenario.event) await expect(notes).toContainText("Meaningful failure reason");
-        else await expect(page.locator(".transcript-note.run-status")).toContainText(language === "zh" ? /失败|中止/ : /failed|aborted/);
+        if (!scenario.visible)
+          await expect(page.locator(".transcript-note.run-status")).toHaveCount(
+            0,
+          );
+        else if ("summary" in scenario.event)
+          await expect(notes).toContainText("Custom completion summary");
+        else if ("error" in scenario.event)
+          await expect(notes).toContainText("Meaningful failure reason");
+        else
+          await expect(
+            page.locator(".transcript-note.run-status"),
+          ).toContainText(language === "zh" ? /失败|中止/ : /failed|aborted/);
       }
     }
   });
 
-  async function railContains(page: Page, selector = '[aria-current="location"]') {
+  async function railContains(
+    page: Page,
+    selector = '[aria-current="location"]',
+  ) {
     return page.locator(".timeline-panel ol").evaluate((list, target) => {
       const node = list.querySelector(target);
       if (!node) return false;
@@ -10688,39 +12594,87 @@ test.describe("conversation timeline", () => {
   }
   async function outsideRail(page: Page) {
     return page.evaluate(() => {
-      const composer = document.querySelector(".composer")!.getBoundingClientRect();
+      const composer = document
+        .querySelector(".composer")!
+        .getBoundingClientRect();
       return {
         transcript: document.querySelector(".transcript")!.scrollTop,
-        windowX: window.scrollX, windowY: window.scrollY,
-        composer: { x: composer.x, y: composer.y, width: composer.width, height: composer.height },
+        windowX: window.scrollX,
+        windowY: window.scrollY,
+        composer: {
+          x: composer.x,
+          y: composer.y,
+          width: composer.width,
+          height: composer.height,
+        },
       };
     });
   }
 
-  for (const [language, width] of [["en", 1280], ["zh", 390]] as const) {
-    test(`initial tool-only page keeps a visible bounded history entry in ${language}`, async ({ page }) => {
+  for (const [language, width] of [
+    ["en", 1280],
+    ["zh", 390],
+  ] as const) {
+    test(`initial tool-only page keeps a visible bounded history entry in ${language}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width, height: 900 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
-      await snapshot(page, Array.from({ length: 48 }, (_, index) => ({
-        role: "assistant", entryId: `tool-only-${index}`,
-        content: [{ type: "toolCall", id: `tool-${index}`, name: "read", arguments: { path: `src/file-${index}.ts` } }],
-      })), { firstId: "tool-only-0", hasMore: true });
+      await snapshot(
+        page,
+        Array.from({ length: 48 }, (_, index) => ({
+          role: "assistant",
+          entryId: `tool-only-${index}`,
+          content: [
+            {
+              type: "toolCall",
+              id: `tool-${index}`,
+              name: "read",
+              arguments: { path: `src/file-${index}.ts` },
+            },
+          ],
+        })),
+        { firstId: "tool-only-0", hasMore: true },
+      );
       const requests: Array<{ beforeId?: string; limit?: number }> = [];
       let release!: () => void;
-      const held = new Promise<void>(resolve => { release = resolve; });
-      await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
-        const body = route.request().postDataJSON();
-        if (body.type !== "get_messages") return route.fallback();
-        requests.push(body);
-        await held;
-        return route.fulfill({ json: response({ messages: turns("loaded", 1), firstId: "loaded-0", hasMore: false }, "get_messages") });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
       });
+      await page.route(
+        `**/api/v1/sessions/${sessionId}/commands`,
+        async (route) => {
+          const body = route.request().postDataJSON();
+          if (body.type !== "get_messages") return route.fallback();
+          requests.push(body);
+          await held;
+          return route.fulfill({
+            json: response(
+              {
+                messages: turns("loaded", 1),
+                firstId: "loaded-0",
+                hasMore: false,
+              },
+              "get_messages",
+            ),
+          });
+        },
+      );
       try {
         await page.goto("/");
         await openTimeline(page);
         const rail = page.locator(".conversation-timeline");
-        const load = rail.getByRole("button", { name: language === "en" ? "Show earlier messages in timeline" : "在时间线中显示更早的消息", exact: true });
+        const load = rail.getByRole("button", {
+          name:
+            language === "en"
+              ? "Show earlier messages in timeline"
+              : "在时间线中显示更早的消息",
+          exact: true,
+        });
         await expect(load).toBeVisible();
         await expect(nodes(page)).toHaveCount(0);
         const box = await rail.boundingBox();
@@ -10729,7 +12683,9 @@ test.describe("conversation timeline", () => {
         const anchor = await visiblePagingAnchor(page);
         await expect(load).toBeDisabled();
         await expect(load).toHaveAttribute("aria-busy", "true");
-        expect(requests).toMatchObject([{ beforeId: "tool-only-0", limit: 48 }]);
+        expect(requests).toMatchObject([
+          { beforeId: "tool-only-0", limit: 48 },
+        ]);
         release();
         await expect(nodes(page)).toHaveCount(1);
         await expect(page.locator(".timeline-load-earlier")).toHaveCount(0);
@@ -10737,14 +12693,20 @@ test.describe("conversation timeline", () => {
         // Completion replaces the busy history button; enter the new tick afresh.
         await page.locator(".composer textarea").hover();
         await nodes(page).first().hover();
-        await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("1 / 1");
+        await expect(
+          page.getByRole("tooltip").locator(".timeline-preview-index"),
+        ).toHaveText("1 / 1");
         await jump(page, 0);
         expect(requests).toHaveLength(1);
-      } finally { release(); }
+      } finally {
+        release();
+      }
     });
   }
 
-  test("a single loaded question is visible and navigable without history paging", async ({ page }) => {
+  test("a single loaded question is visible and navigable without history paging", async ({
+    page,
+  }) => {
     await mockHost(page);
     await snapshot(page, turns("single", 1));
     await page.goto("/");
@@ -10752,13 +12714,19 @@ test.describe("conversation timeline", () => {
     await expect(nodes(page)).toHaveCount(1);
     await expect(page.locator(".timeline-load-earlier")).toHaveCount(0);
     await nodes(page).first().focus();
-    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("1 / 1");
+    await expect(
+      page.getByRole("tooltip").locator(".timeline-preview-index"),
+    ).toHaveText("1 / 1");
     await page.keyboard.press("Enter");
-    await expect.poll(async () => Math.abs(await targetOffset(page, "single-0") - 12)).toBeLessThanOrEqual(3);
+    await expect
+      .poll(async () => Math.abs((await targetOffset(page, "single-0")) - 12))
+      .toBeLessThanOrEqual(3);
     await expect(nodes(page)).toHaveAttribute("aria-current", "location");
   });
 
-  test("top button toggles the original narrow rail, releases padding and preserves the draft", async ({ page }) => {
+  test("top button toggles the original narrow rail, releases padding and preserves the draft", async ({
+    page,
+  }) => {
     await mockHost(page);
     await snapshot(page, turns());
     for (const width of [1280, 390]) {
@@ -10771,13 +12739,20 @@ test.describe("conversation timeline", () => {
       await expect(page.locator(".conversation-timeline")).toHaveCount(0);
       const composer = page.locator(".composer textarea");
       await composer.fill("Keep this unsent timeline draft");
-      const padding = () => page.locator(".transcript").evaluate(element =>
-        Number.parseFloat(getComputedStyle(element).paddingLeft));
+      const padding = () =>
+        page
+          .locator(".transcript")
+          .evaluate((element) =>
+            Number.parseFloat(getComputedStyle(element).paddingLeft),
+          );
       const closedPadding = await padding();
       await openTimeline(page);
       await expect(nodes(page)).toHaveCount(3);
       const rail = page.locator(".conversation-timeline");
-      await expect(rail).toHaveAttribute("id", "conversation-timeline-navigation");
+      await expect(rail).toHaveAttribute(
+        "id",
+        "conversation-timeline-navigation",
+      );
       expect((await rail.boundingBox())!.width).toBeLessThanOrEqual(28);
       expect(await padding()).toBeGreaterThan(closedPadding);
       await expect(composer).toHaveValue("Keep this unsent timeline draft");
@@ -10789,23 +12764,55 @@ test.describe("conversation timeline", () => {
     }
   });
 
-  test("desktop narrow rail previews user turns and roves focus without navigating until activation", async ({ page }) => {
+  test("desktop narrow rail previews user turns and roves focus without navigating until activation", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await mockHost(page);
-    await snapshot(page, [...turns(), { role: "toolResult", toolCallId: "timeline-tool", toolName: "read", content: "Tool output is not a user turn" }], {
-      events: [{ seq: 5, event: { type: "agent_settled", summary: "A note is not a user turn" } }], lastSeq: 5,
-    });
+    await snapshot(
+      page,
+      [
+        ...turns(),
+        {
+          role: "toolResult",
+          toolCallId: "timeline-tool",
+          toolName: "read",
+          content: "Tool output is not a user turn",
+        },
+      ],
+      {
+        events: [
+          {
+            seq: 5,
+            event: {
+              type: "agent_settled",
+              summary: "A note is not a user turn",
+            },
+          },
+        ],
+        lastSeq: 5,
+      },
+    );
     await page.goto("/");
     await openTimeline(page);
     await expect(nodes(page)).toHaveCount(3);
-    await expect(page.locator(".transcript-frame > .transcript")).toHaveCount(1);
-    await expect(page.locator(".transcript-frame > .conversation-timeline")).toHaveCount(1);
+    await expect(page.locator(".transcript-frame > .transcript")).toHaveCount(
+      1,
+    );
+    await expect(
+      page.locator(".transcript-frame > .conversation-timeline"),
+    ).toHaveCount(1);
     await expect(page.locator(".transcript-frame .composer")).toHaveCount(0);
     const rail = page.locator(".conversation-timeline");
-    const panel = page.getByRole("navigation", { name: "Conversation timeline", exact: true });
+    const panel = page.getByRole("navigation", {
+      name: "Conversation timeline",
+      exact: true,
+    });
     await expect(panel).toBeVisible();
     await expect(rail.locator("button:not(.timeline-node)")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Conversation timeline", exact: true })).toHaveCount(1);
+    await expect(
+      page.getByRole("button", { name: "Conversation timeline", exact: true }),
+    ).toHaveCount(1);
     await expect(timelineToggle(page)).toHaveAttribute("aria-expanded", "true");
     const frame = await page.locator(".transcript-frame").boundingBox();
     const box = await rail.boundingBox();
@@ -10813,10 +12820,13 @@ test.describe("conversation timeline", () => {
     expect(box!.height).toBeLessThanOrEqual(280);
     expect(box!.x).toBeGreaterThanOrEqual(frame!.x);
     expect(box!.x + box!.width).toBeLessThan(frame!.x + frame!.width / 2);
-    const firstMessage = await page.locator('.message').first().boundingBox();
+    const firstMessage = await page.locator(".message").first().boundingBox();
     expect(firstMessage!.x).toBeGreaterThanOrEqual(box!.x + box!.width);
     for (let index = 0; index < 3; index++) {
-      await expect(nodes(page).nth(index)).toHaveAttribute("aria-label", new RegExp(`^Go to message ${index + 1}: Question ${index}:`));
+      await expect(nodes(page).nth(index)).toHaveAttribute(
+        "aria-label",
+        new RegExp(`^Go to message ${index + 1}: Question ${index}:`),
+      );
       await expect(nodes(page).nth(index)).not.toHaveAttribute("title");
       const target = await nodes(page).nth(index).boundingBox();
       expect(target!.width).toBeGreaterThanOrEqual(24);
@@ -10828,12 +12838,20 @@ test.describe("conversation timeline", () => {
     await nodes(page).first().hover();
     const preview = page.getByRole("tooltip");
     await expect(preview).toHaveCount(1);
-    await expect(preview.locator(".timeline-preview-index")).toHaveText("1 / 3");
-    await expect(preview.locator(".timeline-label")).toContainText("Question 0:");
+    await expect(preview.locator(".timeline-preview-index")).toHaveText(
+      "1 / 3",
+    );
+    await expect(preview.locator(".timeline-label")).toContainText(
+      "Question 0:",
+    );
     const previewBox = await preview.boundingBox();
     expect(previewBox!.x).toBeGreaterThanOrEqual(box!.x + box!.width);
-    expect(previewBox!.x + previewBox!.width).toBeLessThanOrEqual(frame!.x + frame!.width);
-    await page.screenshot({ path: test.info().outputPath("timeline-desktop.png") });
+    expect(previewBox!.x + previewBox!.width).toBeLessThanOrEqual(
+      frame!.x + frame!.width,
+    );
+    await page.screenshot({
+      path: test.info().outputPath("timeline-desktop.png"),
+    });
     // The hover preview stays readable across its small bridge and does not need focus.
     await preview.hover();
     await expect(preview).toBeVisible();
@@ -10848,21 +12866,40 @@ test.describe("conversation timeline", () => {
     await jump(page, 0);
     const initial = await outsideRail(page);
     await nodes(page).first().focus();
-    for (const [key, index] of [["ArrowDown", 1], ["End", 2], ["ArrowUp", 1], ["Home", 0]] as const) {
+    for (const [key, index] of [
+      ["ArrowDown", 1],
+      ["End", 2],
+      ["ArrowUp", 1],
+      ["Home", 0],
+    ] as const) {
       await page.keyboard.press(key);
       await expect(nodes(page).nth(index)).toBeFocused();
       await expect(nodes(page).nth(index)).toHaveAttribute("tabindex", "0");
-      await expect(panel.locator('.timeline-node[tabindex="0"]')).toHaveCount(1);
+      await expect(panel.locator('.timeline-node[tabindex="0"]')).toHaveCount(
+        1,
+      );
       await expect(preview).toHaveCount(1);
-      await expect(preview.locator(".timeline-preview-index")).toHaveText(`${index + 1} / 3`);
+      await expect(preview.locator(".timeline-preview-index")).toHaveText(
+        `${index + 1} / 3`,
+      );
       expect(await outsideRail(page)).toEqual(initial);
-      await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+      await expect(nodes(page).first()).toHaveAttribute(
+        "aria-current",
+        "location",
+      );
     }
     await page.keyboard.press("ArrowDown");
-    const middleId = (await nodes(page).nth(1).getAttribute("data-timeline-target"))!;
+    const middleId = (await nodes(page)
+      .nth(1)
+      .getAttribute("data-timeline-target"))!;
     await page.keyboard.press("Enter");
-    await expect.poll(async () => Math.abs(await targetOffset(page, middleId) - 12)).toBeLessThanOrEqual(3);
-    await expect(nodes(page).nth(1)).toHaveAttribute("aria-current", "location");
+    await expect
+      .poll(async () => Math.abs((await targetOffset(page, middleId)) - 12))
+      .toBeLessThanOrEqual(3);
+    await expect(nodes(page).nth(1)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
     await expect(preview).toHaveCount(0);
     await page.keyboard.press("ArrowDown");
     await expect(preview).toBeVisible();
@@ -10870,49 +12907,86 @@ test.describe("conversation timeline", () => {
     await expect(preview).toHaveCount(0);
     await expect(nodes(page).nth(2)).toBeFocused();
     await page.keyboard.press("Space");
-    const lastId = (await nodes(page).nth(2).getAttribute("data-timeline-target"))!;
-    await expect.poll(async () => Math.abs(await targetOffset(page, lastId) - 12)).toBeLessThanOrEqual(3);
-    await expect(nodes(page).nth(2)).toHaveAttribute("aria-current", "location");
+    const lastId = (await nodes(page)
+      .nth(2)
+      .getAttribute("data-timeline-target"))!;
+    await expect
+      .poll(async () => Math.abs((await targetOffset(page, lastId)) - 12))
+      .toBeLessThanOrEqual(3);
+    await expect(nodes(page).nth(2)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
     expect(await page.evaluate(() => window.scrollY)).toBe(initial.windowY);
     await scrollPagingTo(page, 0);
-    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await expect(nodes(page).first()).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
   });
 
-  test("390px Chinese timeline stays visible with focused previews and an unchanged composer", async ({ page }) => {
+  test("390px Chinese timeline stays visible with focused previews and an unchanged composer", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.addInitScript(() => localStorage.setItem("rpi-web-language", "zh"));
+    await page.addInitScript(() =>
+      localStorage.setItem("rpi-web-language", "zh"),
+    );
     await mockHost(page);
     await snapshot(page, turns());
     await page.goto("/");
     await openTimeline(page);
-    const panel = page.getByRole("navigation", { name: "对话时间线", exact: true });
+    const panel = page.getByRole("navigation", {
+      name: "对话时间线",
+      exact: true,
+    });
     await expect(panel).toBeVisible();
     await expect(nodes(page)).toHaveCount(3);
-    await expect(page.getByRole("button", { name: "对话时间线", exact: true })).toHaveCount(1);
+    await expect(
+      page.getByRole("button", { name: "对话时间线", exact: true }),
+    ).toHaveCount(1);
     await expect(timelineToggle(page)).toHaveAttribute("aria-expanded", "true");
     const before = await outsideRail(page);
     await nodes(page).first().focus();
     await expect(page.getByRole("tooltip")).toBeVisible();
-    await expect(page.getByRole("tooltip").locator(".timeline-label")).toContainText("Question 0:");
+    await expect(
+      page.getByRole("tooltip").locator(".timeline-label"),
+    ).toContainText("Question 0:");
     const panelBox = await page.locator(".conversation-timeline").boundingBox();
     const previewBox = await page.getByRole("tooltip").boundingBox();
-    const frameBox = await page.locator('.transcript-frame').boundingBox();
-    const firstMessage = await page.locator('.message').first().boundingBox();
+    const frameBox = await page.locator(".transcript-frame").boundingBox();
+    const firstMessage = await page.locator(".message").first().boundingBox();
     expect(panelBox!.x).toBeGreaterThanOrEqual(frameBox!.x);
-    expect(panelBox!.x + panelBox!.width).toBeLessThan(frameBox!.x + frameBox!.width / 2);
-    expect(firstMessage!.x).toBeGreaterThanOrEqual(panelBox!.x + panelBox!.width);
+    expect(panelBox!.x + panelBox!.width).toBeLessThan(
+      frameBox!.x + frameBox!.width / 2,
+    );
+    expect(firstMessage!.x).toBeGreaterThanOrEqual(
+      panelBox!.x + panelBox!.width,
+    );
     expect(previewBox!.x).toBeGreaterThanOrEqual(panelBox!.x + panelBox!.width);
     expect(panelBox!.width).toBeLessThanOrEqual(28);
     expect(panelBox!.height).toBeLessThanOrEqual(280);
     expect(panelBox!.x).toBeGreaterThanOrEqual(0);
     expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
-    expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(before.composer.y + 1);
+    expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(
+      before.composer.y + 1,
+    );
     expect(previewBox!.x).toBeGreaterThanOrEqual(0);
     expect(previewBox!.x + previewBox!.width).toBeLessThanOrEqual(390);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    expect(await page.locator(".transcript").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    expect(
+      await page
+        .locator(".transcript")
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
     expect(await outsideRail(page)).toEqual(before);
-    await page.screenshot({ path: test.info().outputPath("timeline-mobile.png") });
+    await page.screenshot({
+      path: test.info().outputPath("timeline-mobile.png"),
+    });
     await page.keyboard.press("Escape");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
     await expect(nodes(page).first()).toBeFocused();
@@ -10921,34 +12995,71 @@ test.describe("conversation timeline", () => {
     expect((await outsideRail(page)).composer).toEqual(before.composer);
   });
 
-  test("deduplicates text and images, sanitizes previews and safely targets punctuation IDs", async ({ page }) => {
+  test("deduplicates text and images, sanitizes previews and safely targets punctuation IDs", async ({
+    page,
+  }) => {
     await mockHost(page);
     const image = { type: "image", data: imagePng, mimeType: "image/png" };
     const oddId = 'odd"entry:[x]#./?';
     await snapshot(page, [
-      { role: "user", entryId: oddId, content: [{ type: "text", text: '已附加文件:\n- .rpi/uploads/c11ee75a-625a-4aec-a575-401843f7af66-friendly.docx\nPlease review' }, image, image] },
-      { role: "assistant", content: [{ type: "text", text: "Spacer\n\n".repeat(80) }] },
+      {
+        role: "user",
+        entryId: oddId,
+        content: [
+          {
+            type: "text",
+            text: "已附加文件:\n- .rpi/uploads/c11ee75a-625a-4aec-a575-401843f7af66-friendly.docx\nPlease review",
+          },
+          image,
+          image,
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Spacer\n\n".repeat(80) }],
+      },
       { role: "user", entryId: "only-images", content: [image, image] },
       { role: "user", content: [image, image] },
-      { role: "user", entryId: "plain-preview", content: "[Readable link](https://example.test) <b>literal</b> " + "long ".repeat(40) },
+      {
+        role: "user",
+        entryId: "plain-preview",
+        content:
+          "[Readable link](https://example.test) <b>literal</b> " +
+          "long ".repeat(40),
+      },
       ...turns("tail", 1),
     ]);
     await page.goto("/");
     await openTimeline(page);
     await expect(nodes(page)).toHaveCount(5);
-    await expect(nodes(page).first()).toHaveAttribute("aria-label", /friendly\.docx/);
-    await expect(nodes(page).nth(1)).toHaveAttribute("aria-label", "Go to message 2: Image message");
-    await expect(nodes(page).nth(2)).toHaveAttribute("aria-label", "Go to message 3: Image message");
+    await expect(nodes(page).first()).toHaveAttribute(
+      "aria-label",
+      /friendly\.docx/,
+    );
+    await expect(nodes(page).nth(1)).toHaveAttribute(
+      "aria-label",
+      "Go to message 2: Image message",
+    );
+    await expect(nodes(page).nth(2)).toHaveAttribute(
+      "aria-label",
+      "Go to message 3: Image message",
+    );
     for (let index = 0; index < 5; index++) {
       await nodes(page).nth(index).hover();
       const preview = page.getByRole("tooltip");
       await expect(preview).toHaveCount(1);
       const label = (await preview.locator(".timeline-label").textContent())!;
       expect(label.length).toBeLessThanOrEqual(140);
-      await expect(nodes(page).nth(index)).toHaveAttribute("aria-label", `Go to message ${index + 1}: ${label}`);
+      await expect(nodes(page).nth(index)).toHaveAttribute(
+        "aria-label",
+        `Go to message ${index + 1}: ${label}`,
+      );
       await expect(preview).not.toContainText(/c11ee75a|base64|iVBOR/);
       await expect(preview.locator("a, img, b")).toHaveCount(0);
-      if (index === 3) await expect(preview).toContainText("[Readable link](https://example.test) <b>literal</b>");
+      if (index === 3)
+        await expect(preview).toContainText(
+          "[Readable link](https://example.test) <b>literal</b>",
+        );
     }
     await jump(page, 0);
     await expect(page.getByRole("tooltip")).toHaveCount(0);
@@ -10956,42 +13067,76 @@ test.describe("conversation timeline", () => {
     await expect(nodes(page).nth(1)).toHaveAttribute("aria-label", /图片消息$/);
     await expect(nodes(page).nth(2)).toHaveAttribute("aria-label", /图片消息$/);
     await nodes(page).nth(1).hover();
-    await expect(page.getByRole("tooltip").locator(".timeline-label")).toHaveText("图片消息");
+    await expect(
+      page.getByRole("tooltip").locator(".timeline-label"),
+    ).toHaveText("图片消息");
   });
 
-
-  test("indexes loaded history only and prepends a single 48-message page without losing the reading anchor", async ({ page }) => {
+  test("indexes loaded history only and prepends a single 48-message page without losing the reading anchor", async ({
+    page,
+  }) => {
     await mockUpwardPaging(page);
     const requests: Array<{ beforeId?: string; limit?: number }> = [];
     let release!: () => void;
-    const held = new Promise<void>(resolve => { release = resolve; });
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
-      const body = route.request().postDataJSON();
-      if (body.type !== "get_messages") return route.fallback();
-      requests.push(body);
-      if (!body.beforeId) return route.fallback();
-      await held;
-      return route.fulfill({ json: response({ messages: Array.from({ length: 48 }, (_, index) => ({ role: "user", entryId: `timeline-older-${index}`, content: `Earlier question ${index}\nBounded historical content` })), firstId: "timeline-older-0", hasMore: false }, "get_messages") });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/commands`,
+      async (route) => {
+        const body = route.request().postDataJSON();
+        if (body.type !== "get_messages") return route.fallback();
+        requests.push(body);
+        if (!body.beforeId) return route.fallback();
+        await held;
+        return route.fulfill({
+          json: response(
+            {
+              messages: Array.from({ length: 48 }, (_, index) => ({
+                role: "user",
+                entryId: `timeline-older-${index}`,
+                content: `Earlier question ${index}\nBounded historical content`,
+              })),
+              firstId: "timeline-older-0",
+              hasMore: false,
+            },
+            "get_messages",
+          ),
+        });
+      },
+    );
     try {
       await page.goto("/");
       await openTimeline(page);
       await expect(nodes(page)).toHaveCount(20);
       const description = page.locator(".timeline-description");
-      await expect(page.locator("nav.timeline-panel")).toHaveAttribute("aria-describedby", (await description.getAttribute("id"))!);
+      await expect(page.locator("nav.timeline-panel")).toHaveAttribute(
+        "aria-describedby",
+        (await description.getAttribute("id"))!,
+      );
       await expect(description).toContainText(/loaded/i);
-      expect(await description.evaluate(element => {
-        const style = getComputedStyle(element);
-        return style.clipPath === "inset(50%)" && style.overflow === "hidden" && element.getBoundingClientRect().width === 1;
-      })).toBe(true);
+      expect(
+        await description.evaluate((element) => {
+          const style = getComputedStyle(element);
+          return (
+            style.clipPath === "inset(50%)" &&
+            style.overflow === "hidden" &&
+            element.getBoundingClientRect().width === 1
+          );
+        }),
+      ).toBe(true);
       await expect(page.locator(".timeline-earlier")).toHaveCount(0);
       await expect.poll(() => railContains(page)).toBe(true);
       await page.locator('.timeline-node[aria-current="location"]').hover();
-      await expect(page.getByRole("tooltip").locator(".timeline-earlier")).toBeVisible();
+      await expect(
+        page.getByRole("tooltip").locator(".timeline-earlier"),
+      ).toBeVisible();
       expect(requests).toHaveLength(0);
       await page.locator(".composer textarea").hover();
       await expect(page.getByRole("tooltip")).toHaveCount(0);
-      const previous = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      const previous = await nodes(page).evaluateAll((elements) =>
+        elements.map((element) => element.getAttribute("data-timeline-target")),
+      );
       await scrollPagingTo(page, 120);
       await expect.poll(() => requests.length).toBe(1);
       await scrollPagingTo(page, 450);
@@ -10999,7 +13144,9 @@ test.describe("conversation timeline", () => {
       release();
       await expect(nodes(page)).toHaveCount(68);
       await expectPagingAnchor(page, anchor);
-      const targets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      const targets = await nodes(page).evaluateAll((elements) =>
+        elements.map((element) => element.getAttribute("data-timeline-target")),
+      );
       expect(targets.slice(48)).toEqual(previous);
       expect(new Set(targets).size).toBe(68);
       await expect(description).not.toContainText(/loaded/i);
@@ -11007,43 +13154,91 @@ test.describe("conversation timeline", () => {
       await page.locator('.timeline-node[aria-current="location"]').hover();
       await expect(page.getByRole("tooltip")).toBeVisible();
       await expect(page.locator(".timeline-earlier")).toHaveCount(0);
-      expect(requests).toMatchObject([{ beforeId: "scroll-current-0", limit: 48 }]);
-    } finally { release(); }
+      expect(requests).toMatchObject([
+        { beforeId: "scroll-current-0", limit: 48 },
+      ]);
+    } finally {
+      release();
+    }
   });
 
-  test("resets across sessions and binds live appended targets without retaining old nodes or listeners", async ({ page }) => {
+  test("resets across sessions and binds live appended targets without retaining old nodes or listeners", async ({
+    page,
+  }) => {
     await mockHost(page);
     let release!: () => void;
     let waiting = false;
     let emitted = false;
-    const held = new Promise<void>(resolve => { release = resolve; });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     await snapshot(page, turns("original", 2));
-    await page.route(url => url.pathname === "/api/v1/sessions/session-2/snapshot", route => route.fulfill({ json: { sessionId: "session-2", messages: turns("other", 1), events: [], lastSeq: 4, hasMore: false } }));
-    await page.route("**/api/v1/sessions/session-2/events?*", async route => {
-      if (emitted) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
+    await page.route(
+      (url) => url.pathname === "/api/v1/sessions/session-2/snapshot",
+      (route) =>
+        route.fulfill({
+          json: {
+            sessionId: "session-2",
+            messages: turns("other", 1),
+            events: [],
+            lastSeq: 4,
+            hasMore: false,
+          },
+        }),
+    );
+    await page.route("**/api/v1/sessions/session-2/events?*", async (route) => {
+      if (emitted)
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+        });
       emitted = true;
       waiting = true;
       await held;
       const messages = turns("appended", 1);
-      await route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\n" + messages.map((message, index) => `id: ${5 + index}\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message })}\n\n`).join("") });
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body:
+          "retry: 60000\n" +
+          messages
+            .map(
+              (message, index) =>
+                `id: ${5 + index}\nevent: message_end\ndata: ${JSON.stringify({ type: "message_end", message })}\n\n`,
+            )
+            .join(""),
+      });
     });
     try {
       await page.goto("/");
       await openTimeline(page);
       await expect(nodes(page)).toHaveCount(2);
-      const originalTargets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      const originalTargets = await nodes(page).evaluateAll((elements) =>
+        elements.map((element) => element.getAttribute("data-timeline-target")),
+      );
       await nodes(page).first().hover();
       await expect(page.getByRole("tooltip")).toBeVisible();
       const list = page.locator(".timeline-panel ol");
       const start = (await nodes(page).first().boundingBox())!;
       const target = (await nodes(page).nth(1).boundingBox())!;
-      await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+      await page.mouse.move(
+        start.x + start.width / 2,
+        start.y + start.height / 2,
+      );
       await page.mouse.down();
-      await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+      await page.mouse.move(
+        target.x + target.width / 2,
+        target.y + target.height / 2,
+      );
       await expect(list).toHaveAttribute("data-scrubbing", "true");
-      await expect(nodes(page).nth(1)).toHaveAttribute("aria-current", "location");
+      await expect(nodes(page).nth(1)).toHaveAttribute(
+        "aria-current",
+        "location",
+      );
       // Activate the session switch by keyboard while the pointer remains held.
-      await page.getByRole("button", { name: "New session", exact: false }).first().focus();
+      await page
+        .getByRole("button", { name: "New session", exact: false })
+        .first()
+        .focus();
       await page.keyboard.press("Enter");
       await expect(page.locator(".toolbar h1")).toHaveText("New session");
       await expect.poll(() => waiting).toBe(true);
@@ -11051,7 +13246,10 @@ test.describe("conversation timeline", () => {
       // Reopen by keyboard while the old session pointer remains held.
       await timelineToggle(page).focus();
       await page.keyboard.press("Enter");
-      await expect(timelineToggle(page)).toHaveAttribute("aria-expanded", "true");
+      await expect(timelineToggle(page)).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
       await expect(nodes(page)).toHaveCount(1);
       await expect(list).not.toHaveAttribute("data-scrubbing");
       await page.mouse.up();
@@ -11062,22 +13260,31 @@ test.describe("conversation timeline", () => {
       await expect(nodes(page)).toHaveCount(2);
       await expect(page.locator(".message.assistant")).toHaveCount(2);
       await expect(page.getByRole("tooltip")).toHaveCount(0);
-      const targets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
-      expect(targets.every(id => !originalTargets.includes(id))).toBe(true);
+      const targets = await nodes(page).evaluateAll((elements) =>
+        elements.map((element) => element.getAttribute("data-timeline-target")),
+      );
+      expect(targets.every((id) => !originalTargets.includes(id))).toBe(true);
       // Live rows use the event-sequence UI id, not the durable entry id.
       expect(targets).toContain("u5");
       await jump(page, 1);
       await page.locator(".composer textarea").hover();
       await nodes(page).nth(1).hover();
-      await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("2 / 2");
-      await page.locator(".project-session-link").filter({ hasText: "Mock session" }).click();
+      await expect(
+        page.getByRole("tooltip").locator(".timeline-preview-index"),
+      ).toHaveText("2 / 2");
+      await page
+        .locator(".project-session-link")
+        .filter({ hasText: "Mock session" })
+        .click();
       await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
       await openTimeline(page);
       await expect(nodes(page)).toHaveCount(2);
       await expect(page.getByRole("tooltip")).toHaveCount(0);
-      const restoredTargets = await nodes(page).evaluateAll(elements => elements.map(element => element.getAttribute("data-timeline-target")));
+      const restoredTargets = await nodes(page).evaluateAll((elements) =>
+        elements.map((element) => element.getAttribute("data-timeline-target")),
+      );
       expect(restoredTargets).toEqual(originalTargets);
-      expect(restoredTargets.every(id => !targets.includes(id))).toBe(true);
+      expect(restoredTargets.every((id) => !targets.includes(id))).toBe(true);
       await jump(page, 0);
       await page.locator(".composer textarea").focus();
       await nodes(page).first().focus();
@@ -11085,15 +13292,19 @@ test.describe("conversation timeline", () => {
       await page.keyboard.press("Escape");
       await expect(page.getByRole("tooltip")).toHaveCount(0);
       await expect(nodes(page).first()).toBeFocused();
-    } finally { release(); }
+    } finally {
+      release();
+    }
   });
 
-  test("80-user rail consumes native wheel scrolling and does not autosnap while browsing", async ({ page }) => {
+  test("80-user rail consumes native wheel scrolling and does not autosnap while browsing", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await mockHost(page);
     await snapshot(page, turns("long", 80));
     const reads: unknown[] = [];
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
       const body = route.request().postDataJSON();
       if (body.type === "get_messages") reads.push(body);
       return route.fallback();
@@ -11103,50 +13314,88 @@ test.describe("conversation timeline", () => {
     await expect(nodes(page)).toHaveCount(80);
     await page.locator(".composer textarea").hover();
     await scrollPagingTo(page, 0);
-    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await expect(nodes(page).first()).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
     await expect.poll(() => railContains(page)).toBe(true);
     const list = page.locator(".timeline-panel ol");
-    expect(await list.evaluate(element => ({ overflow: getComputedStyle(element).overflowY, touch: getComputedStyle(element).touchAction }))).toEqual({ overflow: "auto", touch: "none" });
+    expect(
+      await list.evaluate((element) => ({
+        overflow: getComputedStyle(element).overflowY,
+        touch: getComputedStyle(element).touchAction,
+      })),
+    ).toEqual({ overflow: "auto", touch: "none" });
     const box = (await list.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     const before = await outsideRail(page);
-    const top = await list.evaluate(element => element.scrollTop);
+    const top = await list.evaluate((element) => element.scrollTop);
     await page.mouse.wheel(0, 360);
-    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(top + 100);
+    await expect
+      .poll(() => list.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(top + 100);
     let lastTop = -1;
     let stableFrames = 0;
-    await expect.poll(async () => {
-      const current = await list.evaluate(element => element.scrollTop);
-      stableFrames = current === lastTop ? stableFrames + 1 : 0;
-      lastTop = current;
-      return stableFrames;
-    }, { intervals: [100] }).toBeGreaterThanOrEqual(3);
+    await expect
+      .poll(
+        async () => {
+          const current = await list.evaluate((element) => element.scrollTop);
+          stableFrames = current === lastTop ? stableFrames + 1 : 0;
+          lastTop = current;
+          return stableFrames;
+        },
+        { intervals: [100] },
+      )
+      .toBeGreaterThanOrEqual(3);
     expect(await outsideRail(page)).toEqual(before);
-    const browsedTop = await list.evaluate(element => element.scrollTop);
+    const browsedTop = await list.evaluate((element) => element.scrollTop);
     // Active-turn changes must not pull a pointer-browsed rail back to the transcript.
-    await scrollPagingTo(page, await page.locator(".transcript").evaluate(element => element.scrollHeight));
-    await expect(nodes(page).last()).toHaveAttribute("aria-current", "location");
-    expect(await list.evaluate(element => element.scrollTop)).toBe(browsedTop);
+    await scrollPagingTo(
+      page,
+      await page
+        .locator(".transcript")
+        .evaluate((element) => element.scrollHeight),
+    );
+    await expect(nodes(page).last()).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    expect(await list.evaluate((element) => element.scrollTop)).toBe(
+      browsedTop,
+    );
     expect(await railContains(page)).toBe(false);
     // Focus browsing has the same protection after the pointer leaves.
-    const visibleIndex = await list.evaluate(element => Array.from(element.querySelectorAll(".timeline-node")).findIndex(node => {
-      const box = node.getBoundingClientRect();
-      const viewport = element.getBoundingClientRect();
-      return box.top >= viewport.top && box.bottom <= viewport.bottom;
-    }));
+    const visibleIndex = await list.evaluate((element) =>
+      Array.from(element.querySelectorAll(".timeline-node")).findIndex(
+        (node) => {
+          const box = node.getBoundingClientRect();
+          const viewport = element.getBoundingClientRect();
+          return box.top >= viewport.top && box.bottom <= viewport.bottom;
+        },
+      ),
+    );
     expect(visibleIndex).toBeGreaterThan(0);
     await nodes(page).nth(visibleIndex).focus();
     await page.locator(".composer textarea").hover();
-    const focusedTop = await list.evaluate(element => element.scrollTop);
+    const focusedTop = await list.evaluate((element) => element.scrollTop);
     await scrollPagingTo(page, 0);
-    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
-    expect(await list.evaluate(element => element.scrollTop)).toBe(focusedTop);
+    await expect(nodes(page).first()).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    expect(await list.evaluate((element) => element.scrollTop)).toBe(
+      focusedTop,
+    );
     expect(await railContains(page)).toBe(false);
     // Reveal the offscreen target inside the rail before Playwright can click it.
     await page.keyboard.press("End");
     await expect(nodes(page).last()).toBeFocused();
-    await expect.poll(() => railContains(page, "li:last-child .timeline-node")).toBe(true);
-    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("80 / 80");
+    await expect
+      .poll(() => railContains(page, "li:last-child .timeline-node"))
+      .toBe(true);
+    await expect(
+      page.getByRole("tooltip").locator(".timeline-preview-index"),
+    ).toHaveText("80 / 80");
     const windowTop = await page.evaluate(() => window.scrollY);
     await jump(page, 79);
     expect(await page.evaluate(() => window.scrollY)).toBe(windowTop);
@@ -11154,12 +13403,14 @@ test.describe("conversation timeline", () => {
     expect(reads).toHaveLength(0);
   });
 
-  test("mouse scrubbing switches turns before release, preserves preview and suppresses the starting click", async ({ page }) => {
+  test("mouse scrubbing switches turns before release, preserves preview and suppresses the starting click", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await mockHost(page);
     await snapshot(page, turns("drag", 8));
     const reads: unknown[] = [];
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
       const body = route.request().postDataJSON();
       if (body.type === "get_messages") reads.push(body);
       return route.fallback();
@@ -11175,25 +13426,61 @@ test.describe("conversation timeline", () => {
     const start = (await nodes(page).nth(1).boundingBox())!;
     const target = (await nodes(page).nth(4).boundingBox())!;
     const id = (await nodes(page).nth(4).getAttribute("data-timeline-target"))!;
-    const top = await list.evaluate(element => element.scrollTop);
-    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    const top = await list.evaluate((element) => element.scrollTop);
+    await page.mouse.move(
+      start.x + start.width / 2,
+      start.y + start.height / 2,
+    );
     await page.mouse.down();
-    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2 + 3);
+    await page.mouse.move(
+      start.x + start.width / 2,
+      start.y + start.height / 2 + 3,
+    );
     await expect(list).not.toHaveAttribute("data-scrubbing");
-    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
-    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 5 });
+    await expect(nodes(page).first()).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    await page.mouse.move(
+      target.x + target.width / 2,
+      target.y + target.height / 2,
+      { steps: 5 },
+    );
     // All navigation assertions here happen while the real mouse button is still held.
     await expect(list).toHaveAttribute("data-scrubbing", "true");
-    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
-    await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
-    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("5 / 8");
+    await expect(nodes(page).nth(4)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    await expect
+      .poll(async () => Math.abs((await targetOffset(page, id)) - 12))
+      .toBeLessThanOrEqual(3);
+    await expect(
+      page.getByRole("tooltip").locator(".timeline-preview-index"),
+    ).toHaveText("5 / 8");
     const middle = (await nodes(page).nth(2).boundingBox())!;
-    await page.mouse.move(middle.x + middle.width / 2, middle.y + middle.height / 2);
-    await expect(nodes(page).nth(2)).toHaveAttribute("aria-current", "location");
-    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("3 / 8");
-    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
-    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
-    await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("5 / 8");
+    await page.mouse.move(
+      middle.x + middle.width / 2,
+      middle.y + middle.height / 2,
+    );
+    await expect(nodes(page).nth(2)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    await expect(
+      page.getByRole("tooltip").locator(".timeline-preview-index"),
+    ).toHaveText("3 / 8");
+    await page.mouse.move(
+      target.x + target.width / 2,
+      target.y + target.height / 2,
+    );
+    await expect(nodes(page).nth(4)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    await expect(
+      page.getByRole("tooltip").locator(".timeline-preview-index"),
+    ).toHaveText("5 / 8");
     // Capture keeps the vertical target and preview even outside the narrow rail.
     await page.mouse.move(target.x - 40, target.y + target.height / 2);
     await expect(page.getByRole("tooltip")).toBeVisible();
@@ -11203,23 +13490,33 @@ test.describe("conversation timeline", () => {
     const during = await outsideRail(page);
     expect(during.transcript).not.toBe(before.transcript);
     expect({ ...during, transcript: before.transcript }).toEqual(before);
-    expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+    expect(await list.evaluate((element) => element.scrollTop)).toBe(top);
     await expect(composer).toHaveValue("Keep this draft while scrubbing");
     await expect(composer).toBeFocused();
     // Release at the scrubbed turn; a synthesized click must not return to the pressed turn.
-    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+    await page.mouse.move(
+      target.x + target.width / 2,
+      target.y + target.height / 2,
+    );
     await page.mouse.up();
     await expect(list).not.toHaveAttribute("data-scrubbing");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
     await page.waitForTimeout(100);
-    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
-    await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
+    await expect(nodes(page).nth(4)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    await expect
+      .poll(async () => Math.abs((await targetOffset(page, id)) - 12))
+      .toBeLessThanOrEqual(3);
     expect(await outsideRail(page)).toEqual(during);
     await jump(page, 1);
     expect(reads).toHaveLength(0);
   });
 
-  test("Escape stops a held scrub without rollback, and right or nonprimary pointers do not scrub", async ({ page }) => {
+  test("Escape stops a held scrub without rollback, and right or nonprimary pointers do not scrub", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await mockHost(page);
     await snapshot(page, turns("cancel", 8));
@@ -11235,29 +13532,55 @@ test.describe("conversation timeline", () => {
     await page.mouse.down({ button: "right" });
     await page.mouse.move(x, target.y + target.height / 2);
     await expect(list).not.toHaveAttribute("data-scrubbing");
-    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await expect(nodes(page).first()).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
     await page.mouse.up({ button: "right" });
-    await nodes(page).nth(1).dispatchEvent("pointerdown", { pointerId: 99, pointerType: "touch", isPrimary: false, button: 0, clientY: start.y });
-    await list.dispatchEvent("pointermove", { pointerId: 99, pointerType: "touch", isPrimary: false, buttons: 1, clientY: target.y });
+    await nodes(page).nth(1).dispatchEvent("pointerdown", {
+      pointerId: 99,
+      pointerType: "touch",
+      isPrimary: false,
+      button: 0,
+      clientY: start.y,
+    });
+    await list.dispatchEvent("pointermove", {
+      pointerId: 99,
+      pointerType: "touch",
+      isPrimary: false,
+      buttons: 1,
+      clientY: target.y,
+    });
     await expect(list).not.toHaveAttribute("data-scrubbing");
-    await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+    await expect(nodes(page).first()).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
     await page.mouse.move(x, start.y + start.height / 2);
     await page.mouse.down();
     await page.mouse.move(x, target.y + target.height / 2);
     await expect(list).toHaveAttribute("data-scrubbing", "true");
-    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    await expect(nodes(page).nth(4)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
     const reading = await outsideRail(page);
     await page.keyboard.press("Escape");
     await expect(list).not.toHaveAttribute("data-scrubbing");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
     await page.mouse.move(x, start.y + start.height / 2);
     await page.mouse.up();
-    await expect(nodes(page).nth(4)).toHaveAttribute("aria-current", "location");
+    await expect(nodes(page).nth(4)).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
     expect(await outsideRail(page)).toEqual(reading);
     await jump(page, 1);
   });
 
-  test("held long-rail edge scrolling stops on capture loss and the next click still works", async ({ page }) => {
+  test("held long-rail edge scrolling stops on capture loss and the next click still works", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await mockHost(page);
     await snapshot(page, turns("edge", 80));
@@ -11267,51 +13590,83 @@ test.describe("conversation timeline", () => {
     await jump(page, 0);
     const before = await outsideRail(page);
     const list = page.locator(".timeline-panel ol");
-    await list.evaluate(element => element.addEventListener("pointerdown", event => {
-      (element as HTMLElement).dataset.testPointerId = String((event as PointerEvent).pointerId);
-    }, { once: true }));
+    await list.evaluate((element) =>
+      element.addEventListener(
+        "pointerdown",
+        (event) => {
+          (element as HTMLElement).dataset.testPointerId = String(
+            (event as PointerEvent).pointerId,
+          );
+        },
+        { once: true },
+      ),
+    );
     const start = (await nodes(page).nth(3).boundingBox())!;
     const box = (await list.boundingBox())!;
-    const top = await list.evaluate(element => element.scrollTop);
+    const top = await list.evaluate((element) => element.scrollTop);
     const x = box.x + box.width / 2;
     await page.mouse.move(x, start.y + start.height / 2);
     await page.mouse.down();
     await page.mouse.move(x, box.y + box.height + 30);
     await expect(list).toHaveAttribute("data-scrubbing", "true");
-    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(top + 80);
+    await expect
+      .poll(() => list.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(top + 80);
     await expect(page.getByRole("tooltip")).toBeVisible();
     expect((await outsideRail(page)).composer).toEqual(before.composer);
     expect(await page.evaluate(() => window.scrollY)).toBe(before.windowY);
-    await list.evaluate(element => {
+    await list.evaluate((element) => {
       const pointerId = Number((element as HTMLElement).dataset.testPointerId);
-      if (!element.hasPointerCapture(pointerId)) throw new Error("Expected a captured mouse pointer");
+      if (!element.hasPointerCapture(pointerId))
+        throw new Error("Expected a captured mouse pointer");
       element.releasePointerCapture(pointerId);
     });
     // Flush pending capture processing with a real event while still holding the button.
     await page.mouse.move(x, box.y + box.height + 40);
     await expect(list).not.toHaveAttribute("data-scrubbing");
-    expect(await list.evaluate(element => element.hasPointerCapture(Number((element as HTMLElement).dataset.testPointerId)))).toBe(false);
+    expect(
+      await list.evaluate((element) =>
+        element.hasPointerCapture(
+          Number((element as HTMLElement).dataset.testPointerId),
+        ),
+      ),
+    ).toBe(false);
     await expect(page.getByRole("tooltip")).toHaveCount(0);
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    const stopped = await list.evaluate(element => element.scrollTop);
-    const current = await page.locator('.timeline-node[aria-current="location"]').getAttribute("data-timeline-target");
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    const stopped = await list.evaluate((element) => element.scrollTop);
+    const current = await page
+      .locator('.timeline-node[aria-current="location"]')
+      .getAttribute("data-timeline-target");
     const reading = await outsideRail(page);
     await page.mouse.move(x, box.y + box.height + 60);
     await page.waitForTimeout(200);
-    expect(await list.evaluate(element => element.scrollTop)).toBe(stopped);
-    await expect(page.locator('.timeline-node[aria-current="location"]')).toHaveAttribute("data-timeline-target", current!);
+    expect(await list.evaluate((element) => element.scrollTop)).toBe(stopped);
+    await expect(
+      page.locator('.timeline-node[aria-current="location"]'),
+    ).toHaveAttribute("data-timeline-target", current!);
     expect(await outsideRail(page)).toEqual(reading);
     await page.mouse.up();
-    const visibleIndex = await list.evaluate(element => Array.from(element.querySelectorAll(".timeline-node")).findIndex(node => {
-      const box = node.getBoundingClientRect();
-      const viewport = element.getBoundingClientRect();
-      return box.top >= viewport.top && box.bottom <= viewport.bottom;
-    }));
+    const visibleIndex = await list.evaluate((element) =>
+      Array.from(element.querySelectorAll(".timeline-node")).findIndex(
+        (node) => {
+          const box = node.getBoundingClientRect();
+          const viewport = element.getBoundingClientRect();
+          return box.top >= viewport.top && box.bottom <= viewport.bottom;
+        },
+      ),
+    );
     expect(visibleIndex).toBeGreaterThan(0);
     await jump(page, visibleIndex);
   });
 
-  test("releasing the primary mouse button stops a chorded edge scrub", async ({ page }) => {
+  test("releasing the primary mouse button stops a chorded edge scrub", async ({
+    page,
+  }) => {
     await mockHost(page);
     await snapshot(page, turns("chord", 80));
     await page.goto("/");
@@ -11326,123 +13681,236 @@ test.describe("conversation timeline", () => {
     await page.mouse.down();
     await page.mouse.move(x, box.y + box.height + 20);
     await expect(list).toHaveAttribute("data-scrubbing", "true");
-    await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(40);
+    await expect
+      .poll(() => list.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(40);
     await page.mouse.down({ button: "right" });
     await page.mouse.up({ button: "left" });
     await expect(list).not.toHaveAttribute("data-scrubbing");
     await expect(page.getByRole("tooltip")).toHaveCount(0);
-    const stopped = await list.evaluate(element => element.scrollTop);
+    const stopped = await list.evaluate((element) => element.scrollTop);
     const reading = await outsideRail(page);
     await page.waitForTimeout(150);
-    expect(await list.evaluate(element => element.scrollTop)).toBe(stopped);
+    expect(await list.evaluate((element) => element.scrollTop)).toBe(stopped);
     expect(await outsideRail(page)).toEqual(reading);
     await page.mouse.up({ button: "right" });
     await jump(page, 0);
   });
 
-  test("native mobile touch scrubs before touchEnd, cancels cleanly and accepts the next tap", async ({ browser, browserName, baseURL }) => {
-    test.skip(browserName !== "chromium", "Native touch injection uses Chromium CDP");
-    const context = await browser.newContext({ baseURL, isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 } });
+  test("native mobile touch scrubs before touchEnd, cancels cleanly and accepts the next tap", async ({
+    browser,
+    browserName,
+    baseURL,
+  }) => {
+    test.skip(
+      browserName !== "chromium",
+      "Native touch injection uses Chromium CDP",
+    );
+    const context = await browser.newContext({
+      baseURL,
+      isMobile: true,
+      hasTouch: true,
+      viewport: { width: 390, height: 844 },
+    });
     try {
       const page = await context.newPage();
       await mockHost(page);
       await snapshot(page, turns("touch", 8));
       const reads: unknown[] = [];
-      await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
         const body = route.request().postDataJSON();
         if (body.type === "get_messages") reads.push(body);
         return route.fallback();
       });
       await page.goto("/");
       await openTimeline(page);
-      expect(await page.evaluate(() => navigator.maxTouchPoints > 0 && "ontouchstart" in window && matchMedia("(pointer: coarse)").matches)).toBe(true);
+      expect(
+        await page.evaluate(
+          () =>
+            navigator.maxTouchPoints > 0 &&
+            "ontouchstart" in window &&
+            matchMedia("(pointer: coarse)").matches,
+        ),
+      ).toBe(true);
       await expect(nodes(page)).toHaveCount(8);
       await scrollPagingTo(page, 0);
-      await expect(nodes(page).first()).toHaveAttribute("aria-current", "location");
+      await expect(nodes(page).first()).toHaveAttribute(
+        "aria-current",
+        "location",
+      );
       await expect.poll(() => railContains(page)).toBe(true);
       const list = page.locator(".timeline-panel ol");
       await expect(list).toBeVisible();
-      expect(await list.evaluate(element => getComputedStyle(element).touchAction)).toBe("none");
+      expect(
+        await list.evaluate((element) => getComputedStyle(element).touchAction),
+      ).toBe("none");
       const start = (await nodes(page).nth(1).boundingBox())!;
       const target = (await nodes(page).nth(5).boundingBox())!;
-      const id = (await nodes(page).nth(5).getAttribute("data-timeline-target"))!;
+      const id = (await nodes(page)
+        .nth(5)
+        .getAttribute("data-timeline-target"))!;
       const before = await outsideRail(page);
-      const top = await list.evaluate(element => element.scrollTop);
+      const top = await list.evaluate((element) => element.scrollTop);
       const cdp = await context.newCDPSession(page);
       try {
         const x = start.x + start.width / 2;
         const y = start.y + start.height / 2;
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x, y, id: 1 }],
+        });
         for (let step = 1; step <= 6; step++) {
-          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + (target.y + target.height / 2 - y) * step / 6, id: 1 }] });
-          await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchMove",
+            touchPoints: [
+              {
+                x,
+                y: y + ((target.y + target.height / 2 - y) * step) / 6,
+                id: 1,
+              },
+            ],
+          });
+          await page.evaluate(
+            () =>
+              new Promise<void>((resolve) =>
+                requestAnimationFrame(() => resolve()),
+              ),
+          );
         }
         // Genuine mobile pointer events must navigate during the gesture, not on tap release.
         await expect(list).toHaveAttribute("data-scrubbing", "true");
-        await expect(nodes(page).nth(5)).toHaveAttribute("aria-current", "location");
-        await expect.poll(async () => Math.abs(await targetOffset(page, id) - 12)).toBeLessThanOrEqual(3);
-        await expect(page.getByRole("tooltip").locator(".timeline-preview-index")).toHaveText("6 / 8");
+        await expect(nodes(page).nth(5)).toHaveAttribute(
+          "aria-current",
+          "location",
+        );
+        await expect
+          .poll(async () => Math.abs((await targetOffset(page, id)) - 12))
+          .toBeLessThanOrEqual(3);
+        await expect(
+          page.getByRole("tooltip").locator(".timeline-preview-index"),
+        ).toHaveText("6 / 8");
         const during = await outsideRail(page);
         expect(during.transcript).not.toBe(before.transcript);
         expect({ ...during, transcript: before.transcript }).toEqual(before);
-        expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+        expect(await list.evaluate((element) => element.scrollTop)).toBe(top);
         const preview = (await page.getByRole("tooltip").boundingBox())!;
         expect(preview.x).toBeGreaterThanOrEqual(0);
         expect(preview.x + preview.width).toBeLessThanOrEqual(390);
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchEnd",
+          touchPoints: [],
+        });
         await expect(list).not.toHaveAttribute("data-scrubbing");
         await expect(page.getByRole("tooltip")).toHaveCount(0);
         await page.waitForTimeout(100);
-        await expect(nodes(page).nth(5)).toHaveAttribute("aria-current", "location");
+        await expect(nodes(page).nth(5)).toHaveAttribute(
+          "aria-current",
+          "location",
+        );
         expect(await outsideRail(page)).toEqual(during);
         // A second real drag is cancelled while active; keep its latest reading target.
         const cancelTarget = (await nodes(page).nth(3).boundingBox())!;
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 2 }] });
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: cancelTarget.y + cancelTarget.height / 2, id: 2 }] });
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x, y, id: 2 }],
+        });
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchMove",
+          touchPoints: [
+            { x, y: cancelTarget.y + cancelTarget.height / 2, id: 2 },
+          ],
+        });
         await expect(list).toHaveAttribute("data-scrubbing", "true");
-        await expect(nodes(page).nth(3)).toHaveAttribute("aria-current", "location");
+        await expect(nodes(page).nth(3)).toHaveAttribute(
+          "aria-current",
+          "location",
+        );
         const cancelled = await outsideRail(page);
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchCancel",
+          touchPoints: [],
+        });
         await expect(list).not.toHaveAttribute("data-scrubbing");
         await expect(page.getByRole("tooltip")).toHaveCount(0);
         await page.waitForTimeout(100);
-        await expect(nodes(page).nth(3)).toHaveAttribute("aria-current", "location");
+        await expect(nodes(page).nth(3)).toHaveAttribute(
+          "aria-current",
+          "location",
+        );
         expect(await outsideRail(page)).toEqual(cancelled);
-        expect(await list.evaluate(element => element.scrollTop)).toBe(top);
+        expect(await list.evaluate((element) => element.scrollTop)).toBe(top);
         const tap = (await nodes(page).nth(2).boundingBox())!;
-        await page.touchscreen.tap(tap.x + tap.width / 2, tap.y + tap.height / 2);
-        await expect(nodes(page).nth(2)).toHaveAttribute("aria-current", "location");
-        const tapId = (await nodes(page).nth(2).getAttribute("data-timeline-target"))!;
-        await expect.poll(async () => Math.abs(await targetOffset(page, tapId) - 12)).toBeLessThanOrEqual(3);
+        await page.touchscreen.tap(
+          tap.x + tap.width / 2,
+          tap.y + tap.height / 2,
+        );
+        await expect(nodes(page).nth(2)).toHaveAttribute(
+          "aria-current",
+          "location",
+        );
+        const tapId = (await nodes(page)
+          .nth(2)
+          .getAttribute("data-timeline-target"))!;
+        await expect
+          .poll(async () => Math.abs((await targetOffset(page, tapId)) - 12))
+          .toBeLessThanOrEqual(3);
         const afterTap = await outsideRail(page);
         expect({ ...afterTap, transcript: before.transcript }).toEqual(before);
         // Gesture interception is confined to the rail: normal chat swiping still scrolls.
         const chat = (await page.locator(".transcript").boundingBox())!;
         const chatX = chat.x + chat.width / 2;
         const chatY = chat.y + chat.height * 0.7;
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: chatX, y: chatY, id: 3 }] });
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x: chatX, y: chatY, id: 3 }],
+        });
         for (let step = 1; step <= 8; step++) {
-          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: chatX, y: chatY - step * 14, id: 3 }] });
-          await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchMove",
+            touchPoints: [{ x: chatX, y: chatY - step * 14, id: 3 }],
+          });
+          await page.evaluate(
+            () =>
+              new Promise<void>((resolve) =>
+                requestAnimationFrame(() => resolve()),
+              ),
+          );
         }
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-        await expect.poll(() => page.locator(".transcript").evaluate(element => element.scrollTop)).toBeGreaterThan(afterTap.transcript + 40);
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchEnd",
+          touchPoints: [],
+        });
+        await expect
+          .poll(() =>
+            page
+              .locator(".transcript")
+              .evaluate((element) => element.scrollTop),
+          )
+          .toBeGreaterThan(afterTap.transcript + 40);
         expect((await outsideRail(page)).composer).toEqual(before.composer);
         expect(await page.evaluate(() => window.scrollY)).toBe(before.windowY);
         expect(reads).toHaveLength(0);
-      } finally { await cdp.detach(); }
-    } finally { await context.close(); }
+      } finally {
+        await cdp.detach();
+      }
+    } finally {
+      await context.close();
+    }
   });
 });
 
 test.describe("todo progress regression", () => {
   const partial = "6/7 completed\n[ ] #5: Verify remaining task";
   const inProgress = "6/7 completed\n[•] #5: Verify remaining task";
-  const full = `6/7 completed\n${Array.from({ length: 7 }, (_, index) =>
-    `[${index === 5 ? " " : "✓"}] #${index}: ${index === 5 ? "Verify remaining task" : `Completed task ${index}`}`,
+  const full = `6/7 completed\n${Array.from(
+    { length: 7 },
+    (_, index) =>
+      `[${index === 5 ? " " : "✓"}] #${index}: ${index === 5 ? "Verify remaining task" : `Completed task ${index}`}`,
   ).join("\n")}`;
   const summaryText = (language: "en" | "zh", done: number, total: number) =>
-    language === "zh" ? `${done}/${total} 项任务已完成` : `${done}/${total} tasks completed`;
+    language === "zh"
+      ? `${done}/${total} 项任务已完成`
+      : `${done}/${total} tasks completed`;
   const operationDone = (language: "en" | "zh") =>
     language === "zh" ? "待办操作已完成" : "Todo operation completed";
   const scopeText = (language: "en" | "zh", shown: number, total: number) =>
@@ -11450,23 +13918,45 @@ test.describe("todo progress regression", () => {
       ? `本次结果仅列出 ${shown}/${total} 项任务，进度包含全部任务。`
       : `This result lists ${shown} of ${total} tasks. Progress includes the entire list.`;
   const call = (id: string, includeDone = false) => ({
-    type: "toolCall", id, name: "todo", arguments: { action: "list", includeDone },
+    type: "toolCall",
+    id,
+    name: "todo",
+    arguments: { action: "list", includeDone },
     webTiming: { elapsedMs: 0, running: false },
   });
   const result = (id: string, content: unknown, isError = false) => ({
-    role: "toolResult", toolCallId: id, toolName: "todo", content, isError,
+    role: "toolResult",
+    toolCallId: id,
+    toolName: "todo",
+    content,
+    isError,
     webTiming: { elapsedMs: 0, running: false },
   });
-  const snapshot = async (page: Page, messages: unknown[], status = "ready", lastSeq = 4) => {
-    await page.route(snapshotRoute, route => route.fulfill({
-      json: { sessionId, messages, events: [], status, lastSeq },
-    }));
+  const snapshot = async (
+    page: Page,
+    messages: unknown[],
+    status = "ready",
+    lastSeq = 4,
+  ) => {
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: { sessionId, messages, events: [], status, lastSeq },
+      }),
+    );
   };
 
   for (const language of ["en", "zh"] as const) {
-    test(`adjacent full, filtered and full snapshots retain global 6/7 progress in ${language}`, async ({ page }) => {
-      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    test(`adjacent full, filtered and full snapshots retain global 6/7 progress in ${language}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: language === "zh" ? 390 : 1280,
+        height: 844,
+      });
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       await snapshot(page, [
         { role: "assistant", content: [call("todo-full-before", true)] },
@@ -11484,7 +13974,9 @@ test.describe("todo progress regression", () => {
       await latest.locator(":scope > summary").click();
       const history = latest.locator(".todo-history");
       await expect(history).toHaveJSProperty("open", false);
-      await expect(history.locator(":scope > summary")).toHaveText(language === "zh" ? "先前 2 次更新" : "2 earlier updates");
+      await expect(history.locator(":scope > summary")).toHaveText(
+        language === "zh" ? "先前 2 次更新" : "2 earlier updates",
+      );
       await expect(history.locator(".todo-card").first()).toBeHidden();
       await history.locator(":scope > summary").click();
       // Previous full and filtered results keep their own original cards.
@@ -11495,50 +13987,130 @@ test.describe("todo progress regression", () => {
         const summary = card.locator(":scope > summary");
         await expect(card).toHaveClass(/tool-done/);
         await expect(card).toHaveJSProperty("open", index === 2);
-        await expect(summary.locator(".tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(summary.locator(".tool-summary-meta")).toHaveText(
+          summaryText(language, 6, 7),
+        );
         await expect(summary).not.toContainText("0/1");
-        await expect(summary.locator(".tool-status")).toHaveAttribute("title", operationDone(language));
-        await expect(summary.locator(".tool-status .sr-only")).toHaveText(operationDone(language));
+        await expect(summary.locator(".tool-status")).toHaveAttribute(
+          "title",
+          operationDone(language),
+        );
+        await expect(summary.locator(".tool-status .sr-only")).toHaveText(
+          operationDone(language),
+        );
         await expect(summary.locator(".tool-elapsed")).toHaveText("0.0s");
         await expect(summary.locator(".tool-elapsed")).not.toContainText("~");
         if (index < 2) await summary.click();
         const detail = card.locator(":scope > .todo-detail");
-        await expect(detail.locator(":scope > .todo-list li")).toHaveCount(index === 1 ? 1 : 7);
-        await expect(detail.locator(":scope > .todo-list li.done")).toHaveCount(index === 1 ? 0 : 6);
-        await expect(detail.locator("input, button, [role=checkbox]")).toHaveCount(0);
+        await expect(detail.locator(":scope > .todo-list li")).toHaveCount(
+          index === 1 ? 1 : 7,
+        );
+        await expect(detail.locator(":scope > .todo-list li.done")).toHaveCount(
+          index === 1 ? 0 : 6,
+        );
+        await expect(
+          detail.locator("input, button, [role=checkbox]"),
+        ).toHaveCount(0);
         if (index === 1) {
-          await expect(detail.locator(":scope > .todo-scope")).toHaveText(scopeText(language, 1, 7));
+          await expect(detail.locator(":scope > .todo-scope")).toHaveText(
+            scopeText(language, 1, 7),
+          );
           await expect(detail.locator(":scope > .todo-scope")).toBeVisible();
         } else {
           await expect(detail.locator(":scope > .todo-scope")).toHaveCount(0);
         }
       }
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
     });
 
-    test(`native todo representations and invalid headers use safe structured or generic fallbacks in ${language}`, async ({ page }) => {
-      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    test(`native todo representations and invalid headers use safe structured or generic fallbacks in ${language}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: language === "zh" ? 390 : 1280,
+        height: 844,
+      });
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       const cases = [
         { content: "7/7 completed", done: 7, total: 7, shown: 0 },
         { content: "No todos", done: 0, total: 0, shown: 0 },
-        { content: "[x] Legacy complete\n[•] Legacy active\n[ ] Legacy pending", done: 1, total: 3, shown: 3 },
-        { content: [{ type: "text", text: "6/7 completed" }, { type: "text", text: "[ ] #5: Verify remaining task" }], done: 6, total: 7, shown: 1 },
-        { content: "8/7 completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
-        { content: "9007199254740992/9007199254740993 completed\n[ ] Pending", done: 0, total: 1, shown: 1 },
-        { content: "6/7 completed\n[ ] Pending one\n[ ] Pending two", done: 0, total: 2, shown: 2 },
-        { content: "0/2 completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
-        { content: "six/seven completed\n[✓] Complete\n[ ] Pending", done: 1, total: 2, shown: 2 },
+        {
+          content: "[x] Legacy complete\n[•] Legacy active\n[ ] Legacy pending",
+          done: 1,
+          total: 3,
+          shown: 3,
+        },
+        {
+          content: [
+            { type: "text", text: "6/7 completed" },
+            { type: "text", text: "[ ] #5: Verify remaining task" },
+          ],
+          done: 6,
+          total: 7,
+          shown: 1,
+        },
+        {
+          content: "8/7 completed\n[✓] Complete\n[ ] Pending",
+          done: 1,
+          total: 2,
+          shown: 2,
+        },
+        {
+          content: "9007199254740992/9007199254740993 completed\n[ ] Pending",
+          done: 0,
+          total: 1,
+          shown: 1,
+        },
+        {
+          content: "6/7 completed\n[ ] Pending one\n[ ] Pending two",
+          done: 0,
+          total: 2,
+          shown: 2,
+        },
+        {
+          content: "0/2 completed\n[✓] Complete\n[ ] Pending",
+          done: 1,
+          total: 2,
+          shown: 2,
+        },
+        {
+          content: "six/seven completed\n[✓] Complete\n[ ] Pending",
+          done: 1,
+          total: 2,
+          shown: 2,
+        },
         { content: "six/seven completed", generic: true },
         { content: "Unrecognized todo output", generic: true },
-        { content: "Error: todo storage unavailable", generic: true, isError: true },
+        {
+          content: "Error: todo storage unavailable",
+          generic: true,
+          isError: true,
+        },
       ];
-      await snapshot(page, cases.flatMap((entry, index) => [
-        { role: "assistant", content: [{ type: "text", text: `Independent todo representation ${index}` }] },
-        { role: "assistant", content: [call(`todo-case-${index}`)] },
-        result(`todo-case-${index}`, entry.content, entry.isError),
-      ]));
+      await snapshot(
+        page,
+        cases.flatMap((entry, index) => [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: `Independent todo representation ${index}`,
+              },
+            ],
+          },
+          { role: "assistant", content: [call(`todo-case-${index}`)] },
+          result(`todo-case-${index}`, entry.content, entry.isError),
+        ]),
+      );
       await page.goto("/");
       const cards = page.locator(".tool-card");
       await expect(cards).toHaveCount(cases.length);
@@ -11546,80 +14118,170 @@ test.describe("todo progress regression", () => {
         const card = cards.nth(index);
         if (entry.generic) {
           await expect(card).not.toHaveClass(/todo-card/);
-          await expect(card.locator("summary .tool-summary-meta")).toHaveCount(0);
+          await expect(card.locator("summary .tool-summary-meta")).toHaveCount(
+            0,
+          );
           await expect(card.locator(".todo-list, .todo-scope")).toHaveCount(0);
           if (!entry.isError) await card.locator(":scope > summary").click();
-          await expect(card.locator(".tool-detail")).toContainText(entry.content as string);
+          await expect(card.locator(".tool-detail")).toContainText(
+            entry.content as string,
+          );
           if (entry.isError) {
             await expect(card).toHaveClass(/tool-error/);
-            await expect(card.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
+            await expect(card.locator("summary .tool-status")).toHaveAttribute(
+              "title",
+              language === "zh" ? "失败" : "failed",
+            );
           }
           continue;
         }
         await expect(card).toHaveClass(/todo-card/);
-        await expect(card.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, entry.done!, entry.total!));
+        await expect(card.locator("summary .tool-summary-meta")).toHaveText(
+          summaryText(language, entry.done!, entry.total!),
+        );
         await card.locator(":scope > summary").click();
         await expect(card.locator(".todo-list li")).toHaveCount(entry.shown!);
-        await expect(card.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
+        await expect(
+          card.locator(
+            ".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]",
+          ),
+        ).toHaveCount(0);
         if (entry.shown! > 0 && entry.shown! < entry.total!) {
-          await expect(card.locator(".todo-scope")).toHaveText(scopeText(language, entry.shown!, entry.total!));
+          await expect(card.locator(".todo-scope")).toHaveText(
+            scopeText(language, entry.shown!, entry.total!),
+          );
         } else {
           await expect(card.locator(".todo-scope")).toHaveCount(0);
         }
         if (entry.shown === 0) {
           await expect(card.locator(".todo-list")).toHaveCount(0);
-          if (entry.total! > 0) await expect(card.locator(".todo-summary-only")).toHaveText(language === "zh"
-            ? "本次结果仅包含进度汇总，未返回任务明细。"
-            : "This result contains only a progress summary; task details were not returned.");
+          if (entry.total! > 0)
+            await expect(card.locator(".todo-summary-only")).toHaveText(
+              language === "zh"
+                ? "本次结果仅包含进度汇总，未返回任务明细。"
+                : "This result contains only a progress summary; task details were not returned.",
+            );
         }
-        if (entry.total === 0) await expect(card.locator(".todo-detail")).toContainText(language === "zh" ? "暂无待办任务。" : "No tasks.");
+        if (entry.total === 0)
+          await expect(card.locator(".todo-detail")).toContainText(
+            language === "zh" ? "暂无待办任务。" : "No tasks.",
+          );
         if (index === 2) {
           await expect(card.locator("li.done")).toHaveCount(1);
-          await expect(card.locator("li.in-progress .todo-check svg.spin")).toHaveCount(1);
-          await expect(card.locator("li.in-progress .sr-only")).toHaveText(language === "zh" ? "任务进行中: " : "Task in progress: ");
+          await expect(
+            card.locator("li.in-progress .todo-check svg.spin"),
+          ).toHaveCount(1);
+          await expect(card.locator("li.in-progress .sr-only")).toHaveText(
+            language === "zh" ? "任务进行中: " : "Task in progress: ",
+          );
         }
       }
     });
 
-    test(`live partial todo progress survives completion, error status and snapshot reload in ${language}`, async ({ page }) => {
-      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    test(`live partial todo progress survives completion, error status and snapshot reload in ${language}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: language === "zh" ? 390 : 1280,
+        height: 844,
+      });
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
-      const messages = [{ role: "assistant", content: [call("todo-live"), call("todo-live-error")] }];
+      const messages = [
+        {
+          role: "assistant",
+          content: [call("todo-live"), call("todo-live-error")],
+        },
+      ];
 
       let reloaded = false;
-      await page.route(snapshotRoute, route => route.fulfill({ json: {
-        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 7 : 4, events: [],
-        messages: reloaded ? [...messages, result("todo-live", [{ type: "text", text: inProgress }]), result("todo-live-error", inProgress, true)] : messages,
-      } }));
+      await page.route(snapshotRoute, (route) =>
+        route.fulfill({
+          json: {
+            sessionId,
+            status: reloaded ? "ready" : "running",
+            lastSeq: reloaded ? 7 : 4,
+            events: [],
+            messages: reloaded
+              ? [
+                  ...messages,
+                  result("todo-live", [{ type: "text", text: inProgress }]),
+                  result("todo-live-error", inProgress, true),
+                ]
+              : messages,
+          },
+        }),
+      );
       let releasePartial!: () => void;
       let releaseDone!: () => void;
-      const partialGate = new Promise<void>(resolve => { releasePartial = resolve; });
-      const doneGate = new Promise<void>(resolve => { releaseDone = resolve; });
-      let attempts = 0;
-      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-        const attempt = attempts++;
-        if (attempt > 1) return route.fulfill({ contentType: "text/event-stream", body: "retry: 60000\nevent: ready\ndata: {\"type\":\"ready\"}\n\n" });
-        await (attempt === 0 ? partialGate : doneGate);
-        const events = attempt === 0 ? [{
-          seq: 5, type: "tool_execution_update", toolCallId: "todo-live", toolName: "todo",
-          partialResult: { text: inProgress }, webTiming: { elapsedMs: 0, running: true },
-        }] : [{
-          seq: 6, type: "tool_execution_end", toolCallId: "todo-live", toolName: "todo", isError: false,
-          result: { content: [{ type: "text", text: inProgress }] }, webTiming: { elapsedMs: 0, running: false },
-        }, {
-          seq: 7, type: "tool_execution_end", toolCallId: "todo-live-error", toolName: "todo", isError: true,
-          result: { content: [{ type: "text", text: inProgress }] }, webTiming: { elapsedMs: 0, running: false },
-        }];
-        await route.fulfill({ contentType: "text/event-stream", body: `retry: 100\n${events.map(event => `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")}` });
+      const partialGate = new Promise<void>((resolve) => {
+        releasePartial = resolve;
       });
+      const doneGate = new Promise<void>((resolve) => {
+        releaseDone = resolve;
+      });
+      let attempts = 0;
+      await page.route(
+        `**/api/v1/sessions/${sessionId}/events?*`,
+        async (route) => {
+          const attempt = attempts++;
+          if (attempt > 1)
+            return route.fulfill({
+              contentType: "text/event-stream",
+              body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+            });
+          await (attempt === 0 ? partialGate : doneGate);
+          const events =
+            attempt === 0
+              ? [
+                  {
+                    seq: 5,
+                    type: "tool_execution_update",
+                    toolCallId: "todo-live",
+                    toolName: "todo",
+                    partialResult: { text: inProgress },
+                    webTiming: { elapsedMs: 0, running: true },
+                  },
+                ]
+              : [
+                  {
+                    seq: 6,
+                    type: "tool_execution_end",
+                    toolCallId: "todo-live",
+                    toolName: "todo",
+                    isError: false,
+                    result: { content: [{ type: "text", text: inProgress }] },
+                    webTiming: { elapsedMs: 0, running: false },
+                  },
+                  {
+                    seq: 7,
+                    type: "tool_execution_end",
+                    toolCallId: "todo-live-error",
+                    toolName: "todo",
+                    isError: true,
+                    result: { content: [{ type: "text", text: inProgress }] },
+                    webTiming: { elapsedMs: 0, running: false },
+                  },
+                ];
+          await route.fulfill({
+            contentType: "text/event-stream",
+            body: `retry: 100\n${events.map((event) => `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")}`,
+          });
+        },
+      );
       try {
         await page.goto("/");
         const live = page.locator(".tool-card").first();
         const status = live.locator("summary .tool-status");
         await expect(live).toHaveClass(/tool-pending/);
         await expect(live.locator("summary .tool-success-mark")).toHaveCount(0);
-        await expect(status).toHaveAttribute("title", language === "zh" ? "排队中" : "queued");
+        await expect(status).toHaveAttribute(
+          "title",
+          language === "zh" ? "排队中" : "queued",
+        );
         await live.locator(":scope > summary").click();
         await expect(live).toHaveJSProperty("open", true);
         releasePartial();
@@ -11627,41 +14289,78 @@ test.describe("todo progress regression", () => {
         await expect(live.locator("summary .tool-success-mark")).toHaveCount(0);
         await expect(live).toHaveClass(/todo-card/);
         await expect(live).toHaveJSProperty("open", true);
-        await expect(status).toHaveAttribute("title", language === "zh" ? "执行中" : "running");
+        await expect(status).toHaveAttribute(
+          "title",
+          language === "zh" ? "执行中" : "running",
+        );
         await expect(status.locator("svg.spin")).toHaveCount(1);
-        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(
+          summaryText(language, 6, 7),
+        );
         await expect(live.locator("li.in-progress")).toHaveCount(1);
-        await expect(live.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
+        await expect(live.locator(".todo-scope")).toHaveText(
+          scopeText(language, 1, 7),
+        );
         releaseDone();
         await expect(live).toHaveClass(/tool-done/);
         await expect(live.locator("summary .tool-success-mark")).toBeVisible();
         await expect(live).toHaveJSProperty("open", true);
         await expect(status).toHaveAttribute("title", operationDone(language));
-        await expect(status.locator(".sr-only")).toHaveText(operationDone(language));
+        await expect(status.locator(".sr-only")).toHaveText(
+          operationDone(language),
+        );
         await expect(status.locator("svg.spin")).toHaveCount(0);
-        await expect(live.locator("li.in-progress .todo-check svg.spin")).toHaveCount(1);
-        await expect(live.locator("li.in-progress .sr-only")).toHaveText(language === "zh" ? "任务进行中: " : "Task in progress: ");
-        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(
+          live.locator("li.in-progress .todo-check svg.spin"),
+        ).toHaveCount(1);
+        await expect(live.locator("li.in-progress .sr-only")).toHaveText(
+          language === "zh" ? "任务进行中: " : "Task in progress: ",
+        );
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(
+          summaryText(language, 6, 7),
+        );
         await expect(live.locator(".tool-elapsed")).toHaveText("0.0s");
         const error = page.locator(".todo-card.tool-error");
         await expect(error).toHaveJSProperty("open", true);
-        await expect(error.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
-        await expect(error.locator("summary .tool-status .sr-only")).toHaveText(language === "zh" ? "失败" : "failed");
-        await expect(error.locator("summary .tool-status svg.lucide-circle-alert")).toHaveCount(1);
-        await expect(error.locator("summary .tool-success-mark")).toHaveCount(0);
-        await expect(error.locator("summary")).not.toContainText(operationDone(language));
+        await expect(error.locator("summary .tool-status")).toHaveAttribute(
+          "title",
+          language === "zh" ? "失败" : "failed",
+        );
+        await expect(error.locator("summary .tool-status .sr-only")).toHaveText(
+          language === "zh" ? "失败" : "failed",
+        );
+        await expect(
+          error.locator("summary .tool-status svg.lucide-circle-alert"),
+        ).toHaveCount(1);
+        await expect(error.locator("summary .tool-success-mark")).toHaveCount(
+          0,
+        );
+        await expect(error.locator("summary")).not.toContainText(
+          operationDone(language),
+        );
         await live.locator(":scope > summary").click();
         await expect(live).toHaveJSProperty("open", false);
         reloaded = true;
         await page.reload();
         await expect(page.locator(".todo-card")).toHaveCount(2);
-        await expect(live.locator("summary .tool-summary-meta")).toHaveText(summaryText(language, 6, 7));
+        await expect(live.locator("summary .tool-summary-meta")).toHaveText(
+          summaryText(language, 6, 7),
+        );
         await expect(live).toHaveJSProperty("open", false);
         await live.locator(":scope > summary").click();
         await expect(live.locator(".todo-list li")).toHaveCount(1);
-        await expect(live.locator(".todo-scope")).toHaveText(scopeText(language, 1, 7));
-        await expect(live.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]")).toHaveCount(0);
-        await expect(error.locator("summary .tool-status")).toHaveAttribute("title", language === "zh" ? "失败" : "failed");
+        await expect(live.locator(".todo-scope")).toHaveText(
+          scopeText(language, 1, 7),
+        );
+        await expect(
+          live.locator(
+            ".todo-detail input, .todo-detail button, .todo-detail [role=checkbox]",
+          ),
+        ).toHaveCount(0);
+        await expect(error.locator("summary .tool-status")).toHaveAttribute(
+          "title",
+          language === "zh" ? "失败" : "failed",
+        );
       } finally {
         releasePartial();
         releaseDone();
@@ -11670,60 +14369,161 @@ test.describe("todo progress regression", () => {
   }
 });
 
-
 test.describe("ask tool card", () => {
   const call = (id: string, args: unknown, name = "ask_user") => ({
-    type: "toolCall", id, name, arguments: args, webTiming: { elapsedMs: 0, running: false },
+    type: "toolCall",
+    id,
+    name,
+    arguments: args,
+    webTiming: { elapsedMs: 0, running: false },
   });
-  const result = (id: string, content: unknown, details?: unknown, isError = false, name = "ask_user") => ({
-    role: "toolResult", toolCallId: id, toolName: name, content, isError,
-    ...(details === undefined ? {} : { details }), webTiming: { elapsedMs: 0, running: false },
+  const result = (
+    id: string,
+    content: unknown,
+    details?: unknown,
+    isError = false,
+    name = "ask_user",
+  ) => ({
+    role: "toolResult",
+    toolCallId: id,
+    toolName: name,
+    content,
+    isError,
+    ...(details === undefined ? {} : { details }),
+    webTiming: { elapsedMs: 0, running: false },
   });
   const snapshot = async (page: Page, messages: unknown[]) => {
-    await page.route(snapshotRoute, route => route.fulfill({
-      json: { sessionId, status: "ready", lastSeq: 4, events: [], messages },
-    }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: { sessionId, status: "ready", lastSeq: 4, events: [], messages },
+      }),
+    );
   };
   const readonly = async (page: Page) => {
-    await expect(page.locator(".ask-detail form, .ask-detail button, .ask-detail input, .ask-detail textarea, .ask-detail select, .ask-detail [contenteditable=true]")).toHaveCount(0);
+    await expect(
+      page.locator(
+        ".ask-detail form, .ask-detail button, .ask-detail input, .ask-detail textarea, .ask-detail select, .ask-detail [contenteditable=true]",
+      ),
+    ).toHaveCount(0);
     await expect(page.getByRole("dialog")).toHaveCount(0);
   };
 
   for (const language of ["en", "zh"] as const) {
     const zh = language === "zh";
-    const noAnswer = zh ? "未记录结构化回答，可查看结果或原始数据。" : "No structured answer recorded. See the result or raw data for details.";
-    test(`structured snapshot choices, comments, freeform and reversed stable IDs in ${language}`, async ({ page }) => {
+    const noAnswer = zh
+      ? "未记录结构化回答，可查看结果或原始数据。"
+      : "No structured answer recorded. See the result or raw data for details.";
+    test(`structured snapshot choices, comments, freeform and reversed stable IDs in ${language}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       const submitted: unknown[] = [];
-      await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+      await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
         const body = route.request().postDataJSON();
         if (body.type !== "ui_dialog_response") return route.fallback();
         submitted.push(body);
         return route.fulfill({ json: response({ accepted: true }, body.type) });
       });
       await snapshot(page, [
-        { role: "assistant", content: [call("ask-single", {
-          question: "Choose a deployment target", context: "Keep production unchanged", header: "Deployment",
-          options: [{ title: "Linux", value: "linux-server", description: "Server build" },
-            { title: "Windows", value: "windows-desktop", description: "Desktop build" },
-            { title: "Linux preview", value: "linux-server-preview" }],
-        })] },
-        result("ask-single", [{ type: "text", text: "Selected Linux for the server build." }], { answers: [{ values: ["Linux"] }] }),
-        { role: "assistant", content: [call("ask-multiple", {
-          question: "Which checks should run?", allowMultiple: true, allowComment: true, options: ["Unit", "Integration", "Browser"],
-        })] },
-        result("ask-multiple", JSON.stringify({ answers: [{ values: ["Unit", "Browser"], text: "Only against staging" }] })),
-        { role: "assistant", content: [call("ask-freeform", { question: "Describe the rollout", allowFreeform: true })] },
-        result("ask-freeform", { content: [{ type: "text", text: JSON.stringify({ answers: [{ text: "Deploy after lunch" }] }) }] }),
-        { role: "assistant", content: [call("ask-questions", { questions: [
-          { id: "region", question: "Where should it run?", options: ["East", "West"] },
-          { id: "tier", question: "Which service tier?", options: ["Basic", "Premium"] },
-        ] })] },
-        result("ask-questions", JSON.stringify({ answers: [
-          { id: "tier", values: ["Premium"], text: "Tier comment" }, { id: "region", values: ["West"], text: "Region comment" },
-        ] })),
+        {
+          role: "assistant",
+          content: [
+            call("ask-single", {
+              question: "Choose a deployment target",
+              context: "Keep production unchanged",
+              header: "Deployment",
+              options: [
+                {
+                  title: "Linux",
+                  value: "linux-server",
+                  description: "Server build",
+                },
+                {
+                  title: "Windows",
+                  value: "windows-desktop",
+                  description: "Desktop build",
+                },
+                { title: "Linux preview", value: "linux-server-preview" },
+              ],
+            }),
+          ],
+        },
+        result(
+          "ask-single",
+          [{ type: "text", text: "Selected Linux for the server build." }],
+          { answers: [{ values: ["Linux"] }] },
+        ),
+        {
+          role: "assistant",
+          content: [
+            call("ask-multiple", {
+              question: "Which checks should run?",
+              allowMultiple: true,
+              allowComment: true,
+              options: ["Unit", "Integration", "Browser"],
+            }),
+          ],
+        },
+        result(
+          "ask-multiple",
+          JSON.stringify({
+            answers: [
+              { values: ["Unit", "Browser"], text: "Only against staging" },
+            ],
+          }),
+        ),
+        {
+          role: "assistant",
+          content: [
+            call("ask-freeform", {
+              question: "Describe the rollout",
+              allowFreeform: true,
+            }),
+          ],
+        },
+        result("ask-freeform", {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                answers: [{ text: "Deploy after lunch" }],
+              }),
+            },
+          ],
+        }),
+        {
+          role: "assistant",
+          content: [
+            call("ask-questions", {
+              questions: [
+                {
+                  id: "region",
+                  question: "Where should it run?",
+                  options: ["East", "West"],
+                },
+                {
+                  id: "tier",
+                  question: "Which service tier?",
+                  options: ["Basic", "Premium"],
+                },
+              ],
+            }),
+          ],
+        },
+        result(
+          "ask-questions",
+          JSON.stringify({
+            answers: [
+              { id: "tier", values: ["Premium"], text: "Tier comment" },
+              { id: "region", values: ["West"], text: "Region comment" },
+            ],
+          }),
+        ),
       ]);
       await page.goto("/");
       const cards = page.locator(".ask-card");
@@ -11731,73 +14531,177 @@ test.describe("ask tool card", () => {
       for (let index = 0; index < 4; index++) {
         const card = cards.nth(index);
         await expect(card).toHaveJSProperty("open", false);
-        await expect(card.locator(":scope > summary .tool-action")).toHaveText("ask_user");
+        await expect(card.locator(":scope > summary .tool-action")).toHaveText(
+          "ask_user",
+        );
         await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
         await card.locator(":scope > summary").click();
         await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
         await expect(card.locator(".ask-raw pre")).toBeHidden();
-        await expect(card.locator(".ask-detail pre:not(.ask-raw pre)")).toHaveCount(0);
-        await expect(card.locator(".ask-confirmation, .ask-cancelled, .ask-empty")).toHaveCount(0);
+        await expect(
+          card.locator(".ask-detail pre:not(.ask-raw pre)"),
+        ).toHaveCount(0);
+        await expect(
+          card.locator(".ask-confirmation, .ask-cancelled, .ask-empty"),
+        ).toHaveCount(0);
       }
       const single = cards.nth(0);
-      await expect(single.locator(".ask-prompt")).toHaveText("Choose a deployment target");
+      await expect(single.locator(".ask-prompt")).toHaveText(
+        "Choose a deployment target",
+      );
       await expect(single.locator(".ask-header")).toHaveText("Deployment");
-      await expect(single.locator(".ask-context")).toHaveText("Keep production unchanged");
-      await expect(single.locator(".ask-options li small")).toHaveText(["Server build", "Desktop build"]);
+      await expect(single.locator(".ask-context")).toHaveText(
+        "Keep production unchanged",
+      );
+      await expect(single.locator(".ask-options li small")).toHaveText([
+        "Server build",
+        "Desktop build",
+      ]);
       await expect(single.locator(".ask-options li.selected")).toHaveCount(1);
-      await expect(single.locator(".ask-options li").nth(0)).toHaveClass("selected");
-      for (const index of [1, 2]) await expect(single.locator(".ask-options li").nth(index)).not.toHaveClass(/selected/);
-      await expect(single.locator(".ask-answer .ask-values li")).toHaveText(["Linux"]);
-      await expect(single.locator(".ask-result p")).toHaveText("Selected Linux for the server build.");
-      await expect(cards.nth(1).locator(".ask-options li.selected")).toHaveCount(2);
-      await expect(cards.nth(1).locator(".ask-options li").nth(1)).not.toHaveClass(/selected/);
-      await expect(cards.nth(1).locator(".ask-values li")).toHaveText(["Unit", "Browser"]);
-      await expect(cards.nth(1).locator(".ask-answer-text")).toHaveText("Only against staging");
+      await expect(single.locator(".ask-options li").nth(0)).toHaveClass(
+        "selected",
+      );
+      for (const index of [1, 2])
+        await expect(
+          single.locator(".ask-options li").nth(index),
+        ).not.toHaveClass(/selected/);
+      await expect(single.locator(".ask-answer .ask-values li")).toHaveText([
+        "Linux",
+      ]);
+      await expect(single.locator(".ask-result p")).toHaveText(
+        "Selected Linux for the server build.",
+      );
+      await expect(
+        cards.nth(1).locator(".ask-options li.selected"),
+      ).toHaveCount(2);
+      await expect(
+        cards.nth(1).locator(".ask-options li").nth(1),
+      ).not.toHaveClass(/selected/);
+      await expect(cards.nth(1).locator(".ask-values li")).toHaveText([
+        "Unit",
+        "Browser",
+      ]);
+      await expect(cards.nth(1).locator(".ask-answer-text")).toHaveText(
+        "Only against staging",
+      );
       await expect(cards.nth(2).locator(".ask-options")).toHaveCount(0);
-      await expect(cards.nth(2).locator(".ask-answer-text")).toHaveText("Deploy after lunch");
+      await expect(cards.nth(2).locator(".ask-answer-text")).toHaveText(
+        "Deploy after lunch",
+      );
       const questions = cards.nth(3).locator(".ask-question");
       await expect(questions).toHaveCount(2);
       for (const [index, prompt, value, comment] of [
-        [0, "Where should it run?", "West", "Region comment"], [1, "Which service tier?", "Premium", "Tier comment"],
+        [0, "Where should it run?", "West", "Region comment"],
+        [1, "Which service tier?", "Premium", "Tier comment"],
       ] as const) {
-        await expect(questions.nth(index).locator(".ask-prompt")).toHaveText(prompt);
-        await expect(questions.nth(index).locator(".ask-options li.selected")).toHaveCount(1);
-        await expect(questions.nth(index).locator(".ask-options li.selected")).toContainText(value);
-        await expect(questions.nth(index).locator(".ask-values li")).toHaveText([value]);
-        await expect(questions.nth(index).locator(".ask-answer-text")).toHaveText(comment);
+        await expect(questions.nth(index).locator(".ask-prompt")).toHaveText(
+          prompt,
+        );
+        await expect(
+          questions.nth(index).locator(".ask-options li.selected"),
+        ).toHaveCount(1);
+        await expect(
+          questions.nth(index).locator(".ask-options li.selected"),
+        ).toContainText(value);
+        await expect(questions.nth(index).locator(".ask-values li")).toHaveText(
+          [value],
+        );
+        await expect(
+          questions.nth(index).locator(".ask-answer-text"),
+        ).toHaveText(comment);
       }
-      await single.screenshot({ path: test.info().outputPath(`ask-card-${language}.png`) });
+      await single.screenshot({
+        path: test.info().outputPath(`ask-card-${language}.png`),
+      });
       await single.locator(".ask-raw > summary").click();
       await expect(single.locator(".ask-raw pre")).toBeVisible();
-      expect(JSON.parse((await single.locator(".ask-raw pre").textContent())!).output).toEqual({
-        content: [{ type: "text", text: "Selected Linux for the server build." }], details: { answers: [{ values: ["Linux"] }] },
+      expect(
+        JSON.parse((await single.locator(".ask-raw pre").textContent())!)
+          .output,
+      ).toEqual({
+        content: [
+          { type: "text", text: "Selected Linux for the server build." },
+        ],
+        details: { answers: [{ values: ["Linux"] }] },
       });
       await readonly(page);
       expect(submitted).toEqual([]);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
     });
 
-
-    test(`confirmation declines, cancellations, errors and raw fallbacks stay distinct in ${language}`, async ({ page }) => {
+    test(`confirmation declines, cancellations, errors and raw fallbacks stay distinct in ${language}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       const cases = [
-        { args: { type: "confirm", summary: "Proceed with deployment?" }, output: JSON.stringify({ answers: [{ confirmed: false }] }) },
-        { args: { type: "confirm", summary: "Enable the feature?" }, output: JSON.stringify({ answers: [{ confirmed: true }] }) },
-        { args: { question: "Any additional notes?", allowFreeform: true }, output: JSON.stringify({ answers: [{ confirmed: false, text: "No changes needed" }] }) },
-        { args: { question: "Choose a target", options: ["Linux"] }, output: JSON.stringify({ cancelled: true }) },
-        { args: { question: "Choose a region", options: ["West"] }, output: JSON.stringify({ status: "cancelled" }) },
-        { args: { question: "Error question" }, output: "Error: answer transport unavailable", isError: true },
-        { args: { question: "Timeout question" }, output: "Timed out waiting for the user's answer", isError: true },
-        { args: { question: "Malformed question" }, output: '{"answers": [broken payload' },
-        { args: { question: "Unknown payload question" }, output: JSON.stringify({ unexpected: { token: "keep-unknown-payload" } }) },
+        {
+          args: { type: "confirm", summary: "Proceed with deployment?" },
+          output: JSON.stringify({ answers: [{ confirmed: false }] }),
+        },
+        {
+          args: { type: "confirm", summary: "Enable the feature?" },
+          output: JSON.stringify({ answers: [{ confirmed: true }] }),
+        },
+        {
+          args: { question: "Any additional notes?", allowFreeform: true },
+          output: JSON.stringify({
+            answers: [{ confirmed: false, text: "No changes needed" }],
+          }),
+        },
+        {
+          args: { question: "Choose a target", options: ["Linux"] },
+          output: JSON.stringify({ cancelled: true }),
+        },
+        {
+          args: { question: "Choose a region", options: ["West"] },
+          output: JSON.stringify({ status: "cancelled" }),
+        },
+        {
+          args: { question: "Error question" },
+          output: "Error: answer transport unavailable",
+          isError: true,
+        },
+        {
+          args: { question: "Timeout question" },
+          output: "Timed out waiting for the user's answer",
+          isError: true,
+        },
+        {
+          args: { question: "Malformed question" },
+          output: '{"answers": [broken payload',
+        },
+        {
+          args: { question: "Unknown payload question" },
+          output: JSON.stringify({
+            unexpected: { token: "keep-unknown-payload" },
+          }),
+        },
         { args: { question: "Unanswered question" }, output: "" },
       ];
-      await snapshot(page, cases.flatMap((entry, index) => [
-        { role: "assistant", content: [call(`ask-evidence-${index}`, entry.args)] },
-        result(`ask-evidence-${index}`, entry.output, undefined, entry.isError),
-      ]));
+      await snapshot(
+        page,
+        cases.flatMap((entry, index) => [
+          {
+            role: "assistant",
+            content: [call(`ask-evidence-${index}`, entry.args)],
+          },
+          result(
+            `ask-evidence-${index}`,
+            entry.output,
+            undefined,
+            entry.isError,
+          ),
+        ]),
+      );
       await page.goto("/");
       const cards = page.locator(".ask-card");
       await expect(cards).toHaveCount(cases.length);
@@ -11806,8 +14710,13 @@ test.describe("ask tool card", () => {
         if (entry.isError) {
           await expect(card).toHaveClass(/tool-error/);
           await expect(card).toHaveJSProperty("open", true);
-          await expect(card.locator("summary .tool-status")).toHaveAttribute("title", zh ? "失败" : "failed");
-          await expect(card.locator(".ask-result.ask-error p")).toHaveText(entry.output);
+          await expect(card.locator("summary .tool-status")).toHaveAttribute(
+            "title",
+            zh ? "失败" : "failed",
+          );
+          await expect(card.locator(".ask-result.ask-error p")).toHaveText(
+            entry.output,
+          );
           await expect(card.locator(".ask-result")).toBeVisible();
         } else await card.locator(":scope > summary").click();
         await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
@@ -11817,75 +14726,166 @@ test.describe("ask tool card", () => {
           await expect(card.locator(".ask-empty")).toHaveText(noAnswer);
           await card.locator(".ask-raw > summary").click();
           await expect(card.locator(".ask-raw pre")).toBeVisible();
-          expect(JSON.parse((await card.locator(".ask-raw pre").textContent())!).output).toBe(entry.output);
+          expect(
+            JSON.parse((await card.locator(".ask-raw pre").textContent())!)
+              .output,
+          ).toBe(entry.output);
         }
       }
-      await expect(cards.nth(0).locator(".ask-confirmation")).toHaveText(zh ? "已拒绝" : "Declined");
-      await expect(cards.nth(1).locator(".ask-confirmation")).toHaveText(zh ? "已确认" : "Confirmed");
-      for (let index = 0; index < 3; index++) await expect(cards.nth(index).locator(".ask-cancelled")).toHaveCount(0);
+      await expect(cards.nth(0).locator(".ask-confirmation")).toHaveText(
+        zh ? "已拒绝" : "Declined",
+      );
+      await expect(cards.nth(1).locator(".ask-confirmation")).toHaveText(
+        zh ? "已确认" : "Confirmed",
+      );
+      for (let index = 0; index < 3; index++)
+        await expect(cards.nth(index).locator(".ask-cancelled")).toHaveCount(0);
       await expect(cards.nth(2).locator(".ask-confirmation")).toHaveCount(0);
-      await expect(cards.nth(2).locator(".ask-answer-text")).toHaveText("No changes needed");
-      await expect(cards.nth(2).locator(".ask-detail")).not.toContainText(zh ? "已拒绝" : "Declined");
+      await expect(cards.nth(2).locator(".ask-answer-text")).toHaveText(
+        "No changes needed",
+      );
+      await expect(cards.nth(2).locator(".ask-detail")).not.toContainText(
+        zh ? "已拒绝" : "Declined",
+      );
       for (const index of [3, 4]) {
-        await expect(cards.nth(index).locator(".ask-cancelled")).toHaveText(zh ? "提问已取消" : "Question cancelled");
+        await expect(cards.nth(index).locator(".ask-cancelled")).toHaveText(
+          zh ? "提问已取消" : "Question cancelled",
+        );
         await expect(cards.nth(index).locator(".ask-cancelled")).toBeVisible();
-        await expect(cards.nth(index).locator(".ask-confirmation, .ask-answer, .ask-empty")).toHaveCount(0);
-        await expect(cards.nth(index).locator(".ask-options li.selected")).toHaveCount(0);
+        await expect(
+          cards
+            .nth(index)
+            .locator(".ask-confirmation, .ask-answer, .ask-empty"),
+        ).toHaveCount(0);
+        await expect(
+          cards.nth(index).locator(".ask-options li.selected"),
+        ).toHaveCount(0);
       }
       await readonly(page);
     });
 
-    test(`ask aliases respect summary settings and invalid arguments stay generic in ${language}`, async ({ page }) => {
+    test(`ask aliases respect summary settings and invalid arguments stay generic in ${language}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       const names = ["ask_user", "functions.ask_user", "ask"];
       await snapshot(page, [
         ...names.flatMap((name, index) => [
-          { role: "assistant", content: [call(`ask-alias-${index}`, { question: `Alias question ${index}` }, name)] },
-          result(`ask-alias-${index}`, "Native readable answer", undefined, false, name),
+          {
+            role: "assistant",
+            content: [
+              call(
+                `ask-alias-${index}`,
+                { question: `Alias question ${index}` },
+                name,
+              ),
+            ],
+          },
+          result(
+            `ask-alias-${index}`,
+            "Native readable answer",
+            undefined,
+            false,
+            name,
+          ),
         ]),
-        { role: "assistant", content: [call("ask-invalid", { options: ["Missing question"] })] },
+        {
+          role: "assistant",
+          content: [call("ask-invalid", { options: ["Missing question"] })],
+        },
         result("ask-invalid", "Invalid ask arguments preserved"),
-        { role: "assistant", content: [call("ask-unknown", { question: "Not an ask tool" }, "custom_question")] },
-        result("ask-unknown", "Unknown tool output preserved", undefined, false, "custom_question"),
+        {
+          role: "assistant",
+          content: [
+            call(
+              "ask-unknown",
+              { question: "Not an ask tool" },
+              "custom_question",
+            ),
+          ],
+        },
+        result(
+          "ask-unknown",
+          "Unknown tool output preserved",
+          undefined,
+          false,
+          "custom_question",
+        ),
       ]);
       await page.goto("/");
       const cards = page.locator(".tool-card");
       await expect(cards).toHaveCount(5);
       await expect(page.locator(".ask-card")).toHaveCount(3);
-      await expect(cards.locator(":scope > summary .tool-action")).toHaveText([...names, "ask_user", "custom_question"]);
+      await expect(cards.locator(":scope > summary .tool-action")).toHaveText([
+        ...names,
+        "ask_user",
+        "custom_question",
+      ]);
       for (const index of [3, 4]) {
         await expect(cards.nth(index)).not.toHaveClass(/ask-card/);
         await cards.nth(index).locator(":scope > summary").click();
-        await expect(cards.nth(index).locator(".tool-detail")).toContainText(index === 3 ? "Invalid ask arguments preserved" : "Unknown tool output preserved");
+        await expect(cards.nth(index).locator(".tool-detail")).toContainText(
+          index === 3
+            ? "Invalid ask arguments preserved"
+            : "Unknown tool output preserved",
+        );
       }
       await page.keyboard.press("Control+,");
-      const group = page.getByRole("group", { name: zh ? "工具名称" : "Tool names", exact: true });
+      const group = page.getByRole("group", {
+        name: zh ? "工具名称" : "Tool names",
+        exact: true,
+      });
       await expect(group).toBeVisible();
-      await group.getByRole("button", { name: zh ? "映射名称" : "Mapped names", exact: true }).click();
+      await group
+        .getByRole("button", {
+          name: zh ? "映射名称" : "Mapped names",
+          exact: true,
+        })
+        .click();
       await page.keyboard.press("Escape");
-      await expect(page.locator(".ask-card > summary .tool-action")).toHaveText(names.map(() => zh ? "询问用户" : "Ask user"));
+      await expect(page.locator(".ask-card > summary .tool-action")).toHaveText(
+        names.map(() => (zh ? "询问用户" : "Ask user")),
+      );
       for (let index = 0; index < 3; index++) {
         const card = page.locator(".ask-card").nth(index);
         await card.locator(":scope > summary").click();
-        await expect(card.locator(".ask-result p")).toHaveText("Native readable answer");
+        await expect(card.locator(".ask-result p")).toHaveText(
+          "Native readable answer",
+        );
       }
       await readonly(page);
     });
 
-
-    test(`hostile text and long tokens remain inert and bounded in ${language}`, async ({ page }) => {
+    test(`hostile text and long tokens remain inert and bounded in ${language}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       const hostile = '<img src=x onerror="window.__askInjected=true">';
       const token = "unbroken-token-".repeat(70);
       const prompt = `${hostile} ${token}`;
       await snapshot(page, [
-        { role: "assistant", content: [call("ask-safe", {
-          question: prompt, context: hostile, options: [{ title: hostile, value: "literal", description: token }],
-        })] },
+        {
+          role: "assistant",
+          content: [
+            call("ask-safe", {
+              question: prompt,
+              context: hostile,
+              options: [
+                { title: hostile, value: "literal", description: token },
+              ],
+            }),
+          ],
+        },
         result("ask-safe", [{ type: "text", text: `${hostile}\n${token}` }], {
           answers: [{ values: [hostile], text: `${hostile}\n${token}` }],
         }),
@@ -11894,114 +14894,290 @@ test.describe("ask tool card", () => {
       const card = page.locator(".ask-card");
       await card.locator(":scope > summary").click();
       await expect(card.locator(".ask-prompt")).toHaveText(prompt);
-      await expect(card.locator(".ask-options li.selected")).toContainText(hostile);
-      await expect(card.locator(".ask-answer-text")).toHaveText(`${hostile}\n${token}`);
-      await expect(card.locator(".ask-result p")).toHaveText(`${hostile}\n${token}`);
-      await expect(card.locator("img, script, iframe, [onerror]")).toHaveCount(0);
+      await expect(card.locator(".ask-options li.selected")).toContainText(
+        hostile,
+      );
+      await expect(card.locator(".ask-answer-text")).toHaveText(
+        `${hostile}\n${token}`,
+      );
+      await expect(card.locator(".ask-result p")).toHaveText(
+        `${hostile}\n${token}`,
+      );
+      await expect(card.locator("img, script, iframe, [onerror]")).toHaveCount(
+        0,
+      );
       await expect(card.locator(".ask-raw pre")).toBeHidden();
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-      expect(await card.locator(".ask-detail").evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      expect(
+        await card.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth + 1,
+        ),
+      ).toBe(true);
+      expect(
+        await card
+          .locator(".ask-detail")
+          .evaluate(
+            (element) => element.scrollWidth <= element.clientWidth + 1,
+          ),
+      ).toBe(true);
       await card.locator(".ask-raw > summary").click();
       await expect(card.locator(".ask-raw pre")).toContainText("onerror");
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      expect(await page.evaluate(() => (window as Window & { __askInjected?: boolean }).__askInjected)).toBeUndefined();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      expect(
+        await page.evaluate(
+          () => (window as Window & { __askInjected?: boolean }).__askInjected,
+        ),
+      ).toBeUndefined();
       await readonly(page);
     });
 
-    test(`native option titles, conflicting identities and diagnostic output stay truthful in ${language}`, async ({ page }) => {
+    test(`native option titles, conflicting identities and diagnostic output stay truthful in ${language}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       const cases = [
-        { args: { question: "Target?", options: [{ title: "Linux", value: "Windows" }, { title: "Windows", value: "win" }] }, output: { answers: [{ values: ["Windows"] }] } },
-        { args: { question: "Target?", options: ["  Linux  ", "Windows"] }, output: { answers: [{ values: ["Linux"] }] } },
-        { args: { questions: [{ id: "region", question: "Region?" }, { id: "tier", question: "Tier?" }] }, output: { answers: [{ id: "tier", question: "Region?", values: ["West"] }] } },
-        { args: { question: "Question?" }, output: { text: "transport diagnostic" } },
-        { args: { questions: [{ id: "region", question: "Region?" }, { id: "tier", question: "Tier?" }] }, output: { answers: [{ id: "unknown", values: ["West"] }] } },
-        { args: { question: "Question?" }, output: { error: "ask timed out" }, isError: true },
-        { args: { question: "Question?" }, output: { content: "Plain output preserved", details: { ui: { kind: "ask_user_result" } } } },
+        {
+          args: {
+            question: "Target?",
+            options: [
+              { title: "Linux", value: "Windows" },
+              { title: "Windows", value: "win" },
+            ],
+          },
+          output: { answers: [{ values: ["Windows"] }] },
+        },
+        {
+          args: { question: "Target?", options: ["  Linux  ", "Windows"] },
+          output: { answers: [{ values: ["Linux"] }] },
+        },
+        {
+          args: {
+            questions: [
+              { id: "region", question: "Region?" },
+              { id: "tier", question: "Tier?" },
+            ],
+          },
+          output: {
+            answers: [{ id: "tier", question: "Region?", values: ["West"] }],
+          },
+        },
+        {
+          args: { question: "Question?" },
+          output: { text: "transport diagnostic" },
+        },
+        {
+          args: {
+            questions: [
+              { id: "region", question: "Region?" },
+              { id: "tier", question: "Tier?" },
+            ],
+          },
+          output: { answers: [{ id: "unknown", values: ["West"] }] },
+        },
+        {
+          args: { question: "Question?" },
+          output: { error: "ask timed out" },
+          isError: true,
+        },
+        {
+          args: { question: "Question?" },
+          output: {
+            content: "Plain output preserved",
+            details: { ui: { kind: "ask_user_result" } },
+          },
+        },
       ];
-      await snapshot(page, cases.flatMap((entry, index) => [
-        { role: "assistant", content: [call(`ask-truth-${index}`, entry.args)] },
-        result(`ask-truth-${index}`, JSON.stringify(entry.output), undefined, entry.isError),
-      ]));
+      await snapshot(
+        page,
+        cases.flatMap((entry, index) => [
+          {
+            role: "assistant",
+            content: [call(`ask-truth-${index}`, entry.args)],
+          },
+          result(
+            `ask-truth-${index}`,
+            JSON.stringify(entry.output),
+            undefined,
+            entry.isError,
+          ),
+        ]),
+      );
       await page.goto("/");
       const cards = page.locator(".ask-card");
       await expect(cards).toHaveCount(cases.length);
       for (let i = 0; i < cases.length; i++) {
-        if (!cases[i].isError) await cards.nth(i).locator(":scope > summary").click();
+        if (!cases[i].isError)
+          await cards.nth(i).locator(":scope > summary").click();
       }
-      await expect(cards.nth(0).locator(".ask-options li.selected")).toHaveCount(1);
-      await expect(cards.nth(0).locator(".ask-options li.selected")).toContainText("Windows");
-      await expect(cards.nth(1).locator(".ask-options li.selected")).toHaveCount(1);
-      await expect(cards.nth(1).locator(".ask-options li.selected")).toContainText("Linux");
-      await expect(cards.nth(2).locator(".ask-question").first().locator(".ask-answer")).toHaveCount(0);
-      await expect(cards.nth(2).locator(".ask-question").nth(1).locator(".ask-values li")).toHaveText(["West"]);
+      await expect(
+        cards.nth(0).locator(".ask-options li.selected"),
+      ).toHaveCount(1);
+      await expect(
+        cards.nth(0).locator(".ask-options li.selected"),
+      ).toContainText("Windows");
+      await expect(
+        cards.nth(1).locator(".ask-options li.selected"),
+      ).toHaveCount(1);
+      await expect(
+        cards.nth(1).locator(".ask-options li.selected"),
+      ).toContainText("Linux");
+      await expect(
+        cards.nth(2).locator(".ask-question").first().locator(".ask-answer"),
+      ).toHaveCount(0);
+      await expect(
+        cards.nth(2).locator(".ask-question").nth(1).locator(".ask-values li"),
+      ).toHaveText(["West"]);
       await expect(cards.nth(3).locator(".ask-answer")).toHaveCount(0);
-      await expect(cards.nth(3).locator(".ask-result p")).toHaveText("transport diagnostic");
+      await expect(cards.nth(3).locator(".ask-result p")).toHaveText(
+        "transport diagnostic",
+      );
       await expect(cards.nth(4).locator(".ask-answer")).toHaveCount(0);
       await expect(cards.nth(4).locator(".ask-empty")).toHaveText(noAnswer);
-      await expect(cards.nth(5).locator(".ask-result.ask-error p")).toHaveText("ask timed out");
-      await expect(cards.nth(6).locator(".ask-result p")).toHaveText("Plain output preserved");
+      await expect(cards.nth(5).locator(".ask-result.ask-error p")).toHaveText(
+        "ask timed out",
+      );
+      await expect(cards.nth(6).locator(".ask-result p")).toHaveText(
+        "Plain output preserved",
+      );
       await expect(cards.nth(6).locator(".ask-answer")).toHaveCount(0);
       await readonly(page);
     });
 
-    test(`live waiting to completion preserves expansion, zero timing and snapshot answers in ${language}`, async ({ page }) => {
+    test(`live waiting to completion preserves expansion, zero timing and snapshot answers in ${language}`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: zh ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
-      const args = { question: "Choose live targets", options: ["Linux", "Windows"], allowMultiple: true, allowComment: true };
-      const messages = [{ role: "assistant", content: [call("ask-live", args)] }];
+      const args = {
+        question: "Choose live targets",
+        options: ["Linux", "Windows"],
+        allowMultiple: true,
+        allowComment: true,
+      };
+      const messages = [
+        { role: "assistant", content: [call("ask-live", args)] },
+      ];
       const content = [{ type: "text", text: "Selected Linux; staging only." }];
-      const details = { answers: [{ values: ["Linux"], text: "Staging only" }] };
+      const details = {
+        answers: [{ values: ["Linux"], text: "Staging only" }],
+      };
       let reloaded = false;
-      await page.route(snapshotRoute, route => route.fulfill({ json: {
-        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 6 : 4, events: [],
-        messages: reloaded ? [...messages, result("ask-live", content, details)] : messages,
-      } }));
+      await page.route(snapshotRoute, (route) =>
+        route.fulfill({
+          json: {
+            sessionId,
+            status: reloaded ? "ready" : "running",
+            lastSeq: reloaded ? 6 : 4,
+            events: [],
+            messages: reloaded
+              ? [...messages, result("ask-live", content, details)]
+              : messages,
+          },
+        }),
+      );
       const releases: Array<() => void> = [];
-      const gates = Array.from({ length: 2 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      const gates = Array.from(
+        { length: 2 },
+        () => new Promise<void>((resolve) => releases.push(resolve)),
+      );
       let attempts = 0;
-      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-        const index = attempts++;
-        if (index >= gates.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
-        await gates[index];
-        const event = index === 0 ? {
-          seq: 5, type: "tool_execution_start", toolCallId: "ask-live", toolName: "ask_user", args,
-          webTiming: { elapsedMs: 0, running: true },
-        } : {
-          seq: 6, type: "tool_execution_end", toolCallId: "ask-live", toolName: "ask_user", isError: false,
-          result: { content, details }, webTiming: { elapsedMs: 0, running: false },
-        };
-        await route.fulfill({ contentType: "text/event-stream", body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
-      });
+      await page.route(
+        `**/api/v1/sessions/${sessionId}/events?*`,
+        async (route) => {
+          const index = attempts++;
+          if (index >= gates.length)
+            return route.fulfill({
+              contentType: "text/event-stream",
+              body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+            });
+          await gates[index];
+          const event =
+            index === 0
+              ? {
+                  seq: 5,
+                  type: "tool_execution_start",
+                  toolCallId: "ask-live",
+                  toolName: "ask_user",
+                  args,
+                  webTiming: { elapsedMs: 0, running: true },
+                }
+              : {
+                  seq: 6,
+                  type: "tool_execution_end",
+                  toolCallId: "ask-live",
+                  toolName: "ask_user",
+                  isError: false,
+                  result: { content, details },
+                  webTiming: { elapsedMs: 0, running: false },
+                };
+          await route.fulfill({
+            contentType: "text/event-stream",
+            body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+          });
+        },
+      );
       try {
         await page.goto("/");
         const card = page.locator(".ask-card");
         await expect(card).toHaveClass(/tool-pending/);
         await card.locator(":scope > summary").click();
-        await expect(card.locator(".ask-empty")).toHaveText(zh ? "等待你的回答…" : "Waiting for your answer…");
+        await expect(card.locator(".ask-empty")).toHaveText(
+          zh ? "等待你的回答…" : "Waiting for your answer…",
+        );
         releases[0]();
         await expect(card).toHaveClass(/tool-running/);
         await expect(card).toHaveJSProperty("open", true);
-        await expect(card.locator("summary .tool-status")).toHaveAttribute("title", zh ? "执行中" : "running");
-        await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(1);
+        await expect(card.locator("summary .tool-status")).toHaveAttribute(
+          "title",
+          zh ? "执行中" : "running",
+        );
+        await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(
+          1,
+        );
         await expect(card.locator(".ask-empty")).toBeVisible();
         await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
         releases[1]();
         await expect(card).toHaveClass(/tool-done/);
         await expect(card).toHaveJSProperty("open", true);
-        await expect(card.locator("summary .tool-status")).toHaveAttribute("title", zh ? "已完成" : "done");
-        await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(0);
+        await expect(card.locator("summary .tool-status")).toHaveAttribute(
+          "title",
+          zh ? "已完成" : "done",
+        );
+        await expect(card.locator("summary .tool-status svg.spin")).toHaveCount(
+          0,
+        );
         await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
         await expect(card.locator(".ask-empty")).toHaveCount(0);
         await expect(card.locator(".ask-options li.selected")).toHaveCount(1);
-        await expect(card.locator(".ask-options li.selected")).toContainText("Linux");
-        await expect(card.locator(".ask-options li").nth(1)).not.toHaveClass(/selected/);
-        await expect(card.locator(".ask-answer-text")).toHaveText("Staging only");
-        await expect(card.locator(".ask-result p")).toHaveText("Selected Linux; staging only.");
+        await expect(card.locator(".ask-options li.selected")).toContainText(
+          "Linux",
+        );
+        await expect(card.locator(".ask-options li").nth(1)).not.toHaveClass(
+          /selected/,
+        );
+        await expect(card.locator(".ask-answer-text")).toHaveText(
+          "Staging only",
+        );
+        await expect(card.locator(".ask-result p")).toHaveText(
+          "Selected Linux; staging only.",
+        );
         await expect(card.locator(".ask-raw pre")).toBeHidden();
         await card.locator(":scope > summary").click();
         reloaded = true;
@@ -12011,16 +15187,21 @@ test.describe("ask tool card", () => {
         await card.locator(":scope > summary").click();
         await expect(card.locator(".ask-options li.selected")).toHaveCount(1);
         await expect(card.locator(".ask-values li")).toHaveText(["Linux"]);
-        await expect(card.locator(".ask-answer-text")).toHaveText("Staging only");
-        await expect(card.locator(".ask-result p")).toHaveText("Selected Linux; staging only.");
+        await expect(card.locator(".ask-answer-text")).toHaveText(
+          "Staging only",
+        );
+        await expect(card.locator(".ask-result p")).toHaveText(
+          "Selected Linux; staging only.",
+        );
         await expect(card.locator(".tool-elapsed")).toHaveText("0.0s");
         await expect(card.locator(".ask-raw")).toHaveJSProperty("open", false);
         await readonly(page);
-      } finally { releases.forEach(release => release()); }
+      } finally {
+        releases.forEach((release) => release());
+      }
     });
   }
 });
-
 
 import { groupTodoUpdates } from "../src/todoGroups";
 import type { Row } from "../src/transcript";
@@ -12029,13 +15210,25 @@ test.describe("todo update grouping", () => {
   const timing = { elapsedMs: 0, running: false };
   const full = `9/9 completed\n${Array.from({ length: 9 }, (_, index) => `[✓] #${index}: Completed task ${index}`).join("\n")}`;
   const partial = "9/10 completed\n[ ] #9: Verify remaining task";
-  const latestResult = "9/11 completed\n[ ] #9: Verify remaining task\n[ ] #10: Document verification";
+  const latestResult =
+    "9/11 completed\n[ ] #9: Verify remaining task\n[ ] #10: Document verification";
   const call = (id: string, name = "todo") => ({
-    type: "toolCall", id, name, arguments: { action: "list", includeDone: false }, webTiming: timing,
+    type: "toolCall",
+    id,
+    name,
+    arguments: { action: "list", includeDone: false },
+    webTiming: timing,
   });
   const pair = (id: string, content: string, name = "todo") => [
     { role: "assistant", entryId: `${id}-call`, content: [call(id, name)] },
-    { role: "toolResult", entryId: `${id}-result`, toolCallId: id, toolName: name, content, webTiming: timing },
+    {
+      role: "toolResult",
+      entryId: `${id}-result`,
+      toolCallId: id,
+      toolName: name,
+      content,
+      webTiming: timing,
+    },
   ];
   const messages = () => [
     ...pair("group-first", full),
@@ -12044,37 +15237,80 @@ test.describe("todo update grouping", () => {
   ];
   const topCards = (page: Page) => page.locator(".transcript-row > .tool-card");
   const progress = (language: "en" | "zh", total: number) =>
-    language === "zh" ? `9/${total} 项任务已完成` : `9/${total} tasks completed`;
+    language === "zh"
+      ? `9/${total} 项任务已完成`
+      : `9/${total} tasks completed`;
   const earlier = (language: "en" | "zh", count: number) =>
     language === "zh" ? `先前 ${count} 次更新` : `${count} earlier updates`;
   async function snapshot(page: Page, entries: unknown[], extra = {}) {
-    await page.route(snapshotRoute, route => route.fulfill({ json: {
-      sessionId, status: "ready", messages: entries, events: [], lastSeq: 4, hasMore: false, ...extra,
-    } }));
+    await page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          messages: entries,
+          events: [],
+          lastSeq: 4,
+          hasMore: false,
+          ...extra,
+        },
+      }),
+    );
   }
   function historyReads(page: Page) {
     const reads: Array<Record<string, unknown>> = [];
-    page.on("request", request => {
-      if (!request.url().includes(`/api/v1/sessions/${sessionId}/commands`)) return;
+    page.on("request", (request) => {
+      if (!request.url().includes(`/api/v1/sessions/${sessionId}/commands`))
+        return;
       const body = request.postDataJSON();
-      if (["get_messages", "get_history", "prompt", "queue_message", "history_mutation"].includes(body?.type)) reads.push(body);
+      if (
+        [
+          "get_messages",
+          "get_history",
+          "prompt",
+          "queue_message",
+          "history_mutation",
+        ].includes(body?.type)
+      )
+        reads.push(body);
     });
     return reads;
   }
   async function readonly(page: Page) {
-    await expect(page.locator(".todo-detail input, .todo-detail button, .todo-detail [role=checkbox], .todo-detail [contenteditable=true]")).toHaveCount(0);
+    await expect(
+      page.locator(
+        ".todo-detail input, .todo-detail button, .todo-detail [role=checkbox], .todo-detail [contenteditable=true]",
+      ),
+    ).toHaveCount(0);
     await expect(page.getByRole("dialog")).toHaveCount(0);
   }
 
   for (const language of ["en", "zh"] as const) {
-    test(`9/9 → 9/10 → 9/11 keeps one latest card with collapsed original history in ${language}`, async ({ page }) => {
-      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    test(`9/9 → 9/10 → 9/11 keeps one latest card with collapsed original history in ${language}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: language === "zh" ? 390 : 1280,
+        height: 844,
+      });
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       let snapshots = 0;
-      await page.route(snapshotRoute, route => {
+      await page.route(snapshotRoute, (route) => {
         snapshots++;
-        return route.fulfill({ json: { sessionId, status: "ready", messages: messages(), events: [], lastSeq: 4, hasMore: false } });
+        return route.fulfill({
+          json: {
+            sessionId,
+            status: "ready",
+            messages: messages(),
+            events: [],
+            lastSeq: 4,
+            hasMore: false,
+          },
+        });
       });
       const reads = historyReads(page);
       await page.goto("/");
@@ -12083,78 +15319,167 @@ test.describe("todo update grouping", () => {
       await expect(latest).toHaveClass(/todo-card/);
       await expect(latest).toHaveClass(/tool-done/);
       await expect(latest).toHaveJSProperty("open", false);
-      await expect(latest.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 11));
+      await expect(
+        latest.locator(":scope > summary .tool-summary-meta"),
+      ).toHaveText(progress(language, 11));
       // Projection replaces only RowView; native call/result wrappers survive.
       for (const id of ["first", "second", "latest"]) {
-        await expect(page.locator(`[data-transcript-row="call-group-${id}"]`)).toHaveCount(1);
-        await expect(page.locator(`[data-transcript-row="group-${id}-result:end"]`)).toHaveCount(1);
+        await expect(
+          page.locator(`[data-transcript-row="call-group-${id}"]`),
+        ).toHaveCount(1);
+        await expect(
+          page.locator(`[data-transcript-row="group-${id}-result:end"]`),
+        ).toHaveCount(1);
       }
-      await expect(page.locator('[data-transcript-row="call-group-first"] > .tool-card')).toHaveCount(1);
-      await expect(page.locator('[data-transcript-row="call-group-second"] > .tool-card, [data-transcript-row="call-group-latest"] > .tool-card')).toHaveCount(0);
+      await expect(
+        page.locator('[data-transcript-row="call-group-first"] > .tool-card'),
+      ).toHaveCount(1);
+      await expect(
+        page.locator(
+          '[data-transcript-row="call-group-second"] > .tool-card, [data-transcript-row="call-group-latest"] > .tool-card',
+        ),
+      ).toHaveCount(0);
       await latest.locator(":scope > summary").click();
       const history = latest.locator(".todo-history");
       await expect(history).toHaveJSProperty("open", false);
-      await expect(history.locator(":scope > summary")).toHaveText(earlier(language, 2));
+      await expect(history.locator(":scope > summary")).toHaveText(
+        earlier(language, 2),
+      );
       const originals = history.locator(".todo-card");
       await expect(originals).toHaveCount(2);
       for (const original of await originals.all()) {
         await expect(original).toHaveJSProperty("open", false);
         await expect(original).toBeHidden();
       }
-      await expect(latest.locator(":scope > .todo-detail > .todo-list li")).toHaveCount(2);
-      await expect(latest.locator(":scope > .todo-detail > .todo-scope")).toHaveText(language === "zh"
-        ? "本次结果仅列出 2/11 项任务，进度包含全部任务。"
-        : "This result lists 2 of 11 tasks. Progress includes the entire list.");
-      await latest.screenshot({ path: test.info().outputPath(`todo-latest-history-collapsed-${language}.png`) });
+      await expect(
+        latest.locator(":scope > .todo-detail > .todo-list li"),
+      ).toHaveCount(2);
+      await expect(
+        latest.locator(":scope > .todo-detail > .todo-scope"),
+      ).toHaveText(
+        language === "zh"
+          ? "本次结果仅列出 2/11 项任务，进度包含全部任务。"
+          : "This result lists 2 of 11 tasks. Progress includes the entire list.",
+      );
+      await latest.screenshot({
+        path: test
+          .info()
+          .outputPath(`todo-latest-history-collapsed-${language}.png`),
+      });
       await history.locator(":scope > summary").click();
       for (let index = 0; index < 2; index++) {
         const original = originals.nth(index);
         await expect(original).toBeVisible();
         await expect(original).toHaveJSProperty("open", false);
-        await expect(original.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, index + 9));
-        await expect(original.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await expect(
+          original.locator(":scope > summary .tool-summary-meta"),
+        ).toHaveText(progress(language, index + 9));
+        await expect(
+          original.locator(":scope > summary .tool-elapsed"),
+        ).toHaveText("0.0s");
         await original.locator(":scope > summary").click();
-        await expect(original.locator(".todo-list li")).toHaveCount(index === 0 ? 9 : 1);
-        await expect(original.locator(".todo-list li.done")).toHaveCount(index === 0 ? 9 : 0);
+        await expect(original.locator(".todo-list li")).toHaveCount(
+          index === 0 ? 9 : 1,
+        );
+        await expect(original.locator(".todo-list li.done")).toHaveCount(
+          index === 0 ? 9 : 0,
+        );
       }
       await history.locator(":scope > summary").click();
       await expect(originals.first()).toBeHidden();
       await readonly(page);
       // The existing 450ms diagnostics timer may read get_history once per load.
       // Expanding cards must not fetch message pages or submit mutations.
-      expect(reads.filter(body => body.type !== "get_history")).toEqual([]);
-      expect(reads.filter(body => body.type === "get_history").length).toBeLessThanOrEqual(snapshots);
+      expect(reads.filter((body) => body.type !== "get_history")).toEqual([]);
+      expect(
+        reads.filter((body) => body.type === "get_history").length,
+      ).toBeLessThanOrEqual(snapshots);
       expect(snapshots).toBe(1);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
     });
 
-
-    test(`SSE pending → running → done preserves latest expansion, history toggle and zero timing in ${language}`, async ({ page }) => {
-      await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
-      await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    test(`SSE pending → running → done preserves latest expansion, history toggle and zero timing in ${language}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: language === "zh" ? 390 : 1280,
+        height: 844,
+      });
+      await page.addInitScript(
+        (lang) => localStorage.setItem("rpi-web-language", lang),
+        language,
+      );
       await mockHost(page);
       let reloaded = false;
       let snapshots = 0;
-      await page.route(snapshotRoute, route => {
+      await page.route(snapshotRoute, (route) => {
         snapshots++;
-        return route.fulfill({ json: { sessionId, status: reloaded ? "ready" : "running", messages: reloaded ? messages() : messages().slice(0, 4), events: [], lastSeq: reloaded ? 7 : 4, hasMore: false } });
+        return route.fulfill({
+          json: {
+            sessionId,
+            status: reloaded ? "ready" : "running",
+            messages: reloaded ? messages() : messages().slice(0, 4),
+            events: [],
+            lastSeq: reloaded ? 7 : 4,
+            hasMore: false,
+          },
+        });
       });
       const reads = historyReads(page);
       const releases: Array<() => void> = [];
-      const gates = Array.from({ length: 3 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      const gates = Array.from(
+        { length: 3 },
+        () => new Promise<void>((resolve) => releases.push(resolve)),
+      );
       const events = [
-        { seq: 5, type: "message_end", message: { role: "assistant", content: [call("group-latest", "functions.todo")] } },
-        { seq: 6, type: "tool_execution_update", toolCallId: "group-latest", toolName: "functions.todo", partialResult: { text: latestResult }, webTiming: { elapsedMs: 0, running: true } },
-        { seq: 7, type: "tool_execution_end", toolCallId: "group-latest", toolName: "functions.todo", isError: false, result: { content: [{ type: "text", text: latestResult }] }, webTiming: timing },
+        {
+          seq: 5,
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [call("group-latest", "functions.todo")],
+          },
+        },
+        {
+          seq: 6,
+          type: "tool_execution_update",
+          toolCallId: "group-latest",
+          toolName: "functions.todo",
+          partialResult: { text: latestResult },
+          webTiming: { elapsedMs: 0, running: true },
+        },
+        {
+          seq: 7,
+          type: "tool_execution_end",
+          toolCallId: "group-latest",
+          toolName: "functions.todo",
+          isError: false,
+          result: { content: [{ type: "text", text: latestResult }] },
+          webTiming: timing,
+        },
       ];
       let attempts = 0;
-      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-        const index = attempts++;
-        if (index >= events.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
-        await gates[index];
-        const event = events[index];
-        await route.fulfill({ contentType: "text/event-stream", body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
-      });
+      await page.route(
+        `**/api/v1/sessions/${sessionId}/events?*`,
+        async (route) => {
+          const index = attempts++;
+          if (index >= events.length)
+            return route.fulfill({
+              contentType: "text/event-stream",
+              body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+            });
+          await gates[index];
+          const event = events[index];
+          await route.fulfill({
+            contentType: "text/event-stream",
+            body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+          });
+        },
+      );
       try {
         await page.goto("/");
         const latest = topCards(page);
@@ -12165,7 +15490,9 @@ test.describe("todo update grouping", () => {
         await expect(latest).toHaveClass(/tool-pending/);
         await expect(latest).toHaveJSProperty("open", true);
         const history = latest.locator(".todo-history");
-        await expect(history.locator(":scope > summary")).toHaveText(earlier(language, 2));
+        await expect(history.locator(":scope > summary")).toHaveText(
+          earlier(language, 2),
+        );
         await expect(history).toHaveJSProperty("open", false);
         await history.locator(":scope > summary").click();
         await expect(history).toHaveJSProperty("open", true);
@@ -12176,52 +15503,103 @@ test.describe("todo update grouping", () => {
         await expect(latest).toHaveClass(/todo-card/);
         await expect(latest).toHaveJSProperty("open", true);
         await expect(history).toHaveJSProperty("open", false);
-        await expect(latest.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 11));
+        await expect(
+          latest.locator(":scope > summary .tool-summary-meta"),
+        ).toHaveText(progress(language, 11));
         await history.locator(":scope > summary").click();
-        await expect(history.locator(".todo-card").first()).toHaveJSProperty("open", false);
+        await expect(history.locator(".todo-card").first()).toHaveJSProperty(
+          "open",
+          false,
+        );
         releases[2]();
         await expect(latest).toHaveClass(/tool-done/);
         await expect(latest).toHaveJSProperty("open", true);
         await expect(history).toHaveJSProperty("open", true);
-        await expect(latest.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
-        await expect(history.locator(".tool-elapsed")).toHaveText(["0.0s", "0.0s"]);
+        await expect(
+          latest.locator(":scope > summary .tool-elapsed"),
+        ).toHaveText("0.0s");
+        await expect(history.locator(".tool-elapsed")).toHaveText([
+          "0.0s",
+          "0.0s",
+        ]);
         await readonly(page);
         expect(snapshots).toBe(1);
         reloaded = true;
         await page.reload();
         await expect(latest).toHaveCount(1);
         await expect(latest).toHaveJSProperty("open", false);
-        await expect(latest.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 11));
+        await expect(
+          latest.locator(":scope > summary .tool-summary-meta"),
+        ).toHaveText(progress(language, 11));
         await latest.locator(":scope > summary").click();
         await expect(history).toHaveJSProperty("open", false);
         await history.locator(":scope > summary").click();
         await expect(history.locator(".todo-card")).toHaveCount(2);
-        await expect(history.locator(".tool-elapsed")).toHaveText(["0.0s", "0.0s"]);
+        await expect(history.locator(".tool-elapsed")).toHaveText([
+          "0.0s",
+          "0.0s",
+        ]);
         expect(snapshots).toBe(2);
-        expect(reads.filter(body => body.type !== "get_history")).toEqual([]);
-        expect(reads.filter(body => body.type === "get_history").length).toBeLessThanOrEqual(snapshots);
+        expect(reads.filter((body) => body.type !== "get_history")).toEqual([]);
+        expect(
+          reads.filter((body) => body.type === "get_history").length,
+        ).toBeLessThanOrEqual(snapshots);
         await readonly(page);
-      } finally { releases.forEach(release => release()); }
+      } finally {
+        releases.forEach((release) => release());
+      }
     });
   }
 
-  test("simultaneously active calls stay visible even when a later call completes", async ({ page }) => {
+  test("simultaneously active calls stay visible even when a later call completes", async ({
+    page,
+  }) => {
     await mockHost(page);
-    await snapshot(page, [{ role: "assistant", content: [
-      call("parallel-pending"),
-      { ...call("parallel-running", "functions.todo"), webTiming: { elapsedMs: 0, running: true } },
-      call("parallel-later"),
-    ] }], { status: "running" });
+    await snapshot(
+      page,
+      [
+        {
+          role: "assistant",
+          content: [
+            call("parallel-pending"),
+            {
+              ...call("parallel-running", "functions.todo"),
+              webTiming: { elapsedMs: 0, running: true },
+            },
+            call("parallel-later"),
+          ],
+        },
+      ],
+      { status: "running" },
+    );
     let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    let sent = false;
-    await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-      if (sent) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
-      sent = true;
-      await gate;
-      const event = { type: "tool_execution_end", toolCallId: "parallel-later", toolName: "todo", result: { content: [{ type: "text", text: full }] }, webTiming: timing };
-      return route.fulfill({ contentType: "text/event-stream", body: `retry: 60000\nid: 5\nevent: tool_execution_end\ndata: ${JSON.stringify(event)}\n\n` });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    let sent = false;
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/events?*`,
+      async (route) => {
+        if (sent)
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+          });
+        sent = true;
+        await gate;
+        const event = {
+          type: "tool_execution_end",
+          toolCallId: "parallel-later",
+          toolName: "todo",
+          result: { content: [{ type: "text", text: full }] },
+          webTiming: timing,
+        };
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: `retry: 60000\nid: 5\nevent: tool_execution_end\ndata: ${JSON.stringify(event)}\n\n`,
+        });
+      },
+    );
     try {
       await page.goto("/");
       await expect(topCards(page)).toHaveCount(3);
@@ -12233,24 +15611,48 @@ test.describe("todo update grouping", () => {
       await expect(topCards(page).nth(0)).toHaveClass(/tool-pending/);
       await expect(topCards(page).nth(1)).toHaveClass(/tool-running/);
       await expect(page.locator(".todo-history")).toHaveCount(0);
-    } finally { release(); }
+    } finally {
+      release();
+    }
   });
 
-
-  test("paged adjacent todo prepend merges without extra reads and preserves the reading anchor", async ({ page }) => {
+  test("paged adjacent todo prepend merges without extra reads and preserves the reading anchor", async ({
+    page,
+  }) => {
     await mockHost(page);
-    await snapshot(page, [...pair("group-latest", latestResult), ...upwardPagingMessages], { firstId: "group-latest-call", hasMore: true });
-    const requests: Array<{ type: string; beforeId?: string; limit?: number }> = [];
+    await snapshot(
+      page,
+      [...pair("group-latest", latestResult), ...upwardPagingMessages],
+      { firstId: "group-latest-call", hasMore: true },
+    );
+    const requests: Array<{ type: string; beforeId?: string; limit?: number }> =
+      [];
     let release!: () => void;
-    const held = new Promise<void>(resolve => { release = resolve; });
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
-      const body = route.request().postDataJSON();
-      if (!["get_messages", "get_history"].includes(body.type)) return route.fallback();
-      requests.push(body);
-      if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
-      await held;
-      return route.fulfill({ json: response({ messages: messages().slice(0, 4), firstId: "group-first-call", hasMore: false }, "get_messages") });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/commands`,
+      async (route) => {
+        const body = route.request().postDataJSON();
+        if (!["get_messages", "get_history"].includes(body.type))
+          return route.fallback();
+        requests.push(body);
+        if (body.type !== "get_messages" || !body.beforeId)
+          return route.fallback();
+        await held;
+        return route.fulfill({
+          json: response(
+            {
+              messages: messages().slice(0, 4),
+              firstId: "group-first-call",
+              hasMore: false,
+            },
+            "get_messages",
+          ),
+        });
+      },
+    );
     try {
       await page.goto("/");
       await expect(topCards(page)).toHaveCount(1);
@@ -12258,18 +15660,32 @@ test.describe("todo update grouping", () => {
       // account for their one history read instead of racing the deferred task.
       await expect.poll(() => requests).toEqual([{ type: "get_history" }]);
       await scrollPagingTo(page, 120);
-      await expect.poll(() => requests.filter(request => request.type === "get_messages").length).toBe(1);
+      await expect
+        .poll(
+          () =>
+            requests.filter((request) => request.type === "get_messages")
+              .length,
+        )
+        .toBe(1);
       await scrollPagingTo(page, 450);
       const anchor = await visiblePagingAnchor(page);
       release();
-      await expect(page.locator('[data-transcript-row="call-group-latest"] > .todo-card')).toHaveCount(1);
+      await expect(
+        page.locator('[data-transcript-row="call-group-latest"] > .todo-card'),
+      ).toHaveCount(1);
       await expect(topCards(page)).toHaveCount(1);
       await expectPagingAnchor(page, anchor);
-      await expect(page.getByRole("button", { name: "Load earlier messages" })).toHaveCount(0);
+      await expect(
+        page.getByRole("button", { name: "Load earlier messages" }),
+      ).toHaveCount(0);
       const latest = topCards(page);
-      await expect(latest.locator(":scope > summary .tool-summary-meta")).toHaveText(progress("en", 11));
+      await expect(
+        latest.locator(":scope > summary .tool-summary-meta"),
+      ).toHaveText(progress("en", 11));
       await latest.locator(":scope > summary").click();
-      await expect(latest.locator(".todo-history > summary")).toHaveText("2 earlier updates");
+      await expect(latest.locator(".todo-history > summary")).toHaveText(
+        "2 earlier updates",
+      );
       await latest.locator(".todo-history > summary").click();
       await expect(latest.locator(".todo-history .todo-card")).toHaveCount(2);
       await expect(page.locator(".message.user")).toHaveCount(20);
@@ -12277,22 +15693,45 @@ test.describe("todo update grouping", () => {
         { type: "get_history" },
         { type: "get_messages", beforeId: "group-latest-call", limit: 48 },
       ]);
-    } finally { release(); }
+    } finally {
+      release();
+    }
   });
 
-  test("held adjacent todo pagination preserves the expanded card itself as the reading anchor", async ({ page }) => {
+  test("held adjacent todo pagination preserves the expanded card itself as the reading anchor", async ({
+    page,
+  }) => {
     await mockHost(page);
     const tallResult = `0/36 completed\n${Array.from({ length: 36 }, (_, index) => `[ ] #${index}: Remaining verification task ${index}`).join("\n")}`;
-    await snapshot(page, [...pair("group-latest", tallResult), ...upwardPagingMessages], { firstId: "group-latest-call", hasMore: true });
+    await snapshot(
+      page,
+      [...pair("group-latest", tallResult), ...upwardPagingMessages],
+      { firstId: "group-latest-call", hasMore: true },
+    );
     const reads = historyReads(page);
     let release!: () => void;
-    const held = new Promise<void>(resolve => { release = resolve; });
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, async route => {
-      const body = route.request().postDataJSON();
-      if (body.type !== "get_messages" || !body.beforeId) return route.fallback();
-      await held;
-      return route.fulfill({ json: response({ messages: messages().slice(0, 4), firstId: "group-first-call", hasMore: false }, "get_messages") });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/commands`,
+      async (route) => {
+        const body = route.request().postDataJSON();
+        if (body.type !== "get_messages" || !body.beforeId)
+          return route.fallback();
+        await held;
+        return route.fulfill({
+          json: response(
+            {
+              messages: messages().slice(0, 4),
+              firstId: "group-first-call",
+              hasMore: false,
+            },
+            "get_messages",
+          ),
+        });
+      },
+    );
     try {
       await page.goto("/");
       const wrapper = page.locator('[data-transcript-row="call-group-latest"]');
@@ -12300,11 +15739,15 @@ test.describe("todo update grouping", () => {
       await expect(latest).toHaveCount(1);
       await latest.locator(":scope > summary").click();
       await expect(latest).toHaveJSProperty("open", true);
-      await expect(latest.locator(":scope > .todo-detail > .todo-list li")).toHaveCount(36);
+      await expect(
+        latest.locator(":scope > .todo-detail > .todo-list li"),
+      ).toHaveCount(36);
       const originalWrapper = await wrapper.elementHandle();
       const originalCard = await latest.elementHandle();
       await scrollPagingTo(page, 120);
-      await expect.poll(() => reads.filter(body => body.type === "get_messages").length).toBe(1);
+      await expect
+        .poll(() => reads.filter((body) => body.type === "get_messages").length)
+        .toBe(1);
       for (const top of [110, 90, 130, 100]) await scrollPagingTo(page, top);
       // Unlike the prose-anchor regression, the viewport must begin inside the
       // expanded todo itself when the held page commits.
@@ -12312,58 +15755,150 @@ test.describe("todo update grouping", () => {
       const anchor = await visiblePagingAnchor(page);
       expect(anchor.id).toBe("call-group-latest");
       expect(anchor.offset).toBeLessThan(0);
-      expect(await latest.evaluate(element => element.getBoundingClientRect().bottom > element.closest(".transcript")!.getBoundingClientRect().top + 20)).toBe(true);
+      expect(
+        await latest.evaluate(
+          (element) =>
+            element.getBoundingClientRect().bottom >
+            element.closest(".transcript")!.getBoundingClientRect().top + 20,
+        ),
+      ).toBe(true);
       release();
-      await expect(latest.locator(".todo-history > summary")).toHaveText("2 earlier updates");
+      await expect(latest.locator(".todo-history > summary")).toHaveText(
+        "2 earlier updates",
+      );
       await expect(topCards(page)).toHaveCount(1);
-      await expect(page.locator('[data-transcript-row="call-group-first"] > .todo-card')).toHaveCount(0);
-      expect(await wrapper.evaluate((element, original) => element === original, originalWrapper)).toBe(true);
-      expect(await latest.evaluate((element, original) => element === original, originalCard)).toBe(true);
+      await expect(
+        page.locator('[data-transcript-row="call-group-first"] > .todo-card'),
+      ).toHaveCount(0);
+      expect(
+        await wrapper.evaluate(
+          (element, original) => element === original,
+          originalWrapper,
+        ),
+      ).toBe(true);
+      expect(
+        await latest.evaluate(
+          (element, original) => element === original,
+          originalCard,
+        ),
+      ).toBe(true);
       await expect(latest).toHaveJSProperty("open", true);
-      const offset = () => wrapper.evaluate(element => element.getBoundingClientRect().top - element.closest(".transcript")!.getBoundingClientRect().top);
-      await expect.poll(async () => Math.abs(await offset() - anchor.offset)).toBeLessThanOrEqual(2);
+      const offset = () =>
+        wrapper.evaluate(
+          (element) =>
+            element.getBoundingClientRect().top -
+            element.closest(".transcript")!.getBoundingClientRect().top,
+        );
+      await expect
+        .poll(async () => Math.abs((await offset()) - anchor.offset))
+        .toBeLessThanOrEqual(2);
       await page.waitForTimeout(250);
-      await expect.poll(async () => Math.abs(await offset() - anchor.offset)).toBeLessThanOrEqual(2);
+      await expect
+        .poll(async () => Math.abs((await offset()) - anchor.offset))
+        .toBeLessThanOrEqual(2);
       await latest.locator(".todo-history > summary").click();
       await expect(latest.locator(".todo-history .todo-card")).toHaveCount(2);
-      await expect(latest.locator(".todo-history .todo-card").first()).toBeVisible();
-      await expect(page.getByRole("button", { name: "Load earlier messages" })).toHaveCount(0);
-      expect(reads.filter(body => body.type === "get_messages")).toMatchObject([{ type: "get_messages", beforeId: "group-latest-call", limit: 48 }]);
-      expect(reads.filter(body => !["get_messages", "get_history"].includes(String(body.type)))).toEqual([]);
-    } finally { release(); }
+      await expect(
+        latest.locator(".todo-history .todo-card").first(),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Load earlier messages" }),
+      ).toHaveCount(0);
+      expect(
+        reads.filter((body) => body.type === "get_messages"),
+      ).toMatchObject([
+        { type: "get_messages", beforeId: "group-latest-call", limit: 48 },
+      ]);
+      expect(
+        reads.filter(
+          (body) =>
+            !["get_messages", "get_history"].includes(String(body.type)),
+        ),
+      ).toEqual([]);
+    } finally {
+      release();
+    }
   });
 
-  test("native footer on an invisible result wrapper stays between independently grouped runs", async ({ page }) => {
+  test("native footer on an invisible result wrapper stays between independently grouped runs", async ({
+    page,
+  }) => {
     await mockHost(page);
     await snapshot(page, messages());
-    await page.route(/\/api\/v1\/sessions\/[^/]+\/run-timings\/query$/, route => route.fulfill({ json: {
-      timings: [{ runId: "todo-footer-run", lane: "main", finalEntryId: "group-second-result", startedAt: 1000, finishedAt: 1000, elapsedMs: 0, outcome: "completed" }],
-      complete: true, cursor: "g", scannedBytes: 100, totalBytes: 100,
-    } }));
+    await page.route(
+      /\/api\/v1\/sessions\/[^/]+\/run-timings\/query$/,
+      (route) =>
+        route.fulfill({
+          json: {
+            timings: [
+              {
+                runId: "todo-footer-run",
+                lane: "main",
+                finalEntryId: "group-second-result",
+                startedAt: 1000,
+                finishedAt: 1000,
+                elapsedMs: 0,
+                outcome: "completed",
+              },
+            ],
+            complete: true,
+            cursor: "g",
+            scannedBytes: 100,
+            totalBytes: 100,
+          },
+        }),
+    );
     await page.goto("/");
     const footer = page.locator('.run-elapsed[data-run-id="todo-footer-run"]');
     await expect(footer).toBeVisible();
     await expect(topCards(page)).toHaveCount(2);
-    await expect(topCards(page).nth(0).locator(":scope > summary .tool-summary-meta")).toHaveText(progress("en", 10));
-    await expect(topCards(page).nth(1).locator(":scope > summary .tool-summary-meta")).toHaveText(progress("en", 11));
-    const wrapper = page.locator('[data-transcript-row="group-second-result:end"]');
+    await expect(
+      topCards(page).nth(0).locator(":scope > summary .tool-summary-meta"),
+    ).toHaveText(progress("en", 10));
+    await expect(
+      topCards(page).nth(1).locator(":scope > summary .tool-summary-meta"),
+    ).toHaveText(progress("en", 11));
+    const wrapper = page.locator(
+      '[data-transcript-row="group-second-result:end"]',
+    );
     await expect(wrapper.locator(":scope > .run-elapsed")).toHaveCount(1);
     await expect(wrapper.locator(".tool-card")).toHaveCount(0);
-    await expect(wrapper.locator('xpath=following-sibling::*[@data-transcript-row="call-group-latest"]').locator(".todo-card")).toHaveCount(1);
+    await expect(
+      wrapper
+        .locator(
+          'xpath=following-sibling::*[@data-transcript-row="call-group-latest"]',
+        )
+        .locator(".todo-card"),
+    ).toHaveCount(1);
     await expect(page.locator(".tool-card .run-elapsed")).toHaveCount(0);
     await topCards(page).first().locator(":scope > summary").click();
-    await expect(topCards(page).first().locator(".todo-history > summary")).toHaveText("1 earlier updates");
+    await expect(
+      topCards(page).first().locator(".todo-history > summary"),
+    ).toHaveText("1 earlier updates");
   });
 
-  const tool = (id: string, overrides: Partial<Extract<Row, { kind: "tool" }>> = {}): Extract<Row, { kind: "tool" }> => ({
-    kind: "tool", id, name: "todo", status: "done", result: full, ...overrides,
+  const tool = (
+    id: string,
+    overrides: Partial<Extract<Row, { kind: "tool" }>> = {},
+  ): Extract<Row, { kind: "tool" }> => ({
+    kind: "tool",
+    id,
+    name: "todo",
+    status: "done",
+    result: full,
+    ...overrides,
   });
 
   test("pure projection anchors at the first row, normalizes aliases, skips invisible boundaries and never mutates input", () => {
     const first = tool("first");
     const second = tool("second", { name: " FUNCTIONS.TODO " });
     const last = tool("last");
-    const rows: Row[] = [first, { kind: "boundary", id: "native-result" }, second, last];
+    const rows: Row[] = [
+      first,
+      { kind: "boundary", id: "native-result" },
+      second,
+      last,
+    ];
     const before = JSON.stringify(rows);
     for (const row of rows) Object.freeze(row);
     Object.freeze(rows);
@@ -12383,20 +15918,29 @@ test.describe("todo update grouping", () => {
     expect(groupTodoUpdates([], footers).size).toBe(0);
   });
 
-
   test("pure projection preserves an existing owner across prepends without mutating rows or owners", () => {
     const first = tool("first");
     const second = tool("second");
     const current = tool("current");
     const owners: ReadonlySet<string> = Object.freeze(new Set(["current"]));
-    const rows: Row[] = [first, { kind: "boundary", id: "native-result" }, second, current];
+    const rows: Row[] = [
+      first,
+      { kind: "boundary", id: "native-result" },
+      second,
+      current,
+    ];
     const before = JSON.stringify(rows);
     for (const row of rows) Object.freeze(row);
     Object.freeze(rows);
     const footers: ReadonlyMap<string, unknown> = new Map();
-    expect(groupTodoUpdates([current], footers, owners).get("current")).toEqual({ latest: current, previous: [] });
+    expect(groupTodoUpdates([current], footers, owners).get("current")).toEqual(
+      { latest: current, previous: [] },
+    );
     const grouped = groupTodoUpdates(rows, footers, owners);
-    expect(grouped.get("current")).toEqual({ latest: current, previous: [first, second] });
+    expect(grouped.get("current")).toEqual({
+      latest: current,
+      previous: [first, second],
+    });
     expect(grouped.get("current")?.latest).toBe(current);
     expect(grouped.get("first")).toBeNull();
     expect(grouped.get("second")).toBeNull();
@@ -12413,18 +15957,64 @@ test.describe("todo update grouping", () => {
   });
 
   const barriers: Array<{ label: string; row: Row }> = [
-    { label: "error even with parsed todo output", row: tool("barrier", { status: "error" }) },
-    { label: "unparsed finished result", row: tool("barrier", { result: "Unknown todo output" }) },
-    { label: "missing finished result", row: tool("barrier", { result: undefined }) },
-    { label: "todo carrying an image", row: tool("barrier", { images: [{ url: "data:image/png;base64,AA==" }] }) },
-    { label: "pending todo carrying an image", row: tool("barrier", { status: "pending", images: [{ url: "image.png" }] }) },
-    { label: "user prose", row: { kind: "text", id: "barrier", role: "user", text: "Continue" } },
-    { label: "assistant prose", row: { kind: "text", id: "barrier", role: "assistant", text: "Next step" } },
-    { label: "thinking", row: { kind: "thinking", id: "barrier", text: "Consider next step" } },
-    { label: "note", row: { kind: "note", id: "barrier", text: "Run stopped" } },
-    { label: "standalone image", row: { kind: "image", id: "barrier", role: "assistant", image: { url: "image.png" } } },
+    {
+      label: "error even with parsed todo output",
+      row: tool("barrier", { status: "error" }),
+    },
+    {
+      label: "unparsed finished result",
+      row: tool("barrier", { result: "Unknown todo output" }),
+    },
+    {
+      label: "missing finished result",
+      row: tool("barrier", { result: undefined }),
+    },
+    {
+      label: "todo carrying an image",
+      row: tool("barrier", { images: [{ url: "data:image/png;base64,AA==" }] }),
+    },
+    {
+      label: "pending todo carrying an image",
+      row: tool("barrier", {
+        status: "pending",
+        images: [{ url: "image.png" }],
+      }),
+    },
+    {
+      label: "user prose",
+      row: { kind: "text", id: "barrier", role: "user", text: "Continue" },
+    },
+    {
+      label: "assistant prose",
+      row: {
+        kind: "text",
+        id: "barrier",
+        role: "assistant",
+        text: "Next step",
+      },
+    },
+    {
+      label: "thinking",
+      row: { kind: "thinking", id: "barrier", text: "Consider next step" },
+    },
+    {
+      label: "note",
+      row: { kind: "note", id: "barrier", text: "Run stopped" },
+    },
+    {
+      label: "standalone image",
+      row: {
+        kind: "image",
+        id: "barrier",
+        role: "assistant",
+        image: { url: "image.png" },
+      },
+    },
     { label: "other tool", row: tool("barrier", { name: "read" }) },
-    { label: "noncanonical suffix", row: tool("barrier", { name: "other.todo" }) },
+    {
+      label: "noncanonical suffix",
+      row: tool("barrier", { name: "other.todo" }),
+    },
   ];
   for (const { label, row } of barriers) {
     test(`pure projection breaks at ${label}`, () => {
@@ -12437,13 +16027,23 @@ test.describe("todo update grouping", () => {
       const second = tool("second");
       const later = tool("later");
       const owners: ReadonlySet<string> = new Set(["later"]);
-      const preserved = groupTodoUpdates([first, second, row, last, later], new Map(), owners);
+      const preserved = groupTodoUpdates(
+        [first, second, row, last, later],
+        new Map(),
+        owners,
+      );
       // An existing owner in the later group must not absorb earlier calls
       // across this visible/semantic barrier.
-      expect(preserved.get("first")).toEqual({ latest: second, previous: [first] });
+      expect(preserved.get("first")).toEqual({
+        latest: second,
+        previous: [first],
+      });
       expect(preserved.get("second")).toBeNull();
       expect(preserved.get("last")).toBeNull();
-      expect(preserved.get("later")).toEqual({ latest: later, previous: [last] });
+      expect(preserved.get("later")).toEqual({
+        latest: later,
+        previous: [last],
+      });
       expect([...owners]).toEqual(["later"]);
     });
   }
@@ -12453,28 +16053,47 @@ test.describe("todo update grouping", () => {
       const first = tool("first");
       const second = tool("second");
       const third = tool("third");
-      const rows: Row[] = [first, { kind: "boundary", id: "native-result" }, second, third];
-      const footers: ReadonlyMap<string, unknown> = new Map([[footerAt, Object.freeze({ runId: "native-run" })]]);
+      const rows: Row[] = [
+        first,
+        { kind: "boundary", id: "native-result" },
+        second,
+        third,
+      ];
+      const footers: ReadonlyMap<string, unknown> = new Map([
+        [footerAt, Object.freeze({ runId: "native-run" })],
+      ]);
       const grouped = groupTodoUpdates(rows, footers);
       if (footerAt === "second") {
-        expect(grouped.get("first")).toEqual({ latest: second, previous: [first] });
+        expect(grouped.get("first")).toEqual({
+          latest: second,
+          previous: [first],
+        });
         expect(grouped.get("second")).toBeNull();
         expect(grouped.get("third")).toEqual({ latest: third, previous: [] });
       } else {
         expect(grouped.get("first")).toEqual({ latest: first, previous: [] });
-        expect(grouped.get("second")).toEqual({ latest: third, previous: [second] });
+        expect(grouped.get("second")).toEqual({
+          latest: third,
+          previous: [second],
+        });
         expect(grouped.get("third")).toBeNull();
       }
       const owners: ReadonlySet<string> = new Set(["third"]);
       const preserved = groupTodoUpdates(rows, footers, owners);
       if (footerAt === "second") {
-        expect(preserved.get("first")).toEqual({ latest: second, previous: [first] });
+        expect(preserved.get("first")).toEqual({
+          latest: second,
+          previous: [first],
+        });
         expect(preserved.get("second")).toBeNull();
         expect(preserved.get("third")).toEqual({ latest: third, previous: [] });
       } else {
         expect(preserved.get("first")).toEqual({ latest: first, previous: [] });
         expect(preserved.get("second")).toBeNull();
-        expect(preserved.get("third")).toEqual({ latest: third, previous: [second] });
+        expect(preserved.get("third")).toEqual({
+          latest: third,
+          previous: [second],
+        });
       }
       expect([...owners]).toEqual(["third"]);
       expect([...footers.keys()]).toEqual([footerAt]);
@@ -12485,63 +16104,147 @@ test.describe("todo update grouping", () => {
     test(`pure projection includes ${status} unparsed todo but never hides an earlier active call`, () => {
       const first = tool("first");
       const active = tool("active", { status, result: undefined });
-      const later = tool("later", { status, result: undefined, name: "functions.todo" });
+      const later = tool("later", {
+        status,
+        result: undefined,
+        name: "functions.todo",
+      });
       const finished = tool("finished");
-      const grouped = groupTodoUpdates([first, active, later, finished], new Map());
-      expect(grouped.get("first")).toEqual({ latest: active, previous: [first] });
+      const grouped = groupTodoUpdates(
+        [first, active, later, finished],
+        new Map(),
+      );
+      expect(grouped.get("first")).toEqual({
+        latest: active,
+        previous: [first],
+      });
       expect(grouped.get("active")).toBeNull();
       expect(grouped.get("later")).toEqual({ latest: later, previous: [] });
-      expect(grouped.get("finished")).toEqual({ latest: finished, previous: [] });
+      expect(grouped.get("finished")).toEqual({
+        latest: finished,
+        previous: [],
+      });
     });
   }
 });
 
-
 test.describe("delegation tool card", () => {
   const timing = { elapsedMs: 0, running: false };
-  const args = { task: "Review parser without edits", role: "reviewer", maxTurns: 8, timeoutSeconds: 300 };
-  const native = (extra: Record<string, unknown> = {}) => ({ kind: "rpi-delegation", ...args, status: "completed", turns: 3, turnLimited: false, childId: "child-1", sessionId: "child-session-1", report: "# Report\n\n- Parser checked\n\n```ts\nconst checked = true;\n```\n\n[Reference](https://example.com/)\n", ...extra });
-  const call = (id: string, input: unknown = args, name = "delegate_task") => ({ type: "toolCall", id, name, arguments: input, webTiming: timing });
-  const result = (id: string, content: unknown, isError = false, toolName = "delegate_task") => ({ role: "toolResult", toolCallId: id, toolName, content, isError, webTiming: timing });
+  const args = {
+    task: "Review parser without edits",
+    role: "reviewer",
+    maxTurns: 8,
+    timeoutSeconds: 300,
+  };
+  const native = (extra: Record<string, unknown> = {}) => ({
+    kind: "rpi-delegation",
+    ...args,
+    status: "completed",
+    turns: 3,
+    turnLimited: false,
+    childId: "child-1",
+    sessionId: "child-session-1",
+    report:
+      "# Report\n\n- Parser checked\n\n```ts\nconst checked = true;\n```\n\n[Reference](https://example.com/)\n",
+    ...extra,
+  });
+  const call = (id: string, input: unknown = args, name = "delegate_task") => ({
+    type: "toolCall",
+    id,
+    name,
+    arguments: input,
+    webTiming: timing,
+  });
+  const result = (
+    id: string,
+    content: unknown,
+    isError = false,
+    toolName = "delegate_task",
+  ) => ({
+    role: "toolResult",
+    toolCallId: id,
+    toolName,
+    content,
+    isError,
+    webTiming: timing,
+  });
   const text = (text: string) => [{ type: "text", text }];
-  const snapshot = (page: Page, messages: unknown[]) => page.route(snapshotRoute, route => route.fulfill({ json: { sessionId, status: "ready", messages, events: [], lastSeq: 4, hasMore: false } }));
+  const snapshot = (page: Page, messages: unknown[]) =>
+    page.route(snapshotRoute, (route) =>
+      route.fulfill({
+        json: {
+          sessionId,
+          status: "ready",
+          messages,
+          events: [],
+          lastSeq: 4,
+          hasMore: false,
+        },
+      }),
+    );
   async function setup(page: Page, language: "en" | "zh") {
-    await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
-    await page.addInitScript(lang => {
+    await page.setViewportSize({
+      width: language === "zh" ? 390 : 1280,
+      height: 844,
+    });
+    await page.addInitScript((lang) => {
       localStorage.setItem("rpi-web-language", lang);
       localStorage.setItem("rpi-web-tool-name-mode", "mapped");
     }, language);
     await mockHost(page);
     const mutations: unknown[] = [];
-    await page.route(`**/api/v1/sessions/${sessionId}/commands`, route => {
+    await page.route(`**/api/v1/sessions/${sessionId}/commands`, (route) => {
       const body = route.request().postDataJSON() as { type?: string };
       if (!String(body.type).startsWith("get_")) mutations.push(body);
-      if (body.type === "get_history") return route.fulfill({ json: response({ records: [], total: 0, hasMore: false }, "get_history") });
+      if (body.type === "get_history")
+        return route.fulfill({
+          json: response(
+            { records: [], total: 0, hasMore: false },
+            "get_history",
+          ),
+        });
       return route.fallback();
     });
     return mutations;
   }
   async function readonlyCard(card: ReturnType<Page["locator"]>) {
     // Safe report links and copy-code buttons are permitted.
-    await expect(card.locator("form, input, select, textarea, [contenteditable=true], [role=checkbox]")).toHaveCount(0);
-    await expect(card.getByRole("button", { name: /^(run|retry|cancel|abort|follow|fork|运行|重试|取消|终止)$/i })).toHaveCount(0);
+    await expect(
+      card.locator(
+        "form, input, select, textarea, [contenteditable=true], [role=checkbox]",
+      ),
+    ).toHaveCount(0);
+    await expect(
+      card.getByRole("button", {
+        name: /^(run|retry|cancel|abort|follow|fork|运行|重试|取消|终止)$/i,
+      }),
+    ).toHaveCount(0);
   }
   for (const language of ["en", "zh"] as const) {
-    const done = language === "zh" ? "委派调用已完成" : "Delegation call completed";
+    const done =
+      language === "zh" ? "委派调用已完成" : "Delegation call completed";
     const completed = language === "zh" ? "已完成" : "completed";
     const failed = language === "zh" ? "失败" : "failed";
     const mapped = language === "zh" ? "委派任务" : "Delegated task";
-    test(`native Markdown, exact opt-in raw data and actual zero timing in ${language}`, async ({ page }) => {
+    test(`native Markdown, exact opt-in raw data and actual zero timing in ${language}`, async ({
+      page,
+    }) => {
       const mutations = await setup(page, language);
       const output = JSON.stringify(native());
-      await snapshot(page, [{ role: "assistant", content: [call("report")] }, result("report", text(output))]);
+      await snapshot(page, [
+        { role: "assistant", content: [call("report")] },
+        result("report", text(output)),
+      ]);
       await page.goto("/");
       const card = page.locator(".delegation-card");
       await expect(card).toHaveJSProperty("open", false);
       await expect(card).toHaveClass(/tool-done/);
       const summary = card.locator(":scope > summary");
       await expect(summary.locator(".tool-action")).toHaveText(mapped);
-      await expect(summary.locator(".tool-status")).toHaveAttribute("title", done);
+      await expect(summary.locator(".tool-status")).toHaveAttribute(
+        "title",
+        done,
+      );
       await expect(summary.locator(".tool-elapsed")).toHaveText("0.0s");
       await summary.click();
       await expect(card.locator(".delegation-task")).toHaveText(args.task);
@@ -12549,51 +16252,153 @@ test.describe("delegation tool card", () => {
       await expect(card.locator(".delegation-status")).toHaveText(completed);
       await expect(card.locator(".delegation-turns")).toHaveText("3");
       await expect(card.locator(".delegation-report h1")).toHaveText("Report");
-      await expect(card.locator(".delegation-report li")).toHaveText("Parser checked");
-      await expect(card.locator(".delegation-report pre code")).toContainText("const checked = true;");
-      await expect(card.locator(".tool-arguments, .tool-result-pre, .delegation-detail > pre")).toHaveCount(0);
-      const execution = card.locator(".delegation-execution"), raw = card.locator(".delegation-raw");
+      await expect(card.locator(".delegation-report li")).toHaveText(
+        "Parser checked",
+      );
+      await expect(card.locator(".delegation-report pre code")).toContainText(
+        "const checked = true;",
+      );
+      await expect(
+        card.locator(
+          ".tool-arguments, .tool-result-pre, .delegation-detail > pre",
+        ),
+      ).toHaveCount(0);
+      const execution = card.locator(".delegation-execution"),
+        raw = card.locator(".delegation-raw");
       await expect(execution).toHaveJSProperty("open", false);
       await expect(execution.locator("dl")).toBeHidden();
       await expect(raw).toHaveJSProperty("open", false);
       await expect(raw.locator("pre")).toBeHidden();
       await execution.locator("summary").click();
-      await expect(execution.locator("dd")).toHaveText(["8", "300s", "child-1", "child-session-1"]);
+      await expect(execution.locator("dd")).toHaveText([
+        "8",
+        "300s",
+        "child-1",
+        "child-session-1",
+      ]);
       await expect(summary).not.toContainText("300s");
       await raw.locator("summary").click();
-      expect(JSON.parse((await raw.locator("pre").textContent())!)).toEqual({ input: args, output });
+      expect(JSON.parse((await raw.locator("pre").textContent())!)).toEqual({
+        input: args,
+        output,
+      });
       await raw.locator("summary").click();
       await expect(raw.locator("pre")).toBeHidden();
       await readonlyCard(card);
       expect(mutations).toEqual([]);
-      await page.screenshot({ path: test.info().outputPath(`delegation-${language}.png`), fullPage: true });
+      await page.screenshot({
+        path: test.info().outputPath(`delegation-${language}.png`),
+        fullPage: true,
+      });
     });
 
-    test(`plain, object, native wrappers, JSON args, aliases and orphan fallback in ${language}`, async ({ page }) => {
+    test(`plain, object, native wrappers, JSON args, aliases and orphan fallback in ${language}`, async ({
+      page,
+    }) => {
       await setup(page, language);
       const valid = [
-        { id: "plain", name: "delegate_task", input: args, output: "Plain report" },
-        { id: "object", name: "functions.delegate_task", input: args, output: native() },
-        { id: "json", name: " FUNCTIONS.DeLeGaTe_TaSk ", input: JSON.stringify(args), output: { content: text(JSON.stringify(native())) } },
-        { id: "wrapped", name: "DELEGATE_TASK", input: args, output: { text: JSON.stringify(native()) } },
-        { id: "content", name: "delegate_task", input: args, output: { content: JSON.stringify(native()) } },
-        { id: "orphan", name: "delegate_task", output: text(JSON.stringify(native())) },
-        { id: "native-wins", name: "delegate_task", input: { task: 42 }, output: native() },
+        {
+          id: "plain",
+          name: "delegate_task",
+          input: args,
+          output: "Plain report",
+        },
+        {
+          id: "object",
+          name: "functions.delegate_task",
+          input: args,
+          output: native(),
+        },
+        {
+          id: "json",
+          name: " FUNCTIONS.DeLeGaTe_TaSk ",
+          input: JSON.stringify(args),
+          output: { content: text(JSON.stringify(native())) },
+        },
+        {
+          id: "wrapped",
+          name: "DELEGATE_TASK",
+          input: args,
+          output: { text: JSON.stringify(native()) },
+        },
+        {
+          id: "content",
+          name: "delegate_task",
+          input: args,
+          output: { content: JSON.stringify(native()) },
+        },
+        {
+          id: "orphan",
+          name: "delegate_task",
+          output: text(JSON.stringify(native())),
+        },
+        {
+          id: "native-wins",
+          name: "delegate_task",
+          input: { task: 42 },
+          output: native(),
+        },
       ];
       const generic = [
-        { id: "other", name: "other.delegate_task", input: args, output: native() },
-        { id: "suffix", name: "delegate_task_extra", input: args, output: native() },
-        { id: "missing", name: "delegate_task", input: {}, output: "Plain report" },
-        { id: "blank", name: "delegate_task", input: { task: " " }, output: native({ task: "" }) },
-        { id: "bad-orphan", name: "delegate_task", output: native({ task: 42 }) },
+        {
+          id: "other",
+          name: "other.delegate_task",
+          input: args,
+          output: native(),
+        },
+        {
+          id: "suffix",
+          name: "delegate_task_extra",
+          input: args,
+          output: native(),
+        },
+        {
+          id: "missing",
+          name: "delegate_task",
+          input: {},
+          output: "Plain report",
+        },
+        {
+          id: "blank",
+          name: "delegate_task",
+          input: { task: " " },
+          output: native({ task: "" }),
+        },
+        {
+          id: "bad-orphan",
+          name: "delegate_task",
+          output: native({ task: 42 }),
+        },
         { id: "plain-orphan", name: "delegate_task", output: "Plain report" },
-        { id: "image", name: "delegate_task", input: args, output: [...text(JSON.stringify(native())), { type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=" }] },
+        {
+          id: "image",
+          name: "delegate_task",
+          input: args,
+          output: [
+            ...text(JSON.stringify(native())),
+            {
+              type: "image",
+              mimeType: "image/png",
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+            },
+          ],
+        },
       ];
       const entries = [...valid, ...generic];
-      await snapshot(page, entries.flatMap(entry => [
-        ...("input" in entry ? [{ role: "assistant", content: [call(entry.id, entry.input, entry.name)] }] : []),
-        result(entry.id, entry.output, false, entry.name),
-      ]));
+      await snapshot(
+        page,
+        entries.flatMap((entry) => [
+          ...("input" in entry
+            ? [
+                {
+                  role: "assistant",
+                  content: [call(entry.id, entry.input, entry.name)],
+                },
+              ]
+            : []),
+          result(entry.id, entry.output, false, entry.name),
+        ]),
+      );
       await page.goto("/");
       const cards = page.locator(".tool-card");
       await expect(cards).toHaveCount(entries.length);
@@ -12601,21 +16406,51 @@ test.describe("delegation tool card", () => {
         const card = cards.nth(index);
         await expect(card).toHaveClass(/delegation-card/);
         await card.locator(":scope > summary").click();
-        await expect(card.locator(".delegation-report")).toContainText(entry.id === "plain" ? "Plain report" : "Report");
+        await expect(card.locator(".delegation-report")).toContainText(
+          entry.id === "plain" ? "Plain report" : "Report",
+        );
         await expect(card.locator(".delegation-task")).toHaveText(args.task);
         await readonlyCard(card);
         await card.locator(":scope > summary").click();
       }
-      for (let index = valid.length; index < entries.length; index++) await expect(cards.nth(index)).not.toHaveClass(/delegation-card/);
+      for (let index = valid.length; index < entries.length; index++)
+        await expect(cards.nth(index)).not.toHaveClass(/delegation-card/);
       await cards.last().locator(":scope > summary").click();
       await expect(cards.last().locator("img")).toHaveCount(1);
     });
 
-    test(`unknown and malformed JSON remain folded without invented budgets in ${language}`, async ({ page }) => {
+    test(`unknown and malformed JSON remain folded without invented budgets in ${language}`, async ({
+      page,
+    }) => {
       await setup(page, language);
-      const input = JSON.stringify({ task: "Inspect unknown result", maxTurns: 0, timeoutSeconds: 1 });
-      const outputs: unknown[] = ['{"kind":"unknown","report":"Not a report"}', '{"kind":"rpi-delegation","report":', ["unknown"], { unexpected: "payload" }, JSON.stringify(native({ report: "", turns: -1, maxTurns: 33, timeoutSeconds: 1801, childId: "", sessionId: "" }))];
-      await snapshot(page, outputs.flatMap((output, index) => [{ role: "assistant", content: [call(`unknown-${index}`, input)] }, result(`unknown-${index}`, output)]));
+      const input = JSON.stringify({
+        task: "Inspect unknown result",
+        maxTurns: 0,
+        timeoutSeconds: 1,
+      });
+      const outputs: unknown[] = [
+        '{"kind":"unknown","report":"Not a report"}',
+        '{"kind":"rpi-delegation","report":',
+        ["unknown"],
+        { unexpected: "payload" },
+        JSON.stringify(
+          native({
+            report: "",
+            turns: -1,
+            maxTurns: 33,
+            timeoutSeconds: 1801,
+            childId: "",
+            sessionId: "",
+          }),
+        ),
+      ];
+      await snapshot(
+        page,
+        outputs.flatMap((output, index) => [
+          { role: "assistant", content: [call(`unknown-${index}`, input)] },
+          result(`unknown-${index}`, output),
+        ]),
+      );
       await page.goto("/");
       const cards = page.locator(".delegation-card");
       await expect(cards).toHaveCount(outputs.length);
@@ -12623,21 +16458,52 @@ test.describe("delegation tool card", () => {
         const card = cards.nth(index);
         await expect(card).toHaveJSProperty("open", false);
         await card.locator(":scope > summary").click();
-        await expect(card.locator(".delegation-empty")).toHaveText(index === outputs.length - 1 ? language === "zh" ? "未记录报告。" : "No report recorded." : language === "zh" ? "无法识别此结果，可展开原始数据查看。" : "Unrecognized result. See raw data for details.");
-        await expect(card.locator(".delegation-report, .delegation-execution, .delegation-turns")).toHaveCount(0);
+        await expect(card.locator(".delegation-empty")).toHaveText(
+          index === outputs.length - 1
+            ? language === "zh"
+              ? "未记录报告。"
+              : "No report recorded."
+            : language === "zh"
+              ? "无法识别此结果，可展开原始数据查看。"
+              : "Unrecognized result. See raw data for details.",
+        );
+        await expect(
+          card.locator(
+            ".delegation-report, .delegation-execution, .delegation-turns",
+          ),
+        ).toHaveCount(0);
         const raw = card.locator(".delegation-raw");
         await expect(raw).toHaveJSProperty("open", false);
         await expect(raw.locator("pre")).toBeHidden();
         await raw.locator("summary").click();
-        expect(JSON.parse((await raw.locator("pre").textContent())!)).toEqual({ input, output });
+        expect(JSON.parse((await raw.locator("pre").textContent())!)).toEqual({
+          input,
+          output,
+        });
         await card.locator(":scope > summary").click();
       }
     });
 
-    test(`stdout errors, cancellation and timeout are not success; turnLimited is only a warning in ${language}`, async ({ page }) => {
+    test(`stdout errors, cancellation and timeout are not success; turnLimited is only a warning in ${language}`, async ({
+      page,
+    }) => {
       await setup(page, language);
-      const failures = ["subagent failed: parser crashed", "subagent cancelled: parent aborted", "subagent timeout: exceeded 300 seconds"];
-      await snapshot(page, [...failures.flatMap((failure, index) => [{ role: "assistant", content: [call(`error-${index}`)] }, result(`error-${index}`, text(failure), true)]), { role: "assistant", content: [call("limited")] }, result("limited", text(JSON.stringify(native({ turns: 8, turnLimited: true }))))]);
+      const failures = [
+        "subagent failed: parser crashed",
+        "subagent cancelled: parent aborted",
+        "subagent timeout: exceeded 300 seconds",
+      ];
+      await snapshot(page, [
+        ...failures.flatMap((failure, index) => [
+          { role: "assistant", content: [call(`error-${index}`)] },
+          result(`error-${index}`, text(failure), true),
+        ]),
+        { role: "assistant", content: [call("limited")] },
+        result(
+          "limited",
+          text(JSON.stringify(native({ turns: 8, turnLimited: true }))),
+        ),
+      ]);
       await page.goto("/");
       const cards = page.locator(".delegation-card");
       await expect(cards).toHaveCount(4);
@@ -12646,58 +16512,145 @@ test.describe("delegation tool card", () => {
         await expect(card).toHaveClass(/tool-error/);
         await expect(card).not.toHaveClass(/tool-done/);
         await expect(card).toHaveJSProperty("open", true);
-        await expect(card.locator(":scope > summary .tool-status")).toHaveAttribute("title", failed);
+        await expect(
+          card.locator(":scope > summary .tool-status"),
+        ).toHaveAttribute("title", failed);
         await expect(card.locator(".delegation-error")).toContainText(failure);
-        await expect(card.locator(".delegation-status, .delegation-limit")).toHaveCount(0);
-        await expect(card.locator(".delegation-raw")).toHaveJSProperty("open", false);
+        await expect(
+          card.locator(".delegation-status, .delegation-limit"),
+        ).toHaveCount(0);
+        await expect(card.locator(".delegation-raw")).toHaveJSProperty(
+          "open",
+          false,
+        );
       }
       const limited = cards.last();
       await expect(limited).toHaveClass(/tool-done/);
-      await expect(limited.locator(":scope > summary .tool-status")).toHaveAttribute("title", done);
+      await expect(
+        limited.locator(":scope > summary .tool-status"),
+      ).toHaveAttribute("title", done);
       await limited.locator(":scope > summary").click();
       await expect(limited.locator(".delegation-status")).toHaveText(completed);
       await expect(limited.locator(".delegation-turns")).toHaveText("8");
-      await expect(limited.locator(".delegation-limit")).toHaveText(language === "zh" ? "已达到轮数上限，已完成的工作请查看报告。" : "Turn limit reached; see the report for completed work.");
-      await expect(limited.locator(".delegation-report h1")).toHaveText("Report");
+      await expect(limited.locator(".delegation-limit")).toHaveText(
+        language === "zh"
+          ? "已达到轮数上限，已完成的工作请查看报告。"
+          : "Turn limit reached; see the report for completed work.",
+      );
+      await expect(limited.locator(".delegation-report h1")).toHaveText(
+        "Report",
+      );
     });
 
-    test(`SSE pending to plain progress to JSON report preserves toggles, reload and error opening in ${language}`, async ({ page }) => {
+    test(`SSE pending to plain progress to JSON report preserves toggles, reload and error opening in ${language}`, async ({
+      page,
+    }) => {
       const mutations = await setup(page, language);
       const output = JSON.stringify(native());
-      const initial = [{ role: "assistant", content: [call("live"), call("live-error")] }];
+      const initial = [
+        { role: "assistant", content: [call("live"), call("live-error")] },
+      ];
       let reloaded = false;
-      await page.route(snapshotRoute, route => route.fulfill({ json: {
-        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 7 : 4, events: [], hasMore: false,
-        messages: reloaded ? [...initial, result("live", text(output)), result("live-error", "subagent cancelled: parent aborted", true)] : initial,
-      } }));
+      await page.route(snapshotRoute, (route) =>
+        route.fulfill({
+          json: {
+            sessionId,
+            status: reloaded ? "ready" : "running",
+            lastSeq: reloaded ? 7 : 4,
+            events: [],
+            hasMore: false,
+            messages: reloaded
+              ? [
+                  ...initial,
+                  result("live", text(output)),
+                  result(
+                    "live-error",
+                    "subagent cancelled: parent aborted",
+                    true,
+                  ),
+                ]
+              : initial,
+          },
+        }),
+      );
       const releases: Array<() => void> = [];
-      const gates = Array.from({ length: 2 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      const gates = Array.from(
+        { length: 2 },
+        () => new Promise<void>((resolve) => releases.push(resolve)),
+      );
       const events = [
-        [{ seq: 5, type: "tool_execution_update", toolCallId: "live", toolName: "delegate_task", partialResult: { text: "## Working\n\n- Inspecting parser" }, webTiming: { elapsedMs: 0, running: true } }],
-        [{ seq: 6, type: "tool_execution_end", toolCallId: "live", toolName: "delegate_task", isError: false, result: { content: text(output) }, webTiming: timing },
-          { seq: 7, type: "tool_execution_end", toolCallId: "live-error", toolName: "delegate_task", isError: true, result: { content: text("subagent cancelled: parent aborted") }, webTiming: timing }],
+        [
+          {
+            seq: 5,
+            type: "tool_execution_update",
+            toolCallId: "live",
+            toolName: "delegate_task",
+            partialResult: { text: "## Working\n\n- Inspecting parser" },
+            webTiming: { elapsedMs: 0, running: true },
+          },
+        ],
+        [
+          {
+            seq: 6,
+            type: "tool_execution_end",
+            toolCallId: "live",
+            toolName: "delegate_task",
+            isError: false,
+            result: { content: text(output) },
+            webTiming: timing,
+          },
+          {
+            seq: 7,
+            type: "tool_execution_end",
+            toolCallId: "live-error",
+            toolName: "delegate_task",
+            isError: true,
+            result: { content: text("subagent cancelled: parent aborted") },
+            webTiming: timing,
+          },
+        ],
       ];
       let attempts = 0;
-      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-        const index = attempts++;
-        if (index >= events.length) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
-        await gates[index];
-        return route.fulfill({ contentType: "text/event-stream", body: `retry: 100\n${events[index].map(event => `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")}` });
-      });
+      await page.route(
+        `**/api/v1/sessions/${sessionId}/events?*`,
+        async (route) => {
+          const index = attempts++;
+          if (index >= events.length)
+            return route.fulfill({
+              contentType: "text/event-stream",
+              body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+            });
+          await gates[index];
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: `retry: 100\n${events[index].map((event) => `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")}`,
+          });
+        },
+      );
       try {
         await page.goto("/");
-        const live = page.locator(".delegation-card").first(), error = page.locator(".delegation-card").nth(1);
+        const live = page.locator(".delegation-card").first(),
+          error = page.locator(".delegation-card").nth(1);
         await expect(live).toHaveClass(/tool-pending/);
         await live.locator(":scope > summary").click();
-        await expect(live.locator(".delegation-empty")).toHaveText(language === "zh" ? "等待子任务输出…" : "Waiting for the subagent's output…");
-        const execution = live.locator(".delegation-execution"), raw = live.locator(".delegation-raw");
+        await expect(live.locator(".delegation-empty")).toHaveText(
+          language === "zh"
+            ? "等待子任务输出…"
+            : "Waiting for the subagent's output…",
+        );
+        const execution = live.locator(".delegation-execution"),
+          raw = live.locator(".delegation-raw");
         await execution.locator("summary").click();
         await raw.locator("summary").click();
         releases[0]();
         await expect(live).toHaveClass(/tool-running/);
         await expect(live).toHaveJSProperty("open", true);
-        await expect(live.locator(".delegation-report h4")).toHaveText(language === "zh" ? "实时进度" : "Live progress");
-        await expect(live.locator(".delegation-report h2")).toHaveText("Working");
+        await expect(live.locator(".delegation-report h4")).toHaveText(
+          language === "zh" ? "实时进度" : "Live progress",
+        );
+        await expect(live.locator(".delegation-report h2")).toHaveText(
+          "Working",
+        );
         await expect(execution).toHaveJSProperty("open", true);
         await expect(raw).toHaveJSProperty("open", true);
         await expect(raw.locator("pre")).toContainText("Inspecting parser");
@@ -12708,71 +16661,158 @@ test.describe("delegation tool card", () => {
         await expect(live).toHaveJSProperty("open", true);
         await expect(execution).toHaveJSProperty("open", true);
         await expect(raw).toHaveJSProperty("open", false);
-        await expect(live.locator(".delegation-report h1")).toHaveText("Report");
-        await expect(live.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
-        await expect(live.locator(":scope > summary .tool-status")).toHaveAttribute("title", done);
+        await expect(live.locator(".delegation-report h1")).toHaveText(
+          "Report",
+        );
+        await expect(live.locator(":scope > summary .tool-elapsed")).toHaveText(
+          "0.0s",
+        );
+        await expect(
+          live.locator(":scope > summary .tool-status"),
+        ).toHaveAttribute("title", done);
         await raw.locator("summary").click();
-        expect(JSON.parse((await raw.locator("pre").textContent())!).output).toEqual({ content: text(output) });
+        expect(
+          JSON.parse((await raw.locator("pre").textContent())!).output,
+        ).toEqual({ content: text(output) });
         await expect(error).toHaveClass(/tool-error/);
         await expect(error).toHaveJSProperty("open", true);
-        await expect(error.locator(".delegation-error")).toContainText("subagent cancelled: parent aborted");
-        await expect(error.locator(":scope > summary .tool-status")).toHaveAttribute("title", failed);
+        await expect(error.locator(".delegation-error")).toContainText(
+          "subagent cancelled: parent aborted",
+        );
+        await expect(
+          error.locator(":scope > summary .tool-status"),
+        ).toHaveAttribute("title", failed);
         await live.locator(":scope > summary").click();
         reloaded = true;
         await page.reload();
         await expect(live).toHaveClass(/tool-done/);
         await expect(live).toHaveJSProperty("open", false);
         await live.locator(":scope > summary").click();
-        await expect(live.locator(".delegation-report h1")).toHaveText("Report");
+        await expect(live.locator(".delegation-report h1")).toHaveText(
+          "Report",
+        );
         await expect(execution).toHaveJSProperty("open", false);
         await expect(raw).toHaveJSProperty("open", false);
-        await expect(live.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await expect(live.locator(":scope > summary .tool-elapsed")).toHaveText(
+          "0.0s",
+        );
         await expect(error).toHaveClass(/tool-error/);
         await expect(error).toHaveJSProperty("open", true);
         expect(mutations).toEqual([]);
-      } finally { releases.forEach(release => release()); }
+      } finally {
+        releases.forEach((release) => release());
+      }
     });
 
-    test(`hostile long text is inert and bounded; name preference preserves detail state in ${language}`, async ({ page }) => {
+    test(`hostile long text is inert and bounded; name preference preserves detail state in ${language}`, async ({
+      page,
+    }) => {
       const mutations = await setup(page, language);
       const errors: string[] = [];
-      page.on("pageerror", error => errors.push(error.message));
-      const hostile = '<img src=x onerror="window.__delegationExecuted=1"><script>window.__delegationExecuted=1</script>';
+      page.on("pageerror", (error) => errors.push(error.message));
+      const hostile =
+        '<img src=x onerror="window.__delegationExecuted=1"><script>window.__delegationExecuted=1</script>';
       const token = "LongUnbrokenToken".repeat(180);
-      const input = { ...args, task: `${hostile} ${token}`, role: `reviewer-${token}` };
-      const output = JSON.stringify(native({ ...input, childId: token, sessionId: `session-${token}`, report: `# Safe report\n\n${hostile}\n\n${token}\n\n[Unsafe](javascript:window.__delegationExecuted=1)\n\n[Safe](https://example.com/)\n\n\`\`\`text\n${token}\n\`\`\`` }));
-      await snapshot(page, [{ role: "assistant", content: [call("hostile", input, "functions.delegate_task")] }, result("hostile", text(output), false, "functions.delegate_task")]);
+      const input = {
+        ...args,
+        task: `${hostile} ${token}`,
+        role: `reviewer-${token}`,
+      };
+      const output = JSON.stringify(
+        native({
+          ...input,
+          childId: token,
+          sessionId: `session-${token}`,
+          report: `# Safe report\n\n${hostile}\n\n${token}\n\n[Unsafe](javascript:window.__delegationExecuted=1)\n\n[Safe](https://example.com/)\n\n\`\`\`text\n${token}\n\`\`\``,
+        }),
+      );
+      await snapshot(page, [
+        {
+          role: "assistant",
+          content: [call("hostile", input, "functions.delegate_task")],
+        },
+        result("hostile", text(output), false, "functions.delegate_task"),
+      ]);
       await page.goto("/");
-      const card = page.locator(".delegation-card"), summary = card.locator(":scope > summary");
+      const card = page.locator(".delegation-card"),
+        summary = card.locator(":scope > summary");
       await summary.click();
       await card.locator(".delegation-execution > summary").click();
       await card.locator(".delegation-raw > summary").click();
       await expect(card.locator(".delegation-task")).toHaveText(input.task);
       await expect(card.locator(".delegation-role")).toHaveText(input.role);
-      await expect(card.locator("script, iframe, object, embed, img, [onerror], [onclick], a[href^='javascript:']")).toHaveCount(0);
-      await expect(card.locator(".delegation-report a[href='https://example.com/']")).toHaveCount(1);
-      expect(await page.evaluate(() => (window as unknown as Record<string, unknown>).__delegationExecuted)).toBeUndefined();
+      await expect(
+        card.locator(
+          "script, iframe, object, embed, img, [onerror], [onclick], a[href^='javascript:']",
+        ),
+      ).toHaveCount(0);
+      await expect(
+        card.locator(".delegation-report a[href='https://example.com/']"),
+      ).toHaveCount(1);
+      expect(
+        await page.evaluate(
+          () =>
+            (window as unknown as Record<string, unknown>).__delegationExecuted,
+        ),
+      ).toBeUndefined();
       const before = await card.locator(".delegation-detail").textContent();
       for (const mode of ["native", "mapped"] as const) {
         await page.keyboard.press("Control+,");
-        const group = page.getByRole("group", { name: language === "zh" ? "工具名称" : "Tool names", exact: true });
+        const group = page.getByRole("group", {
+          name: language === "zh" ? "工具名称" : "Tool names",
+          exact: true,
+        });
         await expect(group).toBeVisible();
-        const label = language === "zh" ? mode === "native" ? "原生名称" : "映射名称" : mode === "native" ? "Native names" : "Mapped names";
+        const label =
+          language === "zh"
+            ? mode === "native"
+              ? "原生名称"
+              : "映射名称"
+            : mode === "native"
+              ? "Native names"
+              : "Mapped names";
         await group.getByRole("button", { name: label, exact: true }).click();
         await page.keyboard.press("Escape");
         await expect(group).toBeHidden();
-        await expect(summary.locator(".tool-action")).toHaveText(mode === "native" ? "functions.delegate_task" : mapped);
-        await expect(summary.locator(".tool-action")).toHaveAttribute("title", mode === "native" ? "functions.delegate_task" : mapped);
+        await expect(summary.locator(".tool-action")).toHaveText(
+          mode === "native" ? "functions.delegate_task" : mapped,
+        );
+        await expect(summary.locator(".tool-action")).toHaveAttribute(
+          "title",
+          mode === "native" ? "functions.delegate_task" : mapped,
+        );
         await expect(card).toHaveJSProperty("open", true);
-        await expect(card.locator(".delegation-execution")).toHaveJSProperty("open", true);
-        await expect(card.locator(".delegation-raw")).toHaveJSProperty("open", true);
+        await expect(card.locator(".delegation-execution")).toHaveJSProperty(
+          "open",
+          true,
+        );
+        await expect(card.locator(".delegation-raw")).toHaveJSProperty(
+          "open",
+          true,
+        );
         await expect(summary.locator(".tool-elapsed")).toHaveText("0.0s");
-        expect(await card.locator(".delegation-detail").textContent()).toBe(before);
-        expect(await page.evaluate(() => localStorage.getItem("rpi-web-tool-name-mode"))).toBe(mode);
-        expect(await card.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect(await card.locator(".delegation-detail").textContent()).toBe(
+          before,
+        );
+        expect(
+          await page.evaluate(() =>
+            localStorage.getItem("rpi-web-tool-name-mode"),
+          ),
+        ).toBe(mode);
+        expect(
+          await card.evaluate(
+            (node) => node.scrollWidth <= node.clientWidth + 1,
+          ),
+        ).toBe(true);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
       }
-      expect(JSON.parse((await card.locator(".delegation-raw pre").textContent())!)).toEqual({ input, output });
+      expect(
+        JSON.parse((await card.locator(".delegation-raw pre").textContent())!),
+      ).toEqual({ input, output });
       await readonlyCard(card);
       expect(errors).toEqual([]);
       expect(mutations).toEqual([]);
@@ -12783,104 +16823,268 @@ test.describe("delegation tool card", () => {
 import { delegationInfo } from "../src/delegation";
 
 test("delegation tool card preserves report indentation and native errors without guessing child success", () => {
-  const output = { kind: "rpi-delegation", task: "Inspect", report: "    indented code\n\nReport\n", turns: 0, maxTurns: 3, timeoutSeconds: 10 };
-  const result = delegationInfo({}, { content: [{ type: "text", text: JSON.stringify({ content: [{ type: "text", text: JSON.stringify(output) }] }) }] });
+  const output = {
+    kind: "rpi-delegation",
+    task: "Inspect",
+    report: "    indented code\n\nReport\n",
+    turns: 0,
+    maxTurns: 3,
+    timeoutSeconds: 10,
+  };
+  const result = delegationInfo(
+    {},
+    {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            content: [{ type: "text", text: JSON.stringify(output) }],
+          }),
+        },
+      ],
+    },
+  );
   expect(result?.report).toBe(output.report);
   expect(result?.status).toBe("");
   expect(result?.turns).toBe(0);
-  expect(delegationInfo({ task: "Inspect" }, { ...output, report: undefined, error: "Native failure" })?.report).toBe("Native failure");
-  expect(delegationInfo({ task: "Inspect" }, { ...output, report: "  ", message: "Native diagnostic" })?.report).toBe("Native diagnostic");
+  expect(
+    delegationInfo(
+      { task: "Inspect" },
+      { ...output, report: undefined, error: "Native failure" },
+    )?.report,
+  ).toBe("Native failure");
+  expect(
+    delegationInfo(
+      { task: "Inspect" },
+      { ...output, report: "  ", message: "Native diagnostic" },
+    )?.report,
+  ).toBe("Native diagnostic");
 });
 
 test("delegation tool card bounds deeply nested envelopes and rejects unsafe numeric metadata", () => {
-  let output: unknown = { kind: "rpi-delegation", task: "Inspect", report: "Report" };
+  let output: unknown = {
+    kind: "rpi-delegation",
+    task: "Inspect",
+    report: "Report",
+  };
   for (let i = 0; i < 8; i++) output = { content: JSON.stringify(output) };
-  expect(delegationInfo({ task: "Inspect", maxTurns: 999, timeoutSeconds: -1 }, output)).toMatchObject({ report: "", unknownResult: true, maxTurns: undefined, timeoutSeconds: undefined });
+  expect(
+    delegationInfo(
+      { task: "Inspect", maxTurns: 999, timeoutSeconds: -1 },
+      output,
+    ),
+  ).toMatchObject({
+    report: "",
+    unknownResult: true,
+    maxTurns: undefined,
+    timeoutSeconds: undefined,
+  });
   expect(delegationInfo({}, output)).toBeNull();
-  expect(delegationInfo({ task: "Inspect" }, { kind: "rpi-delegation", turns: Number.MAX_SAFE_INTEGER + 1, turnLimited: "true", report: "Report" })).toMatchObject({ turns: undefined, turnLimited: false, status: "" });
+  expect(
+    delegationInfo(
+      { task: "Inspect" },
+      {
+        kind: "rpi-delegation",
+        turns: Number.MAX_SAFE_INTEGER + 1,
+        turnLimited: "true",
+        report: "Report",
+      },
+    ),
+  ).toMatchObject({ turns: undefined, turnLimited: false, status: "" });
 });
 
 test.describe("todo summary-only results", () => {
   const timing = { elapsedMs: 0, running: false };
-  const call = (id: string) => ({ type: "toolCall", id, name: "todo", arguments: { action: "list", includeDone: false }, webTiming: timing });
-  const result = (id: string, text: string) => ({ role: "toolResult", toolName: "todo", toolCallId: id, content: [{ type: "text", text }], webTiming: timing });
-  const noDetails = (language: "en" | "zh") => language === "zh"
-    ? "本次结果仅包含进度汇总，未返回任务明细。"
-    : "This result contains only a progress summary; task details were not returned.";
-  const progress = (language: "en" | "zh", done: number, total: number) => language === "zh"
-    ? `${done}/${total} 项任务已完成` : `${done}/${total} tasks completed`;
+  const call = (id: string) => ({
+    type: "toolCall",
+    id,
+    name: "todo",
+    arguments: { action: "list", includeDone: false },
+    webTiming: timing,
+  });
+  const result = (id: string, text: string) => ({
+    role: "toolResult",
+    toolName: "todo",
+    toolCallId: id,
+    content: [{ type: "text", text }],
+    webTiming: timing,
+  });
+  const noDetails = (language: "en" | "zh") =>
+    language === "zh"
+      ? "本次结果仅包含进度汇总，未返回任务明细。"
+      : "This result contains only a progress summary; task details were not returned.";
+  const progress = (language: "en" | "zh", done: number, total: number) =>
+    language === "zh"
+      ? `${done}/${total} 项任务已完成`
+      : `${done}/${total} tasks completed`;
   async function setup(page: Page, language: "en" | "zh") {
-    await page.setViewportSize({ width: language === "zh" ? 390 : 1280, height: 844 });
-    await page.addInitScript(lang => localStorage.setItem("rpi-web-language", lang), language);
+    await page.setViewportSize({
+      width: language === "zh" ? 390 : 1280,
+      height: 844,
+    });
+    await page.addInitScript(
+      (lang) => localStorage.setItem("rpi-web-language", lang),
+      language,
+    );
     await mockHost(page);
   }
 
   for (const language of ["en", "zh"] as const) {
-    test(`4/4 and other header-only results are not empty task lists in ${language}`, async ({ page }) => {
+    test(`4/4 and other header-only results are not empty task lists in ${language}`, async ({
+      page,
+    }) => {
       await setup(page, language);
       const oldTasks = `0/4 completed\n${Array.from({ length: 4 }, (_, i) => `[ ] #${i}: Earlier task ${i}`).join("\n")}`;
-      const cases = [{ text: "4/4 completed", done: 4, total: 4 }, { text: "1/4 completed", done: 1, total: 4 }, { text: "0/4 completed", done: 0, total: 4 }, { text: "No todos", done: 0, total: 0 }];
-      await page.route(snapshotRoute, route => route.fulfill({ json: {
-        sessionId, status: "ready", lastSeq: 4, events: [], messages: [
-          { role: "assistant", content: [call("summary-previous")] }, result("summary-previous", oldTasks),
-          ...cases.flatMap((entry, i) => [
-            ...(i ? [{ role: "assistant", content: [{ type: "text", text: `Independent summary ${i}` }] }] : []),
-            { role: "assistant", content: [call(`summary-${i}`)] }, result(`summary-${i}`, entry.text),
-          ]),
-        ],
-      } }));
+      const cases = [
+        { text: "4/4 completed", done: 4, total: 4 },
+        { text: "1/4 completed", done: 1, total: 4 },
+        { text: "0/4 completed", done: 0, total: 4 },
+        { text: "No todos", done: 0, total: 0 },
+      ];
+      await page.route(snapshotRoute, (route) =>
+        route.fulfill({
+          json: {
+            sessionId,
+            status: "ready",
+            lastSeq: 4,
+            events: [],
+            messages: [
+              { role: "assistant", content: [call("summary-previous")] },
+              result("summary-previous", oldTasks),
+              ...cases.flatMap((entry, i) => [
+                ...(i
+                  ? [
+                      {
+                        role: "assistant",
+                        content: [
+                          { type: "text", text: `Independent summary ${i}` },
+                        ],
+                      },
+                    ]
+                  : []),
+                { role: "assistant", content: [call(`summary-${i}`)] },
+                result(`summary-${i}`, entry.text),
+              ]),
+            ],
+          },
+        }),
+      );
       await page.goto("/");
       const cards = page.locator(".transcript-row > .todo-card");
       await expect(cards).toHaveCount(cases.length);
       for (const [i, entry] of cases.entries()) {
         const card = cards.nth(i);
-        await expect(card.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, entry.done, entry.total));
-        await expect(card.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await expect(
+          card.locator(":scope > summary .tool-summary-meta"),
+        ).toHaveText(progress(language, entry.done, entry.total));
+        await expect(card.locator(":scope > summary .tool-elapsed")).toHaveText(
+          "0.0s",
+        );
         await card.locator(":scope > summary").click();
         const current = card.locator(":scope > .todo-detail");
-        await expect(current.locator(":scope > .todo-list, :scope > .todo-scope")).toHaveCount(0);
+        await expect(
+          current.locator(":scope > .todo-list, :scope > .todo-scope"),
+        ).toHaveCount(0);
         if (entry.total) {
-          await expect(current.locator(":scope > .todo-summary-only")).toHaveText(noDetails(language));
+          await expect(
+            current.locator(":scope > .todo-summary-only"),
+          ).toHaveText(noDetails(language));
           await expect(current.locator(":scope > .todo-empty")).toHaveCount(0);
         } else {
-          await expect(current.locator(":scope > .todo-empty")).toHaveText(language === "zh" ? "暂无待办任务。" : "No tasks.");
-          await expect(current.locator(":scope > .todo-summary-only")).toHaveCount(0);
+          await expect(current.locator(":scope > .todo-empty")).toHaveText(
+            language === "zh" ? "暂无待办任务。" : "No tasks.",
+          );
+          await expect(
+            current.locator(":scope > .todo-summary-only"),
+          ).toHaveCount(0);
         }
       }
-      const latest = cards.first(), history = latest.locator(".todo-history");
+      const latest = cards.first(),
+        history = latest.locator(".todo-history");
       await expect(history).toHaveJSProperty("open", false);
       await expect(history.locator(".todo-list")).toBeHidden();
-      await latest.screenshot({ path: test.info().outputPath(`todo-summary-${language}.png`) });
+      await latest.screenshot({
+        path: test.info().outputPath(`todo-summary-${language}.png`),
+      });
       await history.locator(":scope > summary").click();
       const previous = history.locator(".todo-card");
-      await expect(previous.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 0, 4));
+      await expect(
+        previous.locator(":scope > summary .tool-summary-meta"),
+      ).toHaveText(progress(language, 0, 4));
       await previous.locator(":scope > summary").click();
       await expect(previous.locator(".todo-list li")).toHaveCount(4);
       await expect(previous.locator(".todo-list li.done")).toHaveCount(0);
-      await expect(latest.locator(":scope > .todo-detail > .todo-list")).toHaveCount(0);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await expect(
+        latest.locator(":scope > .todo-detail > .todo-list"),
+      ).toHaveCount(0);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
     });
 
-    test(`partial list to 4/4 summary removes the empty checklist live and after reload in ${language}`, async ({ page }) => {
+    test(`partial list to 4/4 summary removes the empty checklist live and after reload in ${language}`, async ({
+      page,
+    }) => {
       await setup(page, language);
       let reloaded = false;
       const messages = [{ role: "assistant", content: [call("summary-live")] }];
-      await page.route(snapshotRoute, route => route.fulfill({ json: {
-        sessionId, status: reloaded ? "ready" : "running", lastSeq: reloaded ? 6 : 4, events: [],
-        messages: reloaded ? [...messages, result("summary-live", "4/4 completed")] : messages,
-      } }));
+      await page.route(snapshotRoute, (route) =>
+        route.fulfill({
+          json: {
+            sessionId,
+            status: reloaded ? "ready" : "running",
+            lastSeq: reloaded ? 6 : 4,
+            events: [],
+            messages: reloaded
+              ? [...messages, result("summary-live", "4/4 completed")]
+              : messages,
+          },
+        }),
+      );
       const releases: Array<() => void> = [];
-      const gates = Array.from({ length: 2 }, () => new Promise<void>(resolve => releases.push(resolve)));
+      const gates = Array.from(
+        { length: 2 },
+        () => new Promise<void>((resolve) => releases.push(resolve)),
+      );
       let attempts = 0;
-      await page.route(`**/api/v1/sessions/${sessionId}/events?*`, async route => {
-        const index = attempts++;
-        if (index > 1) return route.fulfill({ contentType: "text/event-stream", body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n' });
-        await gates[index];
-        const event = index === 0
-          ? { seq: 5, type: "tool_execution_update", toolCallId: "summary-live", toolName: "todo", partialResult: { text: "3/4 completed\n[ ] #3: Final check" }, webTiming: { elapsedMs: 0, running: true } }
-          : { seq: 6, type: "tool_execution_end", toolCallId: "summary-live", toolName: "todo", result: { content: [{ type: "text", text: "4/4 completed" }] }, webTiming: timing };
-        return route.fulfill({ contentType: "text/event-stream", body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n` });
-      });
+      await page.route(
+        `**/api/v1/sessions/${sessionId}/events?*`,
+        async (route) => {
+          const index = attempts++;
+          if (index > 1)
+            return route.fulfill({
+              contentType: "text/event-stream",
+              body: 'retry: 60000\nevent: ready\ndata: {"type":"ready"}\n\n',
+            });
+          await gates[index];
+          const event =
+            index === 0
+              ? {
+                  seq: 5,
+                  type: "tool_execution_update",
+                  toolCallId: "summary-live",
+                  toolName: "todo",
+                  partialResult: { text: "3/4 completed\n[ ] #3: Final check" },
+                  webTiming: { elapsedMs: 0, running: true },
+                }
+              : {
+                  seq: 6,
+                  type: "tool_execution_end",
+                  toolCallId: "summary-live",
+                  toolName: "todo",
+                  result: {
+                    content: [{ type: "text", text: "4/4 completed" }],
+                  },
+                  webTiming: timing,
+                };
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: `retry: 100\nid: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+          });
+        },
+      );
       try {
         await page.goto("/");
         const card = page.locator(".transcript-row > .tool-card");
@@ -12891,159 +17095,317 @@ test.describe("todo summary-only results", () => {
         releases[1]();
         await expect(card).toHaveClass(/tool-done/);
         await expect(card).toHaveJSProperty("open", true);
-        await expect(card.locator(".todo-summary-only")).toHaveText(noDetails(language));
-        await expect(card.locator(".todo-list, .todo-scope, .todo-empty")).toHaveCount(0);
-        await expect(card.locator(":scope > summary .tool-elapsed")).toHaveText("0.0s");
+        await expect(card.locator(".todo-summary-only")).toHaveText(
+          noDetails(language),
+        );
+        await expect(
+          card.locator(".todo-list, .todo-scope, .todo-empty"),
+        ).toHaveCount(0);
+        await expect(card.locator(":scope > summary .tool-elapsed")).toHaveText(
+          "0.0s",
+        );
         reloaded = true;
         await page.reload();
         await card.locator(":scope > summary").click();
-        await expect(card.locator(":scope > summary .tool-summary-meta")).toHaveText(progress(language, 4, 4));
-        await expect(card.locator(".todo-summary-only")).toHaveText(noDetails(language));
-        await expect(card.locator(".todo-list, .todo-scope, .todo-empty")).toHaveCount(0);
-      } finally { releases.forEach(release => release()); }
+        await expect(
+          card.locator(":scope > summary .tool-summary-meta"),
+        ).toHaveText(progress(language, 4, 4));
+        await expect(card.locator(".todo-summary-only")).toHaveText(
+          noDetails(language),
+        );
+        await expect(
+          card.locator(".todo-list, .todo-scope, .todo-empty"),
+        ).toHaveCount(0);
+      } finally {
+        releases.forEach((release) => release());
+      }
     });
   }
 });
 
 // Retirement is deliberately tested against mocks only: DELETE is irreversible.
 test.describe("retirement", () => {
-  type RetirementSession = typeof session & { archived?: boolean; deleting?: boolean };
-  async function host(page: Page, entries: RetirementSession[] = [{ ...session }]) {
+  type RetirementSession = typeof session & {
+    archived?: boolean;
+    deleting?: boolean;
+  };
+  async function host(
+    page: Page,
+    entries: RetirementSession[] = [{ ...session }],
+  ) {
     await mockHost(page);
-    await page.route("**/api/v1/sessions", (route) => route.request().method() === "GET"
-      ? route.fulfill({ json: { sessions: entries } }) : route.fallback());
+    await page.route("**/api/v1/sessions", (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ json: { sessions: entries } })
+        : route.fallback(),
+    );
     await page.route("**/api/v1/sessions/*/metadata", (route) => {
-      const entry = entries.find(item => item.sessionId === new URL(route.request().url()).pathname.split("/")[4]);
+      const entry = entries.find(
+        (item) =>
+          item.sessionId ===
+          new URL(route.request().url()).pathname.split("/")[4],
+      );
       Object.assign(entry ?? {}, route.request().postDataJSON());
       return route.fulfill({ json: entry });
     });
     return entries;
   }
   async function sidebar(page: Page) {
-    const toggle = page.getByRole("button", { name: "Toggle sidebar", exact: true });
-    if (!(await page.getByRole("button", { name: "Session actions: Mock session", exact: true }).isVisible())) await toggle.click();
+    const toggle = page.getByRole("button", {
+      name: "Toggle sidebar",
+      exact: true,
+    });
+    if (
+      !(await page
+        .getByRole("button", {
+          name: "Session actions: Mock session",
+          exact: true,
+        })
+        .isVisible())
+    )
+      await toggle.click();
   }
   async function action(page: Page, name: string) {
     await sidebar(page);
     await clickRowAction(page, "Session actions: Mock session");
     await page.getByRole("menuitem", { name, exact: true }).click();
   }
-  const confirmation = (page: Page) => page.getByRole("dialog", { name: "Delete session permanently" });
-  const confirm = (page: Page) => confirmation(page).getByRole("button", { name: "Delete permanently", exact: true });
-  const busyText = "Session is running. Stop it and wait for it to settle before trying again.";
+  const confirmation = (page: Page) =>
+    page.getByRole("dialog", { name: "Delete session permanently" });
+  const confirm = (page: Page) =>
+    confirmation(page).getByRole("button", {
+      name: "Delete permanently",
+      exact: true,
+    });
+  const busyText =
+    "Session is running. Stop it and wait for it to settle before trying again.";
   const unknownText = "Cannot confirm the session is idle. Try again later.";
 
   for (const width of [375, 1280]) {
-    for (const [code, status, message] of [["session_busy", 409, busyText], ["session_idle_unknown", 503, unknownText]] as const) {
-      test(`archive ${code} preserves row and navigation at ${width}px`, async ({ page }) => {
+    for (const [code, status, message] of [
+      ["session_busy", 409, busyText],
+      ["session_idle_unknown", 503, unknownText],
+    ] as const) {
+      test(`archive ${code} preserves row and navigation at ${width}px`, async ({
+        page,
+      }) => {
         await page.setViewportSize({ width, height: 844 });
         await host(page);
-        await page.route("**/api/v1/sessions/*/metadata", route => route.fulfill({ status, json: { code, error: "SECRET remote native path" } }));
+        await page.route("**/api/v1/sessions/*/metadata", (route) =>
+          route.fulfill({
+            status,
+            json: { code, error: "SECRET remote native path" },
+          }),
+        );
         await page.goto("/?session=session-1");
-        await expect(page.getByRole(width < 768 ? "button" : "heading", { name: width < 768 ? "Switch session" : "Mock session", exact: true })).toBeVisible();
+        await expect(
+          page.getByRole(width < 768 ? "button" : "heading", {
+            name: width < 768 ? "Switch session" : "Mock session",
+            exact: true,
+          }),
+        ).toBeVisible();
         await action(page, "Archive");
         await expect(page.getByText(message, { exact: true })).toBeVisible();
         await expect(page).toHaveURL(/session=session-1/);
         await sidebar(page);
         await expect(page.locator(".project-session")).toHaveCount(1);
-        await expect(page.getByText("SECRET remote native path", { exact: true })).toHaveCount(0);
+        await expect(
+          page.getByText("SECRET remote native path", { exact: true }),
+        ).toHaveCount(0);
       });
     }
-    test(`delete busy preserves row and navigation and permits explicit retry at ${width}px`, async ({ page }) => {
+    test(`delete busy preserves row and navigation and permits explicit retry at ${width}px`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width, height: 844 });
       const entries = await host(page);
       let deletes = 0;
-      await page.route("**/api/v1/sessions/session-1", async route => {
+      await page.route("**/api/v1/sessions/session-1", async (route) => {
         if (route.request().method() !== "DELETE") return route.fallback();
         deletes++;
-        if (deletes === 1) return route.fulfill({ status: 409, json: { code: "session_busy", error: "SECRET" } });
+        if (deletes === 1)
+          return route.fulfill({
+            status: 409,
+            json: { code: "session_busy", error: "SECRET" },
+          });
         entries.splice(0);
         return route.fulfill({ status: 204, body: "" });
       });
       await page.goto("/?session=session-1");
-      await expect(page.getByRole(width < 768 ? "button" : "heading", { name: width < 768 ? "Switch session" : "Mock session", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole(width < 768 ? "button" : "heading", {
+          name: width < 768 ? "Switch session" : "Mock session",
+          exact: true,
+        }),
+      ).toBeVisible();
       await action(page, "Delete permanently");
       expect(deletes).toBe(0);
-      await expect(confirmation(page)).toContainText("deletes session history and releases the RPC connection, but does not delete project files");
+      await expect(confirmation(page)).toContainText(
+        "deletes session history and releases the RPC connection, but does not delete project files",
+      );
       await confirm(page).click();
       await expect(page.getByText(busyText, { exact: true })).toBeVisible();
       await expect(page).toHaveURL(/session=session-1/);
       expect(deletes).toBe(1);
       await action(page, "Delete permanently");
       await confirm(page).click();
-      await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toHaveCount(0);
-      await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+      await expect(
+        page.getByRole("heading", { name: "Mock session", exact: true }),
+      ).toHaveCount(0);
+      await expect
+        .poll(() => new URL(page.url()).searchParams.has("session"))
+        .toBe(false);
       expect(deletes).toBe(2);
     });
   }
 
   for (const outcome of ["success", "failure"] as const) {
-    test(`late delete ${outcome} cannot hijack newer navigation or show stale errors`, async ({ page }) => {
-      const entries = await host(page, [{ ...session }, { ...session, sessionId: "session-2", title: "Other chat" }]);
+    test(`late delete ${outcome} cannot hijack newer navigation or show stale errors`, async ({
+      page,
+    }) => {
+      const entries = await host(page, [
+        { ...session },
+        { ...session, sessionId: "session-2", title: "Other chat" },
+      ]);
       let release!: () => void;
-      const pending = new Promise<void>(resolve => { release = resolve; });
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
       let deletes = 0;
-      await page.route("**/api/v1/sessions/session-1", async route => {
+      await page.route("**/api/v1/sessions/session-1", async (route) => {
         if (route.request().method() !== "DELETE") return route.fallback();
         deletes++;
         await pending;
-        if (outcome === "failure") return route.fulfill({ status: 500, json: { code: "session_delete_failed", error: "SECRET" } });
+        if (outcome === "failure")
+          return route.fulfill({
+            status: 500,
+            json: { code: "session_delete_failed", error: "SECRET" },
+          });
         entries.splice(0, 1);
         return route.fulfill({ status: 204, body: "" });
       });
       await page.goto("/?session=session-1");
-      await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Mock session", exact: true }),
+      ).toBeVisible();
       await action(page, "Delete permanently");
       await confirm(page).click();
       await expect(confirm(page)).toBeDisabled();
       expect(deletes).toBe(1);
       // Closing the dialog never aborts or retries a potentially landed DELETE.
-      await confirmation(page).getByRole("button", { name: "Cancel", exact: true }).click();
-      await page.locator(".project-session-link", { hasText: "Other chat" }).click();
+      await confirmation(page)
+        .getByRole("button", { name: "Cancel", exact: true })
+        .click();
+      await page
+        .locator(".project-session-link", { hasText: "Other chat" })
+        .click();
       await expect(page).toHaveURL(/session=session-2/);
       release();
-      await expect.poll(() => page.locator(".project-session").count()).toBe(outcome === "success" ? 1 : 2);
-      await expect(page.getByRole("heading", { name: "Other chat", exact: true })).toBeVisible();
-      await expect(page.getByText(/Permanent deletion did not complete/)).toHaveCount(0);
+      await expect
+        .poll(() => page.locator(".project-session").count())
+        .toBe(outcome === "success" ? 1 : 2);
+      await expect(
+        page.getByRole("heading", { name: "Other chat", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByText(/Permanent deletion did not complete/),
+      ).toHaveCount(0);
       await expect(page.getByText("SECRET", { exact: true })).toHaveCount(0);
       expect(deletes).toBe(1);
     });
   }
 
-  test("archived selection sends no open until explicit Restore", async ({ page }) => {
-    await host(page, [{ ...session }, { ...session, sessionId: "archived-chat", title: "Archived chat", archived: true }]);
+  test("archived selection sends no open until explicit Restore", async ({
+    page,
+  }) => {
+    await host(page, [
+      { ...session },
+      {
+        ...session,
+        sessionId: "archived-chat",
+        title: "Archived chat",
+        archived: true,
+      },
+    ]);
     let opens = 0;
-    await page.route("**/api/v1/sessions/archived-chat/open", route => { opens++; return route.fulfill({ json: { ...session, sessionId: "archived-chat" } }); });
+    await page.route("**/api/v1/sessions/archived-chat/open", (route) => {
+      opens++;
+      return route.fulfill({
+        json: { ...session, sessionId: "archived-chat" },
+      });
+    });
     await page.goto("/?session=session-1");
-    await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
-    await page.locator(".project-session-link", { hasText: "Archived chat" }).click();
-    await expect(page.getByText("Restore the chat before opening it (Session actions → Restore chat).", { exact: true })).toBeVisible();
+    await page
+      .getByRole("button", { name: "Show archived chats", exact: true })
+      .click();
+    await page
+      .locator(".project-session-link", { hasText: "Archived chat" })
+      .click();
+    await expect(
+      page.getByText(
+        "Restore the chat before opening it (Session actions → Restore chat).",
+        { exact: true },
+      ),
+    ).toBeVisible();
     expect(opens).toBe(0);
     await expect(page).toHaveURL(/session=session-1/);
     await clickRowAction(page, "Session actions: Archived chat");
-    await page.getByRole("menuitem", { name: "Restore chat", exact: true }).click();
-    await page.getByRole("button", { name: "Show projects", exact: true }).click();
-    await page.locator(".project-session-link", { hasText: "Archived chat" }).click();
+    await page
+      .getByRole("menuitem", { name: "Restore chat", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Show projects", exact: true })
+      .click();
+    await page
+      .locator(".project-session-link", { hasText: "Archived chat" })
+      .click();
     await expect.poll(() => opens).toBe(1);
     await expect(page).toHaveURL(/session=archived-chat/);
   });
 
   for (const code of ["session_delete_failed", undefined]) {
-    test(`partial deletion uses safe generic error and manual retry menu (${code ?? "old backend"})`, async ({ page }) => {
-      await host(page, [{ ...session }, { ...session, sessionId: "deleting-chat", title: "Deleting chat", deleting: true }]);
+    test(`partial deletion uses safe generic error and manual retry menu (${code ?? "old backend"})`, async ({
+      page,
+    }) => {
+      await host(page, [
+        { ...session },
+        {
+          ...session,
+          sessionId: "deleting-chat",
+          title: "Deleting chat",
+          deleting: true,
+        },
+      ]);
       let deletes = 0;
-      await page.route("**/api/v1/sessions/deleting-chat", route => {
+      await page.route("**/api/v1/sessions/deleting-chat", (route) => {
         if (route.request().method() !== "DELETE") return route.fallback();
         deletes++;
-        return route.fulfill({ status: 500, json: { code, error: "SECRET /private/native-history" } });
+        return route.fulfill({
+          status: 500,
+          json: { code, error: "SECRET /private/native-history" },
+        });
       });
       await page.goto("/?session=session-1");
-      await page.locator(".project-session-link", { hasText: "Deleting chat" }).click();
-      await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
+      await page
+        .locator(".project-session-link", { hasText: "Deleting chat" })
+        .click();
+      await expect(
+        page.getByText(/Session deletion is incomplete/),
+      ).toBeVisible();
       await clickRowAction(page, "Session actions: Deleting chat");
-      await page.getByRole("menuitem", { name: "Retry permanent deletion", exact: true }).click();
+      await page
+        .getByRole("menuitem", {
+          name: "Retry permanent deletion",
+          exact: true,
+        })
+        .click();
       await confirm(page).click();
-      await expect(page.getByText("Permanent deletion did not complete. Check the session state, then retry manually.", { exact: true })).toBeVisible();
+      await expect(
+        page.getByText(
+          "Permanent deletion did not complete. Check the session state, then retry manually.",
+          { exact: true },
+        ),
+      ).toBeVisible();
       await expect(page.locator(".project-session")).toHaveCount(2);
       await expect(page).toHaveURL(/session=session-1/);
       expect(deletes).toBe(1);
@@ -13056,55 +17418,104 @@ test.describe("retirement", () => {
   function forbiddenRequests(page: Page) {
     const reads: string[] = [];
     const mutations: string[] = [];
-    page.on("request", request => {
+    page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
-      if (/\/sessions\/blocked-chat\/(open|snapshot|commands|events)$/.test(path)) reads.push(path);
-      if (request.method() === "POST" && (path === "/api/v1/sessions" || path.endsWith("/metadata"))) mutations.push(path);
+      if (
+        /\/sessions\/blocked-chat\/(open|snapshot|commands|events)$/.test(path)
+      )
+        reads.push(path);
+      if (
+        request.method() === "POST" &&
+        (path === "/api/v1/sessions" || path.endsWith("/metadata"))
+      )
+        mutations.push(path);
     });
     return { reads, mutations };
   }
 
-  test("phone chooser rejects deleting chat without changing selection or opening it", async ({ page }) => {
+  test("phone chooser rejects deleting chat without changing selection or opening it", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 375, height: 844 });
-    await host(page, [{ ...session }, { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true }]);
+    await host(page, [
+      { ...session },
+      {
+        ...session,
+        sessionId: "blocked-chat",
+        title: "Deleting chat",
+        deleting: true,
+      },
+    ]);
     const requests = forbiddenRequests(page);
     await page.goto("/?session=session-1");
-    await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
-    await page.getByRole("button", { name: "Switch session", exact: true }).click();
-    await page.locator(".mobile-session-option", { hasText: "Deleting chat" }).click();
-    await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
+    await expect(
+      page.getByRole("status", { name: "Loading conversation" }),
+    ).toBeHidden();
+    await page
+      .getByRole("button", { name: "Switch session", exact: true })
+      .click();
+    await page
+      .locator(".mobile-session-option", { hasText: "Deleting chat" })
+      .click();
+    await expect(
+      page.getByText(/Session deletion is incomplete/),
+    ).toBeVisible();
     await expect(page).toHaveURL(/session=session-1/);
-    await page.getByRole("button", { name: "Switch session", exact: true }).click();
-    await expect(page.locator(".mobile-session-option.selected")).toContainText("Mock session");
+    await page
+      .getByRole("button", { name: "Switch session", exact: true })
+      .click();
+    await expect(page.locator(".mobile-session-option.selected")).toContainText(
+      "Mock session",
+    );
     expect(requests).toEqual({ reads: [], mutations: [] });
   });
 
   for (const kind of ["archived", "deleting"] as const) {
-    const message = kind === "archived" ? "Restore the chat before opening it (Session actions → Restore chat)."
-      : "Session deletion is incomplete. Retry permanent deletion from Session actions before opening or using it.";
+    const message =
+      kind === "archived"
+        ? "Restore the chat before opening it (Session actions → Restore chat)."
+        : "Session deletion is incomplete. Retry permanent deletion from Session actions before opening or using it.";
     for (const normal of [true, false]) {
-      test(`known ${kind} URL ${normal ? "selects normal fallback" : "stays blank"} without creating or restoring`, async ({ page }) => {
+      test(`known ${kind} URL ${normal ? "selects normal fallback" : "stays blank"} without creating or restoring`, async ({
+        page,
+      }) => {
         await host(page, [
-          { ...session, sessionId: "blocked-chat", title: "Blocked chat", [kind]: true },
+          {
+            ...session,
+            sessionId: "blocked-chat",
+            title: "Blocked chat",
+            [kind]: true,
+          },
           ...(normal ? [{ ...session }] : []),
         ]);
         const requests = forbiddenRequests(page);
         await page.goto("/?session=blocked-chat");
         await expect(page.getByText(message, { exact: true })).toBeVisible();
-        await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+        await expect(
+          page.getByRole("status", { name: "Loading conversation" }),
+        ).toBeHidden();
         if (normal) {
           await expect(page).toHaveURL(/session=session-1/);
           await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
         } else {
-          await expect(page.locator(".project-session-link.selected")).toHaveCount(0);
-          if (kind === "archived") await page.getByRole("button", { name: "Show archived chats", exact: true }).click();
-          await expect(page.locator(".project-session-link", { hasText: "Blocked chat" })).toBeVisible();
+          await expect(
+            page.locator(".project-session-link.selected"),
+          ).toHaveCount(0);
+          if (kind === "archived")
+            await page
+              .getByRole("button", { name: "Show archived chats", exact: true })
+              .click();
+          await expect(
+            page.locator(".project-session-link", { hasText: "Blocked chat" }),
+          ).toBeVisible();
         }
         // Repeated list refreshes and language changes must not rerun startup,
         // erase a blocked-link warning or silently create a replacement chat.
         for (let i = 0; i < 2; i++) await refreshChats(page);
         await chooseLanguage(page, "zh");
-        await expect(page.getByRole("button", { name: "设置 Ctrl ,", exact: true })).toBeVisible();
+        await expect(
+          page.getByRole("button", { name: "设置 Ctrl ,", exact: true }),
+        ).toBeVisible();
         await expect(page.getByText(message, { exact: true })).toBeVisible();
         expect(requests).toEqual({ reads: [], mutations: [] });
       });
@@ -13112,9 +17523,17 @@ test.describe("retirement", () => {
   }
 
   for (const normal of [true, false]) {
-    test(`default initialization skips deleting newest chat ${normal ? "for normal candidate" : "without creating a chat"}`, async ({ page }) => {
+    test(`default initialization skips deleting newest chat ${normal ? "for normal candidate" : "without creating a chat"}`, async ({
+      page,
+    }) => {
       await host(page, [
-        { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true, updatedAt: session.updatedAt + 100 },
+        {
+          ...session,
+          sessionId: "blocked-chat",
+          title: "Deleting chat",
+          deleting: true,
+          updatedAt: session.updatedAt + 100,
+        },
         ...(normal ? [{ ...session }] : []),
       ]);
       const requests = forbiddenRequests(page);
@@ -13123,58 +17542,118 @@ test.describe("retirement", () => {
         await expect(page).toHaveURL(/session=session-1/);
         await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
       } else {
-        await expect(page.getByText(/Session deletion is incomplete/)).toBeVisible();
-        await expect(page.locator(".project-session-link", { hasText: "Deleting chat" })).toBeVisible();
-        await expect.poll(() => new URL(page.url()).searchParams.has("session")).toBe(false);
+        await expect(
+          page.getByText(/Session deletion is incomplete/),
+        ).toBeVisible();
+        await expect(
+          page.locator(".project-session-link", { hasText: "Deleting chat" }),
+        ).toBeVisible();
+        await expect
+          .poll(() => new URL(page.url()).searchParams.has("session"))
+          .toBe(false);
       }
-      await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+      await expect(
+        page.getByRole("status", { name: "Loading conversation" }),
+      ).toBeHidden();
       expect(requests).toEqual({ reads: [], mutations: [] });
     });
 
-    test(`archive fallback excludes deleting candidate ${normal ? "and selects normal chat" : "and stays blank"}`, async ({ page }) => {
+    test(`archive fallback excludes deleting candidate ${normal ? "and selects normal chat" : "and stays blank"}`, async ({
+      page,
+    }) => {
       await host(page, [
         { ...session },
-        { ...session, sessionId: "blocked-chat", title: "Deleting chat", deleting: true },
-        ...(normal ? [{ ...session, sessionId: "session-2", title: "Other chat" }] : []),
+        {
+          ...session,
+          sessionId: "blocked-chat",
+          title: "Deleting chat",
+          deleting: true,
+        },
+        ...(normal
+          ? [{ ...session, sessionId: "session-2", title: "Other chat" }]
+          : []),
       ]);
       const requests = forbiddenRequests(page);
       await page.goto("/?session=session-1");
       await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
-      await expect(page.getByRole("status", { name: "Loading conversation" })).toBeHidden();
+      await expect(
+        page.getByRole("status", { name: "Loading conversation" }),
+      ).toBeHidden();
       await action(page, "Archive");
-      await expect.poll(() => new URL(page.url()).searchParams.get("session")).toBe(normal ? "session-2" : null);
-      if (normal) await expect(page.locator(".toolbar h1")).toHaveText("Other chat");
-      await expect(page.locator(".project-session-link", { hasText: "Deleting chat" })).toBeVisible();
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("session"))
+        .toBe(normal ? "session-2" : null);
+      if (normal)
+        await expect(page.locator(".toolbar h1")).toHaveText("Other chat");
+      await expect(
+        page.locator(".project-session-link", { hasText: "Deleting chat" }),
+      ).toBeVisible();
       expect(requests.reads).toEqual([]);
-      expect(requests.mutations).toEqual(["/api/v1/sessions/session-1/metadata"]);
+      expect(requests.mutations).toEqual([
+        "/api/v1/sessions/session-1/metadata",
+      ]);
     });
   }
 
-  test("session list refresh never navigates to a newer normal candidate", async ({ page }) => {
+  test("session list refresh never navigates to a newer normal candidate", async ({
+    page,
+  }) => {
     const entries = await host(page);
     await page.goto("/?session=session-1");
     await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
-    entries.push({ ...session, sessionId: "session-2", title: "Newer chat", updatedAt: session.updatedAt + 100 });
+    entries.push({
+      ...session,
+      sessionId: "session-2",
+      title: "Newer chat",
+      updatedAt: session.updatedAt + 100,
+    });
     await refreshChats(page);
-    await expect(page.locator(".project-session-link", { hasText: "Newer chat" })).toBeVisible();
+    await expect(
+      page.locator(".project-session-link", { hasText: "Newer chat" }),
+    ).toBeVisible();
     await expect(page).toHaveURL(/session=session-1/);
     await expect(page.locator(".toolbar h1")).toHaveText("Mock session");
   });
 
-  test("unsupported organization action on older backend hides retirement controls", async ({ page }) => {
+  test("unsupported organization action on older backend hides retirement controls", async ({
+    page,
+  }) => {
     await host(page);
-    await page.route("**/api/v1/capabilities", route => route.fulfill({ json: { ...capabilities, supportedActions: capabilities.supportedActions.filter(action => action !== "session_organization") } }));
+    await page.route("**/api/v1/capabilities", (route) =>
+      route.fulfill({
+        json: {
+          ...capabilities,
+          supportedActions: capabilities.supportedActions.filter(
+            (action) => action !== "session_organization",
+          ),
+        },
+      }),
+    );
     const mutations: string[] = [];
-    page.on("request", request => { if (request.method() === "DELETE" || request.url().endsWith("/metadata")) mutations.push(request.url()); });
+    page.on("request", (request) => {
+      if (request.method() === "DELETE" || request.url().endsWith("/metadata"))
+        mutations.push(request.url());
+    });
     await page.goto("/?session=session-1");
-    await expect(page.getByRole("heading", { name: "Mock session", exact: true })).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Session actions: Mock session", exact: true }),
+      page.getByRole("heading", { name: "Mock session", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "Session actions: Mock session",
+        exact: true,
+      }),
     ).toHaveCount(1);
     await clickRowAction(page, "Session actions: Mock session");
-    await expect(page.getByRole("menuitem", { name: "Fork", exact: true })).toBeVisible();
-    await expect(page.getByRole("menuitem", { name: "Archive", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("menuitem", { name: "Delete", exact: true })).toHaveCount(0);
+    await expect(
+      page.getByRole("menuitem", { name: "Fork", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("menuitem", { name: "Archive", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("menuitem", { name: "Delete", exact: true }),
+    ).toHaveCount(0);
     expect(mutations).toEqual([]);
   });
 });

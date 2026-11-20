@@ -10,6 +10,30 @@
   cursor: pointer;
   overflow-wrap: anywhere;
 }
+/* Only a path that resolves inside the project is underlined; plain code keeps
+   the neutral chip, so the affordance matches what a click can actually open. */
+.markdown-body button.message-file-link {
+  display: inline;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--text);
+  background: transparent;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--muted);
+  text-underline-offset: 3px;
+}
+.markdown-body button.message-file-link > code {
+  padding: 2px 5px;
+  background: transparent;
+  box-shadow: none;
+}
+.markdown-body button.message-file-link:hover {
+  background: var(--soft);
+}
+.markdown-body button.message-file-link:hover > code {
+  color: var(--text);
+}
 .message-file-link:focus-visible,
 .file-preview button:focus-visible {
   outline: 2px solid var(--blue);
@@ -36,19 +60,50 @@
 .file-preview::backdrop {
   background: #0008;
 }
-.file-preview-header,
-.file-preview-actions {
+.file-preview-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-}
-.file-preview-header {
-  justify-content: space-between;
 }
 .file-preview h2 {
   margin: 0;
   font-size: 16px;
+}
+/* Copy, view, fullscreen and close stay a compact icon strip: this dialog is
+   for reading a file, not for a row of labelled buttons above it. */
+.file-preview-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.file-preview-note {
+  margin-right: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.file-preview button.file-preview-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+.file-preview button.file-preview-icon:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.file-preview button.file-preview-icon[aria-pressed="true"] {
+  background: var(--soft);
+  color: var(--text);
 }
 .file-preview button {
   min-height: 44px;
@@ -66,12 +121,295 @@
   cursor: default;
   opacity: 0.5;
 }
+.file-preview[data-fullscreen] {
+  width: 100vw;
+  height: 100dvh;
+  border: 0;
+  border-radius: 0;
+}
+.file-preview-markdown {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 4px 24px;
+}
+/* A preview is a reading surface, so it runs slightly larger than the compact
+   transcript it was opened from. */
+.file-preview-markdown .markdown-body {
+  font-size: 16px;
+  line-height: 1.85;
+}
+.file-preview-markdown .markdown-body h1 {
+  font-size: 29px;
+}
+.file-preview-markdown .markdown-body h2 {
+  font-size: 25px;
+}
+.file-preview-markdown .markdown-body h3 {
+  font-size: 21px;
+}
+.file-preview-markdown .markdown-body h4 {
+  font-size: 18px;
+}
+.file-preview-markdown .markdown-body :is(h5, h6) {
+  font-size: 16px;
+}
+.file-preview-markdown .markdown-body pre,
+.file-preview-markdown .markdown-table table {
+  font-size: 15px;
+}
+/* Reading rhythm: a document gets room between blocks, a quiet first line and
+   list spacing that does not collapse into the following paragraph. */
+.file-preview-markdown .markdown-body > :first-child {
+  margin-top: 6px;
+}
+.file-preview-markdown .markdown-body :is(p, ul, ol, pre, blockquote),
+.file-preview-markdown .markdown-body .markdown-table {
+  margin: 0 0 16px;
+}
+.file-preview-markdown .markdown-body :is(h1, h2, h3, h4, h5, h6) {
+  margin: 26px 0 12px;
+}
+.file-preview-markdown .markdown-body li {
+  margin: 6px 0;
+}
+.file-preview-markdown .markdown-body li > :is(ul, ol) {
+  margin: 6px 0 0;
+}
+.file-preview-markdown .markdown-body hr {
+  height: 0;
+  margin: 26px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.file-preview-markdown .markdown-body blockquote {
+  margin-inline: 0;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+.file-preview-markdown .markdown-body .markdown-table table {
+  font-size: 15px;
+}
+.file-preview-markdown .markdown-body :is(th, td) {
+  padding: 10px 14px;
+}
+.file-preview-markdown .markdown-body pre {
+  padding: 16px 18px;
+  border-radius: 8px;
+  line-height: 1.7;
+}
+.file-preview-markdown .markdown-body .markdown-code-block {
+  margin: 0 0 16px;
+}
 .file-preview-path {
   overflow-wrap: anywhere;
   font: 13px var(--mono);
 }
-.file-preview-actions [role="status"] {
+.file-preview-resolved {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.file-preview-document {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--soft);
+}
+.file-preview-pdf {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  border: 0;
+}
+/* Visually hidden, not `display: none`: a hidden file input must still open
+   the picker when the dialog forwards the click. */
+.file-preview-local-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.file-preview-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.file-preview-candidates button {
+  min-height: 28px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px var(--mono);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.file-preview-candidates button small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font: 10.5px var(--mono);
+  overflow-wrap: anywhere;
+}
+.file-preview-candidates button:hover {
+  background: var(--hover);
+}
+.file-preview-status-actions,
+.file-preview-office-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.file-preview-office-actions button.file-preview-download {
+  cursor: pointer;
+}
+.file-preview-sheet {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file-preview-sheet-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
   font-size: 12px;
+}
+.file-preview-sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.file-preview-sheet-tabs::-webkit-scrollbar {
+  display: none;
+}
+.file-preview-sheet-tab {
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.file-preview-sheet-tab:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.file-preview-sheet-tab.selected {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+.file-preview-sheet-note {
+  margin-left: auto;
+  font-size: 11px;
+}
+.file-preview-sheet-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.file-preview-sheet-scroll table {
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 100%;
+}
+.file-preview-sheet-scroll :is(th, td) {
+  min-width: 88px;
+  max-width: 320px;
+  padding: 6px 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: start;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.file-preview-sheet-scroll th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: 44px;
+  width: 1%;
+  background: var(--soft);
+  color: var(--muted);
+  font-weight: 400;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.file-preview-sheet-scroll tr:first-child td {
+  background: var(--soft);
+  font-weight: 600;
+}
+.file-preview-office {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 28px;
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--muted);
+  text-align: center;
+}
+.file-preview-office strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.file-preview-office p {
+  max-width: 46ch;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.file-preview-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-decoration: none;
+}
+.file-preview-download:hover {
+  background: var(--hover);
 }
 .file-preview-status {
   overflow: auto;

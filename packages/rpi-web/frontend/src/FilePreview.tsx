@@ -1,13 +1,77 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import hljs from "highlight.js/lib/common";
-import { api, type Project } from "./api";
+import {
+  Code2,
+  Copy,
+  Download,
+  Eye,
+  FileCode2,
+  FileText,
+  Link2,
+  Maximize2,
+  Minimize2,
+  Upload,
+  X,
+} from "lucide-react";
+import { api, ApiError, type Project } from "./api";
+import { lookupProjectPath, type ProjectFileMatch } from "./fileLookup";
+import { readWorkbook, type WorkbookPreview } from "./spreadsheet";
 import { translate, type Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
-import { isProjectImagePath } from "./projectImages";
+import { MarkdownBody } from "./MarkdownBody";
+import { isProjectImagePath, ProjectImageContext } from "./projectImages";
 import { absoluteProjectPath } from "./projectPaths";
 import { ZoomableImage } from "./ZoomableImage";
 import "./file-preview.css";
+
+/** Rendered Markdown is the default reading view; other files stay source-only. */
+function isMarkdownPath(path: string) {
+  return /\.(?:md|markdown|mdx)$/i.test(path);
+}
+
+/**
+ * Browsers render PDF themselves and `.xlsx` sheets are parsed in the page;
+ * legacy binaries and Word/PowerPoint are handed to a desktop app.
+ */
+function documentKind(path: string): "pdf" | "sheet" | "office" | null {
+  if (/\.pdf$/i.test(path)) return "pdf";
+  if (/\.xlsx$/i.test(path)) return "sheet";
+  return /\.(?:docx?|xls|pptx?)$/i.test(path) ? "office" : null;
+}
+
+function SheetTable({
+  table,
+  language,
+}: {
+  table: WorkbookPreview["sheets"][number];
+  language: Language;
+}) {
+  const zh = language === "zh";
+  return (
+    <div
+      className="file-preview-sheet-scroll"
+      tabIndex={0}
+      role="region"
+      aria-label={zh ? "表格内容" : "Sheet content"}
+    >
+      <table>
+        <tbody>
+          {table.rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              <th scope="row" aria-hidden="true">
+                {rowIndex + 1}
+              </th>
+              {row.map((cell, columnIndex) => (
+                <td key={columnIndex}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 /** Mounted only by an explicit click. The deferred effect avoids StrictMode's probe I/O. */
 export function FilePreview({
@@ -26,24 +90,104 @@ export function FilePreview({
   // The server root determines the platform-specific separator, not the
   // browser. Show this exact value so "Copy path" is what the user can see.
   // A linked-worktree link is joined onto that worktree, not the project root.
+  // The path actually being read: it starts as the message link and may be
+  // corrected to a file the project really contains.
+  const [targetPath, setTargetPath] = useState(file.path);
+  // A resolved match may live in a linked worktree, so the root travels with it.
+  const [targetRoot, setTargetRoot] = useState<string | undefined>(file.root);
+  const [candidates, setCandidates] = useState<ProjectFileMatch[]>([]);
+  const resolved =
+    targetPath === file.path && targetRoot === file.root ? null : targetPath;
+  const shownPath = targetPath;
   const absolutePath = absoluteProjectPath(
-    file.root ?? project.path,
-    file.path,
+    targetRoot ?? project.path,
+    shownPath,
   );
   const dialogRef = useRef<HTMLDialogElement>(null);
   const targetRef = useRef<HTMLSpanElement>(null);
   const [attempt, setAttempt] = useState(0);
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const image = isProjectImagePath(file.path);
+  const image = isProjectImagePath(targetPath);
+  const markdown = isMarkdownPath(targetPath);
+  const documentType = image ? null : documentKind(targetPath);
+  const [documentUrl, setDocumentUrl] = useState<string | null>(null);
+  const [workbook, setWorkbook] = useState<WorkbookPreview | null>(null);
+  const [activeSheet, setActiveSheet] = useState(0);
+  const localInput = useRef<HTMLInputElement>(null);
+  const localUrls = useRef<string[]>([]);
+  /** Pure-frontend path: the browser reads a file the user selects itself. */
+  async function useLocalFile(picked: File) {
+    setError("");
+    if (documentType === "sheet") {
+      try {
+        setWorkbook(
+          await readWorkbook(new Uint8Array(await picked.arrayBuffer())),
+        );
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+      return;
+    }
+    const url = URL.createObjectURL(picked);
+    localUrls.current.push(url);
+    setDocumentUrl(url);
+  }
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
+  const [downloading, setDownloading] = useState(false);
+  /** Fetch opaque attachment bytes and hand them to the browser's downloader. */
+  async function downloadToLocal() {
+    if (downloading) return;
+    setDownloading(true);
+    setCopied("");
+    try {
+      const blob = await api.download(project.id, shownPath, {
+        root: targetRoot,
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = shownPath.split("/").pop() || "download";
+      anchor.rel = "noopener";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      setCopied(zh ? "已开始下载" : "Download started");
+    } catch (cause) {
+      const routeMissing =
+        cause instanceof ApiError && cause.code === "route-missing";
+      setError(
+        routeMissing
+          ? zh
+            ? "当前服务版本不支持下载，请选择本地文件"
+            : "This service cannot download files; pick a local copy instead"
+          : cause instanceof Error
+            ? cause.message
+            : String(cause),
+      );
+    } finally {
+      setDownloading(false);
+    }
+  }
+  // A line deep link is only visible in the numbered source, so it wins over
+  // the rendered reading view the first time the preview opens.
+  const [source, setSource] = useState(!markdown || !!file.line);
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    setTargetPath(file.path);
+    setTargetRoot(file.root);
+    setCandidates([]);
+  }, [file.path, file.root]);
   useEffect(() => {
     const previousFocus = document.activeElement;
     const dialog = dialogRef.current!;
     dialog.showModal();
     return () => {
       dialog.close();
+      for (const url of localUrls.current) URL.revokeObjectURL(url);
+      localUrls.current = [];
       if (previousFocus instanceof HTMLElement && previousFocus.isConnected)
         previousFocus.focus({ preventScroll: true });
     };
@@ -51,31 +195,101 @@ export function FilePreview({
   useEffect(() => {
     const controller = new AbortController();
     let objectUrl: string | undefined;
+    let documentObjectUrl: string | undefined;
     setContent(null);
     setImageUrl(null);
+    setDocumentUrl(null);
+    setWorkbook(null);
+    setActiveSheet(0);
     setError("");
     setCopied("");
+    setSource(!markdown || !!file.line);
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
           if (image) {
-            const blob = await api.image(project.id, file.path, {
-              root: file.root,
+            const blob = await api.image(project.id, targetPath, {
+              root: targetRoot,
               signal: controller.signal,
             });
             if (controller.signal.aborted) return;
             objectUrl = URL.createObjectURL(blob);
             setImageUrl(objectUrl);
+          } else if (documentType) {
+            try {
+              const blob = await api.document(project.id, targetPath, {
+                root: targetRoot,
+                signal: controller.signal,
+              });
+              if (controller.signal.aborted) return;
+              if (documentType === "sheet") {
+                setWorkbook(
+                  await readWorkbook(new Uint8Array(await blob.arrayBuffer())),
+                );
+                return;
+              }
+              documentObjectUrl = URL.createObjectURL(blob);
+              setDocumentUrl(documentObjectUrl);
+            } catch (cause) {
+              // A host without the document route cannot stream these bytes.
+              // The dialog then offers a local copy instead of a dead end.
+              if (
+                cause instanceof ApiError &&
+                (cause.code === "route-missing" ||
+                  [404, 405].includes(cause.status))
+              ) {
+                if (controller.signal.aborted) return;
+                if (cause.code === "route-missing") {
+                  setError(
+                    zh
+                      ? "当前服务版本不提供文档读取，可选本地文件预览"
+                      : "This service cannot stream documents; preview a local copy",
+                  );
+                  return;
+                }
+                throw cause;
+              }
+              throw cause;
+            }
           } else {
-            const result = await api.file(project.id, file.path, {
-              root: file.root,
+            const result = await api.file(project.id, targetPath, {
+              root: targetRoot,
               signal: controller.signal,
             });
             if (!controller.signal.aborted) setContent(result.content);
           }
         } catch (cause: unknown) {
-          if (!controller.signal.aborted)
-            setError(cause instanceof Error ? cause.message : String(cause));
+          if (controller.signal.aborted) return;
+          // The literal path may not exist: the message can be relative to a
+          // nested package, or name a file without its directory. Look for the
+          // suffix once, then either reopen the single match or offer choices.
+          if (
+            cause instanceof ApiError &&
+            cause.status === 404 &&
+            !file.root &&
+            cause.code !== "route-missing"
+          ) {
+            const lookup = await lookupProjectPath(project.id, targetPath, {
+              roots: project.worktrees,
+              signal: controller.signal,
+            });
+            if (controller.signal.aborted) return;
+            if (lookup.match) {
+              setTargetPath(lookup.match.path);
+              setTargetRoot(lookup.match.root);
+              return;
+            }
+            if (lookup.candidates.length) {
+              setCandidates(lookup.candidates);
+              setError(
+                zh
+                  ? "该路径不存在，但项目中有同名文件，请选择："
+                  : "That path does not exist, but the project has matches:",
+              );
+              return;
+            }
+          }
+          setError(cause instanceof Error ? cause.message : String(cause));
         }
       })();
     }, 0);
@@ -83,8 +297,19 @@ export function FilePreview({
       window.clearTimeout(timer);
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (documentObjectUrl) URL.revokeObjectURL(documentObjectUrl);
     };
-  }, [project.id, project.path, file.path, file.root, image, attempt]);
+  }, [
+    project.id,
+    project.path,
+    targetPath,
+    targetRoot,
+    image,
+    documentType,
+    markdown,
+    file.line,
+    attempt,
+  ]);
   const lines = useMemo(() => {
     if (content === null) return [];
     const extension = file.path.split(".").pop()?.toLowerCase() ?? "";
@@ -128,6 +353,7 @@ export function FilePreview({
     <dialog
       ref={dialogRef}
       className="file-preview"
+      data-fullscreen={fullscreen || undefined}
       aria-label={zh ? "文件预览" : "File preview"}
       onCancel={(event) => {
         event.preventDefault();
@@ -142,54 +368,192 @@ export function FilePreview({
     >
       <header className="file-preview-header">
         <h2>{zh ? "文件预览（只读）" : "File preview (read-only)"}</h2>
-        <button type="button" onClick={onClose}>
-          {zh ? "关闭" : "Close"}
-        </button>
+        <div className="file-preview-tools">
+          <span className="file-preview-note" role="status">
+            {copied && <>{copied}</>}
+          </span>
+          <button
+            type="button"
+            className="file-preview-icon"
+            disabled={!absolutePath}
+            aria-label={t("copyAbsolutePath")}
+            title={t("copyAbsolutePath")}
+            onClick={() => void copy(absolutePath, t("absolutePathCopied"))}
+          >
+            <Copy size={15} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="file-preview-icon"
+            aria-label={t("copyRelativePath")}
+            title={t("copyRelativePath")}
+            onClick={() => void copy(shownPath, t("relativePathCopied"))}
+          >
+            <Link2 size={15} aria-hidden="true" />
+          </button>
+          {!image && (
+            <button
+              type="button"
+              className="file-preview-icon"
+              disabled={content === null}
+              aria-label={zh ? "复制代码" : "Copy code"}
+              title={zh ? "复制代码" : "Copy code"}
+              onClick={() =>
+                void copy(content!, zh ? "已复制代码" : "Code copied")
+              }
+            >
+              <FileCode2 size={15} aria-hidden="true" />
+            </button>
+          )}
+          {markdown && (
+            <button
+              type="button"
+              className="file-preview-icon"
+              aria-pressed={!source}
+              aria-label={
+                source
+                  ? zh
+                    ? "预览排版"
+                    : "Rendered view"
+                  : zh
+                    ? "查看源码"
+                    : "View source"
+              }
+              title={
+                source
+                  ? zh
+                    ? "预览排版"
+                    : "Rendered view"
+                  : zh
+                    ? "查看源码"
+                    : "View source"
+              }
+              onClick={() => setSource((value) => !value)}
+            >
+              {source ? (
+                <Eye size={15} aria-hidden="true" />
+              ) : (
+                <Code2 size={15} aria-hidden="true" />
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            className="file-preview-icon"
+            aria-pressed={fullscreen}
+            aria-label={
+              fullscreen
+                ? zh
+                  ? "退出全屏"
+                  : "Exit fullscreen"
+                : zh
+                  ? "全屏查看"
+                  : "Fullscreen"
+            }
+            title={
+              fullscreen
+                ? zh
+                  ? "退出全屏"
+                  : "Exit fullscreen"
+                : zh
+                  ? "全屏查看"
+                  : "Fullscreen"
+            }
+            onClick={() => setFullscreen((value) => !value)}
+          >
+            {fullscreen ? (
+              <Minimize2 size={15} aria-hidden="true" />
+            ) : (
+              <Maximize2 size={15} aria-hidden="true" />
+            )}
+          </button>
+          <button
+            type="button"
+            className="file-preview-icon file-preview-close"
+            aria-label={zh ? "关闭" : "Close"}
+            title={zh ? "关闭" : "Close"}
+            onClick={onClose}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
       </header>
       <div className="file-preview-path">
         {absolutePath || `${project.name}: ${file.path}`}
         {file.line
           ? `:${file.line}${file.endLine !== file.line ? `-${file.endLine}` : ""}`
           : ""}
-      </div>
-      <div className="file-preview-actions">
-        <button
-          type="button"
-          disabled={!absolutePath}
-          onClick={() => void copy(absolutePath, t("absolutePathCopied"))}
-        >
-          {t("copyAbsolutePath")}
-        </button>
-        <button
-          type="button"
-          onClick={() => void copy(file.path, t("relativePathCopied"))}
-        >
-          {t("copyRelativePath")}
-        </button>
-        {!image && (
-          <button
-            type="button"
-            disabled={content === null}
-            onClick={() =>
-              void copy(content!, zh ? "已复制代码" : "Code copied")
-            }
-          >
-            {zh ? "复制代码" : "Copy code"}
-          </button>
+        {resolved && (
+          <span className="file-preview-resolved">
+            {zh ? "已定位到项目内路径" : "resolved inside the project"}
+          </span>
         )}
-        <span role="status">{copied}</span>
       </div>
+      <input
+        ref={localInput}
+        type="file"
+        className="file-preview-local-input"
+        aria-label={zh ? "选择本地文件" : "Choose a local file"}
+        accept={
+          documentType === "pdf"
+            ? ".pdf,application/pdf"
+            : documentType === "sheet"
+              ? ".xlsx"
+              : ".doc,.docx,.xls,.xlsx,.ppt,.pptx"
+        }
+        onChange={(event) => {
+          const picked = event.target.files?.[0];
+          event.target.value = "";
+          if (picked) void useLocalFile(picked);
+        }}
+      />
       {error ? (
         <div className="file-preview-status" role="alert">
           <p>
             {zh ? "文件读取失败" : "Could not load file"}: {error}
           </p>
-          <button
-            type="button"
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            {zh ? "重试" : "Retry"}
-          </button>
+          {candidates.length > 0 && (
+            <ul className="file-preview-candidates">
+              {candidates.map((match) => (
+                <li key={`${match.root ?? ""}:${match.path}`}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCandidates([]);
+                      setError("");
+                      setTargetPath(match.path);
+                      setTargetRoot(match.root);
+                    }}
+                  >
+                    {match.path}
+                    {match.root && (
+                      <small>
+                        {zh ? "工作树" : "worktree"} · {match.root}
+                      </small>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="file-preview-status-actions">
+            <button type="button" onClick={() => void downloadToLocal()}>
+              <Download size={14} aria-hidden="true" />
+              {zh ? "下载到本地" : "Download"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              {zh ? "重试" : "Retry"}
+            </button>
+            {documentType && (
+              <button type="button" onClick={() => localInput.current?.click()}>
+                <Upload size={14} aria-hidden="true" />
+                {zh ? "选择本地文件预览" : "Preview a local copy"}
+              </button>
+            )}
+          </div>
         </div>
       ) : image && imageUrl ? (
         <div className="file-preview-image">
@@ -207,10 +571,95 @@ export function FilePreview({
             }
           />
         </div>
+      ) : documentType === "pdf" && documentUrl ? (
+        <div className="file-preview-document">
+          <embed
+            className="file-preview-pdf"
+            src={documentUrl}
+            type="application/pdf"
+            aria-label={zh ? "PDF 预览" : "PDF preview"}
+          />
+        </div>
+      ) : documentType === "sheet" && workbook ? (
+        <div className="file-preview-sheet">
+          <div className="file-preview-sheet-heading">
+            <FileText size={13} aria-hidden="true" />
+            {workbook.sheets.length > 1 ? (
+              <div
+                className="file-preview-sheet-tabs"
+                role="tablist"
+                aria-label={zh ? "工作表" : "Worksheets"}
+              >
+                {workbook.sheets.map((table, index) => (
+                  <button
+                    key={table.name}
+                    type="button"
+                    role="tab"
+                    aria-selected={index === activeSheet}
+                    className={
+                      index === activeSheet
+                        ? "file-preview-sheet-tab selected"
+                        : "file-preview-sheet-tab"
+                    }
+                    onClick={() => setActiveSheet(index)}
+                  >
+                    {table.name}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <span>{workbook.sheets[0].name}</span>
+            )}
+            {(workbook.truncated ||
+              workbook.sheets[activeSheet]?.truncated) && (
+              <span className="file-preview-sheet-note">
+                {zh ? "已截断预览" : "preview truncated"}
+              </span>
+            )}
+          </div>
+          <SheetTable
+            table={workbook.sheets[activeSheet] ?? workbook.sheets[0]}
+            language={language}
+          />
+        </div>
+      ) : documentType === "office" && documentUrl ? (
+        <div className="file-preview-office">
+          <FileText size={26} aria-hidden="true" />
+          <strong>{shownPath.split("/").pop()}</strong>
+          <p>
+            {zh
+              ? "Office 文档不能内嵌预览，可下载后用本地 Office 或 WPS 打开。"
+              : "Office documents cannot be previewed inline. Download the file and open it in Office or WPS."}
+          </p>
+          <div className="file-preview-office-actions">
+            <button
+              type="button"
+              className="file-preview-download"
+              onClick={() => void downloadToLocal()}
+            >
+              <Download size={14} aria-hidden="true" />
+              {zh ? "下载文件" : "Download"}
+            </button>
+            <button
+              type="button"
+              className="file-preview-download"
+              onClick={() => localInput.current?.click()}
+            >
+              <Upload size={14} aria-hidden="true" />
+              {zh ? "换个本地文件" : "Preview a local copy"}
+            </button>
+          </div>
+        </div>
       ) : content === null ? (
         <p className="file-preview-status" role="status">
           {zh ? "正在加载…" : "Loading…"}
         </p>
+      ) : markdown && !source ? (
+        <div className="file-preview-markdown" tabIndex={0}>
+          <ProjectImageContext.Provider value={project}>
+            <MarkdownBody text={content} language={language} />
+          </ProjectImageContext.Provider>
+        </div>
       ) : (
         <pre
           className="file-preview-code"

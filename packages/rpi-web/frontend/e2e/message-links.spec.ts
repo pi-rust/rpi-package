@@ -5,6 +5,8 @@ import {
   browserLink,
 } from "../src/messageLinks";
 import { projectImageSource } from "../src/projectImages";
+import { readWorkbook } from "../src/spreadsheet";
+import * as XLSX from "xlsx";
 import { absoluteProjectPath } from "../src/projectPaths";
 
 test.use({
@@ -23,6 +25,25 @@ const project = {
   path: "/workspace/links",
 };
 const win = { ...project, path: "D:\\Work\\项目" };
+// Minimal bytes with the signatures the document route validates.
+const pdfBytes = Buffer.from("%PDF-1.7\n% mock pdf\n");
+const docxBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]);
+/** Two-sheet workbook with a number, a date and a formula result. */
+function workbookBytes() {
+  const book = XLSX.utils.book_new();
+  const budget = XLSX.utils.aoa_to_sheet([
+    ["项目", "金额", "日期"],
+    ["差旅", 1250, new Date(Date.UTC(2026, 0, 15))],
+    ["合计", 1250, ""],
+  ]);
+  XLSX.utils.book_append_sheet(book, budget, "预算");
+  const notes = XLSX.utils.aoa_to_sheet([["备注"], ["第二张表"]]);
+  XLSX.utils.book_append_sheet(book, notes, "备注");
+  return Buffer.from(
+    XLSX.write(book, { type: "array", bookType: "xlsx" }) as ArrayBuffer,
+  );
+}
+const sheetBytes = workbookBytes();
 
 test("absolute paths follow the server root's platform, not the browser", () => {
   // Unix: a backslash is a legal filename character and must be preserved.
@@ -128,7 +149,14 @@ test("file resolver contains paths, decodes once and validates line ranges", () 
     "src/environment.ts",
   );
   expect(inlineFileLink("identifier", project)).toBeNull();
-  expect(inlineFileLink("README.md", project)?.path).toBe("README.md");
+  // A bare filename or a git ref has no directory of its own; joining it onto
+  // the project root would open a path the agent never wrote.
+  expect(inlineFileLink("README.md", project)).toBeNull();
+  expect(inlineFileLink("message-links.spec.ts", project)).toBeNull();
+  expect(inlineFileLink("origin/main", project)).toBeNull();
+  expect(inlineFileLink("src/main.ts:2", project)?.line).toBe(2);
+  expect(inlineFileLink("./src/main.ts", project)?.path).toBe("src/main.ts");
+  expect(inlineFileLink("src/Makefile", project)).toBeNull();
   // The image endpoint shares the file endpoint's hidden-component rule.
   expect(projectImageSource(".rpi/uploads/shot.png", project)).toBe("");
   expect(projectImageSource("node_modules/pkg/logo.png", project)).toBe("");
@@ -144,9 +172,7 @@ test("linked worktree paths preview from their own checkout", () => {
   // Agents create sibling worktrees (`git worktree add ../name`) and write
   // there; the absolute path names the checkout, so the link must carry it.
   const worktrees = { ...project, worktrees: ["/workspace/links-wt"] };
-  expect(
-    projectFileLink("/workspace/links-wt/src/a.ts:7", worktrees),
-  ).toEqual({
+  expect(projectFileLink("/workspace/links-wt/src/a.ts:7", worktrees)).toEqual({
     root: "/workspace/links-wt",
     path: "src/a.ts",
     line: 7,
@@ -198,6 +224,7 @@ test("linked worktree paths preview from their own checkout", () => {
 const markdown = [
   "[Source](src/main.ts#L2-L3) [中文](src/%E4%B8%AD%E6%96%87%20%E6%96%87%E4%BB%B6.ts:2)",
   "`src/main.ts:2` and `identifier`",
+  "`message-links.spec.ts` and `origin/main` stay plain code",
   "`.rpi/uploads/notes.md` [Hidden](.rpi/uploads/notes.md)",
   "https://example.com/docs [Mail](mailto:dev@example.com)",
   "[Unsafe](javascript:alert%281%29) [OS](file:///workspace/links/main.ts) [Escape](../secret.ts)",
@@ -226,6 +253,26 @@ async function host(
     header: string | undefined;
   }> = [];
   let imageMode: "ok" | "error" | "mime" | "decode" = "ok";
+  // Per-path text so a Markdown document can be previewed as written.
+  const files: Record<string, string> = {};
+  // Directory index used by the nested-path resolver.
+  const listings: Record<
+    string,
+    Array<{ name: string; path: string; kind: "directory" | "file" }>
+  > = {};
+  const missing = new Set<string>();
+  const worktreeListings: Record<
+    string,
+    Array<{ name: string; path: string; kind: "directory" | "file" }>
+  > = {};
+  const documents: Array<{
+    project: string;
+    path: string;
+    root: string | null;
+  }> = [];
+  let documentsUnsupported = false;
+  const downloads: Array<{ path: string; root: string | null }> = [];
+  let downloadsUnsupported = false;
   const unexpected: string[] = [];
   let fail = false;
   let held: (() => void) | null = null;
@@ -304,6 +351,71 @@ async function host(
           imageMode === "decode" ? Buffer.from("not a decodable image") : png,
       });
     }
+    if (
+      /\/projects\/[^/]\w+\/document$/.test(path) ||
+      /\/projects\/[^/]+\/document$/.test(path)
+    ) {
+      const target = url.searchParams.get("path") ?? "";
+      documents.push({
+        project: path.split("/")[4],
+        path: target,
+        root: url.searchParams.get("root"),
+      });
+      if (documentsUnsupported)
+        // A host without the route answers with an empty, non-JSON body.
+        return route.fulfill({ status: 404, body: "" });
+      if (missing.has(target))
+        return route.fulfill({ status: 404, json: { error: "not found" } });
+      if (target.toLowerCase().endsWith(".pdf"))
+        return route.fulfill({
+          status: 200,
+          contentType: "application/pdf",
+          body: pdfBytes,
+        });
+      if (/\.xlsx$/i.test(target))
+        return route.fulfill({
+          status: 200,
+          contentType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          body: sheetBytes,
+        });
+      if (/\.docx$/i.test(target))
+        return route.fulfill({
+          status: 200,
+          contentType:
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          body: docxBytes,
+        });
+      return route.fulfill({
+        status: 415,
+        json: { error: "unsupported document format" },
+      });
+    }
+    if (/\/projects\/[^/]+\/download$/.test(path)) {
+      downloads.push({
+        path: url.searchParams.get("path") ?? "",
+        root: url.searchParams.get("root"),
+      });
+      if (downloadsUnsupported) return route.fulfill({ status: 404, body: "" });
+      return route.fulfill({
+        status: 200,
+        contentType: "application/octet-stream",
+        headers: {
+          "content-disposition": 'attachment; filename="manual.bin"',
+        },
+        body: Buffer.from([0x00, 0x01, 0x02]),
+      });
+    }
+    if (/\/projects\/[^/]+\/files$/.test(path)) {
+      const read = url.searchParams.get("path") ?? "";
+      const root = url.searchParams.get("root") ?? "";
+      return json({
+        path: read,
+        entries: root
+          ? (worktreeListings[`${root}:${read}`] ?? [])
+          : (listings[read] ?? []),
+      });
+    }
     if (/\/projects\/[^/]+\/file$/.test(path)) {
       reads.push({
         project: path.split("/")[4],
@@ -314,10 +426,18 @@ async function host(
         await new Promise<void>((resolve) => {
           held = resolve;
         });
-      if (url.searchParams.get("path")?.endsWith(".pdf"))
+      if (/\.(?:pdf|bin)$/i.test(url.searchParams.get("path") ?? ""))
         return route.fulfill({
           status: 400,
           json: { error: "Binary file cannot be previewed as text" },
+        });
+      if (
+        missing.has(url.searchParams.get("path") ?? "") &&
+        !url.searchParams.get("root")
+      )
+        return route.fulfill({
+          status: 404,
+          json: { error: "file not found" },
         });
       if (fail)
         return route.fulfill({
@@ -326,7 +446,9 @@ async function host(
         });
       return json({
         path: url.searchParams.get("path"),
-        content: "// preview\nconst answer = 42;\nconsole.log(answer);\n// end",
+        content:
+          files[url.searchParams.get("path") ?? ""] ??
+          "// preview\nconst answer = 42;\nconsole.log(answer);\n// end",
       });
     }
     if (path === "/api/v1/sessions")
@@ -408,6 +530,18 @@ async function host(
   });
   return {
     reads,
+    files,
+    listings,
+    worktreeListings,
+    missing,
+    documents,
+    downloads,
+    unsupportedDocuments: () => {
+      documentsUnsupported = true;
+    },
+    unsupportedDownloads: () => {
+      downloadsUnsupported = true;
+    },
     imageReads,
     imageMode: (mode: typeof imageMode) => {
       imageMode = mode;
@@ -451,6 +585,30 @@ for (const width of [1280, 390])
     await expect(source).toBeVisible();
     await page.waitForTimeout(150);
     expect(mock.reads).toEqual([]);
+    await page
+      .locator(".message.assistant")
+      .first()
+      .screenshot({
+        path: test.info().outputPath(`message-links-${width}.png`),
+      });
+    const openable = page
+      .locator("button.message-file-link")
+      .filter({ hasText: "src/main.ts:2" })
+      .first();
+    const style = await openable.evaluate((node) => {
+      const button = getComputedStyle(node);
+      const code = getComputedStyle(node.querySelector("code")!);
+      return {
+        decoration: button.textDecorationLine,
+        buttonBackground: button.backgroundColor,
+        codeBackground: code.backgroundColor,
+      };
+    });
+    // An openable path is underlined; its code chip stays transparent so it
+    // reads as a path, not as a second background inside the button.
+    expect(style.decoration).toContain("underline");
+    expect(style.codeBackground).toBe("rgba(0, 0, 0, 0)");
+    expect(style.buttonBackground).toBe("rgba(0, 0, 0, 0)");
     const web = page.getByRole("link", {
       name: "https://example.com/docs",
       exact: true,
@@ -471,9 +629,21 @@ for (const width of [1280, 390])
     await expect(
       page.locator("code").filter({ hasText: ".rpi/uploads/notes.md" }),
     ).toHaveCount(1);
-    await expect(
-      page.getByText("Hidden", { exact: true }),
-    ).toHaveCount(1);
+    // A bare filename and a git ref have no project directory: no preview that
+    // could only concatenate a wrong path, and no hyperlink styling.
+    for (const bare of ["message-links.spec.ts", "origin/main"]) {
+      await expect(
+        page.locator(".message-file-link").filter({ hasText: bare }),
+      ).toHaveCount(0);
+      const code = page.locator("code").filter({ hasText: bare });
+      await expect(code).toHaveCount(1);
+      expect(
+        await code.evaluate(
+          (node) => getComputedStyle(node.parentElement!).textDecorationLine,
+        ),
+      ).not.toContain("underline");
+    }
+    await expect(page.getByText("Hidden", { exact: true })).toHaveCount(1);
     await expect(
       page.locator(".markdown-code-block .message-file-link"),
     ).toHaveCount(0);
@@ -685,7 +855,7 @@ test("read errors retry; close aborts; navigation cannot show a stale project fi
 });
 
 const imagePath = "assets/中文 photo.PNG";
-const imageMarkdown = `[Photo](assets/%E4%B8%AD%E6%96%87%20photo.PNG) [Binary](assets/manual.pdf)`;
+const imageMarkdown = `[Photo](assets/%E4%B8%AD%E6%96%87%20photo.PNG) [Binary](assets/manual.bin)`;
 type ImageAudit = {
   created: string[];
   revoked: string[];
@@ -925,9 +1095,87 @@ test("unsupported binary links retain the text error route, never an image", asy
     "Binary file cannot be previewed as text",
   );
   await expect(preview(page).locator("img")).toHaveCount(0);
+  await expect(preview(page).locator(".file-preview-pdf")).toHaveCount(0);
   expect(mock.imageReads).toEqual([]);
+  expect(mock.documents).toEqual([]);
   expect(mock.reads).toEqual([
-    { project: project.id, path: "assets/manual.pdf", root: null },
+    { project: project.id, path: "assets/manual.bin", root: null },
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("PDF links stream bytes into the browser viewer", async ({ page }) => {
+  const mock = await host(
+    page,
+    "[Report](docs/report.pdf)",
+    project.path,
+    "zh",
+  );
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "文件预览", exact: true });
+  const pdf = dialog.locator("embed.file-preview-pdf");
+  await expect(pdf).toBeVisible();
+  await expect(pdf).toHaveAttribute("type", "application/pdf");
+  await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.documents).toEqual([
+    { project: project.id, path: "docs/report.pdf", root: null },
+  ]);
+  // No text read is attempted for a document the browser renders itself.
+  expect(mock.reads).toEqual([]);
+  await expect(
+    dialog.getByRole("button", { name: "关闭", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("an older host offers a local copy instead of a dead end", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Report](docs/report.pdf)", project.path);
+  mock.unsupportedDocuments();
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.getByRole("alert")).toContainText(
+    "This service cannot stream documents",
+  );
+  // The picker reads the file in the page, so no further host read is needed.
+  await expect(
+    dialog.getByRole("button", { name: "Preview a local copy", exact: true }),
+  ).toBeVisible();
+  await dialog.locator('input[type="file"]').setInputFiles({
+    name: "report.pdf",
+    mimeType: "application/pdf",
+    buffer: pdfBytes,
+  });
+  await expect(dialog.locator(".file-preview-pdf")).toBeVisible();
+  expect(mock.reads).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("Office documents offer a download instead of pretending to render", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Spec](docs/spec.docx)", project.path);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Spec", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-office")).toContainText(
+    "spec.docx",
+  );
+  // The card never pretends to render; both actions stay available.
+  await expect(
+    dialog.getByRole("button", { name: "Download", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Preview a local copy", exact: true }),
+  ).toBeVisible();
+  await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.documents).toEqual([
+    { project: project.id, path: "docs/spec.docx", root: null },
   ]);
   expect(mock.unexpected).toEqual([]);
 });
@@ -949,5 +1197,344 @@ test("all raster extensions select image reads case-insensitively", async ({
   }
   expect(mock.imageReads).toHaveLength(extensions.length);
   expect(mock.reads).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+const notesDoc = [
+  "# 需求文档",
+  "",
+  "| 项 | 内容 |",
+  "| --- | --- |",
+  "| 版本 | V1.0 |",
+  "",
+  "- 第一项",
+  "- 第二项",
+].join("\n");
+
+for (const width of [1280, 390])
+  test(`markdown preview reads rendered text, source and icon tools at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const mock = await host(page, "[Docs](docs/notes.md)", project.path, "zh");
+    mock.files["docs/notes.md"] = notesDoc;
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator.clipboard, "writeText", {
+        value: async (text: string) => {
+          (window as unknown as { copiedText: string }).copiedText = text;
+        },
+      });
+    });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const dialog = page.getByRole("dialog", { name: "文件预览", exact: true });
+    await page.getByRole("button", { name: "Docs", exact: true }).click();
+    await expect(dialog.locator(".file-preview-markdown")).toBeVisible();
+    await expect(dialog.locator(".file-preview-markdown h1")).toHaveText(
+      "需求文档",
+    );
+    await expect(dialog.locator(".file-preview-markdown table")).toBeVisible();
+    await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+    await page.screenshot({
+      path: test.info().outputPath(`markdown-preview-${width}.png`),
+    });
+    // Copy stays a compact icon strip instead of three labelled buttons.
+    const tools = dialog.locator(".file-preview-tools button");
+    for (const label of [
+      "复制路径",
+      "复制相对路径",
+      "复制代码",
+      "全屏查看",
+      "关闭",
+    ]) {
+      const button = dialog.getByRole("button", { name: label, exact: true });
+      await expect(button).toBeVisible();
+      const box = (await button.boundingBox())!;
+      expect(box.width).toBeLessThanOrEqual(34);
+      expect(box.height).toBeLessThanOrEqual(34);
+    }
+    expect(await tools.count()).toBeGreaterThanOrEqual(6);
+    await dialog.getByRole("button", { name: "复制路径", exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { copiedText: string }).copiedText,
+        ),
+      )
+      .toBe("/workspace/links/docs/notes.md");
+    await dialog.getByRole("button", { name: "查看源码", exact: true }).click();
+    await expect(dialog.locator(".file-preview-code")).toBeVisible();
+    await expect(dialog.locator('[data-line="1"]')).toContainText("# 需求文档");
+    await dialog.getByRole("button", { name: "预览排版", exact: true }).click();
+    await expect(dialog.locator(".file-preview-markdown")).toBeVisible();
+    const normal = (await dialog.boundingBox())!;
+    await dialog.getByRole("button", { name: "全屏查看", exact: true }).click();
+    const full = (await dialog.boundingBox())!;
+    expect(full.width).toBeGreaterThanOrEqual(width - 1);
+    expect(full.height).toBeGreaterThanOrEqual(844 - 1);
+    expect(full.width).toBeGreaterThan(normal.width);
+    await dialog.getByRole("button", { name: "退出全屏", exact: true }).click();
+    const restored = (await dialog.boundingBox())!;
+    expect(restored.width).toBeLessThanOrEqual(normal.width + 1);
+    await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(mock.reads).toEqual([
+      { project: project.id, path: "docs/notes.md", root: null },
+    ]);
+    expect(mock.unexpected).toEqual([]);
+  });
+
+test("source-first preview keeps a line deep link and offers rendered Markdown", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Docs](docs/notes.md:3)", project.path);
+  mock.files["docs/notes.md"] = notesDoc;
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Docs", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-code")).toBeVisible();
+  await expect(dialog.locator('[data-highlighted="true"]')).toHaveCount(1);
+  await dialog
+    .getByRole("button", { name: "Rendered view", exact: true })
+    .click();
+  await expect(dialog.locator(".file-preview-markdown")).toBeVisible();
+  await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("a path written from a nested package resolves to its unique project file", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Notes](src/notes.md)", project.path);
+  // The message says `src/notes.md`; the file lives in a nested package.
+  mock.missing.add("src/notes.md");
+  mock.files["packages/web/src/notes.md"] = "# 恢复\n\n嵌套包内的文件";
+  mock.listings[""] = [
+    { name: "packages", path: "packages", kind: "directory" },
+  ];
+  mock.listings["packages"] = [
+    { name: "web", path: "packages/web", kind: "directory" },
+  ];
+  mock.listings["packages/web"] = [
+    { name: "src", path: "packages/web/src", kind: "directory" },
+  ];
+  mock.listings["packages/web/src"] = [
+    { name: "notes.md", path: "packages/web/src/notes.md", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-markdown h1")).toHaveText("恢复");
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    "/workspace/links/packages/web/src/notes.md",
+  );
+  await expect(dialog.locator(".file-preview-resolved")).toBeVisible();
+  // The failed literal read is retried once, with the resolved path.
+  expect(mock.reads.map((read) => read.path)).toEqual([
+    "src/notes.md",
+    "packages/web/src/notes.md",
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("an ambiguous nested path offers the matching files", async ({ page }) => {
+  const mock = await host(page, "[Notes](src/notes.md)", project.path);
+  mock.missing.add("src/notes.md");
+  mock.listings[""] = [
+    { name: "a", path: "a", kind: "directory" },
+    { name: "b", path: "b", kind: "directory" },
+  ];
+  mock.listings["a"] = [{ name: "src", path: "a/src", kind: "directory" }];
+  mock.listings["a/src"] = [
+    { name: "notes.md", path: "a/src/notes.md", kind: "file" },
+  ];
+  mock.listings["b"] = [{ name: "src", path: "b/src", kind: "directory" }];
+  mock.listings["b/src"] = [
+    { name: "notes.md", path: "b/src/notes.md", kind: "file" },
+  ];
+  mock.files["b/src/notes.md"] = "# 第二个候选";
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
+  const dialog = preview(page);
+  const choices = dialog.locator(".file-preview-candidates button");
+  await expect(choices).toHaveCount(2);
+  await expect(choices.first()).toHaveText("a/src/notes.md");
+  await choices.nth(1).click();
+  await expect(dialog.locator(".file-preview-markdown h1")).toHaveText(
+    "第二个候选",
+  );
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    "b/src/notes.md",
+  );
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("workbook parsing keeps formats, dates and every sheet", async () => {
+  const book = await readWorkbook(new Uint8Array(sheetBytes));
+  expect(book.sheets.map((sheet) => sheet.name)).toEqual(["预算", "备注"]);
+  const [budget] = book.sheets;
+  expect(budget.rows[0]).toEqual(["项目", "金额", "日期"]);
+  expect(budget.rows[1][1]).toBe("1250");
+  // `raw: false` keeps the date format instead of the numeric serial.
+  expect(budget.rows[1][2]).toMatch(/^\d{1,2}\/\d{1,2}\/\d{2,4}$/);
+  expect(book.truncated).toBe(false);
+  await expect(
+    readWorkbook(new Uint8Array([0x50, 0x4b, 0x03, 0x04])),
+  ).rejects.toThrow();
+});
+
+test("a mis-nested PDF path is corrected before the viewer opens", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Report](src/report.pdf)", project.path);
+  mock.missing.add("src/report.pdf");
+  mock.listings[""] = [{ name: "docs", path: "docs", kind: "directory" }];
+  mock.listings["docs"] = [
+    { name: "report.pdf", path: "docs/report.pdf", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-pdf")).toBeVisible();
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    "/workspace/links/docs/report.pdf",
+  );
+  expect(mock.documents.map((read) => read.path)).toEqual([
+    "src/report.pdf",
+    "docs/report.pdf",
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("xlsx links render a read-only sheet table with tabs", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Budget](docs/budget.xlsx)", project.path);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Budget", exact: true }).click();
+  const dialog = preview(page);
+  const sheet = dialog.locator(".file-preview-sheet");
+  await expect(sheet).toBeVisible();
+  await expect(sheet.locator("tr").nth(1)).toContainText("差旅");
+  await expect(sheet.locator("tr").nth(1)).toContainText("1250");
+  const tabs = sheet.getByRole("tab");
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs.first()).toHaveAttribute("aria-selected", "true");
+  await tabs.nth(1).click();
+  await expect(sheet.locator("tr").nth(1)).toContainText("第二张表");
+  await expect(dialog.locator(".file-preview-office")).toHaveCount(0);
+  await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.documents).toEqual([
+    { project: project.id, path: "docs/budget.xlsx", root: null },
+  ]);
+  expect(mock.reads).toEqual([]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("a binary that cannot be previewed downloads instead", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Archive](assets/manual.bin)", project.path);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Binary file cannot be previewed as text",
+  );
+  await dialog.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("Download started");
+  expect(mock.downloads).toEqual([{ path: "assets/manual.bin", root: null }]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("Office cards download the original document", async ({ page }) => {
+  const mock = await host(page, "[Spec](docs/spec.docx)", project.path);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Spec", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-office")).toBeVisible();
+  await dialog.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(dialog.getByRole("status")).toContainText("Download started");
+  expect(mock.downloads).toEqual([{ path: "docs/spec.docx", root: null }]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("an older host explains that it cannot download either", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Archive](assets/manual.bin)", project.path);
+  mock.unsupportedDownloads();
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  const dialog = preview(page);
+  await dialog.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "This service cannot download files",
+  );
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("a file that only exists in a linked worktree resolves there", async ({
+  page,
+}) => {
+  const worktree = "/workspace/links-wt";
+  const mock = await host(page, "[Main](src/main.ts)", project.path, "en", [
+    worktree,
+  ]);
+  mock.missing.add("src/main.ts");
+  mock.worktreeListings[`${worktree}:`] = [
+    { name: "src", path: "src", kind: "directory" },
+  ];
+  mock.worktreeListings[`${worktree}:src`] = [
+    { name: "main.ts", path: "src/main.ts", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Main", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-code")).toBeVisible();
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    `${worktree}/src/main.ts`,
+  );
+  expect(mock.reads).toEqual([
+    { project: project.id, path: "src/main.ts", root: null },
+    { project: project.id, path: "src/main.ts", root: worktree },
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("matches from two checkouts are offered with their worktree", async ({
+  page,
+}) => {
+  const worktree = "/workspace/links-wt";
+  const mock = await host(page, "[Main](src/main.ts)", project.path, "en", [
+    worktree,
+  ]);
+  mock.missing.add("src/main.ts");
+  mock.listings[""] = [{ name: "src", path: "src", kind: "directory" }];
+  mock.listings["src"] = [
+    { name: "main.ts", path: "src/main.ts", kind: "file" },
+  ];
+  mock.worktreeListings[`${worktree}:`] = [
+    { name: "src", path: "src", kind: "directory" },
+  ];
+  mock.worktreeListings[`${worktree}:src`] = [
+    { name: "main.ts", path: "src/main.ts", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Main", exact: true }).click();
+  const dialog = preview(page);
+  const choices = dialog.locator(".file-preview-candidates button");
+  await expect(choices).toHaveCount(2);
+  // The project root is listed first, the worktree carries its label.
+  await expect(choices.first()).toContainText("src/main.ts");
+  await expect(choices.nth(1)).toContainText("worktree");
+  await choices.nth(1).click();
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    `${worktree}/src/main.ts`,
+  );
+  await expect(dialog.locator(".file-preview-code")).toBeVisible();
+  expect(mock.reads).toEqual([
+    { project: project.id, path: "src/main.ts", root: null },
+    { project: project.id, path: "src/main.ts", root: worktree },
+  ]);
   expect(mock.unexpected).toEqual([]);
 });
