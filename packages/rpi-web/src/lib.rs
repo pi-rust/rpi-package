@@ -5,6 +5,7 @@
 
 mod assets;
 pub mod config;
+mod file_links;
 mod plugin;
 mod server;
 mod startup;

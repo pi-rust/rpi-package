@@ -253,6 +253,18 @@ fn register(api: &rpi_plugin_sdk::PluginApi) -> i32 {
             ),
         );
     }
+    // RPC children do not receive --webserver, but a loaded Web extension can
+    // still format file references. This hook never starts or owns a server.
+    if let Some(register_prompt) = api.register_before_agent_start {
+        let code = register_prompt(
+            crate::file_links::before_agent_start,
+            rpi_plugin_sdk::callbacks::free_string,
+            api.user_data,
+        );
+        if code != 0 {
+            return code;
+        }
+    }
     if !enabled(flag("webserver").as_ref()) && !enabled(flag("web").as_ref()) {
         return 0;
     }
