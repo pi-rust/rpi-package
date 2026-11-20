@@ -151,6 +151,7 @@ fn registry_resource_write_failure_rolls_back_memory_and_corrupt_load_never_repa
         relation: None,
         created_at: 0,
         updated_at: 0,
+        last_turn_ended_at: None,
     };
     registry
         .set_resource_configuration(entry.clone(), applied())

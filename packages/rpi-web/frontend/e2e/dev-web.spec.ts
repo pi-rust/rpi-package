@@ -109,7 +109,11 @@ async function mockHost(
     { id: "project-b", name: "rpi-package", path: "/workspace/rpi-package", archived: false },
   ];
   const sessions: Array<
-    typeof session & { pinned?: boolean; archived?: boolean }
+    typeof session & {
+      pinned?: boolean;
+      archived?: boolean;
+      lastTurnEndedAt?: number | null;
+    }
   > = [{ ...session, pinned: false, archived: false }];
   for (let index = 0; index < (options.additionalSessions ?? 0); index += 1) {
     sessions.push({
@@ -1104,6 +1108,34 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
   // Recent rows must never take the selected/active state from the project tree.
   await expect(recent.locator(".recent-session-row.active")).toHaveCount(0);
+});
+
+test("recent chats sort by last completed turn, not recent activity", async ({
+  page,
+}) => {
+  await mockHost(page, { additionalSessions: 2 });
+  await page.route("**/api/v1/sessions", async (route: Route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const payload = (await response.json()) as {
+      sessions: Array<{
+        sessionId: string;
+        updatedAt: number;
+        lastTurnEndedAt?: number | null;
+      }>;
+    };
+    for (const item of payload.sessions) {
+      if (item.sessionId === "session-2") item.lastTurnEndedAt = 3_000;
+      if (item.sessionId === "session-3") item.lastTurnEndedAt = 9_000;
+    }
+    return route.fulfill({ status: 200, json: payload });
+  });
+  await page.goto("/");
+  const titles = page
+    .getByRole("region", { name: "Recent chats" })
+    .locator(".recent-session-link .session-title");
+  await expect(titles.first()).toHaveAttribute("data-title", "Recent session 2");
+  await expect(titles.nth(1)).toHaveAttribute("data-title", "Recent session 1");
 });
 
 test("details jump is right-aligned in the slim metrics strip (#306)", async ({

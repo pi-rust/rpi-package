@@ -247,6 +247,7 @@ async fn delete_owned(state: &Service, id: String) -> ServiceReply {
                     relation: None,
                     created_at: snapshot.created_at,
                     updated_at: snapshot.updated_at,
+                    last_turn_ended_at: None,
                 })
                 .is_err()
             {

@@ -59,6 +59,7 @@ fn entry(id: &str) -> RegistryEntry {
         relation: None,
         created_at: 0,
         updated_at: 0,
+        last_turn_ended_at: None,
     }
 }
 struct Fixture {

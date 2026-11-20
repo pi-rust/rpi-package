@@ -139,6 +139,9 @@ pub struct Service {
     session_activity: Arc<RwLock<HashMap<String, Instant>>>,
     session_lifecycle: Arc<Mutex<()>>,
     registry: Arc<RwLock<Registry>>,
+    /// Live host instances with a settlement watcher already attached. A
+    /// reopened session uses a new host and must get its own watcher.
+    turn_end_watchers: Arc<std::sync::Mutex<std::collections::HashSet<usize>>>,
     run_timing_cache: Arc<std::sync::Mutex<crate::run_timing::RunTimingCache>>,
     run_timing_workers: Arc<tokio::sync::Semaphore>,
     resource_workers: Arc<tokio::sync::Semaphore>,
@@ -179,6 +182,7 @@ impl Service {
             session_activity: Arc::new(RwLock::new(HashMap::new())),
             session_lifecycle: Arc::new(Mutex::new(())),
             registry: Arc::new(RwLock::new(registry)),
+            turn_end_watchers: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             run_timing_cache: Arc::new(std::sync::Mutex::new(Default::default())),
             run_timing_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             resource_workers: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -191,6 +195,58 @@ impl Service {
     }
     pub async fn live_session(&self, id: &str) -> Option<Arc<HostSession>> {
         self.sessions.read().await.get(id).cloned()
+    }
+
+    /// Start a bounded watcher that persists the host's authoritative run-settlement
+    /// time into the registry. It is attached once per live host and never keeps a
+    /// session alive: it only follows the host's existing broadcast channel.
+    pub(crate) fn watch_turn_ends(&self, id: &str, session: &Arc<HostSession>) {
+        let host_key = Arc::as_ptr(session) as usize;
+        let fresh = self
+            .turn_end_watchers
+            .lock()
+            .expect("turn-end watchers")
+            .insert(host_key);
+        if !fresh {
+            return;
+        }
+        let state = self.clone();
+        let session_id = id.to_owned();
+        let watcher_session = Arc::clone(session);
+        let mut events = watcher_session.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) if event.value["type"].as_str() == Some("agent_settled") => {
+                        let ended_at = event
+                            .value
+                            .get("timestamp")
+                            .and_then(Value::as_u64)
+                            .or_else(|| watcher_session.runtime_snapshot_last_turn_ended_at())
+                            .unwrap_or_else(|| {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64
+                            });
+                        let mut registry = state.registry.write().await;
+                        if let Err(error) = registry.note_turn_ended(&session_id, ended_at) {
+                            eprintln!(
+                                "rpi-extcore: cannot persist turn end for {session_id}: {error}"
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            state
+                .turn_end_watchers
+                .lock()
+                .expect("turn-end watchers")
+                .remove(&host_key);
+        });
     }
 
     /// Mark a live session as recently used by a Web/API client. This is
@@ -568,6 +624,7 @@ async fn create_session_owned(
                     relation: None,
                     created_at: snapshot.created_at,
                     updated_at: snapshot.updated_at,
+                    last_turn_ended_at: None,
                 },
                 record,
             )
@@ -576,6 +633,8 @@ async fn create_session_owned(
                 session.shutdown().await;
                 return resources::reply_error(error);
             }
+            state.watch_turn_ends(&id, &session);
+            state.watch_turn_ends(&id, &session);
             state.sessions.write().await.insert(id.clone(), session);
             state.touch_session(&id).await;
             (
@@ -935,6 +994,7 @@ async fn fork_session_owned(
             relation: Some(if entry_id.is_some() { "fork" } else { "clone" }.into()),
             created_at: snapshot.created_at,
             updated_at: snapshot.updated_at,
+            last_turn_ended_at: None,
         },
         record,
     )
@@ -943,6 +1003,8 @@ async fn fork_session_owned(
         session.shutdown().await;
         return resources::reply_error(error).into_reply();
     }
+    state.watch_turn_ends(&actual_id, &session);
+    state.watch_turn_ends(&actual_id, &session);
     state
         .sessions
         .write()
@@ -1054,6 +1116,7 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
                     relation: entry.relation.clone(),
                     created_at: entry.created_at,
                     updated_at: snapshot.updated_at,
+                    last_turn_ended_at: None,
                 },
                 record,
             )
@@ -1062,6 +1125,8 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
                 session.shutdown().await;
                 return resources::reply_error(error);
             }
+            state.watch_turn_ends(&id, &session);
+            state.watch_turn_ends(&id, &session);
             state.sessions.write().await.insert(id.clone(), session);
             state.touch_session(&id).await;
             (
@@ -1212,6 +1277,10 @@ pub async fn list_sessions(state: &Service, query: SessionListQuery) -> Value {
                 .as_ref()
                 .map(|snapshot| snapshot.updated_at.max(entry.updated_at))
                 .unwrap_or(entry.updated_at),
+            "lastTurnEndedAt": snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.last_turn_ended_at)
+                .or(entry.last_turn_ended_at),
             "lastSeq": snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.last_seq)
@@ -1225,8 +1294,23 @@ pub async fn list_sessions(state: &Service, query: SessionListQuery) -> Value {
                 .and_then(|snapshot| snapshot.latest_settlement.clone()),
         }));
     }
-    summaries.sort_by_key(|summary| {
-        std::cmp::Reverse(summary["updatedAt"].as_u64().unwrap_or_default())
+    summaries.sort_by(|a, b| {
+        let a_ended = a["lastTurnEndedAt"].as_u64().unwrap_or(0);
+        let b_ended = b["lastTurnEndedAt"].as_u64().unwrap_or(0);
+        b_ended
+            .cmp(&a_ended)
+            .then_with(|| {
+                b["updatedAt"]
+                    .as_u64()
+                    .unwrap_or_default()
+                    .cmp(&a["updatedAt"].as_u64().unwrap_or_default())
+            })
+            .then_with(|| {
+                a["sessionId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(b["sessionId"].as_str().unwrap_or_default())
+            })
     });
     json!({"sessions": summaries})
 }
@@ -1254,6 +1338,7 @@ pub async fn get_session(state: &Service, id: String) -> (ReplyKind, Value) {
                 "title": entry.title,
                 "createdAt": entry.created_at,
                 "updatedAt": entry.updated_at,
+                "lastTurnEndedAt": entry.last_turn_ended_at,
                 "lastSeq": 0,
                 "parentSessionId": entry.parent_session_id,
                 "forkEntryId": entry.fork_entry_id,
@@ -1277,6 +1362,9 @@ pub async fn get_session(state: &Service, id: String) -> (ReplyKind, Value) {
             "title": entry.as_ref().and_then(|entry| entry.title.clone()).or(snapshot.title),
             "createdAt": entry.as_ref().map(|entry| entry.created_at).unwrap_or(snapshot.created_at),
             "updatedAt": entry.as_ref().map(|entry| entry.updated_at.max(snapshot.updated_at)).unwrap_or(snapshot.updated_at),
+            "lastTurnEndedAt": snapshot
+                .last_turn_ended_at
+                .or_else(|| entry.as_ref().and_then(|entry| entry.last_turn_ended_at)),
             "lastSeq": snapshot.last_seq,
             "parentSessionId": state
                 .registry
@@ -1526,6 +1614,81 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn settlement_updates_last_turn_end_and_recent_order() {
+        let root = std::env::temp_dir().join(format!("rpi-settle-order-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let service = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("sessions.json"),
+            ..BackendConfig::default()
+        })
+        .unwrap();
+        let older = uuid::Uuid::new_v4().to_string();
+        let newer = uuid::Uuid::new_v4().to_string();
+        {
+            let mut registry = service.registry.write().await;
+            for (id, updated_at) in [(&older, 900_u64), (&newer, 800_u64)] {
+                registry
+                    .upsert(RegistryEntry {
+                        session_id: id.clone(),
+                        project_id: Some(service.default_project_id.clone()),
+                        title: None,
+                        parent_session_id: None,
+                        fork_entry_id: None,
+                        relation: None,
+                        created_at: 0,
+                        updated_at,
+                        last_turn_ended_at: None,
+                    })
+                    .unwrap();
+            }
+        }
+        let (writer, _peer) = tokio::io::duplex(2048);
+        let (older_host, older_events) = HostSession::test_connection(writer, 32);
+        let (writer, _peer) = tokio::io::duplex(2048);
+        let (newer_host, newer_events) = HostSession::test_connection(writer, 32);
+        service.watch_turn_ends(&older, &older_host);
+        service.watch_turn_ends(&newer, &newer_host);
+        service.test_register_host(&older, older_host).await;
+        service.test_register_host(&newer, newer_host).await;
+
+        older_events
+            .send_projected(json!({"type":"agent_settled","outcome":"completed"}))
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        newer_events
+            .send_projected(json!({"type":"agent_settled","outcome":"completed"}))
+            .await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let list = list_sessions(&service, SessionListQuery::default()).await;
+                let first = list["sessions"][0]["sessionId"]
+                    .as_str()
+                    .unwrap_or_default();
+                if first == newer {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("settlement timestamps must be persisted");
+
+        let list = list_sessions(&service, SessionListQuery::default()).await;
+        assert_eq!(list["sessions"][0]["sessionId"], newer);
+        let newer_ended = list["sessions"][0]["lastTurnEndedAt"]
+            .as_u64()
+            .expect("settlement time is recorded");
+        let older_ended = list["sessions"][1]["lastTurnEndedAt"]
+            .as_u64()
+            .expect("settlement time is recorded");
+        assert!(newer_ended >= older_ended);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn snapshot_limits_native_history_without_losing_the_earlier_cursor() {
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1685,6 +1848,7 @@ mod run_timing_service_tests {
                 relation: None,
                 created_at: 0,
                 updated_at: 0,
+                last_turn_ended_at: None,
             })
             .unwrap();
         let rows = [

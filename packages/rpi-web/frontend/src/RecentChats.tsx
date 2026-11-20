@@ -29,13 +29,13 @@ export function RecentChats({
   const box = useRef<HTMLDivElement>(null);
   const recent = useMemo(
     () =>
-      sessions
+      [...sessions]
         .filter((session) => !session.archived && !session.deleting)
-        .sort(
-          (a, b) =>
-            Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) ||
-            b.updatedAt - a.updatedAt,
-        ),
+        .sort((a, b) => {
+          const endedDelta =
+            (b.lastTurnEndedAt ?? 0) - (a.lastTurnEndedAt ?? 0);
+          return endedDelta || b.updatedAt - a.updatedAt;
+        }),
     [sessions],
   );
 

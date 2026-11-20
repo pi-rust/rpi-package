@@ -36,6 +36,7 @@ impl Fixture {
                 relation: None,
                 created_at: 1,
                 updated_at: 1,
+                last_turn_ended_at: None,
             })
             .unwrap();
         Self { root, service, id }
