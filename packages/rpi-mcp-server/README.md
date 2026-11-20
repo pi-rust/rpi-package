@@ -167,11 +167,24 @@ The native host is located with `RPI_BIN`, a sibling `rpi` next to the bridge, o
 child with the native `--session <FILE>` flag, so an MCP client can continue an
 existing transcript.
 
-MCP has no approval channel, so a native `ui_dialog_request` (permission gate,
-`ask_user`) is **denied** instead of leaving the run pending. The prompt still
-settles; its result lists the denied titles in `deniedApprovals` and appends a
-`[denied N approval request(s)]` note. Use `--bypass` only for a trusted client
-and workspace when a run must be allowed to use gated tools.
+Native `ui_dialog_request` events (permission gate, `ask_user`) are answered
+through MCP `elicitation/create` when the client advertised the `elicitation`
+capability during `initialize`:
+
+- selector dialogs become an `enum` of the options the agent offered, and the
+  chosen title is forwarded as the native answer; input dialogs become one
+  required string. The core re-validates the choice, so a client cannot invent an
+  answer the agent never offered.
+- dialogs with no answerable shape, a declined/cancelled elicitation, a client
+  without the capability, or a client that never answers (the dialog's own
+  timeout) fall back to a **denial**: the prompt still settles, its result lists
+  `deniedApprovals`, and the text gains a `[denied N approval request(s)]` note.
+- over HTTP the request is delivered on the prompt's SSE stream, so a client that
+  asked for JSON responses (or a dialog raised outside a streaming call) is
+  denied instead.
+
+Use `--bypass` only for a trusted client and workspace when a run must be allowed
+to use gated tools.
 
 ## Protocol surface
 

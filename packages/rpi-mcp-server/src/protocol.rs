@@ -9,11 +9,12 @@ use rpi_extcore::process::resolve_rpi_executable;
 use rpi_extcore::run::RunOutcome;
 use rpi_plugin_sdk::stdio::{InputLine, StdinLines};
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-use tokio::sync::{broadcast, mpsc, watch, Semaphore};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, Semaphore};
 use tokio::task::JoinSet;
 
 const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -105,6 +106,10 @@ struct ServerState {
     subscribed: HashSet<String>,
     /// One session-wide watcher that turns settlements into resource updates.
     watcher: Option<tokio::task::JoinHandle<()>>,
+    /// Whether the client advertised the `elicitation` capability.
+    elicitation: bool,
+    /// Agent-to-client requests awaiting their response, keyed by our id.
+    pending_client: HashMap<String, oneshot::Sender<Value>>,
 }
 
 impl McpServer {
@@ -157,7 +162,16 @@ impl McpServer {
         let protocol_version = requested
             .filter(|value| SUPPORTED_PROTOCOLS.contains(value))
             .unwrap_or(SUPPORTED_PROTOCOLS[0]);
-        self.state.lock().expect("server state").initialized = true;
+        let elicitation = params
+            .as_ref()
+            .and_then(|value| value.get("capabilities"))
+            .and_then(|capabilities| capabilities.get("elicitation"))
+            .is_some();
+        {
+            let mut state = self.state.lock().expect("server state");
+            state.initialized = true;
+            state.elicitation = elicitation;
+        }
         json!({
             "protocolVersion": protocol_version,
             "capabilities": {
@@ -168,6 +182,68 @@ impl McpServer {
             "instructions": "Use rpi_prompt to run the rpi agent in the current workspace. \
                 rpi://session/transcript and rpi://session/state expose its transcript and state."
         })
+    }
+
+    /// Ask the client something (MCP is bidirectional) and wait boundedly.
+    async fn client_request(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        out: &mpsc::Sender<Value>,
+    ) -> Option<Value> {
+        let id = Value::String(uuid::Uuid::new_v4().to_string());
+        let key = request_id_key(&id)?;
+        let (sender, receiver) = oneshot::channel();
+        self.state
+            .lock()
+            .expect("server state")
+            .pending_client
+            .insert(key.clone(), sender);
+        let frame = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+        if send(out, frame).await.is_err() {
+            self.state
+                .lock()
+                .expect("server state")
+                .pending_client
+                .remove(&key);
+            return None;
+        }
+        match tokio::time::timeout(deadline, receiver).await {
+            Ok(Ok(value)) => Some(value),
+            _ => {
+                self.state
+                    .lock()
+                    .expect("server state")
+                    .pending_client
+                    .remove(&key);
+                None
+            }
+        }
+    }
+
+    /// Route a client response to the request that is waiting for it.
+    fn resolve_client_response(&self, frame: &Value) -> bool {
+        let Some(id) = frame.get("id") else {
+            return false;
+        };
+        let Some(key) = request_id_key(id) else {
+            return false;
+        };
+        let pending = self
+            .state
+            .lock()
+            .expect("server state")
+            .pending_client
+            .remove(&key);
+        eprintln!(
+            "[dbg] resolve {:?} matched={}",
+            frame.get("id"),
+            pending.is_some()
+        );
+        pending
+            .map(|sender| sender.send(frame.clone()).is_ok())
+            .unwrap_or(false)
     }
 
     /// Claim the native run for `id`, so a later cancellation can be matched.
@@ -437,6 +513,43 @@ impl McpServer {
 
     /// One native run (prompt or compaction), settled by acceptance plus
     /// settlement, with progress notifications when the client sent a token.
+    /// Translate a native dialog into `elicitation/create` when the client can
+    /// answer one. `None` means "deny", which the caller turns into a response.
+    async fn answer_dialog(
+        &self,
+        request_id: &str,
+        event: &Value,
+        out: &mpsc::Sender<Value>,
+    ) -> Option<Value> {
+        if !self.state.lock().expect("server state").elicitation {
+            return None;
+        }
+        let ui = event.get("ui")?;
+        let schema = elicitation_schema(ui)?;
+        let message = event["title"]
+            .as_str()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or("Approval required");
+        let answer = self
+            .client_request(
+                "elicitation/create",
+                json!({"message": message, "requestedSchema": schema}),
+                rpi_extcore::dialogs::timeout(ui),
+                out,
+            )
+            .await?;
+        // A JSON-RPC response wraps the payload in `result`; an error or a
+        // missing result is treated as a cancelled dialog.
+        let payload = answer.get("result").cloned().unwrap_or(Value::Null);
+        // `dialogs::answer` re-validates the choice against the dialog's own
+        // options, so a client cannot invent an answer the agent never offered.
+        Some(rpi_extcore::dialogs::answer(
+            request_id,
+            ui,
+            &elicitation_answer(&payload),
+        ))
+    }
+
     async fn operation(
         &self,
         message: Option<String>,
@@ -460,25 +573,31 @@ impl McpServer {
                 event = run.events.recv() => event,
             };
             let event = event.map_err(|error| format!("native event stream failed: {error}"))?;
-            // MCP has no approval channel, so a native permission dialog is
-            // denied instead of leaving the run pending forever.
+            // A native dialog is answered through MCP `elicitation/create` when
+            // the client advertised that capability; otherwise it is denied so
+            // the run cannot stay pending forever.
             if event["type"] == "ui_dialog_request" {
                 if let Some(request_id) = event["requestId"].as_str() {
                     let title = event["title"]
                         .as_str()
                         .filter(|title| !title.trim().is_empty())
                         .unwrap_or("approval");
-                    if denied.len() < MAX_DENIED_APPROVALS {
+                    let response = self
+                        .answer_dialog(request_id, &event, out)
+                        .await
+                        .unwrap_or_else(|| {
+                            json!({
+                                "type": "ui_dialog_response",
+                                "requestId": request_id,
+                                "cancelled": true,
+                            })
+                        });
+                    if response["cancelled"] == Value::Bool(true)
+                        && denied.len() < MAX_DENIED_APPROVALS
+                    {
                         denied.push(title.to_string());
                     }
-                    let _ = self
-                        .session
-                        .notify(json!({
-                            "type": "ui_dialog_response",
-                            "requestId": request_id,
-                            "cancelled": true,
-                        }))
-                        .await;
+                    let _ = self.session.notify(response).await;
                 }
                 continue;
             }
@@ -608,6 +727,15 @@ where
                 break;
             }
             continue;
+        }
+        let parsed = serde_json::from_str::<Value>(&line);
+        // A frame without a method is a response to an agent-to-client request
+        // (elicitation, for example); unknown ids are dropped per JSON-RPC.
+        if let Ok(value) = &parsed {
+            if value.get("method").is_none() && value.get("id").is_some() {
+                server.resolve_client_response(value);
+                continue;
+            }
         }
         let request = match serde_json::from_str::<Request>(&line) {
             Ok(request) => request,
@@ -856,6 +984,43 @@ fn format_outcome(outcome: RunOutcome) -> &'static str {
         RunOutcome::Completed => "completed",
         RunOutcome::Cancelled => "cancelled",
         RunOutcome::TokenLimit => "token_limit",
+    }
+}
+
+/// Build the elicitation form for a native dialog, or `None` when the dialog has
+/// no answerable shape (a plain message, for instance).
+fn elicitation_schema(ui: &Value) -> Option<Value> {
+    match ui.get("kind").and_then(Value::as_str)? {
+        "selector" => {
+            let titles = rpi_extcore::dialogs::titles(ui)?;
+            if titles.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "type": "object",
+                "properties": {
+                    "choice": {"type": "string", "enum": titles, "title": "Answer"}
+                },
+                "required": ["choice"],
+            }))
+        }
+        "input" => Some(json!({
+            "type": "object",
+            "properties": {"choice": {"type": "string", "title": "Answer"}},
+            "required": ["choice"],
+        })),
+        _ => None,
+    }
+}
+
+/// Convert an `elicitation/create` result into the native dialog answer shape.
+fn elicitation_answer(result: &Value) -> Value {
+    match result.get("action").and_then(Value::as_str) {
+        Some("accept") => match result.pointer("/content/choice").and_then(Value::as_str) {
+            Some(choice) if !choice.trim().is_empty() => json!({"answer": {"values": [choice]}}),
+            _ => json!({"cancelled": true}),
+        },
+        _ => json!({"cancelled": true}),
     }
 }
 

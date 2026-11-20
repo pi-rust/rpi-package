@@ -85,7 +85,9 @@ arguments, defaults and limits.
 - Prompts run the agent with this workspace's privileges: tools may edit files,
   run commands and reach the network. The MCP client's approval UI does not
   protect you — the agent runs inside rpi, not inside the client.
-- MCP has no approval channel here, so a native permission dialog is **denied**
+- A native permission dialog becomes MCP `elicitation/create` when the client
+  advertised that capability, so the client's own UI decides. Otherwise (or when
+  the client ignores it, or the dialog has no answerable shape) it is **denied**
   and reported in `deniedApprovals`; the run still settles. Use `--bypass` only
   when you accept unattended execution.
 - stdio needs no authentication: whoever can spawn the bridge is trusted.
@@ -111,7 +113,7 @@ events per stream, 256 KiB of model-visible text per result, 600 s per request,
 | `429 too many MCP sessions` | `--max-sessions` reached; `DELETE /mcp` or raise the limit. |
 | `-32603 another tool call is already driving the agent` | One prompt at a time per session; wait or `rpi_abort`. |
 | Prompt returns `isError` with `prompt cancelled` | `notifications/cancelled` aborted the run. |
-| `deniedApprovals` in the result | A permission dialog was denied because MCP has no approval channel. |
+| `deniedApprovals` in the result | A dialog was denied: the client did not advertise `elicitation`, declined it, did not answer, or the dialog had no answerable shape. |
 | Prompt never settles | In this environment the native child can stall after `message_start`; check `rpi --mode rpc` directly before blaming the adapter. |
 
 ## Validation

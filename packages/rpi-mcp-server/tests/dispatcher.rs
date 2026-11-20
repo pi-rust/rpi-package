@@ -71,6 +71,7 @@ impl Harness {
         S: Fn(&Value) -> Option<Value> + Send + 'static,
     {
         let input = Arc::new(Mutex::new(std::mem::take(&mut self.stdin)));
+        let replies = Arc::clone(&input);
         let poll = {
             let input = Arc::clone(&input);
             move || {
@@ -114,7 +115,19 @@ impl Harness {
         while let Ok(Ok(Some(line))) =
             tokio::time::timeout(Duration::from_secs(2), async { reader.next_line().await }).await
         {
-            frames.push(serde_json::from_str(&line).expect("server wrote valid JSON"));
+            let frame = serde_json::from_str::<Value>(&line).expect("server wrote valid JSON");
+            // Answer agent-to-client requests the way a capable client would.
+            if frame["method"] == "elicitation/create" {
+                replies.lock().unwrap().push_back(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": frame["id"],
+                        "result": {"action": "accept", "content": {"choice": "Allow"}},
+                    })
+                    .to_string(),
+                );
+            }
+            frames.push(frame);
         }
         let _ = stop_tx.send(true);
         serving.await.expect("dispatcher task");
@@ -477,4 +490,143 @@ async fn compacts_context_and_returns_the_summary() {
         .as_str()
         .unwrap()
         .contains("Earlier work summarized."));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn answers_approval_dialogs_through_elicitation() {
+    let mut harness = Harness::new();
+    harness.push(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"elicitation": {}},
+        },
+    }));
+    harness.push(request(
+        2,
+        "tools/call",
+        json!({"name":"rpi_prompt","arguments":{"message":"run a command"}}),
+    ));
+    harness.inject(
+        200,
+        json!({
+            "type":"ui_dialog_request",
+            "requestId":"d1",
+            "title":"Allow bash?",
+            "ui":{"kind":"selector","options":["Allow","Deny"]},
+        }),
+    );
+    harness.inject(
+        700,
+        json!({"type":"agent_settled","outcome":"completed","finalText":"done"}),
+    );
+    let (frames, commands) = harness
+        .run(|command| {
+            (command["type"] == "prompt").then(|| {
+                json!({
+                    "type":"response",
+                    "id": command["id"],
+                    "success": true,
+                    "data": {"accepted": true},
+                })
+            })
+        })
+        .await;
+
+    // The dialog became an elicitation request with the offered choices.
+    let elicitation = frames
+        .iter()
+        .find(|frame| frame["method"] == "elicitation/create")
+        .expect("elicitation request");
+    assert_eq!(
+        elicitation["params"]["requestedSchema"]["properties"]["choice"]["enum"],
+        json!(["Allow", "Deny"])
+    );
+
+    // The answered choice reached the native host, not a denial.
+    let response = commands
+        .iter()
+        .find(|command| command["type"] == "ui_dialog_response")
+        .unwrap_or_else(|| panic!("native dialog response missing; commands={commands:#?}"));
+    assert_eq!(response["answer"]["values"], json!(["Allow"]));
+    assert!(response.get("cancelled").is_none(), "{response}");
+
+    // The prompt still settles and reports no denial.
+    let result = frames
+        .iter()
+        .find(|frame| frame["id"] == 2)
+        .expect("prompt response")
+        .clone();
+    assert_eq!(result["result"]["isError"], false, "{result:#?}");
+    assert!(
+        result["result"]["structuredContent"]
+            .get("deniedApprovals")
+            .is_none(),
+        "{result:#?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unanswerable_dialogs_are_still_denied() {
+    let mut harness = Harness::new();
+    harness.push(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {"protocolVersion":"2025-06-18","capabilities":{"elicitation":{}}},
+    }));
+    harness.push(request(
+        2,
+        "tools/call",
+        json!({"name":"rpi_prompt","arguments":{"message":"run a command"}}),
+    ));
+    // A plain message dialog has no answerable shape.
+    harness.inject(
+        200,
+        json!({
+            "type":"ui_dialog_request",
+            "requestId":"d2",
+            "title":"Note",
+            "ui":{"kind":"message","message":"heads up"},
+        }),
+    );
+    harness.inject(
+        700,
+        json!({"type":"agent_settled","outcome":"completed","finalText":"done"}),
+    );
+    let (frames, commands) = harness
+        .run(|command| {
+            (command["type"] == "prompt").then(|| {
+                json!({
+                    "type":"response",
+                    "id": command["id"],
+                    "success": true,
+                    "data": {"accepted": true},
+                })
+            })
+        })
+        .await;
+
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame["method"] == "elicitation/create"),
+        "a shapeless dialog must not become an elicitation"
+    );
+    let response = commands
+        .iter()
+        .find(|command| command["type"] == "ui_dialog_response")
+        .expect("native dialog response");
+    assert_eq!(response["cancelled"], true);
+    let result = frames
+        .iter()
+        .find(|frame| frame["id"] == 2)
+        .expect("prompt response")
+        .clone();
+    assert_eq!(
+        result["result"]["structuredContent"]["deniedApprovals"][0],
+        "Note"
+    );
 }
