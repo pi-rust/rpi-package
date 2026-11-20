@@ -1750,6 +1750,17 @@ export default function App() {
         case "message_start": {
           if (roleOf(event.message) === "user") {
             const text = textOf(event.message);
+            // The host just delivered this queued message, so it is no longer
+            // waiting; waiting for the next queue read would show it twice.
+            setQueueItems((previous) =>
+              previous.length
+                ? previous.filter(
+                    (item) =>
+                      item.text?.trim() !== text.trim() ||
+                      !isEditableQueueItem(item),
+                  )
+                : previous,
+            );
             const prefix = `u${seq}`;
             currentUser.current = prefix;
             const initial = rowsFromUser(event.message, prefix);
@@ -2728,6 +2739,35 @@ export default function App() {
     }
   }, [rows, sessionId]);
 
+  const queueAbort = useRef<AbortController | null>(null);
+  /** Server truth for the waiting queue; the host owns delivery. */
+  const refreshQueue = useCallback(
+    async (id: string) => {
+      if (!supported.has("get_queue")) return;
+      if (activeSessionRef.current !== id) return;
+      queueAbort.current?.abort();
+      const controller = new AbortController();
+      queueAbort.current = controller;
+      try {
+        const value = await api.queue(id, showQueueHistory, controller.signal);
+        if (controller.signal.aborted) return;
+        if (activeSessionRef.current !== id) return;
+        const items = value.items ?? [];
+        setQueueItems((previous) =>
+          // Only an in-flight enqueue may briefly outrun the host's list.
+          items.length === 0 && queueSubmission.current.has(id)
+            ? previous.filter(isEditableQueueItem)
+            : items,
+        );
+      } catch {
+        // A failed poll keeps the last known list; the next one retries.
+      } finally {
+        if (queueAbort.current === controller) queueAbort.current = null;
+      }
+    },
+    [showQueueHistory, supported],
+  );
+
   const refreshDiagnostics = useCallback(
     async (id: string) => {
       if (activeSessionRef.current !== id) return;
@@ -2742,19 +2782,8 @@ export default function App() {
       const jobs: Array<() => Promise<void>> = [];
       if (supported.has("get_queue")) {
         jobs.push(async () => {
-          const value = await api.queue(
-            id,
-            showQueueHistory,
-            controller.signal,
-          );
           if (!current()) return;
-          const items = value.items ?? [];
-          setQueueItems((previous) =>
-            items.length === 0 &&
-            (runActive || queueRunSubmission.current.has(id))
-              ? previous.filter(isEditableQueueItem)
-              : items,
-          );
+          await refreshQueue(id);
         });
       }
       if (supported.has("get_stats")) {
@@ -2809,8 +2838,27 @@ export default function App() {
           diagnosticsAbort.current = null;
       }
     },
-    [supported, actions, showQueueHistory, clearAccess, runActive],
+    [
+      supported,
+      actions,
+      showQueueHistory,
+      clearAccess,
+      runActive,
+      refreshQueue,
+    ],
   );
+
+  // A queued message leaves the list the moment the host hands it to the run.
+  // User-message events cover the common case; this bounded poll covers the
+  // remaining deliveries (tool-batch steering) while work is active.
+  useEffect(() => {
+    if (!sessionId || !runActive || !sessionHydrated) return;
+    if (!supported.has("get_queue")) return;
+    const timer = window.setInterval(() => {
+      void refreshQueue(sessionId);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [sessionId, runActive, sessionHydrated, supported, refreshQueue]);
 
   useEffect(() => {
     if (!sessionId || loadingSession || !sessionHydrated) return;

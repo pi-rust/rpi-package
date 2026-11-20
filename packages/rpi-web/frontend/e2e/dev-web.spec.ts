@@ -618,6 +618,7 @@ test("sending one queued message keeps later waiting messages visible", async ({
       const body = route.request().postDataJSON();
       if (body.type === "get_queue") {
         queueReads++;
+        // The host drops the entry that was sent now and keeps the rest.
         const items =
           queueReads === 1
             ? [
@@ -634,7 +635,14 @@ test("sending one queued message keeps later waiting messages visible", async ({
                   text: "second pending",
                 },
               ]
-            : [];
+            : [
+                {
+                  entryId: "queue-2",
+                  queue: "followUp",
+                  status: "queued",
+                  text: "second pending",
+                },
+              ];
         return route.fulfill({
           json: response({ items, count: items.length }, body.type),
         });
@@ -1721,6 +1729,88 @@ test("send now steers a waiting message into the running task", async ({
         entryId: "queue-2",
       },
     ]);
+});
+
+test("a delivered queued message leaves the list", async ({ page }) => {
+  await mockHost(page);
+  // Serialize the two sources: the host stops listing an entry once delivered.
+  let delivered = false;
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) => {
+    delivered = true;
+    return route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: message_start\ndata: {"type":"message_start","message":{"role":"user","content":"pending"}}\n\n',
+    });
+  });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_queue") return route.fallback();
+      const items = delivered
+        ? []
+        : [
+            {
+              entryId: "queue-2",
+              queue: "followUp",
+              status: "queued",
+              text: "pending",
+            },
+          ];
+      return route.fulfill({
+        json: response({ items, count: items.length }, body.type),
+      });
+    },
+  );
+  await page.goto("/");
+  await openRuntimePanel(page);
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(0);
+  await expect(page.locator(".composer-queue-panel")).toHaveCount(0);
+});
+
+test("a running session re-reads the queue so delivered entries disappear", async ({
+  page,
+}) => {
+  await mockHost(page);
+  let reads = 0;
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type !== "get_queue") return route.fallback();
+      reads += 1;
+      const items =
+        reads <= 1
+          ? [
+              {
+                entryId: "queue-drain",
+                queue: "followUp",
+                status: "queued",
+                text: "drained by the run",
+              },
+            ]
+          : [];
+      return route.fulfill({
+        json: response({ items, count: items.length }, body.type),
+      });
+    },
+  );
+  await page.goto("/");
+  await openRuntimePanel(page);
+  await expect(page.locator(".inspector .queue-item")).toContainText(
+    "drained by the run",
+  );
+  // The bounded poll runs while work is active; no settle is required.
+  await expect(page.locator(".inspector .queue-item")).toHaveCount(0, {
+    timeout: 5000,
+  });
+  expect(reads).toBeGreaterThan(1);
 });
 
 test("an event replay gap reloads the native snapshot", async ({ page }) => {
