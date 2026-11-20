@@ -70,10 +70,12 @@
   color: var(--muted);
   background: transparent;
 }
-.login-theme:hover,
-.login-reveal:hover {
-  background: var(--soft);
-  color: var(--text);
+@media (hover: hover) {
+  .login-theme:hover,
+  .login-reveal:hover {
+    background: var(--soft);
+    color: var(--text);
+  }
 }
 .login-center {
   flex: 1;
@@ -181,10 +183,12 @@
   font-weight: 500;
   transition: opacity 150ms;
 }
-.login-submit:hover:not(:disabled) {
-  background: var(--text);
-  color: var(--bg);
-  opacity: 0.85;
+@media (hover: hover) {
+  .login-submit:hover:not(:disabled) {
+    background: var(--text);
+    color: var(--bg);
+    opacity: 0.85;
+  }
 }
 .login-screen button:disabled {
   opacity: 0.45;

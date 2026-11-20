@@ -114,8 +114,10 @@
   color: var(--text);
   cursor: pointer;
 }
-.file-preview button:hover {
-  background: var(--hover);
+@media (hover: hover) {
+  .file-preview button:hover {
+    background: var(--hover);
+  }
 }
 .file-preview button:disabled {
   cursor: default;

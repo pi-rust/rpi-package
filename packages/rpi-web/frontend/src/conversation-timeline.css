@@ -45,7 +45,12 @@
   color: var(--muted);
   font-size: 14px;
 }
-.conversation-timeline .timeline-load-earlier:hover,
+@media (hover: hover) {
+  .conversation-timeline .timeline-load-earlier:hover {
+    color: var(--text);
+    background: var(--soft);
+  }
+}
 .conversation-timeline .timeline-load-earlier:focus-visible {
   color: var(--text);
   background: var(--soft);
@@ -108,12 +113,20 @@
   height: 3px;
   opacity: 1;
 }
-.conversation-timeline .timeline-node:hover,
+@media (hover: hover) {
+  .conversation-timeline .timeline-node:hover {
+    color: var(--text);
+    background: var(--soft);
+  }
+  .timeline-node:hover .timeline-mark {
+    width: 16px;
+    opacity: 1;
+  }
+}
 .conversation-timeline .timeline-node:focus-visible {
   color: var(--text);
   background: var(--soft);
 }
-.timeline-node:hover .timeline-mark,
 .timeline-node:focus-visible .timeline-mark {
   width: 16px;
   opacity: 1;
