@@ -15,29 +15,53 @@ const SKIPPED = new Set([
   "__pycache__",
 ]);
 
+export interface ProjectPathLookup {
+  /** Exactly one file ends with the wanted path. */
+  path: string | null;
+  /** Several plausible files; the user picks instead of being refused. */
+  candidates: string[];
+}
+
 /**
- * Resolve a path an agent wrote relative to a nested package directory.
+ * Find a message-linked path the project does not contain literally.
  *
- * A message may say `src/App.tsx` while the project root is the repository, so
- * the literal path does not exist. Walk the project breadth-first and accept a
- * single file whose relative path ends with `/<wanted>`. Ambiguity returns
- * null: a wrong guess would preview an unrelated file.
+ * Agents write paths relative to a nested package (`src/App.tsx`) or name a
+ * file without its directory. Walk the project breadth-first and collect files
+ * whose relative path ends with the wanted suffix, then let the caller decide:
+ * one match opens, several become a choice, none stays an explicit error.
  */
-export async function resolveProjectPath(
+export async function lookupProjectPath(
   projectId: string,
   wanted: string,
-  options: { signal?: AbortSignal; maxDirs?: number; maxDepth?: number } = {},
-): Promise<string | null> {
+  options: {
+    signal?: AbortSignal;
+    maxDirs?: number;
+    maxDepth?: number;
+    maxCandidates?: number;
+  } = {},
+): Promise<ProjectPathLookup> {
   const target = wanted.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
-  if (!target.includes("/")) return null;
+  if (!target || target.startsWith("/") || target.split("/").includes(".."))
+    return { path: null, candidates: [] };
   const suffix = `/${target}`;
-  const maxDirs = options.maxDirs ?? 48;
-  const maxDepth = options.maxDepth ?? 4;
+  // A message can name the wrong directory (`src/x.pdf` for `docs/x.pdf`), so
+  // the file name alone is the fallback search key.
+  const basename = target.split("/").pop() ?? target;
+  const nameSuffix = `/${basename}`;
+  const byName: string[] = [];
+  const maxDirs = options.maxDirs ?? 64;
+  const maxDepth = options.maxDepth ?? 5;
+  const maxCandidates = options.maxCandidates ?? 8;
   const seen = new Set<string>();
   const queue = [{ path: "", depth: 0 }];
   const matches: string[] = [];
   let listed = 0;
-  while (queue.length > 0 && listed < maxDirs && matches.length < 2) {
+  while (
+    queue.length > 0 &&
+    listed < maxDirs &&
+    matches.length < maxCandidates &&
+    byName.length < maxCandidates
+  ) {
     const next = queue.shift()!;
     if (seen.has(next.path)) continue;
     seen.add(next.path);
@@ -48,15 +72,24 @@ export async function resolveProjectPath(
     } catch {
       continue;
     }
-    if (options.signal?.aborted) return null;
+    if (options.signal?.aborted) return { path: null, candidates: [] };
     for (const entry of entries) {
       const path = entry.path.replace(/\\/g, "/");
       if (entry.kind === "file") {
         if (path.endsWith(suffix)) matches.push(path);
-      } else if (next.depth < maxDepth && !SKIPPED.has(entry.name)) {
-        queue.push({ path, depth: next.depth + 1 });
+        else if (path.endsWith(nameSuffix) && !byName.includes(path))
+          byName.push(path);
+        continue;
       }
+      if (next.depth < maxDepth && !SKIPPED.has(entry.name))
+        queue.push({ path, depth: next.depth + 1 });
     }
   }
-  return matches.length === 1 ? matches[0] : null;
+  const found = matches.length > 0 ? matches : byName;
+  if (found.length === 1) return { path: found[0], candidates: [] };
+  // Shortest paths first: the closest checkout wins the tie-break presentation.
+  const candidates = found
+    .sort((a, b) => a.length - b.length || a.localeCompare(b))
+    .slice(0, maxCandidates);
+  return { path: null, candidates };
 }

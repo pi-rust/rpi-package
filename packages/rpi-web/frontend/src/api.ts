@@ -762,6 +762,8 @@ export const api = {
       throw new ApiError(
         String(value?.error ?? `HTTP ${response.status}`),
         response.status,
+        // A host without this route answers with an empty, non-JSON body.
+        value ? undefined : "route-missing",
       );
     }
     return response.blob();

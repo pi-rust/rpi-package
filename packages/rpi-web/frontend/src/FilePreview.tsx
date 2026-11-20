@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError, type Project } from "./api";
-import { resolveProjectPath } from "./fileLookup";
+import { lookupProjectPath } from "./fileLookup";
 import { readWorkbook, type WorkbookPreview } from "./spreadsheet";
 import { translate, type Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
@@ -90,8 +90,12 @@ export function FilePreview({
   // The server root determines the platform-specific separator, not the
   // browser. Show this exact value so "Copy path" is what the user can see.
   // A linked-worktree link is joined onto that worktree, not the project root.
-  const [resolved, setResolved] = useState<string | null>(null);
-  const shownPath = resolved ?? file.path;
+  // The path actually being read: it starts as the message link and may be
+  // corrected to a file the project really contains.
+  const [targetPath, setTargetPath] = useState(file.path);
+  const [candidates, setCandidates] = useState<string[]>([]);
+  const resolved = targetPath === file.path ? null : targetPath;
+  const shownPath = targetPath;
   const absolutePath = absoluteProjectPath(
     file.root ?? project.path,
     shownPath,
@@ -101,9 +105,9 @@ export function FilePreview({
   const [attempt, setAttempt] = useState(0);
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const image = isProjectImagePath(file.path);
-  const markdown = isMarkdownPath(file.path);
-  const documentType = image ? null : documentKind(file.path);
+  const image = isProjectImagePath(targetPath);
+  const markdown = isMarkdownPath(targetPath);
+  const documentType = image ? null : documentKind(targetPath);
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const [workbook, setWorkbook] = useState<WorkbookPreview | null>(null);
   const [activeSheet, setActiveSheet] = useState(0);
@@ -133,6 +137,10 @@ export function FilePreview({
   const [source, setSource] = useState(!markdown || !!file.line);
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => {
+    setTargetPath(file.path);
+    setCandidates([]);
+  }, [file.path]);
+  useEffect(() => {
     const previousFocus = document.activeElement;
     const dialog = dialogRef.current!;
     dialog.showModal();
@@ -155,13 +163,12 @@ export function FilePreview({
     setActiveSheet(0);
     setError("");
     setCopied("");
-    setResolved(null);
     setSource(!markdown || !!file.line);
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
           if (image) {
-            const blob = await api.image(project.id, file.path, {
+            const blob = await api.image(project.id, targetPath, {
               root: file.root,
               signal: controller.signal,
             });
@@ -170,7 +177,7 @@ export function FilePreview({
             setImageUrl(objectUrl);
           } else if (documentType) {
             try {
-              const blob = await api.document(project.id, file.path, {
+              const blob = await api.document(project.id, targetPath, {
                 root: file.root,
                 signal: controller.signal,
               });
@@ -184,23 +191,28 @@ export function FilePreview({
               documentObjectUrl = URL.createObjectURL(blob);
               setDocumentUrl(documentObjectUrl);
             } catch (cause) {
-              // An older backend has no document route; the text route still
-              // explains why the file cannot be previewed.
+              // A host without the document route cannot stream these bytes.
+              // The dialog then offers a local copy instead of a dead end.
               if (
                 cause instanceof ApiError &&
-                [404, 405].includes(cause.status)
+                (cause.code === "route-missing" ||
+                  [404, 405].includes(cause.status))
               ) {
-                const result = await api.file(project.id, file.path, {
-                  root: file.root,
-                  signal: controller.signal,
-                });
-                if (!controller.signal.aborted) setContent(result.content);
-                return;
+                if (controller.signal.aborted) return;
+                if (cause.code === "route-missing") {
+                  setError(
+                    zh
+                      ? "当前服务版本不提供文档读取，可选本地文件预览"
+                      : "This service cannot stream documents; preview a local copy",
+                  );
+                  return;
+                }
+                throw cause;
               }
               throw cause;
             }
           } else {
-            const result = await api.file(project.id, file.path, {
+            const result = await api.file(project.id, targetPath, {
               root: file.root,
               signal: controller.signal,
             });
@@ -208,25 +220,30 @@ export function FilePreview({
           }
         } catch (cause: unknown) {
           if (controller.signal.aborted) return;
-          // A relative path may have been written from a nested package, so the
-          // literal join does not exist. Resolve one unique suffix and retry.
+          // The literal path may not exist: the message can be relative to a
+          // nested package, or name a file without its directory. Look for the
+          // suffix once, then either reopen the single match or offer choices.
           if (
-            !image &&
-            !file.root &&
             cause instanceof ApiError &&
-            cause.status === 404
+            cause.status === 404 &&
+            !file.root &&
+            cause.code !== "route-missing"
           ) {
-            const found = await resolveProjectPath(project.id, file.path, {
+            const lookup = await lookupProjectPath(project.id, targetPath, {
               signal: controller.signal,
             });
             if (controller.signal.aborted) return;
-            if (found) {
-              const retried = await api.file(project.id, found, {
-                signal: controller.signal,
-              });
-              if (controller.signal.aborted) return;
-              setResolved(found);
-              setContent(retried.content);
+            if (lookup.path) {
+              setTargetPath(lookup.path);
+              return;
+            }
+            if (lookup.candidates.length) {
+              setCandidates(lookup.candidates);
+              setError(
+                zh
+                  ? "该路径不存在，但项目中有同名文件，请选择："
+                  : "That path does not exist, but the project has matches:",
+              );
               return;
             }
           }
@@ -243,7 +260,7 @@ export function FilePreview({
   }, [
     project.id,
     project.path,
-    file.path,
+    targetPath,
     file.root,
     image,
     documentType,
@@ -453,6 +470,24 @@ export function FilePreview({
           <p>
             {zh ? "文件读取失败" : "Could not load file"}: {error}
           </p>
+          {candidates.length > 0 && (
+            <ul className="file-preview-candidates">
+              {candidates.map((path) => (
+                <li key={path}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCandidates([]);
+                      setError("");
+                      setTargetPath(path);
+                    }}
+                  >
+                    {path}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <div className="file-preview-status-actions">
             <button
               type="button"

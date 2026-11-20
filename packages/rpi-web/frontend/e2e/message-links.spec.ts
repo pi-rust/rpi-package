@@ -356,10 +356,10 @@ async function host(
         root: url.searchParams.get("root"),
       });
       if (documentsUnsupported)
-        return route.fulfill({
-          status: 404,
-          json: { error: "not found" },
-        });
+        // A host without the route answers with an empty, non-JSON body.
+        return route.fulfill({ status: 404, body: "" });
+      if (missing.has(target))
+        return route.fulfill({ status: 404, json: { error: "not found" } });
       if (target.toLowerCase().endsWith(".pdf"))
         return route.fulfill({
           status: 200,
@@ -1096,7 +1096,7 @@ test("PDF links stream bytes into the browser viewer", async ({ page }) => {
   expect(mock.unexpected).toEqual([]);
 });
 
-test("an older backend without the document route explains the file instead", async ({
+test("an older host offers a local copy instead of a dead end", async ({
   page,
 }) => {
   const mock = await host(page, "[Report](docs/report.pdf)", project.path);
@@ -1105,12 +1105,19 @@ test("an older backend without the document route explains the file instead", as
   await page.getByRole("button", { name: "Report", exact: true }).click();
   const dialog = preview(page);
   await expect(dialog.getByRole("alert")).toContainText(
-    "Binary file cannot be previewed as text",
+    "This service cannot stream documents",
   );
-  await expect(dialog.locator(".file-preview-pdf")).toHaveCount(0);
-  expect(mock.reads).toEqual([
-    { project: project.id, path: "docs/report.pdf", root: null },
-  ]);
+  // The picker reads the file in the page, so no further host read is needed.
+  await expect(
+    dialog.getByRole("button", { name: "Preview a local copy", exact: true }),
+  ).toBeVisible();
+  await dialog.locator('input[type="file"]').setInputFiles({
+    name: "report.pdf",
+    mimeType: "application/pdf",
+    buffer: pdfBytes,
+  });
+  await expect(dialog.locator(".file-preview-pdf")).toBeVisible();
+  expect(mock.reads).toEqual([]);
   expect(mock.unexpected).toEqual([]);
 });
 
@@ -1290,9 +1297,7 @@ test("a path written from a nested package resolves to its unique project file",
   expect(mock.unexpected).toEqual([]);
 });
 
-test("an ambiguous nested path stays an explicit read error", async ({
-  page,
-}) => {
+test("an ambiguous nested path offers the matching files", async ({ page }) => {
   const mock = await host(page, "[Notes](src/notes.md)", project.path);
   mock.missing.add("src/notes.md");
   mock.listings[""] = [
@@ -1307,12 +1312,20 @@ test("an ambiguous nested path stays an explicit read error", async ({
   mock.listings["b/src"] = [
     { name: "notes.md", path: "b/src/notes.md", kind: "file" },
   ];
+  mock.files["b/src/notes.md"] = "# 第二个候选";
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Notes", exact: true }).click();
-  await expect(preview(page).getByRole("alert")).toContainText(
-    "file not found",
+  const dialog = preview(page);
+  const choices = dialog.locator(".file-preview-candidates button");
+  await expect(choices).toHaveCount(2);
+  await expect(choices.first()).toHaveText("a/src/notes.md");
+  await choices.nth(1).click();
+  await expect(dialog.locator(".file-preview-markdown h1")).toHaveText(
+    "第二个候选",
   );
-  await expect(preview(page).locator(".file-preview-code")).toHaveCount(0);
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    "b/src/notes.md",
+  );
   expect(mock.unexpected).toEqual([]);
 });
 
@@ -1328,6 +1341,29 @@ test("workbook parsing keeps formats, dates and every sheet", async () => {
   await expect(
     readWorkbook(new Uint8Array([0x50, 0x4b, 0x03, 0x04])),
   ).rejects.toThrow();
+});
+
+test("a mis-nested PDF path is corrected before the viewer opens", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Report](src/report.pdf)", project.path);
+  mock.missing.add("src/report.pdf");
+  mock.listings[""] = [{ name: "docs", path: "docs", kind: "directory" }];
+  mock.listings["docs"] = [
+    { name: "report.pdf", path: "docs/report.pdf", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Report", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-pdf")).toBeVisible();
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    "/workspace/links/docs/report.pdf",
+  );
+  expect(mock.documents.map((read) => read.path)).toEqual([
+    "src/report.pdf",
+    "docs/report.pdf",
+  ]);
+  expect(mock.unexpected).toEqual([]);
 });
 
 test("xlsx links render a read-only sheet table with tabs", async ({

@@ -225,8 +225,43 @@
   min-height: 420px;
   border: 0;
 }
+/* Visually hidden, not `display: none`: a hidden file input must still open
+   the picker when the dialog forwards the click. */
 .file-preview-local-input {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.file-preview-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.file-preview-candidates button {
+  min-height: 28px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px var(--mono);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.file-preview-candidates button:hover {
+  background: var(--hover);
 }
 .file-preview-status-actions,
 .file-preview-office-actions {
