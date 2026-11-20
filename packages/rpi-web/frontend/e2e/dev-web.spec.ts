@@ -1152,8 +1152,8 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   const recent = page.getByRole("region", { name: "Recent chats" });
   await expect(recent).toBeVisible();
   const rows = recent.locator(".recent-session-link");
-  await expect(rows).toHaveCount(15);
-  await expect(recent.locator(".recent-session-link")).toHaveCount(15);
+  await expect(rows).toHaveCount(10);
+  await expect(recent.locator(".recent-session-link")).toHaveCount(10);
   const wrap = recent.locator(".recent-wrap");
   const geometry = await wrap.evaluate((element) => {
     const list = element.querySelector(".recent-session-list") as HTMLElement;
@@ -1175,6 +1175,25 @@ test("recent chats stay inline as a scrollable sidebar list", async ({
   expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
   // Recent rows must never take the selected/active state from the project tree.
   await expect(recent.locator(".recent-session-row.active")).toHaveCount(0);
+  // The heading collapses and restores the list without touching the tree.
+  const heading = page.getByRole("button", {
+    name: "Recent chats",
+    exact: true,
+  });
+  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "false");
+  await expect(recent).toHaveCount(0);
+  await expect(
+    page.getByRole("button", {
+      name: "Collapse project: pi-rust",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await expect(recent).toBeVisible();
+  await expect(recent.locator(".recent-session-link")).toHaveCount(10);
 });
 
 test("details jump is right-aligned in the slim metrics strip (#306)", async ({

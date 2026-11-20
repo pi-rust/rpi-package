@@ -95,8 +95,12 @@
   width: 100%;
 }
 /* All three primary rows share one geometry; only New session is bold. */
-.sidebar-primary-actions > .sidebar-new-chat:first-child { font-weight: 500; }
-.sidebar-new-chat.recent-chats-heading { color: var(--muted); }
+.sidebar-primary-actions > .sidebar-new-chat:first-child {
+  font-weight: 500;
+}
+.sidebar-new-chat.recent-chats-heading {
+  color: var(--muted);
+}
 .sidebar-primary-actions kbd {
   margin-left: auto;
   flex-shrink: 0;
@@ -211,7 +215,6 @@
   padding: 7px 9px;
 }
 
-
 .project-section-heading {
   display: flex;
   align-items: center;
@@ -236,6 +239,17 @@
 .project-section-heading .icon-button.selected {
   background: var(--hover);
   color: var(--text);
+}
+.recent-chats-heading {
+  width: 100%;
+}
+.recent-chats-heading .recent-chats-chevron {
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+.recent-chats-heading[aria-expanded="false"] .recent-chats-chevron {
+  transform: rotate(-90deg);
 }
 .recent-sessions {
   flex: 0 0 auto;
@@ -1504,7 +1518,6 @@
   max-width: 100%;
 }
 
-
 .composer-workspace-branch,
 .composer-workspace-worktree {
   display: inline-flex;
@@ -1945,7 +1958,6 @@
   padding: 5px 0 2px 16px;
 }
 
-
 .workspace .shell-window .shell-copy {
   padding: 2px 5px;
   border: 0;
@@ -1964,7 +1976,9 @@
 }
 
 /* Custom scrollbar thumb: hidden at rest, visible while scrolling. */
-.recent-wrap { position: relative; }
+.recent-wrap {
+  position: relative;
+}
 .scroll-thumb {
   position: absolute;
   top: 0;
@@ -1975,8 +1989,11 @@
   background: var(--line);
   opacity: 0;
   pointer-events: none;
-  transition: opacity .4s cubic-bezier(.4, 0, .2, 1);
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.recent-wrap.scrolling .scroll-thumb { opacity: 1; pointer-events: auto; }
+.recent-wrap.scrolling .scroll-thumb {
+  opacity: 1;
+  pointer-events: auto;
+}
 /* Recent rows intentionally match .project-session-link visually; the extra
    class only gives tests and ARIA consumers a stable, scoped selector. */
