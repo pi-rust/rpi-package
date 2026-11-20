@@ -22,6 +22,17 @@
     "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-adapter-v0.2.11/rpi-extension.json"
   },
   {
+    "name": "rpi-mcp-server",
+    "version": "0.1.0",
+    "type": "extension",
+    "tool": "--mcp (MCP stdio server)",
+    "inspiredBy": "Model Context Protocol",
+    "sourceDownloadsPerMonth": null,
+    "install": "rpi install rpi-mcp-server",
+    "repository": "https://github.com/pi-rust/rpi-package",
+    "prebuilt_manifest": "https://github.com/pi-rust/rpi-package/releases/download/rpi-mcp-server-v0.1.0/rpi-extension.json"
+  },
+  {
     "name": "rpi-subagents",
     "version": "0.1.16",
     "type": "extension",

@@ -113,6 +113,17 @@ tasks:
       - cargo build --release -p rpi-acp --bin rpi-acp-bridge
       - cargo run --release -p rpi-package-install -- pack-acp
 
+  pack-mcp:
+    desc: Package the standalone rpi-mcp bridge binary for MCP clients
+    cmds:
+      - cargo build --release -p rpi-mcp-server --bin rpi-mcp-bridge
+      - cargo run --release -p rpi-package-install -- pack-mcp
+
+  mcp-conformance:
+    desc: Drive a live MCP HTTP endpoint (set MCP_URL, default http://127.0.0.1:8080/mcp)
+    cmds:
+      - python3 packages/rpi-mcp-server/tests/mcp_conformance.py --url "{{.MCP_URL | default "http://127.0.0.1:8080/mcp"}}"
+
   smoke:
     desc: Load all built packages through the pi-rust extension loader
     deps: [build]

@@ -159,12 +159,13 @@ jobs:
             echo "::warning::RPI_ANTIGRAVITY_OAUTH_CLIENT_ID or RPI_ANTIGRAVITY_OAUTH_CLIENT_SECRET is empty; rpi-providers will build without Antigravity OAuth login."
           fi
           cargo build --release --workspace --locked
-      - name: Assemble full extension bundle and ACP bridge
+      - name: Assemble full extension bundle and standalone bridges
         run: |
           # Use the curated catalog so archived host-owned packages are not
           # copied into future extension bundles.
           cargo run --release --locked -p rpi-package-install -- pack
           cargo run --release --locked -p rpi-package-install -- pack-acp
+          cargo run --release --locked -p rpi-package-install -- pack-mcp
       - name: Package individual extensions and record checksums and SDK ABI
         env:
           TARGET: ${{ matrix.target }}

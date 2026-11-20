@@ -41,6 +41,56 @@ flowchart TD
   which owns Windows suspended/headless Job Object setup and Unix process groups.
   ABI-free does not mean all platform FFI is unsafe-free.
 
+### MCP server adapter
+
+`rpi-mcp-server` is the serving counterpart of the MCP client boundary above; it
+is not part of `rpi-mcp-core` and must not add server policy there:
+
+- **rpi-mcp-server** owns MCP JSON-RPC 2.0 framing (one frame per line), the
+  `initialize`/`tools/list`/`tools/call` and
+  `resources/list`/`read`/`subscribe` surface, progress, resource-update and
+  cancellation mapping, `tools/call` concurrency, output serialization and the
+  plugin flag plumbing (`--mcp`). It must not own native child lifecycle, run
+  settlement, transcript or history semantics; resource reads forward a bounded
+  native `get_messages`/`get_state` request and never start a run.
+- Native session lifecycle, prompt acceptance, settlement, cancellation and
+  process-tree cleanup remain `rpi-extcore`'s (`HostSession`,
+  `begin_prompt`/`abort_run`, `RunTracker`). The adapter only maps them onto MCP
+  requests and results.
+- Two entry points share one implementation: the `rpi-mcp-bridge` executable
+  (owns its own stdin/stdout, needs no host change) and the `rpi --mcp` plugin
+  entry, which claims `{"ownsStdio":true}` exactly like `--acp` and `--http`.
+- HTTP/WebSocket transports live in this adapter, not in `rpi-extcore`: Axum
+  routing, session headers, access checks, SSE framing and the WebSocket bridge
+  are wire concerns. All three transports drive the same transport-neutral
+  dispatcher, so tool, resource and cancellation semantics cannot drift. The
+  WebSocket endpoint (`GET /mcp/ws`) is a private extension, while MCP clients
+  must use stdio or Streamable HTTP.
+- In-process stdio has a single owner. `--mcp` is therefore mutually exclusive
+  with `--acp`, `--http`, `--webserver`, `--web`, `--server` and `--webui`, and
+  every one of those adapters rejects `--mcp` before claiming stdio. The
+  standalone bridge sidesteps the conflict entirely and stays the recommended
+  integration for MCP clients.
+- stdout carries protocol frames only; diagnostics use stderr, because a stray
+  stdout line corrupts the MCP session rather than merely adding noise.
+- Bounds are adapter policy: a 16 MiB frame ceiling, at most 16 concurrent
+  `tools/call` requests, 64 queued outbound frames and a 256 KiB tool-result text
+  ceiling. Closing stdin drains already-dispatched calls (bounded by 600 s);
+  `SessionShutdown` or an I/O error aborts them.
+- Not implemented in this adapter: MCP prompts, sampling, elicitation,
+  Streamable HTTP transport and permission-dialog bridging. Those need new
+  reverse-request directions (or a client capability) and are not implied by the
+  existing client transports. Because MCP has no approval channel, native
+  `ui_dialog_request` events are answered as denied (`cancelled: true`) and the
+  denial is reported in the tool result instead of leaving the run pending.
+- Resource updates are settlement-driven: the adapter subscribes to the native
+  event stream and emits `notifications/resources/updated` for subscribed URIs
+  when a run settles. It does not poll the transcript.
+- Stream resumption is adapter state, not core state: retained SSE events live in
+  the HTTP session (bounded per stream and per session) and a resumed POST replays
+  them without re-executing the request. Expired events fail closed with `404`
+  rather than silently dropping frames.
+
 ### Session-owned MCP tools integration
 
 `rpi-extcore::external_tools::ToolServer::{Stdio, Http}` wraps `StdioToolServer`

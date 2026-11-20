@@ -114,7 +114,7 @@ extern "C" fn start(_: StablePluginEvent, _: *mut std::ffi::c_void) -> i32 {
     if thread.is_some() {
         return 0;
     }
-    for other in ["acp", "webui", "server"] {
+    for other in ["acp", "mcp", "webui", "server"] {
         if enabled(flag(other).as_ref()) {
             eprintln!("[rpi-web] --webserver (--web) cannot be combined with --{other}");
             finish(2);
