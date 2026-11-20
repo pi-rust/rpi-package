@@ -879,6 +879,7 @@ export default function App() {
   const [following, setFollowing] = useState(true);
   const [rows, setRows] = useState<Row[]>([]);
   const streamingAssistant = useRef<string | null>(null);
+  const [assistantStreamRevision, setAssistantStreamRevision] = useState(0);
   const rowsBySession = useRef(new Map<string, Row[]>());
   const rowsSessionRef = useRef(sessionId);
   const earlierPage = useRef<{
@@ -1200,7 +1201,7 @@ export default function App() {
   const rememberTranscriptPosition = useTranscriptViewport(
     transcriptRef,
     followingRef,
-    `${sessionId}:${connectionRevision}`,
+    `${sessionId}:${connectionRevision}:${assistantStreamRevision}`,
     Boolean(capabilities),
     displayedRows,
     status,
@@ -1942,6 +1943,7 @@ export default function App() {
           const prefix = `m${seq}`;
           currentAssistant.current = prefix;
           streamingAssistant.current = prefix;
+          setAssistantStreamRevision((revision) => revision + 1);
           const initial = rowsFromAssistant(
             (event.message ?? {}) as Record<string, unknown>,
             prefix,
@@ -1985,7 +1987,10 @@ export default function App() {
           }
           const prefix = currentAssistant.current ?? `restored-${seq}`;
           currentAssistant.current = prefix;
-          if (event.type === "message_end") streamingAssistant.current = null;
+          if (event.type === "message_end") {
+            streamingAssistant.current = null;
+            setAssistantStreamRevision((revision) => revision + 1);
+          }
           const rebuilt = rowsFromAssistant(
             (event.message ?? {}) as Record<string, unknown>,
             prefix,
@@ -2531,6 +2536,7 @@ export default function App() {
     currentAssistant.current = null;
     currentUser.current = null;
     streamingAssistant.current = null;
+    setAssistantStreamRevision((revision) => revision + 1);
     followingRef.current = true;
     setFollowing(true);
     setDraft(draftBySession.current.get(sessionId) ?? "");
@@ -2618,6 +2624,7 @@ export default function App() {
         currentAssistant.current = null;
         currentUser.current = null;
         streamingAssistant.current = null;
+        setAssistantStreamRevision((revision) => revision + 1);
         const restored = prependRows(
           earlierPage.current?.rows ?? [],
           rowsFromMessages(snapshot.messages),
@@ -5943,6 +5950,9 @@ export default function App() {
                                   language={language}
                                   onSpeak={speakMessage}
                                   readingRowId={readingRowId}
+                                  assistantStreamRevision={
+                                    assistantStreamRevision
+                                  }
                                   thinkingStreaming={
                                     !historical.active &&
                                     streamingAssistant.current !== null &&
@@ -6953,6 +6963,7 @@ const RowView = memo(function RowView({
   todoHistory,
   onSpeak,
   readingRowId,
+  assistantStreamRevision,
   thinkingStreaming,
 }: {
   row: Row;
@@ -6960,6 +6971,8 @@ const RowView = memo(function RowView({
   todoHistory?: ToolRow[];
   onSpeak?: (rowId: string, text: string) => void;
   readingRowId?: string | null;
+  /** Changes when a streaming assistant turn starts or ends. */
+  assistantStreamRevision?: number;
   thinkingStreaming?: boolean;
 }) {
   const t = (key: MessageKey) => translate(language, key);
@@ -7015,7 +7028,11 @@ const RowView = memo(function RowView({
             <Sparkles size={13} /> {t("thinking")}
           </div>
           <div className="thinking-row-viewport">
-            <MarkdownBody text={row.text} language={language} />
+            <MarkdownBody
+              text={row.text}
+              language={language}
+              streaming={thinkingStreaming}
+            />
           </div>
         </div>
       );
@@ -7040,6 +7057,8 @@ const RowView = memo(function RowView({
       language={language}
       onSpeak={onSpeak}
       reading={readingRowId === row.id}
+      streaming={thinkingStreaming}
+      streamKey={`${row.id}:${assistantStreamRevision ?? 0}`}
     />
   );
 });
@@ -7200,11 +7219,15 @@ function MessageRow({
   language,
   onSpeak,
   reading,
+  streaming = false,
+  streamKey = "",
 }: {
   row: Extract<Row, { kind: "text" }>;
   language: Language;
   onSpeak?: (rowId: string, text: string) => void;
   reading?: boolean;
+  streaming?: boolean;
+  streamKey?: string;
 }) {
   const t = (key: MessageKey) => translate(language, key);
   const [copiedMarkdown, setCopiedMarkdown] = useState(false);
@@ -7227,7 +7250,12 @@ function MessageRow({
       </div>
       <div className="message-body">
         {row.role === "assistant" ? (
-          <MarkdownBody text={row.text} language={language} />
+          <MarkdownBody
+            key={streaming ? streamKey : undefined}
+            text={row.text}
+            language={language}
+            streaming={streaming}
+          />
         ) : (
           <UserMessageBody text={row.text} language={language} />
         )}

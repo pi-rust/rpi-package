@@ -7,6 +7,8 @@ import {
   useState,
   type ComponentProps,
   type ReactNode,
+  useLayoutEffect,
+  useRef,
 } from "react";
 import { Check, Copy } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
@@ -120,9 +122,12 @@ function CodeBlock({
 export const MarkdownBody = memo(function MarkdownBody({
   text,
   language,
+  streaming = false,
 }: {
   text: string;
   language: Language;
+  /** Hold the rendered height while a streamed message keeps growing. */
+  streaming?: boolean;
 }) {
   const project = useContext(ProjectImageContext);
   const [preview, setPreview] = useState<{
@@ -131,6 +136,22 @@ export const MarkdownBody = memo(function MarkdownBody({
   } | null>(null);
   const owner = project ? JSON.stringify([project.id, project.path]) : "";
   useEffect(() => setPreview(null), [owner]);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const streamedHeight = useRef(0);
+  useLayoutEffect(() => {
+    const node = bodyRef.current;
+    if (!node) return;
+    if (!streaming) {
+      streamedHeight.current = 0;
+      node.style.removeProperty("min-height");
+      return;
+    }
+    const height = node.getBoundingClientRect().height;
+    if (height > streamedHeight.current) {
+      streamedHeight.current = height;
+      node.style.minHeight = `${height}px`;
+    }
+  }, [streaming, text, language]);
   const components = useMemo<Components>(
     () => ({
       a: ({ href, children, title }) => {
@@ -219,7 +240,7 @@ export const MarkdownBody = memo(function MarkdownBody({
   );
 
   return (
-    <div className="prose markdown-body">
+    <div ref={bodyRef} className="prose markdown-body">
       <Markdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
