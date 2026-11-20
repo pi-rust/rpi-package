@@ -429,9 +429,7 @@ pub async fn document_at(
         "xls" => "application/vnd.ms-excel",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "ppt" => "application/vnd.ms-powerpoint",
-        "pptx" => {
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        }
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         _ => {
             return Err(failure(
                 ReplyKind::UnsupportedContent,
@@ -894,7 +892,11 @@ mod tests {
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ),
             // Legacy Office formats are OLE compound files.
-            ("old.doc", &[0xD0, 0xCF, 0x11, 0xE0][..], "application/msword"),
+            (
+                "old.doc",
+                &[0xD0, 0xCF, 0x11, 0xE0][..],
+                "application/msword",
+            ),
         ] {
             std::fs::write(root.join(name), bytes).unwrap();
             let document = document_at(&project, "", name).await.unwrap();

@@ -213,7 +213,10 @@ pub(super) async fn project_download(
             (
                 [
                     (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
-                    (axum::http::header::CONTENT_DISPOSITION, disposition.as_str()),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        disposition.as_str(),
+                    ),
                     (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
                 ],
                 download.bytes,
@@ -233,14 +236,8 @@ pub(super) async fn project_document(
         Ok(document) => (
             [
                 (axum::http::header::CONTENT_TYPE, document.media_type),
-                (
-                    axum::http::header::CONTENT_DISPOSITION,
-                    "inline",
-                ),
-                (
-                    axum::http::header::X_CONTENT_TYPE_OPTIONS,
-                    "nosniff",
-                ),
+                (axum::http::header::CONTENT_DISPOSITION, "inline"),
+                (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             ],
             document.bytes,
         )
