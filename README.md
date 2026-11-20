@@ -1,5 +1,13 @@
 # rpi-packages
 
+> **仓库已迁移 / Repository moved**
+>
+> 本仓库已迁移至 [pi-rust/rpi-extension](https://github.com/pi-rust/rpi-extension)。本仓库仅保留历史记录，后续开发、issue、pull request 与发布均在新仓库进行。
+>
+> This repository has moved to [pi-rust/rpi-extension](https://github.com/pi-rust/rpi-extension).
+> It is kept for history only; development, issues, pull requests and releases
+> now happen there.
+
 Rust-native extension packages for the `rpi` agent, built against the stable
 `rpi-plugin-sdk` ABI from `pi-rust`.
 
