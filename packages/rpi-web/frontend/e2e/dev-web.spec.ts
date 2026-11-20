@@ -10210,6 +10210,8 @@ test.describe("Mermaid diagrams", () => {
     "flowchart TD\n  start[开始] --> process[处理数据]\n  process --> done[完成]\n  classDef milestone fill:#eef2ff,stroke:#4f46e5\n  class start,done milestone\n";
   const sequence =
     "sequenceDiagram\n  participant A as 用户\n  participant B as 服务\n  A->>B: 你好\n  B-->>A: 收到\n";
+  const states =
+    "stateDiagram-v2\n  [*] --> 待支付\n  待支付 --> 已支付: 付款\n  已支付 --> 已发货: 出库\n  已发货 --> [*]\n";
   const failure =
     "Unable to render this diagram. The syntax may be incomplete or unsupported; source is shown below.";
   const fence = (source: string) => `\`\`\`mermaid\n${source}\`\`\``;
@@ -10381,6 +10383,29 @@ test.describe("Mermaid diagrams", () => {
       .click();
     await decodedDiagram(first.locator(".mermaid-diagram img"));
     await expect(first.locator(".mermaid-source")).toHaveCount(0);
+  });
+
+  test("renders state diagrams with Chinese states and transitions", async ({
+    page,
+  }) => {
+    await diagramSnapshot(page, fence(states));
+    await page.goto("/");
+    const block = page.locator(".mermaid-block");
+    await expect(block).toHaveCount(1);
+    const decoded = await decodedDiagram(block.locator(".mermaid-diagram img"));
+    expect(decoded.parseErrors).toBe(0);
+    expect(decoded.text).toContain("待支付");
+    expect(decoded.text).toContain("已发货");
+    expect(decoded.text).toContain("付款");
+    expect(decoded.viewBox).toMatch(/\S+\s+\S+\s+\S+\s+\S+/);
+    expect(decoded.svg).not.toContain("<foreignObject");
+    // The exact source stays available and copyable.
+    await block
+      .getByRole("button", { name: "View source", exact: true })
+      .click();
+    expect(await block.locator(".mermaid-source code").textContent()).toBe(
+      states,
+    );
   });
 
   test("renders sequence diagrams with code-style generic type labels", async ({
