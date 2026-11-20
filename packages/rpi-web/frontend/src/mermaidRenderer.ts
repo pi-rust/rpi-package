@@ -12,23 +12,27 @@ export function renderMermaid(
     // Diagram configuration is application-owned, not supplied by chat text.
     // Image/HTML/CSS resources are not needed for local flowcharts and must not
     // trigger requests while Mermaid measures a temporary DOM tree.
-    // Restrict the first release to flowcharts and sequences. In particular,
-    // do not pass shape metadata (YAML) or authored CSS into the renderer:
-    // quoted/escaped `img` keys can otherwise cause requests before SVG export.
+    // Restrict rendering to the diagram kinds the preview supports: flowcharts,
+    // sequences and state machines. In particular, do not pass shape metadata
+    // (YAML) or authored CSS into the renderer: quoted/escaped `img` keys can
+    // otherwise cause requests before SVG export.
     const diagram = source.replace(/^\s*%%[^\n]*(?:\n|$)/gm, "").trimStart();
     const typeLikeMarkup =
       /^<\s*(?:[A-Z_$][\w$]*(?:(?:::|\.)[A-Za-z_$][\w$]*)*|string|number|boolean|unknown|never|void|any)(?:\s*,\s*(?:[A-Z_$][\w$]*(?:(?:::|\.)[A-Za-z_$][\w$]*)*|string|number|boolean|unknown|never|void|any))*\s*>$/;
     if (
-      !/^(?:flowchart|graph|sequenceDiagram)\b/.test(diagram) ||
+      !/^(?:flowchart|graph|sequenceDiagram|stateDiagram(?:-v2)?)\b/.test(
+        diagram,
+      ) ||
       source.length > 20_000 ||
       source.split(/[\n;]/).length > 300 ||
       source.includes("%%{") ||
       /^\s*---(?:\r?\n|$)/.test(source) ||
-      /@\s*\{|\\(?:[0-9a-f]{1,6}\s?)|\b(?:background-image|image-set|filter)\s*:/i.test(diagram) ||
+      /@\s*\{|\\(?:[0-9a-f]{1,6}\s?)|\b(?:background-image|image-set|filter)\s*:/i.test(
+        diagram,
+      ) ||
       /\b(?:url\s*\(|img\s*:)|@import|!\[/i.test(source) ||
       [...source.matchAll(/<\s*\/?\s*[a-z][^>]*>/gi)].some(
-        ([tag]) =>
-          !/^<br\s*\/?>$/i.test(tag) && !typeLikeMarkup.test(tag),
+        ([tag]) => !/^<br\s*\/?>$/i.test(tag) && !typeLikeMarkup.test(tag),
       )
     ) {
       throw new Error("Unsupported or oversized diagram");

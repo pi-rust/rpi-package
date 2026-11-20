@@ -124,7 +124,7 @@ The trace retains at most **300 nodes / 50 groups**, with text excerpts limited 
 
 ## Mermaid diagrams
 
-Fenced `mermaid` blocks render flowcharts (`flowchart` or `graph`) and sequence diagrams locally:
+Fenced `mermaid` blocks render flowcharts (`flowchart` or `graph`), sequence diagrams and state machines (`stateDiagram-v2` or the legacy `stateDiagram` alias) locally:
 
 ````markdown
 ```mermaid
