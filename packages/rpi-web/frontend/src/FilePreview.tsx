@@ -11,7 +11,8 @@ import {
   Minimize2,
   X,
 } from "lucide-react";
-import { api, type Project } from "./api";
+import { api, ApiError, type Project } from "./api";
+import { resolveProjectPath } from "./fileLookup";
 import { translate, type Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
 import { MarkdownBody } from "./MarkdownBody";
@@ -42,9 +43,11 @@ export function FilePreview({
   // The server root determines the platform-specific separator, not the
   // browser. Show this exact value so "Copy path" is what the user can see.
   // A linked-worktree link is joined onto that worktree, not the project root.
+  const [resolved, setResolved] = useState<string | null>(null);
+  const shownPath = resolved ?? file.path;
   const absolutePath = absoluteProjectPath(
     file.root ?? project.path,
-    file.path,
+    shownPath,
   );
   const dialogRef = useRef<HTMLDialogElement>(null);
   const targetRef = useRef<HTMLSpanElement>(null);
@@ -76,6 +79,7 @@ export function FilePreview({
     setImageUrl(null);
     setError("");
     setCopied("");
+    setResolved(null);
     setSource(!markdown || !!file.line);
     const timer = window.setTimeout(() => {
       void (async () => {
@@ -96,8 +100,30 @@ export function FilePreview({
             if (!controller.signal.aborted) setContent(result.content);
           }
         } catch (cause: unknown) {
-          if (!controller.signal.aborted)
-            setError(cause instanceof Error ? cause.message : String(cause));
+          if (controller.signal.aborted) return;
+          // A relative path may have been written from a nested package, so the
+          // literal join does not exist. Resolve one unique suffix and retry.
+          if (
+            !image &&
+            !file.root &&
+            cause instanceof ApiError &&
+            cause.status === 404
+          ) {
+            const found = await resolveProjectPath(project.id, file.path, {
+              signal: controller.signal,
+            });
+            if (controller.signal.aborted) return;
+            if (found) {
+              const retried = await api.file(project.id, found, {
+                signal: controller.signal,
+              });
+              if (controller.signal.aborted) return;
+              setResolved(found);
+              setContent(retried.content);
+              return;
+            }
+          }
+          setError(cause instanceof Error ? cause.message : String(cause));
         }
       })();
     }, 0);
@@ -193,7 +219,7 @@ export function FilePreview({
             className="file-preview-icon"
             aria-label={t("copyRelativePath")}
             title={t("copyRelativePath")}
-            onClick={() => void copy(file.path, t("relativePathCopied"))}
+            onClick={() => void copy(shownPath, t("relativePathCopied"))}
           >
             <Link2 size={15} aria-hidden="true" />
           </button>
@@ -289,6 +315,11 @@ export function FilePreview({
         {file.line
           ? `:${file.line}${file.endLine !== file.line ? `-${file.endLine}` : ""}`
           : ""}
+        {resolved && (
+          <span className="file-preview-resolved">
+            {zh ? "已定位到项目内路径" : "resolved inside the project"}
+          </span>
+        )}
       </div>
       {error ? (
         <div className="file-preview-status" role="alert">

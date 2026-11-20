@@ -234,6 +234,12 @@ async function host(
   let imageMode: "ok" | "error" | "mime" | "decode" = "ok";
   // Per-path text so a Markdown document can be previewed as written.
   const files: Record<string, string> = {};
+  // Directory index used by the nested-path resolver.
+  const listings: Record<
+    string,
+    Array<{ name: string; path: string; kind: "directory" | "file" }>
+  > = {};
+  const missing = new Set<string>();
   const unexpected: string[] = [];
   let fail = false;
   let held: (() => void) | null = null;
@@ -312,6 +318,10 @@ async function host(
           imageMode === "decode" ? Buffer.from("not a decodable image") : png,
       });
     }
+    if (/\/projects\/[^/]+\/files$/.test(path)) {
+      const read = url.searchParams.get("path") ?? "";
+      return json({ path: read, entries: listings[read] ?? [] });
+    }
     if (/\/projects\/[^/]+\/file$/.test(path)) {
       reads.push({
         project: path.split("/")[4],
@@ -326,6 +336,11 @@ async function host(
         return route.fulfill({
           status: 400,
           json: { error: "Binary file cannot be previewed as text" },
+        });
+      if (missing.has(url.searchParams.get("path") ?? ""))
+        return route.fulfill({
+          status: 404,
+          json: { error: "file not found" },
         });
       if (fail)
         return route.fulfill({
@@ -419,6 +434,8 @@ async function host(
   return {
     reads,
     files,
+    listings,
+    missing,
     imageReads,
     imageMode: (mode: typeof imageMode) => {
       imageMode = mode;
@@ -468,6 +485,24 @@ for (const width of [1280, 390])
       .screenshot({
         path: test.info().outputPath(`message-links-${width}.png`),
       });
+    const openable = page
+      .locator("button.message-file-link")
+      .filter({ hasText: "src/main.ts:2" })
+      .first();
+    const style = await openable.evaluate((node) => {
+      const button = getComputedStyle(node);
+      const code = getComputedStyle(node.querySelector("code")!);
+      return {
+        decoration: button.textDecorationLine,
+        buttonBackground: button.backgroundColor,
+        codeBackground: code.backgroundColor,
+      };
+    });
+    // An openable path is underlined; its code chip stays transparent so it
+    // reads as a path, not as a second background inside the button.
+    expect(style.decoration).toContain("underline");
+    expect(style.codeBackground).toBe("rgba(0, 0, 0, 0)");
+    expect(style.buttonBackground).toBe("rgba(0, 0, 0, 0)");
     const web = page.getByRole("link", {
       name: "https://example.com/docs",
       exact: true,
@@ -1079,5 +1114,66 @@ test("source-first preview keeps a line deep link and offers rendered Markdown",
     .click();
   await expect(dialog.locator(".file-preview-markdown")).toBeVisible();
   await expect(dialog.locator(".file-preview-code")).toHaveCount(0);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("a path written from a nested package resolves to its unique project file", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Notes](src/notes.md)", project.path);
+  // The message says `src/notes.md`; the file lives in a nested package.
+  mock.missing.add("src/notes.md");
+  mock.files["packages/web/src/notes.md"] = "# 恢复\n\n嵌套包内的文件";
+  mock.listings[""] = [
+    { name: "packages", path: "packages", kind: "directory" },
+  ];
+  mock.listings["packages"] = [
+    { name: "web", path: "packages/web", kind: "directory" },
+  ];
+  mock.listings["packages/web"] = [
+    { name: "src", path: "packages/web/src", kind: "directory" },
+  ];
+  mock.listings["packages/web/src"] = [
+    { name: "notes.md", path: "packages/web/src/notes.md", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-markdown h1")).toHaveText("恢复");
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    "/workspace/links/packages/web/src/notes.md",
+  );
+  await expect(dialog.locator(".file-preview-resolved")).toBeVisible();
+  // The failed literal read is retried once, with the resolved path.
+  expect(mock.reads.map((read) => read.path)).toEqual([
+    "src/notes.md",
+    "packages/web/src/notes.md",
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("an ambiguous nested path stays an explicit read error", async ({
+  page,
+}) => {
+  const mock = await host(page, "[Notes](src/notes.md)", project.path);
+  mock.missing.add("src/notes.md");
+  mock.listings[""] = [
+    { name: "a", path: "a", kind: "directory" },
+    { name: "b", path: "b", kind: "directory" },
+  ];
+  mock.listings["a"] = [{ name: "src", path: "a/src", kind: "directory" }];
+  mock.listings["a/src"] = [
+    { name: "notes.md", path: "a/src/notes.md", kind: "file" },
+  ];
+  mock.listings["b"] = [{ name: "src", path: "b/src", kind: "directory" }];
+  mock.listings["b/src"] = [
+    { name: "notes.md", path: "b/src/notes.md", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
+  await expect(preview(page).getByRole("alert")).toContainText(
+    "file not found",
+  );
+  await expect(preview(page).locator(".file-preview-code")).toHaveCount(0);
   expect(mock.unexpected).toEqual([]);
 });

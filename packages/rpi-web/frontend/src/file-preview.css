@@ -10,35 +10,29 @@
   cursor: pointer;
   overflow-wrap: anywhere;
 }
-/* An inline-code path is a readable chip, not an underlined hyperlink. The
-   file glyph marks it as openable while the mono text stays a path. */
+/* Only a path that resolves inside the project is underlined; plain code keeps
+   the neutral chip, so the affordance matches what a click can actually open. */
 .markdown-body button.message-file-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 7px 1px 5px;
-  border-radius: 5px;
+  display: inline;
+  padding: 0;
+  border-radius: 4px;
   color: var(--text);
-  background: var(--soft);
-  box-shadow: inset 0 0 0 1px var(--line);
-  text-decoration: none;
-  vertical-align: baseline;
+  background: transparent;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--muted);
+  text-underline-offset: 3px;
 }
 .markdown-body button.message-file-link > code {
-  padding: 0;
+  padding: 2px 5px;
   background: transparent;
   box-shadow: none;
 }
-.markdown-body .message-file-link-icon {
-  flex: 0 0 auto;
-  color: var(--muted);
-}
 .markdown-body button.message-file-link:hover {
-  background: var(--hover);
-  box-shadow: inset 0 0 0 1px var(--blue);
+  background: var(--soft);
 }
-.markdown-body button.message-file-link:hover .message-file-link-icon {
-  color: var(--blue-text);
+.markdown-body button.message-file-link:hover > code {
+  color: var(--text);
 }
 .message-file-link:focus-visible,
 .file-preview button:focus-visible {
@@ -211,6 +205,11 @@
 .file-preview-path {
   overflow-wrap: anywhere;
   font: 13px var(--mono);
+}
+.file-preview-resolved {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
 }
 .file-preview-status {
   overflow: auto;

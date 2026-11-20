@@ -8,7 +8,7 @@ import {
   type ComponentProps,
   type ReactNode,
 } from "react";
-import { Check, Copy, FileText } from "lucide-react";
+import { Check, Copy } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -179,11 +179,6 @@ export const MarkdownBody = memo(function MarkdownBody({
             title={language === "zh" ? "打开文件预览" : "Open file preview"}
             onClick={() => setPreview({ owner, file })}
           >
-            <FileText
-              size={12}
-              aria-hidden="true"
-              className="message-file-link-icon"
-            />
             <code className={className}>{children}</code>
           </button>
         ) : (
