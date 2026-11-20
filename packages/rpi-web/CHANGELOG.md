@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- *(web)* keep streamed assistant replies from shrinking the transcript while Markdown reflows ([#371](https://github.com/pi-rust/rpi-package/pull/371))
+- *(web)* sort recent chats by the latest settled turn instead of ordinary activity ([#372](https://github.com/pi-rust/rpi-package/pull/372))
+
 ## [0.1.66](https://github.com/pi-rust/rpi-package/compare/rpi-web-v0.1.65...rpi-web-v0.1.66) - 2026-11-20
 
 ### Added
