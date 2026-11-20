@@ -216,6 +216,13 @@ async fn cors_preflight_only_allows_known_origins() {
         .to_str()
         .unwrap()
         .contains("mcp-session-id"));
+    assert!(local
+        .headers()
+        .get("access-control-allow-headers")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("last-event-id"));
 
     let foreign = client()
         .request(reqwest::Method::OPTIONS, format!("{base}/mcp"))

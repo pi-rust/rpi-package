@@ -55,6 +55,8 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(600);
 const STOP_DEADLINE: Duration = Duration::from_secs(5);
 /// Retained SSE frames per stream; older events cannot be resumed.
 const MAX_STREAM_EVENTS: usize = 512;
+/// Retained bytes per stream; bounds memory even when frames are large.
+const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
 /// Retained SSE streams per session.
 const MAX_STREAMS: usize = 16;
 
@@ -102,12 +104,14 @@ impl HttpOptions {
 struct StreamEntry {
     seq: u64,
     frame: Value,
+    bytes: usize,
 }
 
 #[derive(Default)]
 struct StreamLog {
     entries: std::collections::VecDeque<StreamEntry>,
     next_seq: u64,
+    bytes: usize,
     finished: bool,
 }
 
@@ -115,36 +119,51 @@ struct StreamLog {
 struct StreamState {
     id: String,
     log: Mutex<StreamLog>,
-    notify: tokio::sync::Notify,
+    /// Every reader watches the same version; `watch` wakes all readers instead
+    /// of `Notify`'s single waiter, so concurrent resumes cannot strand one.
+    wake: watch::Sender<u64>,
 }
 
 impl StreamState {
     fn new() -> Arc<Self> {
+        let (wake, _) = watch::channel(0u64);
         Arc::new(Self {
             id: uuid::Uuid::new_v4().to_string(),
             log: Mutex::new(StreamLog::default()),
-            notify: tokio::sync::Notify::new(),
+            wake,
         })
     }
 
-    /// Append one frame, dropping the oldest retained event past the cap.
+    /// Append one frame, dropping the oldest retained events past the caps.
     fn append(&self, frame: Value) {
+        let bytes = serde_json::to_vec(&frame)
+            .map(|encoded| encoded.len())
+            .unwrap_or(0);
         let mut log = self.log.lock().expect("stream log");
         log.next_seq += 1;
         let seq = log.next_seq;
-        log.entries.push_back(StreamEntry { seq, frame });
-        while log.entries.len() > MAX_STREAM_EVENTS {
-            log.entries.pop_front();
+        log.entries.push_back(StreamEntry { seq, frame, bytes });
+        log.bytes = log.bytes.saturating_add(bytes);
+        while log.entries.len() > MAX_STREAM_EVENTS
+            || (log.entries.len() > 1 && log.bytes > MAX_STREAM_BYTES)
+        {
+            if let Some(removed) = log.entries.pop_front() {
+                log.bytes = log.bytes.saturating_sub(removed.bytes);
+            }
         }
         drop(log);
-        // `notify_one` keeps a permit, so a reader that checks the log just
-        // before registering cannot miss this wakeup and stall.
-        self.notify.notify_one();
+        self.wake
+            .send_modify(|version| *version = version.wrapping_add(1));
     }
 
     fn finish(&self) {
         self.log.lock().expect("stream log").finished = true;
-        self.notify.notify_one();
+        self.wake
+            .send_modify(|version| *version = version.wrapping_add(1));
+    }
+
+    fn subscribe(&self) -> watch::Receiver<u64> {
+        self.wake.subscribe()
     }
 
     /// Copy only the frames after `cursor`, plus whether the log ended.
@@ -262,7 +281,16 @@ impl HttpSession {
                 match outbound.recv().await {
                     Ok(frame) if frame.get("method").is_some() => log.append(frame),
                     Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        log.append(json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/message",
+                            "params": {
+                                "level": "error",
+                                "data": format!("MCP notification stream lagged by {skipped} frames"),
+                            },
+                        }));
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -382,12 +410,15 @@ impl AppState {
                 ));
             }
         };
-        self.creating.fetch_sub(1, Ordering::AcqRel);
         let session = HttpSession::spawn(server).await;
         self.sessions
             .lock()
             .expect("sessions")
             .insert(session.id.clone(), Arc::clone(&session));
+        // Release the reservation only after the new session is visible, so a
+        // concurrent create cannot observe a free slot while this one is in the
+        // insertion gap.
+        self.creating.fetch_sub(1, Ordering::AcqRel);
         Ok(session)
     }
 
@@ -674,7 +705,10 @@ async fn handle_post(State(state): State<AppState>, headers: HeaderMap, body: By
         spawn_stream(Arc::clone(&stream), outbound, ids);
         return stream_response(&session.id, stream, 0, &state, &headers);
     }
-    let responses = gather(&mut outbound, ids).await;
+    let responses = match gather(&mut outbound, ids).await {
+        Ok(responses) => responses,
+        Err(error) => return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    };
     let body = match responses.len() {
         0 => Value::Null,
         1 => responses.into_iter().next().unwrap_or(Value::Null),
@@ -700,14 +734,19 @@ fn with_cors(state: &AppState, headers: &HeaderMap, mut response: Response) -> R
 }
 
 /// Wait for one response per requested id, ignoring unrelated frames.
-async fn gather(outbound: &mut broadcast::Receiver<Value>, ids: HashSet<String>) -> Vec<Value> {
+async fn gather(
+    outbound: &mut broadcast::Receiver<Value>,
+    ids: HashSet<String>,
+) -> Result<Vec<Value>, String> {
     let mut pending = ids;
     let mut responses = Vec::new();
     let deadline = tokio::time::Instant::now() + REQUEST_DEADLINE;
     while !pending.is_empty() {
         let frame = match tokio::time::timeout_at(deadline, outbound.recv()).await {
             Ok(Ok(frame)) => frame,
-            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                return Err(format!("outbound stream lagged by {skipped} frames"));
+            }
             Ok(Err(broadcast::error::RecvError::Closed)) => break,
             Err(_) => break,
         };
@@ -722,7 +761,7 @@ async fn gather(outbound: &mut broadcast::Receiver<Value>, ids: HashSet<String>)
             responses.push(frame);
         }
     }
-    responses
+    Ok(responses)
 }
 
 /// Drain the session's frames into a retained stream.
@@ -737,7 +776,19 @@ fn spawn_stream(
         while !pending.is_empty() {
             let frame = match tokio::time::timeout_at(deadline, outbound.recv()).await {
                 Ok(Ok(frame)) => frame,
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                    for id in pending.drain() {
+                        stream.append(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32603,
+                                "message": format!("SSE outbound stream lagged by {skipped} frames"),
+                            },
+                        }));
+                    }
+                    break;
+                }
                 Ok(Err(broadcast::error::RecvError::Closed)) => break,
                 Err(_) => break,
             };
@@ -790,19 +841,28 @@ fn stream_response(
     headers: &HeaderMap,
 ) -> Response {
     let source = Arc::clone(&stream);
-    let body = futures_util::stream::unfold((source, after), |(stream, cursor)| async move {
-        loop {
-            let (entries, finished) = stream.read_after(cursor);
-            if let Some((seq, frame)) = entries.into_iter().next() {
-                let chunk = format!("id: {}:{seq}\ndata: {frame}\n\n", stream.id);
-                return Some((Ok::<Bytes, Infallible>(Bytes::from(chunk)), (stream, seq)));
+    let wake = source.subscribe();
+    let body = futures_util::stream::unfold(
+        (source, after, wake),
+        |(stream, cursor, mut wake)| async move {
+            loop {
+                let (entries, finished) = stream.read_after(cursor);
+                if let Some((seq, frame)) = entries.into_iter().next() {
+                    let chunk = format!("id: {}:{seq}\ndata: {frame}\n\n", stream.id);
+                    return Some((
+                        Ok::<Bytes, Infallible>(Bytes::from(chunk)),
+                        (stream, seq, wake),
+                    ));
+                }
+                if finished {
+                    return None;
+                }
+                if wake.changed().await.is_err() {
+                    return None;
+                }
             }
-            if finished {
-                return None;
-            }
-            stream.notify.notified().await;
-        }
-    });
+        },
+    );
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
@@ -870,7 +930,7 @@ fn insert_cors(headers: &mut HeaderMap, origin: &str) {
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
         header::HeaderValue::from_static(
-            "content-type, accept, authorization, mcp-session-id, mcp-protocol-version",
+            "content-type, accept, authorization, mcp-session-id, mcp-protocol-version, last-event-id",
         ),
     );
     headers.insert(
@@ -1240,26 +1300,25 @@ mod tests {
     #[tokio::test]
     async fn stream_wakeups_are_not_lost_between_check_and_wait() {
         let stream = StreamState::new();
-        // Producer appends while no reader is waiting; `notify_one` keeps a
-        // permit, so the reader cannot miss the frame it just checked for.
+        let mut wake = stream.subscribe();
+        // Producer appends after the reader subscribes but before it waits.
         stream.append(json!({"type":"first"}));
         assert_eq!(stream.read_after(0).0.len(), 1);
-        tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            stream.notify.notified(),
-        )
-        .await
-        .expect("wakeup was dropped");
+        tokio::time::timeout(std::time::Duration::from_millis(200), wake.changed())
+            .await
+            .expect("wakeup was dropped")
+            .expect("stream wake channel closed");
 
-        // And a finished stream still wakes a reader that arrives late.
+        // A finished stream wakes every reader, not just one waiter.
+        let mut first = stream.subscribe();
+        let mut second = stream.subscribe();
         stream.finish();
-        assert!(stream.read_after(0).1);
-        tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            stream.notify.notified(),
-        )
-        .await
-        .expect("completion wakeup was dropped");
+        for wake in [&mut first, &mut second] {
+            tokio::time::timeout(std::time::Duration::from_millis(200), wake.changed())
+                .await
+                .expect("completion wakeup was dropped")
+                .expect("stream wake channel closed");
+        }
     }
 
     #[test]

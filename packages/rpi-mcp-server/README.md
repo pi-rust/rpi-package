@@ -65,8 +65,8 @@ trusted proxy or keep it on loopback.
 Every SSE frame carries `id: <stream>:<seq>`. If the connection drops mid-prompt,
 re-send the request with `Last-Event-ID: <stream>:<seq>` (the last event you
 received): the server replays the retained events after that point and continues
-live, without re-executing the prompt. Retained per stream: 512 events; 16
-streams per session. An unknown stream, or one whose events already expired, is
+live, without re-executing the prompt. Retained per stream: 512 events or
+8 MiB, whichever is reached first; 16 streams per session. An unknown stream, or one whose events already expired, is
 `404` — re-read `rpi://session/transcript` instead of guessing. A resumed POST
 ignores its body, so a reconnect can never start a second run. A client that
 falls more than the retained window behind (for example a paused reader) is
@@ -203,7 +203,7 @@ to use gated tools.
   before it is buffered.
 - At most 16 concurrent `tools/call` requests; excess calls fail with `-32603`.
 - 16 MiB per HTTP body and per WebSocket message; at most 8 HTTP sessions by
-  default, 16 retained streams per session and 512 retained events per stream.
+  default, 16 retained streams per session and 512 retained events/8 MiB per stream.
 - 64 queued outbound frames of backpressure.
 - 256 KiB of model-visible text per tool result, truncated with
   `\n[truncated]`.

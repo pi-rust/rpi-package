@@ -236,11 +236,6 @@ impl McpServer {
             .expect("server state")
             .pending_client
             .remove(&key);
-        eprintln!(
-            "[dbg] resolve {:?} matched={}",
-            frame.get("id"),
-            pending.is_some()
-        );
         pending
             .map(|sender| sender.send(frame.clone()).is_ok())
             .unwrap_or(false)
