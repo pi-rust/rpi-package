@@ -90,8 +90,14 @@ button {
      can create a low-contrast intermediate frame. */
   transition: border-color 0.15s;
 }
-button:hover:not(:disabled) {
-  background: var(--hover);
+/* Hover highlights only apply on devices with a real pointer. On touch
+   screens a tap would otherwise stick the hover background until the user
+   taps somewhere else (stuck-hover artifact, most visible on toolbar
+   icon buttons). */
+@media (hover: hover) {
+  button:hover:not(:disabled) {
+    background: var(--hover);
+  }
 }
 button:disabled {
   opacity: 0.48;
@@ -102,8 +108,10 @@ button.primary {
   color: #fff;
   border-color: transparent;
 }
-button.primary:hover:not(:disabled) {
-  background: #0064c9;
+@media (hover: hover) {
+  button.primary:hover:not(:disabled) {
+    background: #0064c9;
+  }
 }
 button.danger {
   background: #c5352d;
@@ -145,8 +153,12 @@ a {
   color: var(--blue-text);
   text-decoration: none;
 }
-a:hover {
-  text-decoration: underline;
+/* Underline links on hover only for pointer devices; touch taps would
+     otherwise leave the underline stuck. */
+@media (hover: hover) {
+  a:hover {
+    text-decoration: underline;
+  }
 }
 button:focus-visible,
 a:focus-visible,
@@ -204,7 +216,12 @@ code {
   color: var(--muted);
   flex-shrink: 0;
 }
-.icon-button:hover:not(:disabled),
+@media (hover: hover) {
+  .icon-button:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
+}
 .icon-button[aria-pressed="true"] {
   background: var(--hover);
   color: var(--text);
@@ -288,8 +305,10 @@ code {
   background: transparent;
   text-align: left;
 }
-.session-notification-main:hover:not(:disabled) {
-  background: var(--hover);
+@media (hover: hover) {
+  .session-notification-main:hover:not(:disabled) {
+    background: var(--hover);
+  }
 }
 .session-notification-main > svg {
   margin-top: 2px;
@@ -313,8 +332,10 @@ code {
   font-weight: 600;
   white-space: nowrap;
 }
-.session-notification-continue:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+@media (hover: hover) {
+  .session-notification-continue:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
 }
 .session-notification-copy {
   display: grid;
@@ -819,9 +840,11 @@ code {
   bottom: 18px;
   color: var(--muted);
 }
-.suggestions button:hover {
-  border-color: var(--blue);
-  background: var(--soft) !important;
+@media (hover: hover) {
+  .suggestions button:hover {
+    border-color: var(--blue);
+    background: var(--soft) !important;
+  }
 }
 .welcome-footnote {
   display: flex;
@@ -885,8 +908,10 @@ code {
 .attachment-card > summary::before {
   content: none;
 }
-.attachment-card > summary:hover {
-  background: var(--hover);
+@media (hover: hover) {
+  .attachment-card > summary:hover {
+    background: var(--hover);
+  }
 }
 .attachment-card > summary:focus-visible {
   outline: 2px solid var(--accent);
@@ -976,8 +1001,10 @@ code {
   min-width: 0;
   color: var(--muted);
 }
-.composer-attach:hover:not(:disabled) {
-  color: var(--text);
+@media (hover: hover) {
+  .composer-attach:hover:not(:disabled) {
+    color: var(--text);
+  }
 }
 .composer-attach .spin {
   animation: spin 0.9s linear infinite;
@@ -1041,8 +1068,10 @@ code {
   color: var(--muted);
   opacity: 1;
 }
-.send-button:hover:not(:disabled) {
-  background: #0066cf;
+@media (hover: hover) {
+  .send-button:hover:not(:disabled) {
+    background: #0066cf;
+  }
 }
 .composer-controls .session-command-button {
   min-width: 44px;
@@ -1193,14 +1222,22 @@ code {
     background-color 0.15s,
     color 0.15s;
 }
-.message:hover .message-copy,
+/* The copy button appears on hover for pointer users and on focus for
+   keyboard users; a touch tap must not reveal it permanently. */
+@media (hover: hover) {
+  .message:hover .message-copy {
+    opacity: 1;
+  }
+}
 .message:focus-within .message-copy {
   opacity: 1;
 }
-.message-copy:hover {
-  border-color: var(--line);
-  background: var(--soft);
-  color: var(--text);
+@media (hover: hover) {
+  .message-copy:hover {
+    border-color: var(--line);
+    background: var(--soft);
+    color: var(--text);
+  }
 }
 .message-actions .message-copy + .message-copy {
   margin-left: 0;
@@ -1305,9 +1342,11 @@ code {
   text-transform: none;
   letter-spacing: 0;
 }
-.markdown-copy:hover:not(:disabled) {
-  background: var(--hover);
-  color: var(--text);
+@media (hover: hover) {
+  .markdown-copy:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
 }
 .markdown-copy:disabled {
   opacity: 0.45;
@@ -1586,8 +1625,10 @@ details[open] > summary:before {
 .tool-card > summary::before {
   content: none;
 }
-.tool-card > summary:hover {
-  background: var(--soft);
+@media (hover: hover) {
+  .tool-card > summary:hover {
+    background: var(--soft);
+  }
 }
 .tool-card > summary:focus-visible {
   outline: 2px solid var(--accent);
@@ -1846,9 +1887,11 @@ details[open] > summary:before {
   font-size: 12px;
   cursor: pointer;
 }
-.shell-command-toggle:hover {
-  background: var(--hover);
-  color: var(--text);
+@media (hover: hover) {
+  .shell-command-toggle:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
 }
 .shell-card .shell-window .shell-output {
   padding: 0 1px;
@@ -1868,9 +1911,11 @@ details[open] > summary:before {
   font-family: inherit;
   font-size: 10px;
 }
-.shell-window .shell-copy:hover:not(:disabled) {
-  background: var(--hover);
-  color: var(--text);
+@media (hover: hover) {
+  .shell-window .shell-copy:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
 }
 .shell-empty {
   margin: 0;
@@ -2223,8 +2268,10 @@ details[open] > summary:before {
   text-align: left;
 }
 .select-menu-option.highlighted,
-.select-menu-option:hover:not(:disabled) {
-  background: var(--hover);
+@media (hover: hover) {
+  .select-menu-option:hover:not(:disabled) {
+    background: var(--hover);
+  }
 }
 .select-menu-option[aria-selected="true"] {
   color: var(--blue-text);
@@ -2286,7 +2333,11 @@ details[open] > summary:before {
   text-align: left;
   cursor: pointer;
 }
-.dropdown-item:hover,
+@media (hover: hover) {
+  .dropdown-item:hover {
+    background: var(--hover);
+  }
+}
 .dropdown-item:focus-visible {
   background: var(--hover);
 }
@@ -3065,7 +3116,12 @@ details[open] > summary:before {
     color: var(--text);
     text-align: left;
   }
-  .mobile-session-option:hover,
+  @media (hover: hover) {
+    .mobile-session-option:hover {
+      border-color: var(--line);
+      background: var(--soft);
+    }
+  }
   .mobile-session-option.selected {
     border-color: var(--line);
     background: var(--soft);
@@ -3695,8 +3751,10 @@ details[open] > summary:before {
   font-size: 12px;
   color: var(--text);
 }
-.slash-item:hover:not(:disabled) {
-  background: var(--hover);
+@media (hover: hover) {
+  .slash-item:hover:not(:disabled) {
+    background: var(--hover);
+  }
 }
 .slash-item:disabled {
   cursor: not-allowed;
@@ -3728,9 +3786,11 @@ details[open] > summary:before {
   font-size: 11.5px;
   font-weight: 590;
 }
-.banner-action:hover:not(:disabled) {
-  border-color: var(--blue);
-  color: var(--blue-text);
+@media (hover: hover) {
+  .banner-action:hover:not(:disabled) {
+    border-color: var(--blue);
+    color: var(--blue-text);
+  }
 }
 .banner-action:disabled {
   opacity: 0.45;
@@ -3773,9 +3833,11 @@ details[open] > summary:before {
   color: var(--muted);
   font-size: 12px;
 }
-.load-earlier button:hover:not(:disabled) {
-  color: var(--blue-text);
-  border-color: var(--blue);
+@media (hover: hover) {
+  .load-earlier button:hover:not(:disabled) {
+    color: var(--blue-text);
+    border-color: var(--blue);
+  }
 }
 
 /* Durable history and queue diagnostics. */
@@ -3959,9 +4021,11 @@ details[open] > summary:before {
   padding: 4px;
   cursor: pointer;
 }
-.history-actions button:hover {
-  color: var(--blue-text);
-  border-color: var(--blue);
+@media (hover: hover) {
+  .history-actions button:hover {
+    color: var(--blue-text);
+    border-color: var(--blue);
+  }
 }
 .history-detail .history-actions {
   margin-top: 8px;
@@ -4011,7 +4075,12 @@ details[open] > summary:before {
   text-align: left;
   cursor: pointer;
 }
-.auth-provider:hover,
+@media (hover: hover) {
+  .auth-provider:hover {
+    border-color: var(--line);
+    background: var(--surface);
+  }
+}
 .auth-provider.selected {
   border-color: var(--line);
   background: var(--surface);

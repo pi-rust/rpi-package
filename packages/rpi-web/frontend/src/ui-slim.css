@@ -29,9 +29,11 @@
   color: var(--muted);
   font-size: 12px;
 }
-.slim-settings:hover:not(:disabled) {
-  background: var(--hover);
-  color: var(--text);
+@media (hover: hover) {
+  .slim-settings:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
 }
 .slim-settings kbd {
   margin-left: auto;
@@ -218,10 +220,12 @@
   font-size: 10px;
   cursor: pointer;
 }
-.slim-metrics-more:hover:not(:disabled) {
-  background: transparent;
-  color: var(--text);
-  text-decoration: underline;
+@media (hover: hover) {
+  .slim-metrics-more:hover:not(:disabled) {
+    background: transparent;
+    color: var(--text);
+    text-decoration: underline;
+  }
 }
 
 /* The runtime entry sits at the top of the model menu, separated from the
@@ -267,12 +271,17 @@
   opacity: 0;
   pointer-events: none;
 }
-.workspace .project-group-header:hover .project-new-session,
-.workspace .project-group-header:hover .project-menu-trigger,
+@media (hover: hover) {
+  .workspace .project-group-header:hover .project-new-session,
+  .workspace .project-group-header:hover .project-menu-trigger,
+  .workspace .project-session:hover .session-menu-trigger {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
 .workspace .project-group-header:has(:focus-visible) .project-new-session,
 .workspace .project-group-header:has(:focus-visible) .project-menu-trigger,
 .workspace .project-group-header .project-menu-trigger[aria-expanded="true"],
-.workspace .project-session:hover .session-menu-trigger,
 .workspace .project-session:has(:focus-visible) .session-menu-trigger,
 .workspace .project-session .session-menu-trigger[aria-expanded="true"] {
   opacity: 1;

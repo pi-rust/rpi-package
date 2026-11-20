@@ -29,9 +29,11 @@
   font-size: 11px;
   font-weight: 500;
 }
-.workspace .composer-workspace-path:hover:not(:disabled) {
-  color: var(--text);
-  background: transparent;
+@media (hover: hover) {
+  .workspace .composer-workspace-path:hover:not(:disabled) {
+    color: var(--text);
+    background: transparent;
+  }
 }
 .workspace .composer-workspace-meta {
   width: auto;
@@ -65,7 +67,12 @@
   color: var(--text);
   font-size: 10.5px;
 }
-.composer-runtime-meta > .dropdown-anchor > button:hover:not(:disabled),
+@media (hover: hover) {
+  .composer-runtime-meta > .dropdown-anchor > button:hover:not(:disabled) {
+    border-color: var(--text);
+    background: var(--hover);
+  }
+}
 .composer-runtime-meta > .dropdown-anchor > button[aria-expanded="true"] {
   border-color: var(--text);
   background: var(--hover);
@@ -93,10 +100,12 @@
   color: var(--text);
   box-shadow: inset 0 0 0 1px var(--line);
 }
-.workspace
-  .composer-controls
-  .send-button.composer-action-queue:hover:not(:disabled) {
-  background: var(--hover);
+@media (hover: hover) {
+  .workspace
+    .composer-controls
+    .send-button.composer-action-queue:hover:not(:disabled) {
+    background: var(--hover);
+  }
 }
 .workspace .composer-footer {
   margin: 0 10px;
@@ -119,7 +128,13 @@
   color: var(--muted);
   font-size: 10.5px;
 }
-.workspace .composer-options button:hover:not(:disabled),
+@media (hover: hover) {
+  .workspace .composer-options button:hover:not(:disabled) {
+    border-color: var(--line);
+    background: var(--surface);
+    color: var(--text);
+  }
+}
 .workspace .composer-options .dropdown-anchor > button[aria-expanded="true"] {
   border-color: var(--line);
   background: var(--surface);
@@ -175,9 +190,11 @@
   font-size: 10.5px;
   text-align: left;
 }
-.workspace .composer-queue-heading:hover:not(:disabled) {
-  background: var(--hover);
-  color: var(--text);
+@media (hover: hover) {
+  .workspace .composer-queue-heading:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
 }
 .workspace .composer-queue-heading > span {
   display: flex;
@@ -257,8 +274,14 @@
   border-color: transparent;
   background: transparent;
 }
-.workspace .composer-options .composer-model:hover:not(:disabled),
-.workspace .composer-options .composer-thinking:hover:not(:disabled),
+@media (hover: hover) {
+  .workspace .composer-options .composer-model:hover:not(:disabled),
+  .workspace .composer-options .composer-thinking:hover:not(:disabled) {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text);
+  }
+}
 .workspace .composer-options .composer-model[aria-expanded="true"],
 .workspace .composer-options .composer-thinking[aria-expanded="true"] {
   border-color: transparent;

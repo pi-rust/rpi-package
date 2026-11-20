@@ -151,7 +151,13 @@
     border-color 0.15s,
     color 0.15s;
 }
-.sidebar-filter:hover,
+@media (hover: hover) {
+  .sidebar-filter:hover {
+    border-color: var(--line);
+    background: var(--surface);
+    color: var(--text);
+  }
+}
 .sidebar-filter:focus-within,
 .sidebar-filter.active {
   border-color: var(--line);
@@ -308,8 +314,10 @@
   gap: 0;
   border-radius: 6px;
 }
-.project-group-header:hover {
-  background: var(--hover);
+@media (hover: hover) {
+  .project-group-header:hover {
+    background: var(--hover);
+  }
 }
 .project-group-header .project-collapse {
   flex: 0 0 20px;
@@ -354,9 +362,13 @@
 .project-group-header .project-menu-trigger {
   opacity: 1;
 }
-.project-group-header:hover .project-new-session,
+@media (hover: hover) {
+  .project-group-header:hover .project-new-session,
+  .project-group-header:hover .project-menu-trigger {
+    opacity: 1;
+  }
+}
 .project-group-header:focus-within .project-new-session,
-.project-group-header:hover .project-menu-trigger,
 .project-group-header:focus-within .project-menu-trigger,
 .project-menu-trigger[aria-expanded="true"] {
   opacity: 1;
@@ -370,9 +382,13 @@
   min-height: 31px;
   padding-right: 2px;
 }
-.project-session:hover,
-.project-session.active,
-.recent-session-row:hover {
+@media (hover: hover) {
+  .project-session:hover,
+  .recent-session-row:hover {
+    background: var(--hover);
+  }
+}
+.project-session.active {
   background: var(--hover);
 }
 .project-session-link,
@@ -498,7 +514,13 @@
   background: transparent !important;
   color: var(--muted);
 }
-.project-session:hover .session-menu-trigger,
+@media (hover: hover) {
+  .project-session:hover .session-menu-trigger {
+    opacity: 1;
+    background: var(--hover) !important;
+    color: var(--text);
+  }
+}
 .project-session:focus-within .session-menu-trigger,
 .session-menu-trigger[aria-expanded="true"] {
   opacity: 1;
@@ -585,8 +607,10 @@
   border: 0;
   background: transparent;
 }
-.sidebar-bottom .account-panel > .icon-button:hover {
-  background: var(--hover);
+@media (hover: hover) {
+  .sidebar-bottom .account-panel > .icon-button:hover {
+    background: var(--hover);
+  }
 }
 .sidebar-bottom .user-avatar {
   width: 22px;
@@ -919,8 +943,13 @@
   color: var(--muted);
   font-size: 10px;
 }
-.workspace .composer-controls .composer-queue-button[aria-expanded="true"],
-.workspace .composer-controls .composer-queue-button:hover:not(:disabled) {
+@media (hover: hover) {
+  .workspace .composer-controls .composer-queue-button:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
+}
+.workspace .composer-controls .composer-queue-button[aria-expanded="true"] {
   background: var(--hover);
   color: var(--text);
 }
@@ -1015,9 +1044,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.composer-queue-editing:hover:not(:disabled) {
-  border-color: var(--blue);
-  background: var(--hover);
+@media (hover: hover) {
+  .composer-queue-editing:hover:not(:disabled) {
+    border-color: var(--blue);
+    background: var(--hover);
+  }
 }
 .workspace .composer-controls {
   gap: 5px;
@@ -1041,9 +1072,11 @@
   color: var(--muted);
   opacity: 0.7;
 }
-.workspace .send-button:hover:not(:disabled) {
-  background: var(--text);
-  opacity: 0.85;
+@media (hover: hover) {
+  .workspace .send-button:hover:not(:disabled) {
+    background: var(--text);
+    opacity: 0.85;
+  }
 }
 .workspace .send-button.composer-action-stop {
   border-radius: 50%;
@@ -1069,9 +1102,11 @@
     opacity: 0.45;
   }
 }
-.workspace .send-button.composer-action-stop:hover:not(:disabled) {
-  background: var(--soft);
-  opacity: 1;
+@media (hover: hover) {
+  .workspace .send-button.composer-action-stop:hover:not(:disabled) {
+    background: var(--soft);
+    opacity: 1;
+  }
 }
 .start-project-chat {
   margin: 15px auto 0;
@@ -1214,7 +1249,12 @@
   color: var(--text);
   text-align: left;
 }
-.folder-option:hover:not(:disabled),
+@media (hover: hover) {
+  .folder-option:hover:not(:disabled) {
+    background: var(--soft);
+    border-color: var(--line);
+  }
+}
 .folder-option[aria-selected="true"] {
   background: var(--soft);
   border-color: var(--line);
@@ -1422,7 +1462,12 @@
   font-size: 11px;
   line-height: 1.45;
 }
-.message-search-result:hover,
+@media (hover: hover) {
+  .message-search-result:hover {
+    border-color: var(--line);
+    background: var(--hover);
+  }
+}
 .message-search-result.selected {
   border-color: var(--line);
   background: var(--hover);

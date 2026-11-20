@@ -28,11 +28,13 @@
   background: transparent;
   box-shadow: none;
 }
-.markdown-body button.message-file-link:hover {
-  background: var(--soft);
-}
-.markdown-body button.message-file-link:hover > code {
-  color: var(--text);
+@media (hover: hover) {
+  .markdown-body button.message-file-link:hover {
+    background: var(--soft);
+  }
+  .markdown-body button.message-file-link:hover > code {
+    color: var(--text);
+  }
 }
 .message-file-link:focus-visible,
 .file-preview button:focus-visible {
@@ -97,9 +99,11 @@
   background: transparent;
   color: var(--muted);
 }
-.file-preview button.file-preview-icon:hover:not(:disabled) {
-  background: var(--hover);
-  color: var(--text);
+@media (hover: hover) {
+  .file-preview button.file-preview-icon:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
 }
 .file-preview button.file-preview-icon[aria-pressed="true"] {
   background: var(--soft);
@@ -114,8 +118,10 @@
   color: var(--text);
   cursor: pointer;
 }
-.file-preview button:hover {
-  background: var(--hover);
+@media (hover: hover) {
+  .file-preview button:hover {
+    background: var(--hover);
+  }
 }
 .file-preview button:disabled {
   cursor: default;
@@ -220,8 +226,10 @@
   background: transparent;
   justify-content: center;
 }
-.file-preview-markdown .markdown-copy:hover:not(:disabled) {
-  background: var(--hover);
+@media (hover: hover) {
+  .file-preview-markdown .markdown-copy:hover:not(:disabled) {
+    background: var(--hover);
+  }
 }
 .file-preview-markdown .markdown-copy svg {
   width: 12px;
@@ -292,8 +300,10 @@
   font: 10.5px var(--mono);
   overflow-wrap: anywhere;
 }
-.file-preview-candidates button:hover {
-  background: var(--hover);
+@media (hover: hover) {
+  .file-preview-candidates button:hover {
+    background: var(--hover);
+  }
 }
 .file-preview-status-actions,
 .file-preview-office-actions {
@@ -340,9 +350,11 @@
   white-space: nowrap;
   cursor: pointer;
 }
-.file-preview-sheet-tab:hover {
-  background: var(--hover);
-  color: var(--text);
+@media (hover: hover) {
+  .file-preview-sheet-tab:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
 }
 .file-preview-sheet-tab.selected {
   border-color: var(--line);
@@ -433,8 +445,10 @@
   font-size: 12px;
   text-decoration: none;
 }
-.file-preview-download:hover {
-  background: var(--hover);
+@media (hover: hover) {
+  .file-preview-download:hover {
+    background: var(--hover);
+  }
 }
 .file-preview-status {
   overflow: auto;
