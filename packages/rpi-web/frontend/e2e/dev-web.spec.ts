@@ -6,7 +6,7 @@ import {
   refreshChats,
 } from "./controls";
 import { writeFile } from "node:fs/promises";
-import { test, expect, type Page, type Route } from "@playwright/test";
+import { test, expect, devices, type Page, type Route } from "@playwright/test";
 
 const timelineToggle = (page: Page) =>
   page.getByRole("button", { name: /^(Conversation timeline|对话时间线)$/ });
@@ -6896,6 +6896,53 @@ test("slash model selection rejects ambiguous names and accepts provider qualifi
     .toEqual([
       expect.objectContaining({ provider: "beta", modelId: "shared" }),
     ]);
+});
+
+test("an unknown slash word is sent as a prompt, not rejected", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const prompts: string[] = [];
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.type === "prompt") {
+        prompts.push(body.message);
+        return route.fulfill({ json: response({ accepted: true }, body.type) });
+      }
+      return route.fallback();
+    },
+  );
+  await page.goto("/");
+  const input = page.locator(".composer textarea");
+  // A slash-prefixed word that is not a command must reach the model as a
+  // normal prompt instead of an "Unknown command" note.
+  await input.fill("/modelx please explain this");
+  await input.press("Enter");
+  await expect.poll(() => prompts).toEqual(["/modelx please explain this"]);
+  // A fresh composer: a typo against a real command falls through the same
+  // way (a new load sidesteps the running state the first prompt left).
+  await page.goto("/");
+  await input.fill("/modle sumo");
+  await input.press("Enter");
+  await expect.poll(() => prompts).toEqual([
+    "/modelx please explain this",
+    "/modle sumo",
+  ]);
+  // A known command is still routed to the slash handler, not the model.
+  // ("/abort" while idle is advertised by the mock host and notes without
+  // sending a prompt; "/help" lists commands.)
+  await page.goto("/");
+  await input.fill("/abort");
+  await input.press("Enter");
+  await expect(page.locator(".transcript-note")).toContainText([
+    "Nothing is running.",
+  ]);
+  await input.fill("/help");
+  await input.press("Enter");
+  await expect(page.locator(".transcript-note")).toContainText(["/help"]);
+  await expect.poll(() => prompts).toHaveLength(2);
 });
 
 for (const outcome of ["done", "error", "closed"] as const) {
@@ -17649,4 +17696,37 @@ test.describe("retirement", () => {
     ).toHaveCount(0);
     expect(mutations).toEqual([]);
   });
+});
+
+test("mobile composer inserts a newline on Enter without sending", async ({
+  browser,
+}) => {
+  let prompts = 0;
+  // Mobile devices report a coarse pointer and have no Shift key on the soft
+  // keyboard, so Enter must fall through to the textarea's native newline.
+  const context = await browser.newContext({
+    ...devices["iPhone 13"],
+    baseURL: process.env.BASE_URL ?? "http://127.0.0.1:4191",
+  });
+  const mobilePage = await context.newPage();
+  mobilePage.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/commands") &&
+      request.postDataJSON().type === "prompt"
+    )
+      prompts++;
+  });
+  await mockHost(mobilePage);
+  await mobilePage.goto("/");
+  const input = mobilePage.locator(".composer textarea");
+  await input.fill("first line");
+  await input.press("Enter");
+  await input.type("second line");
+  await expect(input).toHaveValue("first line\nsecond line");
+  expect(prompts).toBe(0);
+  await expect(
+    mobilePage.getByRole("button", { name: "Send message", exact: true }),
+  ).toBeEnabled();
+  await context.close();
 });

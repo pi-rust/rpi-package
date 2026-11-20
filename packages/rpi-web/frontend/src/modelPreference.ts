@@ -1,7 +1,8 @@
 // Browser-local UI preference only; never inferred from native runtime/history.
 export interface ModelPreference {
-  provider: string;
-  modelId: string;
+  provider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
 }
 // Begin an explicit choice before I/O; call the returned completion only after
 // set_model succeeds. Its boolean guards UI writes after session navigation.
@@ -25,14 +26,24 @@ export function readModelPreference(projectId: string): ModelPreference | null {
   let preference: ModelPreference | null = null;
   try {
     const value = JSON.parse(localStorage.getItem(storageKey) ?? "null");
-    if (
-      value &&
+    if (!value || typeof value !== "object") {
+      fallback.set(storageKey, null);
+      return null;
+    }
+    const hasModel =
       typeof value.provider === "string" &&
       value.provider &&
       typeof value.modelId === "string" &&
-      value.modelId
-    )
-      preference = { provider: value.provider, modelId: value.modelId };
+      value.modelId;
+    const hasThinking =
+      typeof value.thinkingLevel === "string" && value.thinkingLevel;
+    if (hasModel || hasThinking)
+      preference = {
+        ...(hasModel
+          ? { provider: value.provider, modelId: value.modelId }
+          : {}),
+        ...(hasThinking ? { thinkingLevel: value.thinkingLevel } : {}),
+      };
   } catch {
     return fallback.get(storageKey) ?? null;
   }
@@ -49,7 +60,8 @@ export function writeModelPreference(
   // Keep this tab usable even when persistence is unavailable (including clear).
   fallback.set(storageKey, value);
   try {
-    if (value) localStorage.setItem(storageKey, JSON.stringify(value));
+    if (value && (value.provider || value.thinkingLevel))
+      localStorage.setItem(storageKey, JSON.stringify(value));
     else localStorage.removeItem(storageKey);
     unpersisted.delete(storageKey);
   } catch {

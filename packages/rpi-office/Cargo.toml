@@ -1,6 +1,6 @@
 [package]
 name = "rpi-office"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -8,7 +8,8 @@ authors.workspace = true
 repository.workspace = true
 description = "Drive Excel, Word and PowerPoint from rpi through the pi-for-office task-pane add-in (loopback WebSocket bridge + Office tool proxy)"
 readme = "README.md"
-keywords = ["rpi", "office", "excel", "word", "powerpoint", "plugin"]
+# crates.io accepts at most 5 keywords; keep the host apps, drop the generic one.
+keywords = ["rpi", "office", "excel", "word", "powerpoint"]
 categories = ["development-tools"]
 
 [package.metadata.rpi.prebuilt]
