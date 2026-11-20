@@ -382,6 +382,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
 type Socket = WebSocketStream<Box<dyn Stream>>;
 
+/// How long a TLS/WebSocket handshake may take before the socket is dropped.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// 每条 JSON 消息占一个 WebSocket 文本帧；协议与 TCP JSONL 一致。
 pub struct WebSocketTransport {
     listener: Mutex<Option<TcpListener>>,
@@ -397,7 +400,7 @@ pub struct WebSocketTransport {
 struct Rotation {
     files: crate::tls::TlsFiles,
     interval: Duration,
-    loaded_at: std::time::SystemTime,
+    loaded_at: std::sync::Mutex<std::time::SystemTime>,
     last_check: std::sync::Mutex<Instant>,
 }
 
@@ -438,7 +441,7 @@ impl WebSocketTransport {
             rotation: Some(Rotation {
                 files,
                 interval,
-                loaded_at,
+                loaded_at: std::sync::Mutex::new(loaded_at),
                 last_check: std::sync::Mutex::new(Instant::now()),
             }),
         }
@@ -462,13 +465,15 @@ impl WebSocketTransport {
         let Some(newest) = newest_mtime(&rotation.files) else {
             return;
         };
-        if newest <= rotation.loaded_at {
+        let loaded_at = *rotation.loaded_at.lock().expect("tls loaded clock");
+        if newest <= loaded_at {
             return;
         }
         let files = &rotation.files;
         match crate::tls::load_server_config(&files.cert, &files.key, files.client_ca.as_deref()) {
             Ok(config) => {
                 *self.acceptor.lock().expect("tls acceptor") = Some(TlsAcceptor::from(config));
+                *rotation.loaded_at.lock().expect("tls loaded clock") = newest;
                 eprintln!("[rpi-server] reloaded rotated TLS material");
             }
             Err(error) => {
@@ -565,15 +570,16 @@ impl Transport for WebSocketTransport {
         // boxed stream type the client side uses.
         let stream: Box<dyn Stream> = match self.current_acceptor() {
             Some(acceptor) => Box::new(
-                acceptor
-                    .accept(stream)
+                tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream))
                     .await
+                    .map_err(|_| "tls handshake timed out".to_string())?
                     .map_err(|e| format!("tls handshake failed: {e}"))?,
             ),
             None => Box::new(stream),
         };
-        let socket = accept_async(stream)
+        let socket = tokio::time::timeout(HANDSHAKE_TIMEOUT, accept_async(stream))
             .await
+            .map_err(|_| "websocket handshake timed out".to_string())?
             .map_err(|e| format!("websocket handshake failed: {e}"))?;
         Ok(WebSocketConnection::new(socket, format!("ws-{addr}")))
     }
@@ -865,6 +871,17 @@ mod websocket_tests {
             rotated.err()
         );
         let _ = accepting.await;
+        let loaded_at = *server
+            .rotation
+            .as_ref()
+            .expect("rotation")
+            .loaded_at
+            .lock()
+            .expect("tls loaded clock");
+        assert!(
+            loaded_at >= future,
+            "successful rotation must advance the loaded timestamp: {loaded_at:?} < {future:?}"
+        );
 
         // The superseded CA no longer verifies the served certificate.
         let accepting = {

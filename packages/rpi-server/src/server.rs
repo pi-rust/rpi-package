@@ -11,6 +11,10 @@ use tokio::sync::broadcast;
 use tokio::sync::Mutex as TokioMutex;
 
 const MAX_LINE: usize = 1_048_576;
+/// Bound the accept tasks whose TLS/WebSocket handshakes are in flight. Each
+/// task releases the listener before its handshake, so this pool keeps one slow
+/// peer from blocking the accept loop while still bounding memory/connections.
+const MAX_PENDING_ACCEPTS: usize = 16;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -797,23 +801,34 @@ pub async fn run_server<T: Transport>(
         println!("token: {}", handle.token);
     }
 
-    // Accept loop
+    // Accept loop. `accept()` includes the TLS/WebSocket handshake for the
+    // WebSocket transports, so run a bounded pool instead of awaiting one
+    // handshake at a time; otherwise a peer that never finishes its handshake
+    // blocks every later connection.
     let handle_clone = Arc::clone(&handle);
     let transport_clone = Arc::clone(&transport);
     tokio::spawn(async move {
         let mut shutdown_rx = handle_clone.shutdown_rx.clone();
+        let mut accepts = tokio::task::JoinSet::new();
         loop {
+            while accepts.len() < MAX_PENDING_ACCEPTS {
+                let transport = Arc::clone(&transport_clone);
+                accepts.spawn(async move { transport.accept().await });
+            }
             tokio::select! {
-                result = transport_clone.accept() => {
-                    match result {
-                        Ok(conn) => {
+                Some(joined) = accepts.join_next() => {
+                    match joined {
+                        Ok(Ok(conn)) => {
                             let state = Arc::clone(&handle_clone.state);
                             tokio::spawn(async move {
                                 handle_connection(state, conn).await;
                             });
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             eprintln!("accept error: {e}");
+                        }
+                        Err(e) => {
+                            eprintln!("accept task failed: {e}");
                         }
                     }
                 }
@@ -822,6 +837,8 @@ pub async fn run_server<T: Transport>(
                 }
             }
         }
+        accepts.abort_all();
+        while accepts.join_next().await.is_some() {}
     });
 
     Ok(handle)
@@ -897,6 +914,39 @@ mod transport_tests {
         assert_eq!(info.address, format!("127.0.0.1:{port}"));
 
         client.close().await.expect("close");
+        handle.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_handshake_does_not_block_server_accepts() {
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(WebSocketTransport::new()),
+            "ws",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start ws server");
+
+        // Open TCP without sending the WebSocket handshake. The accept pool must
+        // still complete a second, healthy WebSocket connection.
+        let stalled = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("stalled peer");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let connected = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            WebSocketTransport::new().connect(&format!("127.0.0.1:{port}")),
+        )
+        .await
+        .expect("accept loop was blocked by a stalled handshake")
+        .expect("healthy ws connection");
+        drop(stalled);
+        drop(connected);
         handle.stop().await.expect("stop");
     }
 
