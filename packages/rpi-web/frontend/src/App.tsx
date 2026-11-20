@@ -102,7 +102,7 @@ import {
   type MessageKey,
 } from "./i18n";
 import { Splitter, useStoredNumber, Workbench } from "./Workbench";
-import { WEB_VERSION } from "./version";
+import { displayedVersion } from "./version";
 import { MenuSelect } from "./MenuSelect";
 import { LoginScreen } from "./LoginScreen";
 import { ProjectContext } from "./ProjectContext";
@@ -1338,7 +1338,8 @@ export default function App() {
     if (!session || !remembered) return;
     if (
       !capabilities?.supportedCommands?.includes("get_state") ||
-      (!remembered.thinkingLevel && !(remembered.provider && remembered.modelId))
+      (!remembered.thinkingLevel &&
+        !(remembered.provider && remembered.modelId))
     )
       return;
     try {
@@ -1360,7 +1361,10 @@ export default function App() {
         return;
       }
       const failures: SessionRuntimeChoice = {};
-      if (needsModel && capabilities?.supportedCommands?.includes("set_model")) {
+      if (
+        needsModel &&
+        capabilities?.supportedCommands?.includes("set_model")
+      ) {
         try {
           await commandData(session, "set_model", {
             provider: remembered.provider,
@@ -3236,7 +3240,8 @@ export default function App() {
     const [name = "", ...rest] = raw.trim().split(/\s+/);
     const arg = rest.join(" ").trim();
     if (!slashCommands.some((command) => command.name === name)) return;
-    if ((loadingSession || connectionFailed) && !LOCAL_SLASH_COMMANDS.has(name)) return;
+    if ((loadingSession || connectionFailed) && !LOCAL_SLASH_COMMANDS.has(name))
+      return;
     updateDraft("");
     setError("");
     try {
@@ -3345,7 +3350,12 @@ export default function App() {
           return;
         }
         await commandData(targetSession, "set_thinking_level", { level });
-        recordThinkingSelected(projectRef.current, targetSession, level, navigation);
+        recordThinkingSelected(
+          projectRef.current,
+          targetSession,
+          level,
+          navigation,
+        );
         const state = await api.runtimeState(targetSession);
         if (navigation !== navigationRevision.current) return;
         setRuntime(state);
@@ -3459,7 +3469,14 @@ export default function App() {
     }
     if (!forceContinue && !sessionHydrated) return;
     if (composerContinue) {
-      if (loadingSession || connectionFailed || status === "closed" || !sessionId || sendingRef.current) return;
+      if (
+        loadingSession ||
+        connectionFailed ||
+        status === "closed" ||
+        !sessionId ||
+        sendingRef.current
+      )
+        return;
       if (interrupted && supported.has("resume_pending")) {
         await resumePending();
         return;
@@ -5227,16 +5244,16 @@ export default function App() {
             <div className="sidebar-brand">
               <Mark /> <span>rpi</span>{" "}
               <span className="brand-caption">{t("workspace")}</span>
-              {WEB_VERSION && (
+              {displayedVersion(capabilities) && (
                 <span
                   className="brand-version"
                   title={
                     language === "zh"
-                      ? `当前版本 v${WEB_VERSION}`
-                      : `Version v${WEB_VERSION}`
+                      ? `当前版本 v${displayedVersion(capabilities)}`
+                      : `Version v${displayedVersion(capabilities)}`
                   }
                 >
-                  v{WEB_VERSION}
+                  v{displayedVersion(capabilities)}
                 </span>
               )}
               <button
@@ -5572,24 +5589,29 @@ export default function App() {
               {language === "zh"
                 ? `未能恢复本会话上次使用的模型或思考深度（${[
                     sessionRuntimeFailures[sessionId].provider &&
-                    sessionRuntimeFailures[sessionId].modelId &&
-                    `${sessionRuntimeFailures[sessionId].provider}/${sessionRuntimeFailures[sessionId].modelId}`,
+                      sessionRuntimeFailures[sessionId].modelId &&
+                      `${sessionRuntimeFailures[sessionId].provider}/${sessionRuntimeFailures[sessionId].modelId}`,
                     sessionRuntimeFailures[sessionId].thinkingLevel,
                   ]
                     .filter(Boolean)
                     .join("、")}）。请在运行时设置中选择可用项后再发送。`
                 : `Could not restore this session's last model or thinking level (${[
                     sessionRuntimeFailures[sessionId].provider &&
-                    sessionRuntimeFailures[sessionId].modelId &&
-                    `${sessionRuntimeFailures[sessionId].provider}/${sessionRuntimeFailures[sessionId].modelId}`,
+                      sessionRuntimeFailures[sessionId].modelId &&
+                      `${sessionRuntimeFailures[sessionId].provider}/${sessionRuntimeFailures[sessionId].modelId}`,
                     sessionRuntimeFailures[sessionId].thinkingLevel,
                   ]
                     .filter(Boolean)
-                    .join(", ")}). Select available ones in Runtime settings before sending.`}
+                    .join(
+                      ", ",
+                    )}). Select available ones in Runtime settings before sending.`}
             </span>
             <button
               className="banner-action"
-              onClick={() => { setTraceOpen(false); setPanel(true); }}
+              onClick={() => {
+                setTraceOpen(false);
+                setPanel(true);
+              }}
             >
               {language === "zh" ? "运行时设置" : "Runtime settings"}
             </button>
@@ -5606,7 +5628,10 @@ export default function App() {
             </span>
             <button
               className="banner-action"
-              onClick={() => { setTraceOpen(false); setPanel(true); }}
+              onClick={() => {
+                setTraceOpen(false);
+                setPanel(true);
+              }}
             >
               {language === "zh" ? "运行时设置" : "Runtime settings"}
             </button>
@@ -6234,6 +6259,22 @@ export default function App() {
                     )}
                   </div>
                   <div className="composer-controls">
+                    {composerAbort &&
+                      supported.has("queue_message") &&
+                      !queueEditId &&
+                      (draft.trim().length > 0 || attachments.length > 0) && (
+                        // Touch keyboards keep Enter as a newline, so a run in
+                        // progress needs an explicit way to queue the message.
+                        <button
+                          type="submit"
+                          className="send-button composer-action-queue"
+                          aria-label={t("queue")}
+                          title={t("queue")}
+                          disabled={sending || uploading}
+                        >
+                          <ArrowUp size={17} aria-hidden="true" />
+                        </button>
+                      )}
                     <button
                       type={composerAbort ? "button" : "submit"}
                       className={`send-button${composerAbort ? " composer-action-stop" : composerContinue ? " composer-action-continue" : ""}`}
@@ -7713,7 +7754,10 @@ function RuntimePanel({
           ? "成功选择的模型会在此浏览器中按项目记住，仅用于未来新会话；已有会话不变。"
           : "Successful model choices are remembered in this browser per project for future new sessions only; existing sessions are unchanged."}
         {preference?.provider && preference.modelId && (
-          <> {preference.provider}/{preference.modelId}</>
+          <>
+            {" "}
+            {preference.provider}/{preference.modelId}
+          </>
         )}
       </p>
       <button
@@ -7721,7 +7765,9 @@ function RuntimePanel({
         disabled={!preference?.provider || !preference.modelId}
         onClick={onClearModelPreference}
       >
-        {zh ? "清除模型偏好（未来使用原生默认值）" : "Clear model preference (future native defaults)"}
+        {zh
+          ? "清除模型偏好（未来使用原生默认值）"
+          : "Clear model preference (future native defaults)"}
       </button>
       <label htmlFor="model">{zh ? "模型" : "Model"}</label>
       <MenuSelect
@@ -7789,14 +7835,18 @@ function RuntimePanel({
         {zh
           ? "成功选择的思考深度会在此浏览器中按项目记住，仅用于未来新会话；已有会话不变。"
           : "Successful thinking level choices are remembered in this browser per project for future new sessions only; existing sessions are unchanged."}
-        {preference?.thinkingLevel ? <> {valueLabel(language, preference.thinkingLevel)}</> : null}
+        {preference?.thinkingLevel ? (
+          <> {valueLabel(language, preference.thinkingLevel)}</>
+        ) : null}
       </p>
       <button
         type="button"
         disabled={!preference?.thinkingLevel}
         onClick={onClearThinkingPreference}
       >
-        {zh ? "清除思考深度偏好（未来使用默认档位）" : "Clear thinking preference (future default off)"}
+        {zh
+          ? "清除思考深度偏好（未来使用默认档位）"
+          : "Clear thinking preference (future default off)"}
       </button>
 
       <h3 className="panel-heading">{zh ? "上下文" : "Context"}</h3>

@@ -34,6 +34,7 @@ const snapshotRoute = (url: URL) =>
 
 const capabilities = {
   protocol: "rpi",
+  version: "9.9.9",
   piCompatibilityTarget: "1.2.0",
   supportedCommands: [
     "get_state",
@@ -1276,9 +1277,9 @@ test("project navigation collapses and remembers appearance", async ({
 }) => {
   await mockHost(page);
   await page.goto("/");
-  // The installed build identifies itself beside the logo.
+  // The logo shows what the host reports, not what the bundle was built from.
   await expect(page.locator(".sidebar-brand .brand-version")).toHaveText(
-    /^v\d+\.\d+\.\d+/,
+    "v9.9.9",
   );
   await page
     .getByRole("button", { name: "Collapse project: pi-rust", exact: true })
@@ -1625,6 +1626,66 @@ test("a message typed during a run queues as a follow-up without a kind selector
   await expect
     .poll(() => queued)
     .toEqual([{ message: "Change course now", deliverAs: "followUp" }]);
+});
+
+test.describe("touch composer", () => {
+  test.use({ hasTouch: true });
+
+  test("a running task offers a queue button because Enter inserts a newline", async ({
+    page,
+  }) => {
+    await mockHost(page);
+    const queued: Array<{ message: string; deliverAs: string }> = [];
+    await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
+      route.fulfill({
+        contentType: "text/event-stream",
+        body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+      }),
+    );
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/commands`,
+      async (route) => {
+        const body = route.request().postDataJSON();
+        if (body.type !== "queue_message") return route.fallback();
+        queued.push({ message: body.message, deliverAs: body.deliverAs });
+        return route.fulfill({
+          json: response(
+            { accepted: true, entryId: "touch-queued" },
+            body.type,
+          ),
+        });
+      },
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    const input = page.getByRole("textbox", {
+      name: "Send a prompt, or type / for commands…",
+    });
+    const queueButton = page.getByRole("button", {
+      name: "Queue",
+      exact: true,
+    });
+    // Nothing queued yet: only the stop action is offered.
+    await expect(
+      page.getByRole("button", { name: "Abort", exact: true }),
+    ).toBeEnabled();
+    await expect(queueButton).toHaveCount(0);
+    await input.fill("继续补充需求");
+    await expect(queueButton).toBeVisible();
+    await page.screenshot({
+      path: test.info().outputPath("touch-queue-buttons.png"),
+    });
+    // Enter still inserts a newline on a touch keyboard.
+    await input.press("Enter");
+    await expect(input).toHaveValue("继续补充需求\n");
+    await expect.poll(() => queued).toEqual([]);
+    await queueButton.click();
+    await expect
+      .poll(() => queued)
+      .toEqual([{ message: "继续补充需求", deliverAs: "followUp" }]);
+    await expect(input).toHaveValue("");
+    await expect(queueButton).toHaveCount(0);
+  });
 });
 
 test("send now steers a waiting message into the running task", async ({
