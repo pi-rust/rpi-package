@@ -421,7 +421,7 @@ pub struct FileQuery {
     pub staged: bool,
 }
 pub async fn project_files(state: &Service, id: String, query: FileQuery) -> workspace::Reply {
-    workspace::files(&project_by_id(state, &id).await?, &query.path).await
+    workspace::files_at(&project_by_id(state, &id).await?, &query.root, &query.path).await
 }
 pub async fn project_file(state: &Service, id: String, query: FileQuery) -> workspace::Reply {
     workspace::file_at(&project_by_id(state, &id).await?, &query.root, &query.path).await

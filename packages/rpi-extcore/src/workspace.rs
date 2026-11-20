@@ -198,7 +198,12 @@ pub async fn browse_root(project: &Project, root: &str) -> Result<PathBuf, (Repl
 }
 
 pub async fn files(project: &Project, relative: &str) -> Reply {
-    let path = resolve(&project.root, relative)?;
+    files_at(project, "", relative).await
+}
+
+/// List one directory of the project root or of a linked worktree.
+pub async fn files_at(project: &Project, root: &str, relative: &str) -> Reply {
+    let path = resolve(&browse_root(project, root).await?, relative)?;
     let mut directory = tokio::fs::read_dir(path)
         .await
         .map_err(|_| failure(ReplyKind::NotFound, "directory not found"))?;
@@ -918,6 +923,55 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(kind, ReplyKind::AccessDenied);
+    }
+
+    #[tokio::test]
+    async fn linked_worktree_directories_are_listable() {
+        let root = fixture();
+        let project = Project::new(&root).unwrap();
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            assert!(git(&project, &args).await.unwrap().0);
+        }
+        let linked = root.with_extension("list-worktree");
+        assert!(
+            git(
+                &project,
+                &["worktree", "add", "-b", "listing", linked.to_str().unwrap()]
+            )
+            .await
+            .unwrap()
+            .0
+        );
+        std::fs::create_dir(linked.join("nested")).unwrap();
+        std::fs::write(linked.join("nested/only.txt"), b"worktree").unwrap();
+        let canonical = std::fs::canonicalize(&linked).unwrap();
+        let branch = display_root(&canonical);
+
+        // The project root lists its own directory only.
+        let listed = files_at(&project, "", "").await.unwrap();
+        let names: Vec<String> = listed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap().to_string())
+            .collect();
+        // The worktree's directories are not part of the project root listing.
+        assert!(!names.contains(&"nested".to_string()), "{names:?}");
+
+        // The linked checkout lists its own files under the same project.
+        let listed = files_at(&project, &branch, "nested").await.unwrap();
+        assert_eq!(
+            listed["entries"][0]["path"].as_str().unwrap(),
+            "nested/only.txt"
+        );
+
+        // Anything else stays outside the browsable project.
+        assert!(files_at(&project, "/", "").await.is_err());
     }
 
     #[tokio::test]

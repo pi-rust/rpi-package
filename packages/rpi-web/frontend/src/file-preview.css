@@ -260,6 +260,13 @@
   overflow-wrap: anywhere;
   cursor: pointer;
 }
+.file-preview-candidates button small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font: 10.5px var(--mono);
+  overflow-wrap: anywhere;
+}
 .file-preview-candidates button:hover {
   background: var(--hover);
 }

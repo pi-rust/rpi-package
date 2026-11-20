@@ -721,10 +721,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(metadata),
     }),
-  files: (projectId: string, path = "") =>
-    request<{ path: string; entries: FileEntry[] }>(
-      `/projects/${projectId}/files?${new URLSearchParams({ path })}`,
-    ),
+  files: (projectId: string, path = "", root?: string) => {
+    const query = new URLSearchParams({ path });
+    if (root) query.set("root", root);
+    return request<{ path: string; entries: FileEntry[] }>(
+      `/projects/${projectId}/files?${query}`,
+    );
+  },
   /** `root` selects a linked worktree; it defaults to the project root. */
   file: (
     projectId: string,

@@ -15,11 +15,17 @@ const SKIPPED = new Set([
   "__pycache__",
 ]);
 
+export interface ProjectFileMatch {
+  path: string;
+  /** Linked worktree the file lives in; undefined for the project root. */
+  root?: string;
+}
+
 export interface ProjectPathLookup {
-  /** Exactly one file ends with the wanted path. */
-  path: string | null;
+  /** Exactly one file matches the wanted path. */
+  match: ProjectFileMatch | null;
   /** Several plausible files; the user picks instead of being refused. */
-  candidates: string[];
+  candidates: ProjectFileMatch[];
 }
 
 /**
@@ -34,6 +40,8 @@ export async function lookupProjectPath(
   projectId: string,
   wanted: string,
   options: {
+    /** Linked worktrees to search as well, as reported by `/projects`. */
+    roots?: string[];
     signal?: AbortSignal;
     maxDirs?: number;
     maxDepth?: number;
@@ -42,19 +50,21 @@ export async function lookupProjectPath(
 ): Promise<ProjectPathLookup> {
   const target = wanted.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
   if (!target || target.startsWith("/") || target.split("/").includes(".."))
-    return { path: null, candidates: [] };
+    return { match: null, candidates: [] };
   const suffix = `/${target}`;
   // A message can name the wrong directory (`src/x.pdf` for `docs/x.pdf`), so
   // the file name alone is the fallback search key.
   const basename = target.split("/").pop() ?? target;
   const nameSuffix = `/${basename}`;
-  const byName: string[] = [];
+  const byName: ProjectFileMatch[] = [];
   const maxDirs = options.maxDirs ?? 64;
   const maxDepth = options.maxDepth ?? 5;
   const maxCandidates = options.maxCandidates ?? 8;
   const seen = new Set<string>();
-  const queue = [{ path: "", depth: 0 }];
-  const matches: string[] = [];
+  // Each checkout is searched on its own so a match keeps its root.
+  const roots = [undefined, ...(options.roots ?? [])];
+  const queue = roots.map((root) => ({ root, path: "", depth: 0 }));
+  const matches: ProjectFileMatch[] = [];
   let listed = 0;
   while (
     queue.length > 0 &&
@@ -63,33 +73,45 @@ export async function lookupProjectPath(
     byName.length < maxCandidates
   ) {
     const next = queue.shift()!;
-    if (seen.has(next.path)) continue;
-    seen.add(next.path);
+    const key = `${next.root ?? ""}\u0000${next.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     listed += 1;
     let entries;
     try {
-      entries = (await api.files(projectId, next.path)).entries ?? [];
+      entries = (await api.files(projectId, next.path, next.root)).entries ?? [];
     } catch {
       continue;
     }
-    if (options.signal?.aborted) return { path: null, candidates: [] };
+    if (options.signal?.aborted) return { match: null, candidates: [] };
     for (const entry of entries) {
       const path = entry.path.replace(/\\/g, "/");
       if (entry.kind === "file") {
-        if (path.endsWith(suffix)) matches.push(path);
-        else if (path.endsWith(nameSuffix) && !byName.includes(path))
-          byName.push(path);
+        const found: ProjectFileMatch = next.root
+          ? { path, root: next.root }
+          : { path };
+        if (path.endsWith(suffix)) matches.push(found);
+        else if (
+          path.endsWith(nameSuffix) &&
+          !byName.some((item) => item.path === path && item.root === next.root)
+        )
+          byName.push(found);
         continue;
       }
       if (next.depth < maxDepth && !SKIPPED.has(entry.name))
-        queue.push({ path, depth: next.depth + 1 });
+        queue.push({ root: next.root, path, depth: next.depth + 1 });
     }
   }
   const found = matches.length > 0 ? matches : byName;
-  if (found.length === 1) return { path: found[0], candidates: [] };
-  // Shortest paths first: the closest checkout wins the tie-break presentation.
+  if (found.length === 1) return { match: found[0], candidates: [] };
+  // Project-root matches first, then shortest path, so the likeliest is on top.
   const candidates = found
-    .sort((a, b) => a.length - b.length || a.localeCompare(b))
+    .sort(
+      (a, b) =>
+        Number(Boolean(a.root)) - Number(Boolean(b.root)) ||
+        a.path.length - b.path.length ||
+        a.path.localeCompare(b.path),
+    )
     .slice(0, maxCandidates);
-  return { path: null, candidates };
+  return { match: null, candidates };
 }

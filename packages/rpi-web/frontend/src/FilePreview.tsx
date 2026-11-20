@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError, type Project } from "./api";
-import { lookupProjectPath } from "./fileLookup";
+import { lookupProjectPath, type ProjectFileMatch } from "./fileLookup";
 import { readWorkbook, type WorkbookPreview } from "./spreadsheet";
 import { translate, type Language } from "./i18n";
 import type { ProjectFileLink } from "./messageLinks";
@@ -93,11 +93,14 @@ export function FilePreview({
   // The path actually being read: it starts as the message link and may be
   // corrected to a file the project really contains.
   const [targetPath, setTargetPath] = useState(file.path);
-  const [candidates, setCandidates] = useState<string[]>([]);
-  const resolved = targetPath === file.path ? null : targetPath;
+  // A resolved match may live in a linked worktree, so the root travels with it.
+  const [targetRoot, setTargetRoot] = useState<string | undefined>(file.root);
+  const [candidates, setCandidates] = useState<ProjectFileMatch[]>([]);
+  const resolved =
+    targetPath === file.path && targetRoot === file.root ? null : targetPath;
   const shownPath = targetPath;
   const absolutePath = absoluteProjectPath(
-    file.root ?? project.path,
+    targetRoot ?? project.path,
     shownPath,
   );
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -140,7 +143,7 @@ export function FilePreview({
     setCopied("");
     try {
       const blob = await api.download(project.id, shownPath, {
-        root: file.root,
+        root: targetRoot,
       });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -174,8 +177,9 @@ export function FilePreview({
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => {
     setTargetPath(file.path);
+    setTargetRoot(file.root);
     setCandidates([]);
-  }, [file.path]);
+  }, [file.path, file.root]);
   useEffect(() => {
     const previousFocus = document.activeElement;
     const dialog = dialogRef.current!;
@@ -205,7 +209,7 @@ export function FilePreview({
         try {
           if (image) {
             const blob = await api.image(project.id, targetPath, {
-              root: file.root,
+              root: targetRoot,
               signal: controller.signal,
             });
             if (controller.signal.aborted) return;
@@ -214,7 +218,7 @@ export function FilePreview({
           } else if (documentType) {
             try {
               const blob = await api.document(project.id, targetPath, {
-                root: file.root,
+                root: targetRoot,
                 signal: controller.signal,
               });
               if (controller.signal.aborted) return;
@@ -249,7 +253,7 @@ export function FilePreview({
             }
           } else {
             const result = await api.file(project.id, targetPath, {
-              root: file.root,
+              root: targetRoot,
               signal: controller.signal,
             });
             if (!controller.signal.aborted) setContent(result.content);
@@ -266,11 +270,13 @@ export function FilePreview({
             cause.code !== "route-missing"
           ) {
             const lookup = await lookupProjectPath(project.id, targetPath, {
+              roots: project.worktrees,
               signal: controller.signal,
             });
             if (controller.signal.aborted) return;
-            if (lookup.path) {
-              setTargetPath(lookup.path);
+            if (lookup.match) {
+              setTargetPath(lookup.match.path);
+              setTargetRoot(lookup.match.root);
               return;
             }
             if (lookup.candidates.length) {
@@ -297,7 +303,7 @@ export function FilePreview({
     project.id,
     project.path,
     targetPath,
-    file.root,
+    targetRoot,
     image,
     documentType,
     markdown,
@@ -508,17 +514,23 @@ export function FilePreview({
           </p>
           {candidates.length > 0 && (
             <ul className="file-preview-candidates">
-              {candidates.map((path) => (
-                <li key={path}>
+              {candidates.map((match) => (
+                <li key={`${match.root ?? ""}:${match.path}`}>
                   <button
                     type="button"
                     onClick={() => {
                       setCandidates([]);
                       setError("");
-                      setTargetPath(path);
+                      setTargetPath(match.path);
+                      setTargetRoot(match.root);
                     }}
                   >
-                    {path}
+                    {match.path}
+                    {match.root && (
+                      <small>
+                        {zh ? "工作树" : "worktree"} · {match.root}
+                      </small>
+                    )}
                   </button>
                 </li>
               ))}

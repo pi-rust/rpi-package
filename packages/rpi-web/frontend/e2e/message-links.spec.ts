@@ -261,6 +261,10 @@ async function host(
     Array<{ name: string; path: string; kind: "directory" | "file" }>
   > = {};
   const missing = new Set<string>();
+  const worktreeListings: Record<
+    string,
+    Array<{ name: string; path: string; kind: "directory" | "file" }>
+  > = {};
   const documents: Array<{
     project: string;
     path: string;
@@ -404,7 +408,13 @@ async function host(
     }
     if (/\/projects\/[^/]+\/files$/.test(path)) {
       const read = url.searchParams.get("path") ?? "";
-      return json({ path: read, entries: listings[read] ?? [] });
+      const root = url.searchParams.get("root") ?? "";
+      return json({
+        path: read,
+        entries: root
+          ? (worktreeListings[`${root}:${read}`] ?? [])
+          : (listings[read] ?? []),
+      });
     }
     if (/\/projects\/[^/]+\/file$/.test(path)) {
       reads.push({
@@ -421,7 +431,10 @@ async function host(
           status: 400,
           json: { error: "Binary file cannot be previewed as text" },
         });
-      if (missing.has(url.searchParams.get("path") ?? ""))
+      if (
+        missing.has(url.searchParams.get("path") ?? "") &&
+        !url.searchParams.get("root")
+      )
         return route.fulfill({
           status: 404,
           json: { error: "file not found" },
@@ -519,6 +532,7 @@ async function host(
     reads,
     files,
     listings,
+    worktreeListings,
     missing,
     documents,
     downloads,
@@ -1456,5 +1470,71 @@ test("an older host explains that it cannot download either", async ({
   await expect(dialog.getByRole("alert")).toContainText(
     "This service cannot download files",
   );
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("a file that only exists in a linked worktree resolves there", async ({
+  page,
+}) => {
+  const worktree = "/workspace/links-wt";
+  const mock = await host(page, "[Main](src/main.ts)", project.path, "en", [
+    worktree,
+  ]);
+  mock.missing.add("src/main.ts");
+  mock.worktreeListings[`${worktree}:`] = [
+    { name: "src", path: "src", kind: "directory" },
+  ];
+  mock.worktreeListings[`${worktree}:src`] = [
+    { name: "main.ts", path: "src/main.ts", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Main", exact: true }).click();
+  const dialog = preview(page);
+  await expect(dialog.locator(".file-preview-code")).toBeVisible();
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    `${worktree}/src/main.ts`,
+  );
+  expect(mock.reads).toEqual([
+    { project: project.id, path: "src/main.ts", root: null },
+    { project: project.id, path: "src/main.ts", root: worktree },
+  ]);
+  expect(mock.unexpected).toEqual([]);
+});
+
+test("matches from two checkouts are offered with their worktree", async ({
+  page,
+}) => {
+  const worktree = "/workspace/links-wt";
+  const mock = await host(page, "[Main](src/main.ts)", project.path, "en", [
+    worktree,
+  ]);
+  mock.missing.add("src/main.ts");
+  mock.listings[""] = [{ name: "src", path: "src", kind: "directory" }];
+  mock.listings["src"] = [
+    { name: "main.ts", path: "src/main.ts", kind: "file" },
+  ];
+  mock.worktreeListings[`${worktree}:`] = [
+    { name: "src", path: "src", kind: "directory" },
+  ];
+  mock.worktreeListings[`${worktree}:src`] = [
+    { name: "main.ts", path: "src/main.ts", kind: "file" },
+  ];
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Main", exact: true }).click();
+  const dialog = preview(page);
+  const choices = dialog.locator(".file-preview-candidates button");
+  await expect(choices).toHaveCount(2);
+  // The project root is listed first, the worktree carries its label.
+  await expect(choices.first()).toContainText("src/main.ts");
+  await expect(choices.nth(1)).toContainText("worktree");
+  await choices.nth(1).click();
+  await expect(dialog.locator(".file-preview-path")).toContainText(
+    `${worktree}/src/main.ts`,
+  );
+  await expect(dialog.locator(".file-preview-code")).toBeVisible();
+  expect(mock.reads).toEqual([
+    { project: project.id, path: "src/main.ts", root: null },
+    { project: project.id, path: "src/main.ts", root: worktree },
+  ]);
   expect(mock.unexpected).toEqual([]);
 });
