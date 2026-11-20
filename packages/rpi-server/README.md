@@ -1,11 +1,12 @@
 # rpi-server
 
-TCP JSONL server for rpi with streaming subscriptions — 基于 **Transport trait** 抽象，支持多种传输协议。
+TCP JSONL / WebSocket server for rpi with streaming subscriptions — 基于 **Transport trait** 抽象，两种传输共用同一套 JSON-RPC 语义。
 
 ## 特性
 
 - ✅ **TCP JSONL 协议** — 简单、高效、易于调试
-- ✅ **Transport trait 抽象** — 可扩展 WebSocket/Unix Socket 等传输方式
+- ✅ **WebSocket 传输** — 一个 JSON 帧一个文本帧，适合浏览器/网关客户端
+- ✅ **Transport trait 抽象** — 可继续扩展 Unix Socket 等传输方式
 - ✅ **流式订阅** — 通过 `subscribe` 方法订阅实时事件流
 - ✅ **会话管理** — 支持多个 rpi 会话并行
 - ✅ **连接管理** — 内置重试、心跳、延迟检测、在线状态追踪
@@ -24,9 +25,62 @@ rpi --server --port 8080
 
 # 指定绑定地址
 rpi --server --bind 0.0.0.0 --port 9800
+
+# 改用 WebSocket 传输（同样的方法、认证与结果）
+rpi --server --server-ws --port 9800
+
+# WebSocket over TLS（证书和私钥由运维提供）
+rpi --server --server-ws \
+  --server-tls-cert /etc/rpi/cert.pem \
+  --server-tls-key  /etc/rpi/key.pem \
+  --port 9800
+
+# 双向 TLS：再要求客户端证书（mTLS）
+rpi --server --server-ws \
+  --server-tls-cert /etc/rpi/cert.pem \
+  --server-tls-key  /etc/rpi/key.pem \
+  --server-tls-client-ca /etc/rpi/client-ca.pem \
+  --port 9800
 ```
 
-rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动 TCP 服务器。
+rpi-server 作为扩展加载，检测到 `--server` flag 后自动启动服务器；加上
+`--server-ws` 时改用 WebSocket，同时给出 `--server-tls-cert` 与
+`--server-tls-key` 时升级为 `wss`（TLS 终结在监听器内）。`rpc_server` 工具的
+`transport` 参数（`"tcp"` 默认 / `"ws"` / `"wss"`）可以在会话内选择传输，返回
+结果里的 `transport` 字段就是实际使用的传输。`rpc_client` 会按监听器记录的
+传输自动选择客户端（`wss` 时用系统根证书校验）。
+
+### wss 的证书要求
+
+- `tlsCert` / `tlsKey` 只在 `transport: "wss"` 时有效；`tcp`/`ws` 传这两个参数
+  会直接报错，避免"配了 TLS 却静默明文"
+- 证书必须是 PEM 链，私钥必须是 PEM；读取失败、缺少证书、证书与私钥不匹配都会
+  让启动失败，而不是降级
+- 私钥只在启动时读取一次，不出现在返回值或日志里
+- `rpc_client` 使用系统根证书，因此**自签名证书需要反向代理或自定义客户端**；
+  浏览器等外部客户端同理
+- 监听器不做 HSTS/重定向：`wss` 只加密这一条通道
+
+### 证书轮换
+
+监听器每次接受连接前会检查证书/私钥/客户端 CA 文件的修改时间，最多每 10 秒
+一次；发现变新就重新加载：
+
+- 轮换只影响**新连接**，已建立的连接保持原握手，不会被中断
+- 轮换失败（文件半写、格式错误、私钥不匹配）只打印错误并**继续使用旧证书**，
+  不会让监听器停止服务
+- 没有 SIGHUP 之类的显式触发：直接替换文件即可，10 秒内生效
+
+### mTLS（客户端证书）
+
+`--server-tls-client-ca`（工具参数 `tlsClientCa`）指定一个 PEM CA bundle 后，
+**每个连接都必须出示由该 CA 签发的客户端证书**，否则 TLS 握手直接失败：
+
+- 没有「只在客户端提供时校验」的模式——那等于放行任何人
+- 客户端证书与 token 是两层独立机制：证书决定"能不能建立连接"，token 决定
+  "能不能调用方法"；两者可以同时启用
+- CA 文件可以是多个证书（多 CA），但必须至少有一个；读取失败/非 PEM/不可用作
+  根证书都会让启动失败，而不是退化成无客户端校验
 
 ### 在 rpi 会话中管理
 
@@ -253,8 +307,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `send` | 必须 `sessionId`、`command`；将原生 JSON 命令写到该子进程 stdin；sent 不表示执行完成 |
 | `stop_session` | 必须 `sessionId`；从会话表移除并 kill/wait 子进程 |
 | `list_sessions` | 忽略 params；列出会话快照，不是历史记录 |
-| `server_status` | 忽略 params；服务状态，包含明文 token，必须保密 |
-| `subscribe` | 必须有效 `sessionId`；订阅当前连接上的后续事件，工具收集还需 `subscribe:true` |
+| `server_status` | 忽略 params；服务状态（含 `transport`），包含明文 token，必须保密 |
+| `subscribe` | 必须有效 `sessionId`；订阅当前连接上的后续事件（每个连接最多 32 个订阅，超出返回 `-32002`） |
+| `unsubscribe` | 必须 `params.subscriptionId`；释放本地订阅并返回 `{unsubscribed:true}`，未知 id 返回 `-32000` |
 | `ping` | 忽略 params；返回 pong，不保证模型或子进程健康 |
 
 ## Schema 回归检查
@@ -286,7 +341,7 @@ cargo test --locked -p rpi-server registered_schemas
 ```
 Transport trait (抽象层)
     ↓
-TcpTransport (已实现) / WebSocketTransport (未来)
+TcpTransport (已实现) / WebSocketTransport (已实现)
     ↓
 ManagedConnection (连接管理)
     - 自动重试 (10次)
@@ -299,29 +354,30 @@ AppState + Sessions (业务逻辑)
 
 ## Transport trait 扩展
 
-要添加新的传输协议（如 WebSocket），只需实现 `Transport` 和 `Connection` trait：
+`WebSocketTransport` 就是按这个方式实现的参考（单帧一个 JSON，服务端做
+`accept_async`，客户端连 `ws://host:port/`）。添加新传输只需实现同样的两个 trait：
 
 ```rust
 use async_trait::async_trait;
 use rpi_server::transport::{Transport, Connection};
 
-pub struct WebSocketTransport {
+pub struct UnixSocketTransport {
     // ...
 }
 
 #[async_trait]
-impl Transport for WebSocketTransport {
-    type Connection = WebSocketConnection;
+impl Transport for UnixSocketTransport {
+    type Connection = UnixSocketConnection;
     
     async fn listen(&self, addr: &str) -> Result<(), String> {
         // 实现 WebSocket 监听
     }
     
-    async fn accept(&self) -> Result<WebSocketConnection, String> {
+    async fn accept(&self) -> Result<UnixSocketConnection, String> {
         // 实现接受连接
     }
     
-    async fn connect(&self, addr: &str) -> Result<WebSocketConnection, String> {
+    async fn connect(&self, addr: &str) -> Result<UnixSocketConnection, String> {
         // 实现客户端连接
     }
     
@@ -330,12 +386,12 @@ impl Transport for WebSocketTransport {
     }
 }
 
-pub struct WebSocketConnection {
+pub struct UnixSocketConnection {
     // ...
 }
 
 #[async_trait]
-impl Connection for WebSocketConnection {
+impl Connection for UnixSocketConnection {
     async fn send(&mut self, msg: serde_json::Value) -> Result<(), String> {
         // 实现发送
     }
@@ -404,7 +460,9 @@ println!("messages received: {}", status.messages_received);
 | 特性 | TCP JSONL | WebSocket |
 |------|-----------|-----------|
 | 协议开销 | 低（仅 `\n` 分隔） | 中（帧协议） |
-| 浏览器支持 | ❌ 需要代理 | ✅ 原生支持 |
+| 浏览器支持 | ❌ 需要代理 | ✅ 原生支持（`ws://host:port/`） |
+| 认证/方法/结果 | 相同 | 相同（`authenticate` 仍在最前） |
+| 加密 | 无 | `wss` 由监听器终结 TLS（`ws` 仍为明文） |
 | 调试难度 | 低（nc/telnet） | 中（需要工具） |
 | 心跳检测 | 应用层实现 | 协议自带 |
 | 适用场景 | 服务间通信 | Web 客户端 |

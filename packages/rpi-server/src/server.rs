@@ -11,6 +11,10 @@ use tokio::sync::broadcast;
 use tokio::sync::Mutex as TokioMutex;
 
 const MAX_LINE: usize = 1_048_576;
+/// Bound the accept tasks whose TLS/WebSocket handshakes are in flight. Each
+/// task releases the listener before its handshake, so this pool keeps one slow
+/// peer from blocking the accept loop while still bounding memory/connections.
+const MAX_PENDING_ACCEPTS: usize = 16;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -26,6 +30,7 @@ pub struct SessionInfo {
 pub struct ServerInfo {
     pub id: String,
     pub address: String,
+    pub transport: &'static str,
     pub token: String,
     pub state: String,
     pub sessions: Vec<SessionInfo>,
@@ -59,6 +64,7 @@ pub struct AppState {
     pub sessions: TokioMutex<HashMap<String, Arc<TokioMutex<Session>>>>,
     pub executable: PathBuf,
     pub default_args: Vec<String>,
+    pub transport: &'static str,
     pub token: String,
     pub server_id: String,
     pub bound_address: TokioMutex<String>,
@@ -69,6 +75,7 @@ impl AppState {
     pub fn new(
         executable: PathBuf,
         default_args: Vec<String>,
+        transport: &'static str,
         token: String,
         server_id: String,
     ) -> Self {
@@ -76,6 +83,7 @@ impl AppState {
             sessions: TokioMutex::new(HashMap::new()),
             executable,
             default_args,
+            transport,
             token,
             server_id,
             bound_address: TokioMutex::new(String::new()),
@@ -96,6 +104,7 @@ impl AppState {
         ServerInfo {
             id: self.server_id.clone(),
             address: address.to_string(),
+            transport: self.transport,
             token: self.token.clone(),
             state: state.to_string(),
             sessions,
@@ -464,6 +473,10 @@ async fn handle_server_status(state: &Arc<AppState>) -> Result<Value, String> {
 
 static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Subscriptions one connection may hold. Each retains a broadcast receiver and
+/// a session handle, so an uncapped client could grow both without bound.
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 32;
+
 // ── Connection handler ────────────────────────────────────────────────────────
 
 /// Handle a single client connection.
@@ -477,6 +490,10 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
 
     loop {
         // Check for subscription events (non-blocking)
+        // Subscriptions whose child ended (or whose sender closed) are dropped
+        // after this pass; keeping them would grow the map for the life of the
+        // connection and keep replaying a finished session.
+        let mut finished: Vec<u64> = Vec::new();
         for (sub_id, rx) in sub_receivers.iter_mut() {
             loop {
                 match rx.try_recv() {
@@ -494,6 +511,7 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
                             return;
                         }
                         if event.get("type").and_then(Value::as_str) == Some("session_end") {
+                            finished.push(*sub_id);
                             break;
                         }
                     }
@@ -509,9 +527,16 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
                         });
                         let _ = conn.send(notification).await;
                     }
-                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        finished.push(*sub_id);
+                        break;
+                    }
                 }
             }
+        }
+        for sub_id in finished {
+            sub_receivers.remove(&sub_id);
+            sub_sessions.remove(&sub_id);
         }
 
         // Read next message with a short timeout to allow subscription polling
@@ -583,6 +608,22 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
 
                     match session {
                         Some(session) => {
+                            if sub_receivers.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                                let response = json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32002,
+                                        "message": format!(
+                                            "subscription limit reached ({MAX_SUBSCRIPTIONS_PER_CONNECTION})"
+                                        ),
+                                    },
+                                });
+                                if conn.send(response).await.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
                             let sub_id = NEXT_SUB_ID.fetch_add(1, Ordering::Relaxed);
                             let rx = {
                                 let sl = session.lock().await;
@@ -615,6 +656,37 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
                             }
                         }
                     }
+                } else if method == "unsubscribe" {
+                    let id = msg.get("id").cloned();
+                    let requested = msg
+                        .get("params")
+                        .and_then(|params| params.get("subscriptionId"))
+                        .and_then(Value::as_u64);
+                    let removed = requested
+                        .map(|sub_id| {
+                            sub_receivers.remove(&sub_id).is_some()
+                                | sub_sessions.remove(&sub_id).is_some()
+                        })
+                        .unwrap_or(false);
+                    let response = if removed {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {"unsubscribed": true},
+                        })
+                    } else {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32000,
+                                "message": "unknown subscriptionId",
+                            },
+                        })
+                    };
+                    if conn.send(response).await.is_err() {
+                        break;
+                    }
                 } else {
                     // Normal request
                     if let Some(response) = handle_request(&state, &msg).await {
@@ -639,10 +711,10 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
         }
     }
 
-    // Cleanup: abort all subscription tasks
-    for (_, session) in sub_sessions {
-        let _ = session;
-    }
+    // Receivers and session handles are dropped with the connection; the child
+    // processes stay owned by the server so another client can subscribe.
+    drop(sub_receivers);
+    drop(sub_sessions);
 }
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
@@ -650,6 +722,8 @@ pub async fn handle_connection<C: Connection>(state: Arc<AppState>, mut conn: C)
 pub struct TcpServerHandle {
     pub id: String,
     pub address: String,
+    /// Wire transport actually carrying JSON frames: `tcp` or `ws`.
+    pub transport: &'static str,
     pub token: String,
     pub state: Arc<AppState>,
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -667,7 +741,7 @@ impl TcpServerHandle {
 
         // Kill all child processes
         let sessions = self.state.sessions.lock().await;
-        for (_, session) in sessions.iter() {
+        for session in sessions.values() {
             let mut s = session.lock().await;
             let _ = s.child.kill().await;
             let _ = s.child.wait().await;
@@ -688,6 +762,7 @@ impl TcpServerHandle {
 /// Run the TCP server — accepts connections and spawns handlers.
 pub async fn run_server<T: Transport>(
     transport: Arc<T>,
+    transport_name: &'static str,
     bind: &str,
     port: u16,
     token: String,
@@ -701,6 +776,7 @@ pub async fn run_server<T: Transport>(
     let state = Arc::new(AppState::new(
         executable,
         args,
+        transport_name,
         token.clone(),
         server_id.clone(),
     ));
@@ -711,6 +787,7 @@ pub async fn run_server<T: Transport>(
     let handle = Arc::new(TcpServerHandle {
         id: server_id,
         address: addr.clone(),
+        transport: transport_name,
         token,
         state: Arc::clone(&state),
         shutdown_tx,
@@ -724,23 +801,34 @@ pub async fn run_server<T: Transport>(
         println!("token: {}", handle.token);
     }
 
-    // Accept loop
+    // Accept loop. `accept()` includes the TLS/WebSocket handshake for the
+    // WebSocket transports, so run a bounded pool instead of awaiting one
+    // handshake at a time; otherwise a peer that never finishes its handshake
+    // blocks every later connection.
     let handle_clone = Arc::clone(&handle);
     let transport_clone = Arc::clone(&transport);
     tokio::spawn(async move {
         let mut shutdown_rx = handle_clone.shutdown_rx.clone();
+        let mut accepts = tokio::task::JoinSet::new();
         loop {
+            while accepts.len() < MAX_PENDING_ACCEPTS {
+                let transport = Arc::clone(&transport_clone);
+                accepts.spawn(async move { transport.accept().await });
+            }
             tokio::select! {
-                result = transport_clone.accept() => {
-                    match result {
-                        Ok(conn) => {
+                Some(joined) = accepts.join_next() => {
+                    match joined {
+                        Ok(Ok(conn)) => {
                             let state = Arc::clone(&handle_clone.state);
                             tokio::spawn(async move {
                                 handle_connection(state, conn).await;
                             });
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             eprintln!("accept error: {e}");
+                        }
+                        Err(e) => {
+                            eprintln!("accept task failed: {e}");
                         }
                     }
                 }
@@ -749,7 +837,422 @@ pub async fn run_server<T: Transport>(
                 }
             }
         }
+        accepts.abort_all();
+        while accepts.join_next().await.is_some() {}
     });
 
     Ok(handle)
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use crate::transport::{Connection, WebSocketTransport};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    fn free_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("free port");
+        listener.local_addr().expect("address").port()
+    }
+
+    /// Read until the response with `id` arrives, skipping notifications.
+    async fn response_for(conn: &mut impl Connection, id: u64) -> serde_json::Value {
+        for _ in 0..20 {
+            let frame = conn.recv().await.expect("recv").expect("frame");
+            if frame["id"] == id {
+                return frame;
+            }
+        }
+        panic!("no response for id {id}");
+    }
+
+    #[tokio::test]
+    async fn serves_jsonrpc_over_websocket_and_reports_its_transport() {
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(WebSocketTransport::new()),
+            "ws",
+            "127.0.0.1",
+            port,
+            "test-token".to_string(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start ws server");
+
+        let mut client = WebSocketTransport::new()
+            .connect(&format!("127.0.0.1:{port}"))
+            .await
+            .expect("ws connect");
+
+        // Unauthenticated requests are refused, exactly like the TCP transport.
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}))
+            .await
+            .expect("send");
+        let refused = response_for(&mut client, 1).await;
+        assert!(refused.get("error").is_some(), "{refused}");
+
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":2,"method":"authenticate","params":{"token":"test-token"}}))
+            .await
+            .expect("send");
+        let authenticated = response_for(&mut client, 2).await;
+        assert_eq!(authenticated["result"]["authenticated"], true);
+
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":3,"method":"ping"}))
+            .await
+            .expect("send");
+        let pong = response_for(&mut client, 3).await;
+        assert!(pong.get("result").is_some(), "{pong}");
+
+        assert_eq!(handle.transport, "ws");
+        let info = handle.info().await;
+        assert_eq!(info.address, format!("127.0.0.1:{port}"));
+
+        client.close().await.expect("close");
+        handle.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_handshake_does_not_block_server_accepts() {
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(WebSocketTransport::new()),
+            "ws",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start ws server");
+
+        // Open TCP without sending the WebSocket handshake. The accept pool must
+        // still complete a second, healthy WebSocket connection.
+        let stalled = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("stalled peer");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let connected = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            WebSocketTransport::new().connect(&format!("127.0.0.1:{port}")),
+        )
+        .await
+        .expect("accept loop was blocked by a stalled handshake")
+        .expect("healthy ws connection");
+        drop(stalled);
+        drop(connected);
+        handle.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn serves_wss_with_a_supplied_certificate() {
+        let generated =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+        let cert_pem = generated.cert.pem();
+        let key_pem = generated.key_pair.serialize_pem();
+        let dir = std::env::temp_dir().join(format!("rpi-server-wss-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, &cert_pem).expect("write cert");
+        std::fs::write(&key_path, &key_pem).expect("write key");
+
+        let config =
+            crate::tls::load_server_config(&cert_path, &key_path, None).expect("tls config");
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(WebSocketTransport::with_tls(
+                tokio_rustls::TlsAcceptor::from(config),
+            )),
+            "wss",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start wss server");
+        assert_eq!(handle.transport, "wss");
+
+        // A real TLS client that trusts exactly the generated certificate.
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for certificate in rustls_pemfile::certs(&mut cert_pem.as_bytes()) {
+            roots.add(certificate.expect("cert der")).expect("add root");
+        }
+        let client_config = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_tungstenite::Connector::Rustls(Arc::new(client_config));
+        let (mut socket, _) = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{port}/"),
+            None,
+            false,
+            Some(connector),
+        )
+        .await
+        .expect("wss connect");
+
+        socket
+            .send(Message::Text(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("send");
+        let reply = loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    break serde_json::from_str::<serde_json::Value>(&text).expect("json");
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        };
+        assert!(reply.get("result").is_some(), "{reply}");
+        assert_eq!(reply["result"]["type"], "pong");
+
+        let _ = socket.close(None).await;
+        handle.stop().await.expect("stop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/bin/cat` stands in for the native child: it echoes stdin, so a session
+    /// can be started without an `rpi` binary.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subscriptions_can_be_released_and_are_capped() {
+        use crate::transport::TcpTransport;
+
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(TcpTransport::new()),
+            "tcp",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("/bin/cat"),
+            Vec::new(),
+        )
+        .await
+        .expect("start server");
+        let mut client = TcpTransport::new()
+            .connect(&format!("127.0.0.1:{port}"))
+            .await
+            .expect("connect");
+
+        client
+            .send(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"start_session"}))
+            .await
+            .expect("send");
+        let started = response_for(&mut client, 1).await;
+        let session_id = started["result"]["sessionId"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+
+        client
+            .send(serde_json::json!({
+                "jsonrpc":"2.0","id":2,"method":"subscribe",
+                "params":{"sessionId":session_id},
+            }))
+            .await
+            .expect("send");
+        let subscribed = response_for(&mut client, 2).await;
+        let subscription_id = subscribed["result"]["subscriptionId"]
+            .as_u64()
+            .expect("subscription id");
+
+        client
+            .send(serde_json::json!({
+                "jsonrpc":"2.0","id":3,"method":"unsubscribe",
+                "params":{"subscriptionId":subscription_id},
+            }))
+            .await
+            .expect("send");
+        let released = response_for(&mut client, 3).await;
+        assert_eq!(released["result"]["unsubscribed"], true);
+
+        // Releasing the same id twice is an error, not a silent success.
+        client
+            .send(serde_json::json!({
+                "jsonrpc":"2.0","id":4,"method":"unsubscribe",
+                "params":{"subscriptionId":subscription_id},
+            }))
+            .await
+            .expect("send");
+        let repeated = response_for(&mut client, 4).await;
+        assert_eq!(repeated["error"]["code"], -32000, "{repeated}");
+
+        // The next subscription beyond the cap is refused; earlier ones stand.
+        let mut refused = 0;
+        for index in 0..=MAX_SUBSCRIPTIONS_PER_CONNECTION {
+            let id = 100 + index as u64;
+            client
+                .send(serde_json::json!({
+                    "jsonrpc":"2.0","id":id,"method":"subscribe",
+                    "params":{"sessionId":session_id},
+                }))
+                .await
+                .expect("send");
+            let reply = response_for(&mut client, id).await;
+            if reply["error"]["code"] == -32002 {
+                refused += 1;
+            }
+            assert!(
+                reply.get("result").is_some() || reply["error"]["code"] == -32002,
+                "{reply}"
+            );
+        }
+        assert_eq!(refused, 1, "exactly the over-cap subscription is refused");
+
+        client.close().await.expect("close");
+        handle.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    async fn requires_a_client_certificate_when_a_client_ca_is_configured() {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+        };
+        use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+        // CA, server leaf and client leaf, all minted locally.
+        let ca_key = KeyPair::generate().expect("ca key");
+        let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "rpi-test-ca");
+        let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
+
+        let server_key = KeyPair::generate().expect("server key");
+        let mut server_params =
+            CertificateParams::new(vec!["localhost".to_string()]).expect("server params");
+        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let server_cert = server_params
+            .signed_by(&server_key, &ca_cert, &ca_key)
+            .expect("server cert");
+
+        let client_key = KeyPair::generate().expect("client key");
+        let mut client_params =
+            CertificateParams::new(vec!["rpi-test-client".to_string()]).expect("client params");
+        client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        let client_cert = client_params
+            .signed_by(&client_key, &ca_cert, &ca_key)
+            .expect("client cert");
+
+        let dir = std::env::temp_dir().join(format!("rpi-server-mtls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        let ca_path = dir.join("ca.pem");
+        std::fs::write(&cert_path, server_cert.pem()).expect("write cert");
+        std::fs::write(&key_path, server_key.serialize_pem()).expect("write key");
+        std::fs::write(&ca_path, ca_cert.pem()).expect("write ca");
+
+        let config = crate::tls::load_server_config(&cert_path, &key_path, Some(&ca_path))
+            .expect("mtls config");
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(WebSocketTransport::with_tls(
+                tokio_rustls::TlsAcceptor::from(config),
+            )),
+            "wss",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start mtls server");
+
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from(ca_cert.der().to_vec()))
+            .expect("trust ca");
+
+        // A client without a certificate cannot complete the handshake.
+        let anonymous = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots.clone())
+            .with_no_client_auth();
+        let refused = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{port}/"),
+            None,
+            false,
+            Some(tokio_tungstenite::Connector::Rustls(Arc::new(anonymous))),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "a certificate-less client must be rejected"
+        );
+
+        // With a certificate signed by the CA the session works.
+        let authenticated = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(
+                vec![CertificateDer::from(client_cert.der().to_vec())],
+                PrivateKeyDer::try_from(client_key.serialize_der()).expect("client key der"),
+            )
+            .expect("client config");
+        let (mut socket, _) = tokio_tungstenite::connect_async_tls_with_config(
+            format!("wss://localhost:{port}/"),
+            None,
+            false,
+            Some(tokio_tungstenite::Connector::Rustls(Arc::new(
+                authenticated,
+            ))),
+        )
+        .await
+        .expect("client certificate accepted");
+        socket
+            .send(Message::Text(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("send");
+        let reply = loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    break serde_json::from_str::<serde_json::Value>(&text).expect("json");
+                }
+                Some(Ok(_)) => continue,
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        };
+        assert_eq!(reply["result"]["type"], "pong");
+
+        let _ = socket.close(None).await;
+        handle.stop().await.expect("stop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tcp_servers_keep_reporting_tcp() {
+        let port = free_port();
+        let handle = run_server(
+            Arc::new(crate::transport::TcpTransport::new()),
+            "tcp",
+            "127.0.0.1",
+            port,
+            String::new(),
+            PathBuf::from("rpi"),
+            Vec::new(),
+        )
+        .await
+        .expect("start tcp server");
+        assert_eq!(handle.transport, "tcp");
+        handle.stop().await.expect("stop");
+    }
 }
