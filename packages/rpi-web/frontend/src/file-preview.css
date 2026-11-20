@@ -202,6 +202,31 @@
 .file-preview-markdown .markdown-body .markdown-code-block {
   margin: 0 0 16px;
 }
+/* The code-block copy action matches the dialog's compact icon strip: the
+   accessible name stays, the visible label does not. */
+.file-preview-markdown .markdown-code-heading {
+  min-height: 26px;
+  padding: 0 6px 0 12px;
+  font-size: 9.5px;
+}
+.file-preview-markdown .markdown-copy {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  gap: 0;
+  font-size: 0;
+  background: transparent;
+  justify-content: center;
+}
+.file-preview-markdown .markdown-copy:hover:not(:disabled) {
+  background: var(--hover);
+}
+.file-preview-markdown .markdown-copy svg {
+  width: 12px;
+  height: 12px;
+}
 .file-preview-path {
   overflow-wrap: anywhere;
   font: 13px var(--mono);

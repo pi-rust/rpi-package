@@ -1209,6 +1209,8 @@ const notesDoc = [
   "",
   "- 第一项",
   "- 第二项",
+  "",
+  "```ts\nconst answer = 42;\n```",
 ].join("\n");
 
 for (const width of [1280, 390])
@@ -1246,13 +1248,23 @@ for (const width of [1280, 390])
       "全屏查看",
       "关闭",
     ]) {
-      const button = dialog.getByRole("button", { name: label, exact: true });
+      const button = dialog.locator(
+        `.file-preview-tools button[aria-label="${label}"]`,
+      );
+      await expect(button).toHaveCount(1);
       await expect(button).toBeVisible();
       const box = (await button.boundingBox())!;
       expect(box.width).toBeLessThanOrEqual(34);
       expect(box.height).toBeLessThanOrEqual(34);
     }
     expect(await tools.count()).toBeGreaterThanOrEqual(6);
+    // A fenced block's own copy action is equally compact (icon only).
+    const codeCopy = dialog.locator(".file-preview-markdown .markdown-copy");
+    await expect(codeCopy).toHaveCount(1);
+    const codeBox = (await codeCopy.boundingBox())!;
+    expect(codeBox.width).toBeLessThanOrEqual(24);
+    expect(codeBox.height).toBeLessThanOrEqual(24);
+    await expect(codeCopy).toHaveAccessibleName("复制代码");
     await dialog.getByRole("button", { name: "复制路径", exact: true }).click();
     await expect
       .poll(() =>
