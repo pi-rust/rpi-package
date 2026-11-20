@@ -2989,7 +2989,7 @@ dependencies = [
 
 [[package]]
 name = "rpi-web"
-version = "0.1.66"
+version = "0.1.73"
 dependencies = [
  "axum",
  "rpi-extcore",
