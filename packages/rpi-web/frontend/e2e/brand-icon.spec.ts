@@ -121,9 +121,21 @@ for (const width of [1280, 390]) {
       const response = await page.request.get(src!);
       expect(response.status()).toBe(200);
       expect(response.headers()["content-type"]).toContain("image/png");
-      expect(await page.locator('link[rel="icon"]').getAttribute("href")).toBe(
-        "/favicon.svg",
+      const iconHref = await page
+        .locator('link[rel="icon"]')
+        .getAttribute("href");
+      expect(iconHref).toBe("/favicon.svg");
+      const faviconResponse = await page.request.get(iconHref!);
+      expect(faviconResponse.status()).toBe(200);
+      expect(faviconResponse.headers()["content-type"]).toContain(
+        "image/svg+xml",
       );
+      const faviconSvg = await faviconResponse.text();
+      // The browser tab renders this at 16–32px. Keep the favicon as real SVG
+      // geometry instead of embedding a 600px raster that becomes blurry.
+      expect(faviconSvg).not.toMatch(/<image\b/i);
+      expect(faviconSvg).not.toMatch(/base64/i);
+      expect(faviconSvg).toContain('viewBox="0 0 32 32"');
       if (!authenticated)
         await expect(page.locator(".login-mark .rpi-logo")).toBeVisible();
       expect(
