@@ -18,6 +18,10 @@ pub(super) async fn capabilities(State(state): State<AppState>) -> Json<Value> {
     // measured server-side only: browser-local typing is invisible to it. A
     // client that knows the value can keep the selected session alive instead
     // of waiting for the retirement to surface as a 404.
+    // The installed build identifies itself; older clients simply ignore it.
+    if let Some(version) = state.service_version {
+        value["version"] = json!(version);
+    }
     value["sessionIdleTimeoutSeconds"] = match state.session_idle_timeout_seconds {
         Some(seconds) => json!(seconds),
         None => Value::Null,

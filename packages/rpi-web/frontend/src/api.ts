@@ -1,4 +1,6 @@
 export interface Capabilities {
+  /** Installed build reported by the host; absent on older services. */
+  version?: string;
   protocol: string;
   piCompatibilityTarget?: string;
   supportedCommands: string[];

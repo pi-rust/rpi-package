@@ -25,6 +25,7 @@ struct AppState {
     admission: Admission,
     shutdown: watch::Receiver<bool>,
     service_name: &'static str,
+    service_version: Option<&'static str>,
     /// Mirrors the configured idle timeout so clients can keep a session alive
     /// instead of discovering the retirement through a 404.
     session_idle_timeout_seconds: Option<u64>,
@@ -84,6 +85,7 @@ pub async fn serve_until(
             .expect("the configured HTTP admission limit must be non-zero"),
         shutdown: receiver,
         service_name: config.service_name,
+        service_version: config.service_version,
         session_idle_timeout_seconds: config.session_timeout_seconds.filter(|s| *s > 0),
     };
     let idle_reaper = config
@@ -190,6 +192,7 @@ fn app_state(
             .expect("the configured HTTP admission limit must be non-zero"),
         shutdown,
         service_name: config.service_name,
+        service_version: config.service_version,
         session_idle_timeout_seconds: config.session_timeout_seconds.filter(|s| *s > 0),
     }
 }
