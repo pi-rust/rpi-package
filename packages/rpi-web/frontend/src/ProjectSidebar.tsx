@@ -1395,12 +1395,23 @@ export function ProjectSidebar({
               {[...sessions]
                 .filter((session) => !session.archived && !session.deleting)
                 .sort((a, b) => {
-                  // Last settled turn first; a session with no settled turn
-                  // yet competes by its latest activity so a brand-new chat
-                  // sits on top instead of below every tracked one.
-                  const key = (session: (typeof b) | (typeof a)) =>
-                    session.lastTurnEndedAt ?? session.updatedAt;
-                  return key(b) - key(a);
+                  // A live run outranks everything, ordered by its turn start;
+                  // the rest sort by the last settled turn, with sessions
+                  // that have none competing by latest activity so a
+                  // brand-new chat still sits high.
+                  const rank = (session: typeof b | typeof a) =>
+                    session.runningTurnStartedAt && session.status === "running"
+                      ? 0
+                      : 1;
+                  const key = (session: typeof b | typeof a) =>
+                    (session.runningTurnStartedAt &&
+                    session.status === "running"
+                      ? session.runningTurnStartedAt
+                      : undefined) ??
+                    session.lastTurnEndedAt ??
+                    session.updatedAt;
+                  const delta = rank(a) - rank(b);
+                  return delta || key(b) - key(a);
                 })
                 .slice(0, 10)
                 .map((session) => sessionRow(session, { recent: true }))}

@@ -38,6 +38,8 @@ export interface SessionSummary {
   updatedAt: number;
   /** Unix milliseconds of the latest authoritative run settlement, if any. */
   lastTurnEndedAt?: number | null;
+  /** Unix milliseconds of the live run's start, while a run is active. */
+  runningTurnStartedAt?: number | null;
   lastSeq: number;
   error: string | null;
   parentSessionId?: string | null;
