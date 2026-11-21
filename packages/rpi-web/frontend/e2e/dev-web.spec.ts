@@ -1792,7 +1792,7 @@ test.describe("touch composer", () => {
   test.use({ hasTouch: true });
 
 
-  test("a touch Enter stays a newline and the button queues during a run", async ({
+  test("a touch Enter tap submits and a keydown-less insert stays a newline", async ({
     page,
   }) => {
     await mockHost(page);
@@ -1805,10 +1805,11 @@ test.describe("touch composer", () => {
     );
     await page.route(`**/api/v1/sessions/${sessionId}/commands`, async (route) => {
       const body = route.request().postDataJSON();
-      if (body.type !== "queue_message") return route.fallback();
-      queued.push({ message: body.message, deliverAs: body.deliverAs });
+      if (!["prompt", "queue_message"].includes(body.type))
+        return route.fallback();
+      queued.push({ message: body.message, deliverAs: body.deliverAs ?? "" });
       return route.fulfill({
-        json: response({ accepted: true, entryId: "touch-queued" }, body.type),
+        json: response({ accepted: true, entryId: "touch-send" }, body.type),
       });
     });
     await page.setViewportSize({ width: 390, height: 844 });
@@ -1816,26 +1817,32 @@ test.describe("touch composer", () => {
     const input = page.getByRole("textbox", {
       name: "Send a prompt, or type / for commands…",
     });
-    const queueButton = page.getByRole("button", {
-      name: "Queue",
-      exact: true,
-    });
     await expect(
       page.getByRole("button", { name: "Abort", exact: true }),
     ).toBeEnabled();
-    await expect(queueButton).toHaveCount(0);
-    await input.fill("继续补充需求");
-    await expect(queueButton).toBeVisible();
-    // Touch Enter keeps its newline default; nothing submits.
+    await input.fill("点按发送");
     await input.press("Enter");
-    await expect(input).toHaveValue("继续补充需求\n");
-    await expect.poll(() => queued).toEqual([]);
-    // The run exposes the explicit queue button for sending drafts.
-    await queueButton.click();
+    // The tap submits once; the trailing newline insert of the same press is
+    // swallowed, leaving the composer empty.
     await expect
       .poll(() => queued)
-      .toEqual([{ message: "继续补充需求", deliverAs: "followUp" }]);
+      .toEqual([{ message: "点按发送", deliverAs: "followUp" }]);
     await expect(input).toHaveValue("");
+    // A long-press injects its newline without a keydown, so it must fall
+    // through to the textarea's default insert.
+    await input.fill("长按换行");
+    const allowed = await input.evaluate((element) =>
+      element.dispatchEvent(
+        new InputEvent("beforeinput", {
+          inputType: "insertLineBreak",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(allowed).toBe(true);
+    // Nothing extra was sent for the long-press.
+    await expect.poll(() => queued).toHaveLength(1);
   });
 });
 
