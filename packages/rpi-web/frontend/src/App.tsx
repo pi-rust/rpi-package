@@ -942,6 +942,10 @@ export default function App() {
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const composerComposing = useRef(false);
   const composerShiftEnter = useRef(false);
+  // True while a soft-keyboard Enter key is held past its first keydown
+  // (auto-repeat). Long-pressing Enter must insert newlines instead of
+  // spamming submissions; the beforeinput handler releases those inserts.
+  const composerEnterHeld = useRef(false);
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   function updateDraft(
@@ -3670,6 +3674,9 @@ export default function App() {
         !event.cancelable
       )
         return;
+      // A held Enter key long-press auto-repeats; those repeats mean
+      // newlines, not submissions. Let the default insert through.
+      if (composerEnterHeld.current) return;
       event.preventDefault();
       void submit();
     };
@@ -6318,9 +6325,11 @@ export default function App() {
                   onBlur={() => {
                     composerComposing.current = false;
                     composerShiftEnter.current = false;
+                    composerEnterHeld.current = false;
                   }}
                   onKeyUp={(event) => {
                     composerShiftEnter.current = event.shiftKey;
+                    if (event.key === "Enter") composerEnterHeld.current = false;
                   }}
                   onKeyDown={(event) => {
                     composerShiftEnter.current = event.shiftKey;
@@ -6331,6 +6340,14 @@ export default function App() {
                       !event.nativeEvent.isComposing &&
                       event.nativeEvent.keyCode !== 229
                     ) {
+                      // The first auto-repeat marks a long-press: from then
+                      // on Enter means newlines, so keep the repeats from
+                      // submitting too.
+                      if (event.repeat) {
+                        composerEnterHeld.current = true;
+                        event.preventDefault();
+                        return;
+                      }
                       event.preventDefault();
                       void submit();
                     }

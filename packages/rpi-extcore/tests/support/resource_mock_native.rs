@@ -135,6 +135,12 @@ fn main() {
                 success = !Path::new("fail-navigation").exists();
                 "{}".into()
             }
+            "prompt" => {
+                emit(r#"{"type":"agent_start"}"#.into());
+                std::thread::sleep(Duration::from_millis(30));
+                emit(r#"{"type":"agent_settled","outcome":"completed"}"#.into());
+                "{}".into()
+            }
             _ => "{}".into(),
         };
         emit(format!(
