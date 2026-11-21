@@ -1792,7 +1792,7 @@ test.describe("touch composer", () => {
   test.use({ hasTouch: true });
 
 
-  test("a touch Enter tap submits and a keydown-less insert stays a newline", async ({
+  test("touch Enter inserts a newline and the queue button sends", async ({
     page,
   }) => {
     await mockHost(page);
@@ -1820,17 +1820,12 @@ test.describe("touch composer", () => {
     await expect(
       page.getByRole("button", { name: "Abort", exact: true }),
     ).toBeEnabled();
-    await input.fill("点按发送");
+    await input.fill("触摸换行");
     await input.press("Enter");
-    // The tap submits once; the trailing newline insert of the same press is
-    // swallowed, leaving the composer empty.
-    await expect
-      .poll(() => queued)
-      .toEqual([{ message: "点按发送", deliverAs: "followUp" }]);
-    await expect(input).toHaveValue("");
-    // A long-press injects its newline without a keydown, so it must fall
-    // through to the textarea's default insert.
-    await input.fill("长按换行");
+    // Touch keyboards have no Shift: Enter must insert a newline, never send.
+    await expect(input).toHaveValue("触摸换行\n");
+    await expect.poll(() => queued).toHaveLength(0);
+    // A keydown-less insert (soft-keyboard long-press) keeps the default too.
     const allowed = await input.evaluate((element) =>
       element.dispatchEvent(
         new InputEvent("beforeinput", {
@@ -1841,8 +1836,11 @@ test.describe("touch composer", () => {
       ),
     );
     expect(allowed).toBe(true);
-    // Nothing extra was sent for the long-press.
-    await expect.poll(() => queued).toHaveLength(1);
+    // Running sessions queue a follow-up only through the explicit button.
+    await page.getByRole("button", { name: "Queue" }).click();
+    await expect
+      .poll(() => queued)
+      .toEqual([{ message: "触摸换行", deliverAs: "followUp" }]);
   });
 });
 
