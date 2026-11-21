@@ -734,13 +734,6 @@ export default function App() {
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [immersive, setImmersive] = useState(false);
   const isMobileViewport = () => window.matchMedia("(pointer: coarse)").matches;
-  // A composer that answers to a touch keyboard. Touch emulation (Playwright
-  // `hasTouch`) and real touch devices both report touch points, while desktop
-  // Chrome without a touchscreen reports none; the legacy media query alone
-  // misses emulated touch, so both signals count.
-  const isTouchComposer = () =>
-    navigator.maxTouchPoints > 0 ||
-    window.matchMedia("(pointer: coarse)").matches;
   // Mobile keeps the whole page visible (including the composer) and only
   // asks the browser to hide its own chrome. Desktop keeps the CSS immersive
   // reading mode; the two paths are deliberately independent.
@@ -949,12 +942,12 @@ export default function App() {
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const composerComposing = useRef(false);
   const composerShiftEnter = useRef(false);
-  // Timestamp of the last soft-keyboard Enter keydown. Soft keyboards do not
-  // auto-repeat: a long-press arrives as a lone keydown followed, hundreds of
-  // milliseconds later, by the system-injected newline insert. The beforeinput
-  // handler uses the elapsed time to tell that long-press newline apart from
-  // the tap that should submit; keyup settles keyboards that never emit
-  // beforeinput at all.
+  // Set by the keydown submit and consumed by the trailing newline insert a
+  // soft keyboard appends to the same physical press. A system-injected
+  // newline with no preceding keydown (the soft-keyboard long-press) never
+  // sets it, so the insert falls through to the textarea's default:
+  // tap sends, long-press inserts a newline.
+  const composerEnterJustSubmitted = useRef(false);
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   function updateDraft(
@@ -3666,6 +3659,31 @@ export default function App() {
     }
   }
 
+  // Some soft keyboards emit beforeinput without an Enter keydown. The
+  // keydown submit marks itself; a trailing newline insert for the same tap
+  // is swallowed, while a keydown-less insert (the soft-keyboard long-press)
+  // falls through to the textarea's default newline.
+  useEffect(() => {
+    const input = composerInputRef.current;
+    if (!input) return;
+    const onBeforeInput = (event: InputEvent) => {
+      if (
+        !["insertLineBreak", "insertParagraph"].includes(event.inputType) ||
+        event.isComposing ||
+        composerComposing.current ||
+        composerShiftEnter.current ||
+        !event.cancelable
+      )
+        return;
+      if (composerEnterJustSubmitted.current) {
+        composerEnterJustSubmitted.current = false;
+        event.preventDefault();
+      }
+    };
+    input.addEventListener("beforeinput", onBeforeInput);
+    return () => input.removeEventListener("beforeinput", onBeforeInput);
+  });
+
   async function resumePending() {
     if (
       !sessionId ||
@@ -6297,9 +6315,14 @@ export default function App() {
                   onBlur={() => {
                     composerComposing.current = false;
                     composerShiftEnter.current = false;
+                    composerEnterJustSubmitted.current = false;
                   }}
                   onKeyUp={(event) => {
                     composerShiftEnter.current = event.shiftKey;
+                    // The press is over: any newline insert from here on is
+                    // a system-injected long-press, not the tap's trailing
+                    // insert.
+                    composerEnterJustSubmitted.current = false;
                   }}
                   onKeyDown={(event) => {
                     composerShiftEnter.current = event.shiftKey;
@@ -6312,11 +6335,10 @@ export default function App() {
                     ) {
                       return;
                     }
-                    // Touch keyboards keep Enter as a newline; sending goes
-                    // through the send/queue buttons. Physical keyboards
-                    // submit on Enter as before (#373-era behavior).
-                    if (isTouchComposer()) return;
+                    // Tap: submit and swallow the trailing newline insert a
+                    // soft keyboard appends to the same physical press.
                     event.preventDefault();
+                    composerEnterJustSubmitted.current = true;
                     void submit();
                   }}
                   placeholder={t("sendPlaceholder")}
