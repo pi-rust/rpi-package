@@ -259,16 +259,13 @@ impl Service {
         let session_id = id.to_owned();
         let state = self.clone();
         tokio::task::spawn_blocking(move || {
-            let Some(ended_at) =
-                last_transcript_turn_end(&project_root, configured, &session_id)
+            let Some(ended_at) = last_transcript_turn_end(&project_root, configured, &session_id)
             else {
                 return;
             };
             let mut registry = state.registry.blocking_write();
             if let Err(error) = registry.note_turn_ended(&session_id, ended_at) {
-                eprintln!(
-                    "rpi-extcore: cannot backfill turn end for {session_id}: {error}"
-                );
+                eprintln!("rpi-extcore: cannot backfill turn end for {session_id}: {error}");
             }
         });
     }
@@ -750,19 +747,16 @@ fn last_transcript_turn_end(
         // Drop the first (likely partial) line of the window.
         tail.find('\n').map(|index| index + 1)?
     };
-    tail[skip..]
-        .lines()
-        .rev()
-        .find_map(|line| {
-            let frame = serde_json::from_str::<Value>(line).ok()?;
-            if frame["type"].as_str() != Some("operation_finished") {
-                return None;
-            }
-            if frame["outcome"].as_str().is_some_and(|o| o != "completed") {
-                return None;
-            }
-            frame["timestamp"].as_u64()
-        })
+    tail[skip..].lines().rev().find_map(|line| {
+        let frame = serde_json::from_str::<Value>(line).ok()?;
+        if frame["type"].as_str() != Some("operation_finished") {
+            return None;
+        }
+        if frame["outcome"].as_str().is_some_and(|o| o != "completed") {
+            return None;
+        }
+        frame["timestamp"].as_u64()
+    })
 }
 
 /// Resolve the native transcript path for a session id. Mirrors the discovery
@@ -1732,10 +1726,7 @@ mod tests {
 
     #[test]
     fn backfill_reads_the_last_settled_operation_from_the_transcript_tail() {
-        let root = std::env::temp_dir().join(format!(
-            "rpi-turn-backfill-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = std::env::temp_dir().join(format!("rpi-turn-backfill-{}", uuid::Uuid::new_v4()));
         let dir = root.join(".rpi").join("sessions");
         std::fs::create_dir_all(&dir).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
@@ -1760,15 +1751,12 @@ mod tests {
 
     #[test]
     fn backfill_returns_none_without_a_transcript() {
-        let root = std::env::temp_dir().join(format!(
-            "rpi-turn-backfill-empty-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rpi-turn-backfill-empty-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         assert_eq!(last_transcript_turn_end(&root, None, &id), None);
     }
-
 
     #[tokio::test]
     async fn settlement_updates_last_turn_end_and_recent_order() {
