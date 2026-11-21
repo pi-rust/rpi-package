@@ -752,9 +752,8 @@ fn last_transcript_turn_end(
         if frame["type"].as_str() != Some("operation_finished") {
             return None;
         }
-        if frame["outcome"].as_str().is_some_and(|o| o != "completed") {
-            return None;
-        }
+        // A turn ends however the run ends: completed, failed or aborted all
+        // mark the moment the last turn stopped.
         frame["timestamp"].as_u64()
     })
 }
@@ -1403,23 +1402,23 @@ pub async fn list_sessions(state: &Service, query: SessionListQuery) -> Value {
                 .and_then(|snapshot| snapshot.latest_settlement.clone()),
         }));
     }
+    // Sort by the last settled turn. A session that never completed a run
+    // (fresh, or aborted before any settle) still competes by its latest
+    // activity, so a brand-new session sits on top instead of falling behind
+    // every tracked one.
     summaries.sort_by(|a, b| {
-        let a_ended = a["lastTurnEndedAt"].as_u64().unwrap_or(0);
-        let b_ended = b["lastTurnEndedAt"].as_u64().unwrap_or(0);
-        b_ended
-            .cmp(&a_ended)
-            .then_with(|| {
-                b["updatedAt"]
-                    .as_u64()
-                    .unwrap_or_default()
-                    .cmp(&a["updatedAt"].as_u64().unwrap_or_default())
-            })
-            .then_with(|| {
-                a["sessionId"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .cmp(b["sessionId"].as_str().unwrap_or_default())
-            })
+        let key = |entry: &Value| {
+            entry["lastTurnEndedAt"]
+                .as_u64()
+                .unwrap_or_else(|| entry["updatedAt"].as_u64().unwrap_or_default())
+        };
+        let (a_key, b_key) = (key(a), key(b));
+        b_key.cmp(&a_key).then_with(|| {
+            a["sessionId"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(b["sessionId"].as_str().unwrap_or_default())
+        })
     });
     json!({"sessions": summaries})
 }
@@ -1740,11 +1739,12 @@ mod tests {
                 "\n",
                 r#"{"kind":"record","type":"operation_finished","id":"b","seq":3,"timestamp":900,"outcome":"aborted"}"#,
                 "\n",
-                r#"{"kind":"record","type":"operation_finished","id":"c","seq":4,"timestamp":950,"outcome":"completed"}"#,
+                r#"{"kind":"record","type":"operation_finished","id":"c","seq":4,"timestamp":950,"outcome":"aborted"}"#,
                 "\n",
             ),
         )
         .unwrap();
+        // The final run aborted; it still ends the last turn.
         let ended_at = last_transcript_turn_end(&root, None, &id);
         assert_eq!(ended_at, Some(950));
     }
