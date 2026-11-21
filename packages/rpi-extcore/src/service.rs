@@ -249,6 +249,30 @@ impl Service {
         });
     }
 
+    /// One-time backfill for sessions that ran entirely before turn-end
+    /// tracking existed: seed `lastTurnEndedAt` from the last settled
+    /// operation recorded in the native transcript. The watcher advances the
+    /// timestamp for every later run.
+    pub(crate) fn backfill_last_turn_ended(&self, id: &str, project: &Project) {
+        let configured = self.config.session_dir.clone();
+        let project_root = project.root.clone();
+        let session_id = id.to_owned();
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let Some(ended_at) =
+                last_transcript_turn_end(&project_root, configured, &session_id)
+            else {
+                return;
+            };
+            let mut registry = state.registry.blocking_write();
+            if let Err(error) = registry.note_turn_ended(&session_id, ended_at) {
+                eprintln!(
+                    "rpi-extcore: cannot backfill turn end for {session_id}: {error}"
+                );
+            }
+        });
+    }
+
     /// Mark a live session as recently used by a Web/API client. This is
     /// deliberately separate from `live_session`: internal probes and the
     /// reaper must not keep a session alive just by inspecting it.
@@ -699,6 +723,80 @@ pub struct RenameRequest {
     pub title: String,
 }
 
+/// Scan the tail of a native transcript for the last settled operation.
+/// Returns its timestamp, i.e. the authoritative end of the session's most
+/// recent completed run. Missing/unreadable transcripts simply yield `None`;
+/// the watcher then records the next run when it settles.
+fn last_transcript_turn_end(
+    project_root: &std::path::Path,
+    configured: Option<PathBuf>,
+    session_id: &str,
+) -> Option<u64> {
+    let root = crate::run_timing::session_root(project_root, configured).ok()?;
+    let path = locate_transcript(&root, session_id)?;
+    let file = std::fs::File::open(&path).ok()?;
+    let size = file.metadata().ok()?.len();
+    // One tail window is enough: a settle frame is a few hundred bytes.
+    let window = size.min(1024 * 1024);
+    let mut bytes = vec![0u8; window as usize];
+    let mut handle = std::io::BufReader::new(file);
+    use std::io::{Read, Seek, SeekFrom};
+    handle.seek(SeekFrom::Start(size - window)).ok()?;
+    handle.read_exact(&mut bytes).ok()?;
+    let tail = String::from_utf8_lossy(&bytes);
+    let skip = if window == size {
+        0
+    } else {
+        // Drop the first (likely partial) line of the window.
+        tail.find('\n').map(|index| index + 1)?
+    };
+    tail[skip..]
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let frame = serde_json::from_str::<Value>(line).ok()?;
+            if frame["type"].as_str() != Some("operation_finished") {
+                return None;
+            }
+            if frame["outcome"].as_str().is_some_and(|o| o != "completed") {
+                return None;
+            }
+            frame["timestamp"].as_u64()
+        })
+}
+
+/// Resolve the native transcript path for a session id. Mirrors the discovery
+/// budget of `history::saved::locate`: bounded entries, directories and time.
+fn locate_transcript(root: &std::path::Path, session_id: &str) -> Option<PathBuf> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let suffix = format!("_{session_id}.jsonl");
+    let inspect = |entry: std::fs::DirEntry| -> Option<PathBuf> {
+        if !entry.file_name().to_string_lossy().ends_with(&suffix) {
+            return None;
+        }
+        entry.file_type().ok()?.is_file().then_some(entry.path())
+    };
+    let mut directories = 0usize;
+    for entry in std::fs::read_dir(root).ok()? {
+        let entry = entry.ok()?;
+        if entry.file_type().ok()?.is_dir() {
+            directories += 1;
+            if directories > 256 || Instant::now() >= deadline {
+                return None;
+            }
+            for file in std::fs::read_dir(entry.path()).ok()? {
+                if let Some(found) = inspect(file.ok()?) {
+                    return Some(found);
+                }
+            }
+        } else if let Some(found) = inspect(entry) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn validated_title(title: Option<String>) -> Result<Option<String>, (ReplyKind, Value)> {
     let Some(title) = title else { return Ok(None) };
     let title = title.trim();
@@ -1138,6 +1236,9 @@ async fn open_session_owned(state: &Service, id: String) -> (ReplyKind, Value) {
             if let Err(error) = saved {
                 session.shutdown().await;
                 return resources::reply_error(error);
+            }
+            if entry.last_turn_ended_at.is_none() {
+                state.backfill_last_turn_ended(&id, &project);
             }
             state.watch_turn_ends(&id, &session);
             state.watch_turn_ends(&id, &session);
@@ -1628,6 +1729,46 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backfill_reads_the_last_settled_operation_from_the_transcript_tail() {
+        let root = std::env::temp_dir().join(format!(
+            "rpi-turn-backfill-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let dir = root.join(".rpi").join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = dir.join(format!("2026-01-01T00-00-00-000Z_{id}.jsonl"));
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"kind":"record","type":"operation_started","id":"a","seq":1,"timestamp":100}"#,
+                "\n",
+                r#"{"kind":"record","type":"operation_finished","id":"a","seq":2,"timestamp":800,"outcome":"completed"}"#,
+                "\n",
+                r#"{"kind":"record","type":"operation_finished","id":"b","seq":3,"timestamp":900,"outcome":"aborted"}"#,
+                "\n",
+                r#"{"kind":"record","type":"operation_finished","id":"c","seq":4,"timestamp":950,"outcome":"completed"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let ended_at = last_transcript_turn_end(&root, None, &id);
+        assert_eq!(ended_at, Some(950));
+    }
+
+    #[test]
+    fn backfill_returns_none_without_a_transcript() {
+        let root = std::env::temp_dir().join(format!(
+            "rpi-turn-backfill-empty-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(last_transcript_turn_end(&root, None, &id), None);
+    }
+
 
     #[tokio::test]
     async fn settlement_updates_last_turn_end_and_recent_order() {

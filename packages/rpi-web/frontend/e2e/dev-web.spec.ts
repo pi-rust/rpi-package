@@ -1810,6 +1810,60 @@ test.describe("touch composer", () => {
   }
 });
 
+test("a long-pressed touch Enter inserts newlines instead of submitting", async ({
+  page,
+}) => {
+  await mockHost(page);
+  const queued: Array<{ message: string }> = [];
+  await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: 'id: 5\nevent: agent_start\ndata: {"type":"agent_start"}\n\n',
+    }),
+  );
+  await page.route(`**/api/v1/sessions/${sessionId}/commands`, async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.type !== "queue_message") return route.fallback();
+    queued.push({ message: body.message });
+    return route.fulfill({
+      json: response({ accepted: true, entryId: "touch-queued" }, body.type),
+    });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  const input = page.getByRole("textbox", {
+    name: "Send a prompt, or type / for commands…",
+  });
+  const queueButton = page.getByRole("button", {
+    name: "Queue",
+    exact: true,
+  });
+  await input.fill("多行草稿");
+  await expect(queueButton).toBeVisible();
+  // A long-pressed Enter auto-repeats before the newline insert lands.
+  await input.dispatchEvent("keydown", { key: "Enter", keyCode: 13 });
+  await input.dispatchEvent("keydown", {
+    key: "Enter",
+    keyCode: 13,
+    repeat: true,
+  });
+  const allowed = await input.evaluate((element) =>
+    element.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertLineBreak",
+        bubbles: true,
+        cancelable: true,
+      }),
+    ),
+  );
+  // The held key releases the newline insert instead of swallowing it. (A
+  // synthetic beforeinput cannot perform the default insert; real browsers
+  // insert the newline into the draft.)
+  expect(allowed).toBe(true);
+  // Exactly one submission happened: the initial press, not the repeats.
+  await expect.poll(() => queued).toEqual([{ message: "多行草稿" }]);
+});
+
 test("send now steers a waiting message into the running task", async ({
   page,
 }) => {
