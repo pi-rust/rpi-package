@@ -942,12 +942,6 @@ export default function App() {
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const composerComposing = useRef(false);
   const composerShiftEnter = useRef(false);
-  // Set by the keydown submit and consumed by the trailing newline insert a
-  // soft keyboard appends to the same physical press. A system-injected
-  // newline with no preceding keydown (the soft-keyboard long-press) never
-  // sets it, so the insert falls through to the textarea's default:
-  // tap sends, long-press inserts a newline.
-  const composerEnterJustSubmitted = useRef(false);
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   function updateDraft(
@@ -3659,31 +3653,6 @@ export default function App() {
     }
   }
 
-  // Some soft keyboards emit beforeinput without an Enter keydown. The
-  // keydown submit marks itself; a trailing newline insert for the same tap
-  // is swallowed, while a keydown-less insert (the soft-keyboard long-press)
-  // falls through to the textarea's default newline.
-  useEffect(() => {
-    const input = composerInputRef.current;
-    if (!input) return;
-    const onBeforeInput = (event: InputEvent) => {
-      if (
-        !["insertLineBreak", "insertParagraph"].includes(event.inputType) ||
-        event.isComposing ||
-        composerComposing.current ||
-        composerShiftEnter.current ||
-        !event.cancelable
-      )
-        return;
-      if (composerEnterJustSubmitted.current) {
-        composerEnterJustSubmitted.current = false;
-        event.preventDefault();
-      }
-    };
-    input.addEventListener("beforeinput", onBeforeInput);
-    return () => input.removeEventListener("beforeinput", onBeforeInput);
-  });
-
   async function resumePending() {
     if (
       !sessionId ||
@@ -6315,30 +6284,24 @@ export default function App() {
                   onBlur={() => {
                     composerComposing.current = false;
                     composerShiftEnter.current = false;
-                    composerEnterJustSubmitted.current = false;
                   }}
                   onKeyUp={(event) => {
                     composerShiftEnter.current = event.shiftKey;
-                    // The press is over: any newline insert from here on is
-                    // a system-injected long-press, not the tap's trailing
-                    // insert.
-                    composerEnterJustSubmitted.current = false;
                   }}
                   onKeyDown={(event) => {
                     composerShiftEnter.current = event.shiftKey;
                     if (
                       event.key !== "Enter" ||
                       event.shiftKey ||
+                      // Touch keyboards have no Shift; Enter inserts a newline.
+                      isMobileViewport() ||
                       composerComposing.current ||
                       event.nativeEvent.isComposing ||
                       event.nativeEvent.keyCode === 229
                     ) {
                       return;
                     }
-                    // Tap: submit and swallow the trailing newline insert a
-                    // soft keyboard appends to the same physical press.
                     event.preventDefault();
-                    composerEnterJustSubmitted.current = true;
                     void submit();
                   }}
                   placeholder={t("sendPlaceholder")}
@@ -6409,7 +6372,7 @@ export default function App() {
                       !queueEditId &&
                       (draft.trim().length > 0 || attachments.length > 0) && (
                         // Touch keyboards keep Enter as a newline, so a run in
-                        // progress needs an explicit way to queue the message.
+                        // progress needs an explicit way to queue a follow-up.
                         <button
                           type="submit"
                           className="send-button composer-action-queue"
