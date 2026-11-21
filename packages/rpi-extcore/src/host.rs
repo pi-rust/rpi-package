@@ -269,6 +269,9 @@ pub struct HostSnapshot {
     /// Unix milliseconds of the most recent authoritative run settlement in
     /// this live host. `None` means no run has settled since it was opened.
     pub last_turn_ended_at: Option<u64>,
+    /// Unix milliseconds of the current run's start, while a run is active.
+    /// `None` between runs; not persisted, so a restored host starts clean.
+    pub turn_started_at: Option<u64>,
     pub pending_dialog: Option<Value>,
     pub pending_dialogs: Vec<Value>,
     pub title: Option<String>,
@@ -489,6 +492,7 @@ struct HostState {
     last_error: Option<String>,
     latest_settlement: Option<Value>,
     last_turn_ended_at: Option<u64>,
+    turn_started_at: Option<u64>,
     pending_dialogs: Vec<Value>,
     resource_unsettled: bool,
     title: Option<String>,
@@ -831,6 +835,7 @@ impl HostSession {
             last_error: None,
             latest_settlement: None,
             last_turn_ended_at: None,
+            turn_started_at: None,
             pending_dialogs: Vec::new(),
             resource_unsettled: false,
             title: None,
@@ -1225,6 +1230,7 @@ impl HostSession {
                     last_error: None,
                     latest_settlement: None,
                     last_turn_ended_at: None,
+                    turn_started_at: None,
                     pending_dialogs: vec![],
                     resource_unsettled: false,
                     title: None,
@@ -1593,6 +1599,7 @@ impl HostSession {
             last_error: state.last_error.clone(),
             latest_settlement: state.latest_settlement.clone(),
             last_turn_ended_at: state.last_turn_ended_at,
+            turn_started_at: state.turn_started_at,
             pending_dialog: state.pending_dialogs.first().cloned(),
             pending_dialogs: state.pending_dialogs.clone(),
             title: state.title.clone(),
@@ -1836,6 +1843,11 @@ async fn publish(
             "agent_start" | "operation_accepted" => {
                 state.status = "running".into();
                 state.resource_unsettled = true;
+                // The first start frame timestamps the turn; later frames of
+                // the same run must not move it.
+                if state.turn_started_at.is_none() {
+                    state.turn_started_at = Some(now_ms());
+                }
             }
             "ui_dialog_request" => {
                 state.status = "awaiting_input".into();
@@ -1860,6 +1872,7 @@ async fn publish(
             "agent_settled" => {
                 state.status = "ready".into();
                 state.resource_unsettled = false;
+                state.turn_started_at = None;
                 state.pending_dialogs.clear();
                 state.latest_settlement = Some(value.clone());
                 state.last_error = value
@@ -1909,6 +1922,32 @@ mod tests {
     include!("external_tools_host_tests.rs");
     include!("host_file_io_tests.rs");
     include!("host_retirement_tests.rs");
+
+    #[tokio::test]
+    async fn turn_start_is_captured_once_and_cleared_on_settlement() {
+        let (writer, _peer) = tokio::io::duplex(1024);
+        let (session, events) =
+            HostSession::test_connection_with_ready(writer, 16, json!({"type":"ready"}));
+        drop(_peer);
+        events.send_projected(json!({"type":"agent_start"})).await;
+        let started = session.snapshot().await.turn_started_at;
+        assert!(started.is_some(), "agent_start timestamps the turn");
+        events.send_projected(json!({"type":"agent_start"})).await;
+        assert_eq!(
+            session.snapshot().await.turn_started_at,
+            started,
+            "later frames of the same run must not move the start"
+        );
+        events
+            .send_projected(json!({"type":"agent_settled","outcome":"completed"}))
+            .await;
+        assert_eq!(
+            session.snapshot().await.turn_started_at,
+            None,
+            "settlement closes the turn"
+        );
+        session.shutdown().await;
+    }
 
     #[tokio::test]
     async fn child_binding_identity_uses_launch_metadata_not_a_ready_wire_field() {
@@ -2321,6 +2360,7 @@ mod tests {
             last_error: None,
             latest_settlement: None,
             last_turn_ended_at: None,
+            turn_started_at: None,
             pending_dialogs: Vec::new(),
             resource_unsettled: false,
             title: None,

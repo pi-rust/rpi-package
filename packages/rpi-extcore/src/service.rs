@@ -1389,6 +1389,9 @@ pub async fn list_sessions(state: &Service, query: SessionListQuery) -> Value {
                 .as_ref()
                 .and_then(|snapshot| snapshot.last_turn_ended_at)
                 .or(entry.last_turn_ended_at),
+            "runningTurnStartedAt": snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.turn_started_at),
             "lastSeq": snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.last_seq)
@@ -1405,20 +1408,33 @@ pub async fn list_sessions(state: &Service, query: SessionListQuery) -> Value {
     // Sort by the last settled turn. A session that never completed a run
     // (fresh, or aborted before any settle) still competes by its latest
     // activity, so a brand-new session sits on top instead of falling behind
-    // every tracked one.
+    // every tracked one. A live run outranks everything: running sessions sort
+    // first by their turn start, before any finished turn.
     summaries.sort_by(|a, b| {
+        let running_key = |entry: &Value| {
+            entry["runningTurnStartedAt"]
+                .as_u64()
+                .filter(|_| entry["status"].as_str() == Some("running"))
+        };
         let key = |entry: &Value| {
             entry["lastTurnEndedAt"]
                 .as_u64()
                 .unwrap_or_else(|| entry["updatedAt"].as_u64().unwrap_or_default())
         };
-        let (a_key, b_key) = (key(a), key(b));
-        b_key.cmp(&a_key).then_with(|| {
-            a["sessionId"]
-                .as_str()
-                .unwrap_or_default()
-                .cmp(b["sessionId"].as_str().unwrap_or_default())
-        })
+        let rank = |entry: &Value| u8::from(running_key(entry).is_none());
+        let (a_rank, b_rank) = (rank(a), rank(b));
+        a_rank
+            .cmp(&b_rank)
+            .then_with(|| match (running_key(a), running_key(b)) {
+                (Some(a_started), Some(b_started)) => b_started.cmp(&a_started),
+                _ => key(b).cmp(&key(a)),
+            })
+            .then_with(|| {
+                a["sessionId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(b["sessionId"].as_str().unwrap_or_default())
+            })
     });
     json!({"sessions": summaries})
 }
@@ -1829,6 +1845,60 @@ mod tests {
             .as_u64()
             .expect("settlement time is recorded");
         assert!(newer_ended >= older_ended);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_sessions_pins_running_sessions_above_finished_turns() {
+        let root = std::env::temp_dir().join(format!("rpi-running-pin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let service = Service::new(BackendConfig {
+            project: root.clone(),
+            registry: root.join("sessions.json"),
+            ..BackendConfig::default()
+        })
+        .unwrap();
+        let finished = uuid::Uuid::new_v4().to_string();
+        let fresh = uuid::Uuid::new_v4().to_string();
+        let running = uuid::Uuid::new_v4().to_string();
+        {
+            let mut registry = service.registry.write().await;
+            for (id, updated_at, ended) in [
+                (&finished, 500_u64, Some(500_u64)),
+                (&fresh, 400_u64, None),
+                (&running, 100_u64, None),
+            ] {
+                registry
+                    .upsert(RegistryEntry {
+                        session_id: id.clone(),
+                        project_id: Some(service.default_project_id.clone()),
+                        title: None,
+                        parent_session_id: None,
+                        fork_entry_id: None,
+                        relation: None,
+                        created_at: 0,
+                        updated_at,
+                        last_turn_ended_at: ended,
+                    })
+                    .unwrap();
+            }
+        }
+        let (writer, _peer) = tokio::io::duplex(2048);
+        let (host, events) = HostSession::test_connection(writer, 32);
+        service.watch_turn_ends(&running, &host);
+        service.test_register_host(&running, host).await;
+        // The run started after the finished session's turn ended.
+        events.send_projected(json!({"type":"agent_start"})).await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let list = list_sessions(&service, SessionListQuery::default()).await;
+        let first = list["sessions"][0]["sessionId"].as_str().unwrap();
+        let started = list["sessions"][0]["runningTurnStartedAt"]
+            .as_u64()
+            .expect("the live run publishes its turn start");
+        assert_eq!(first, running, "a live run outranks finished turns");
+        let finished_key = list["sessions"][1]["lastTurnEndedAt"].as_u64().unwrap_or(0);
+        assert!(started > finished_key);
         std::fs::remove_dir_all(root).unwrap();
     }
 

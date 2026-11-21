@@ -955,8 +955,6 @@ export default function App() {
   // handler uses the elapsed time to tell that long-press newline apart from
   // the tap that should submit; keyup settles keyboards that never emit
   // beforeinput at all.
-  const composerEnterDownAt = useRef(0);
-  const composerEnterSubmitted = useRef(false);
   const [queueEditId, setQueueEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   function updateDraft(
@@ -3668,40 +3666,6 @@ export default function App() {
     }
   }
 
-  // Some soft keyboards emit beforeinput without an Enter keydown. Listen to
-  // the native event: React's synthetic before-input normalization can omit
-  // inputType. Rebind after renders to use the current draft/session and to
-  // handle the textarea mounting after authentication.
-  useEffect(() => {
-    const input = composerInputRef.current;
-    if (!input) return;
-    const onBeforeInput = (event: InputEvent) => {
-      if (
-        !isTouchComposer() ||
-        !["insertLineBreak", "insertParagraph"].includes(event.inputType) ||
-        event.isComposing ||
-        composerComposing.current ||
-        composerShiftEnter.current ||
-        !event.cancelable
-      )
-        return;
-      console.log("[bi] coarse passed");
-      // A soft-keyboard long-press injects its newline long after the lone
-      // keydown (well past 250 ms); a tap's insert follows it immediately.
-      // Keyboards that never emit a keydown submit right away, as before.
-      const heldMs = composerEnterDownAt.current
-        ? performance.now() - composerEnterDownAt.current
-        : 0;
-      composerEnterDownAt.current = 0;
-      if (heldMs > 250) return;
-      event.preventDefault();
-      composerEnterSubmitted.current = true;
-      void submit();
-    };
-    input.addEventListener("beforeinput", onBeforeInput);
-    return () => input.removeEventListener("beforeinput", onBeforeInput);
-  });
-
   async function resumePending() {
     if (
       !sessionId ||
@@ -6333,7 +6297,6 @@ export default function App() {
                   onChange={(event) => {
                     updateDraft(event.target.value, sessionId);
                   }}
-                  enterKeyHint="send"
                   onCompositionStart={() => {
                     composerComposing.current = true;
                   }}
@@ -6343,24 +6306,9 @@ export default function App() {
                   onBlur={() => {
                     composerComposing.current = false;
                     composerShiftEnter.current = false;
-                    composerEnterDownAt.current = 0;
                   }}
                   onKeyUp={(event) => {
                     composerShiftEnter.current = event.shiftKey;
-                    if (event.key !== "Enter") return;
-                    // Touch keyboards without beforeinput never submit on
-                    // keydown, so a quick tap settles here instead. A long
-                    // press already released its newline and must not send.
-                    if (
-                      isTouchComposer() &&
-                      composerEnterDownAt.current &&
-                      !composerEnterSubmitted.current &&
-                      performance.now() - composerEnterDownAt.current <= 250
-                    ) {
-                      composerEnterDownAt.current = 0;
-                      void submit();
-                    }
-                    composerEnterDownAt.current = 0;
                   }}
                   onKeyDown={(event) => {
                     composerShiftEnter.current = event.shiftKey;
@@ -6373,19 +6321,12 @@ export default function App() {
                     ) {
                       return;
                     }
-                    if (!isTouchComposer()) {
-                      // Physical keyboards have no long-press newline: submit
-                      // immediately, as before.
-                      event.preventDefault();
-                      void submit();
-                      return;
-                    }
-                    // Soft keyboards: remember the press. The decision moves
-                    // to the newline insert (beforeinput) or, failing that,
-                    // to keyup above.
-                    composerEnterDownAt.current = performance.now();
-                    composerEnterSubmitted.current = false;
+                    // Touch keyboards keep Enter as a newline; sending goes
+                    // through the send/queue buttons. Physical keyboards
+                    // submit on Enter as before (#373-era behavior).
+                    if (isTouchComposer()) return;
                     event.preventDefault();
+                    void submit();
                   }}
                   placeholder={t("sendPlaceholder")}
                   disabled={!sessionId}
