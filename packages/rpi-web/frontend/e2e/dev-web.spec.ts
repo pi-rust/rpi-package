@@ -1808,11 +1808,9 @@ test.describe("touch composer", () => {
       await expect(queueButton).toHaveCount(0);
     });
   }
-});
-
-test("a long-pressed touch Enter inserts newlines instead of submitting", async ({
-  page,
-}) => {
+  test("a long-pressed touch Enter inserts newlines instead of submitting", async ({
+    page,
+  }) => {
   await mockHost(page);
   const queued: Array<{ message: string }> = [];
   await page.route(`**/api/v1/sessions/${sessionId}/events**`, (route) =>
@@ -1840,13 +1838,20 @@ test("a long-pressed touch Enter inserts newlines instead of submitting", async 
   });
   await input.fill("多行草稿");
   await expect(queueButton).toBeVisible();
-  // A long-pressed Enter auto-repeats before the newline insert lands.
-  await input.dispatchEvent("keydown", { key: "Enter", keyCode: 13 });
-  await input.dispatchEvent("keydown", {
-    key: "Enter",
-    keyCode: 13,
-    repeat: true,
-  });
+  // A soft-keyboard long-press injects its newline well after the lone
+  // keydown, with no auto-repeat keydown events in between.
+  await input.evaluate((element) =>
+    element.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        keyCode: 13,
+        bubbles: true,
+        cancelable: true,
+      }),
+    ),
+  );
+  await page.waitForTimeout(400);
+  await expect.poll(() => queued).toEqual([]);
   const allowed = await input.evaluate((element) =>
     element.dispatchEvent(
       new InputEvent("beforeinput", {
@@ -1856,15 +1861,19 @@ test("a long-pressed touch Enter inserts newlines instead of submitting", async 
       }),
     ),
   );
-  // The held key releases the newline insert instead of swallowing it. (A
+  // The delayed insert is released as a newline, not a submission. (A
   // synthetic beforeinput cannot perform the default insert; real browsers
   // insert the newline into the draft.)
   expect(allowed).toBe(true);
-  // Exactly one submission happened: the initial press, not the repeats.
+  await expect.poll(() => queued).toEqual([]);
+  // The press is consumed; a later quick tap still submits.
+  await input.press("Enter");
   await expect.poll(() => queued).toEqual([{ message: "多行草稿" }]);
+  });
+
 });
 
-test("send now steers a waiting message into the running task", async ({
+  test("send now steers a waiting message into the running task", async ({
   page,
 }) => {
   await mockHost(page);
