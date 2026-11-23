@@ -3154,16 +3154,31 @@ export default function App() {
     void refreshSessions();
     if (!sessionId) return;
     const controller = new AbortController();
-    void api
-      .runtimeState(sessionId, controller.signal)
-      .then((state) => {
-        if (
-          !controller.signal.aborted &&
-          activeSessionRef.current === sessionId
-        )
-          setRuntime(state);
-      })
-      .catch(() => {});
+    const readRuntime = (allowRetry: boolean) => {
+      api
+        .runtimeState(sessionId, controller.signal)
+        .then((state) => {
+          if (
+            !controller.signal.aborted &&
+            activeSessionRef.current === sessionId
+          )
+            setRuntime(state);
+        })
+        .catch(() => {
+          // A settlement read can race the native host committing a /compact.
+          // Retry once so the footer's CH/context badges reflect the compacted
+          // branch instead of keeping the pre-compact values (#307).
+          if (!allowRetry || controller.signal.aborted) return;
+          window.setTimeout(() => {
+            if (
+              !controller.signal.aborted &&
+              activeSessionRef.current === sessionId
+            )
+              readRuntime(false);
+          }, 1500);
+        });
+    };
+    readRuntime(true);
     return () => controller.abort();
   }, [refreshSessions, sessionId, settleTick]);
 
