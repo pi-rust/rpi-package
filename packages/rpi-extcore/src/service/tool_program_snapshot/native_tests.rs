@@ -141,6 +141,8 @@ async fn actual_native_readonly_child_snapshots() {
             session_dir: Some(case.join("sessions")),
             saved_session: Some(saved.clone()),
             fork_source: None,
+            fork_entry: None,
+            fork_position: "at".to_owned(),
             timings_dir: case.join("timings"),
             model: None,
             provider: None,

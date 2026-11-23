@@ -1242,6 +1242,22 @@ code {
 .message-actions .message-copy + .message-copy {
   margin-left: 0;
 }
+.message-action-icon {
+  width: 28px;
+  justify-content: center;
+  padding: 5px;
+}
+.message-action-icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+@media (hover: hover) {
+  .message-action-icon:disabled:hover {
+    border-color: transparent;
+    background: transparent;
+    color: var(--muted);
+  }
+}
 
 .settings-toggle {
   display: flex;

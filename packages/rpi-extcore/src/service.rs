@@ -971,6 +971,10 @@ async fn fork_session_owned(
     }
     fork_options.session_id = requested_id.clone();
     fork_options.fork_source = Some(source_id.to_owned());
+    if let Some(target) = entry_id.as_deref() {
+        fork_options.fork_entry = Some(target.to_owned());
+        fork_options.fork_position = "at".to_owned();
+    }
     let session = match HostSession::spawn_options(fork_options).await {
         Ok(session) => session,
         Err(error) => {
@@ -1018,49 +1022,6 @@ async fn fork_session_owned(
             json!({"error":"forked host destination identity unavailable"}),
         )
             .into_reply();
-    }
-    if let Some(target) = entry_id.as_deref() {
-        let navigation = session
-            .send(json!({
-                "type": "navigate",
-                "id": uuid::Uuid::new_v4().to_string(),
-                "targetId": target,
-            }))
-            .await;
-        match navigation {
-            Err(error) => {
-                session.shutdown().await;
-                return (ReplyKind::HostUnavailable, json!({"error":error})).into_reply();
-            }
-            Ok(response) => {
-                let failed = response.get("success") == Some(&Value::Bool(false))
-                    || response
-                        .get("data")
-                        .and_then(|data| data.get("outcome"))
-                        .and_then(Value::as_str)
-                        == Some("failed");
-                if failed {
-                    session.shutdown().await;
-                    return (
-                        ReplyKind::InvalidInput,
-                        json!({
-                            "error": response
-                                .get("error")
-                                .and_then(Value::as_str)
-                                .or_else(|| {
-                                    response
-                                        .get("data")
-                                        .and_then(|data| data.get("error"))
-                                        .and_then(Value::as_str)
-                                })
-                                .unwrap_or("fork target could not be reached"),
-                            "code": "invalid_fork_entry"
-                        }),
-                    )
-                        .into_reply();
-                }
-            }
-        }
     }
     let prepared = resources::prepare_fork_selection(
         state,

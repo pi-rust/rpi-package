@@ -301,6 +301,9 @@ pub struct SessionOptions {
     pub session_dir: Option<PathBuf>,
     pub saved_session: Option<PathBuf>,
     pub fork_source: Option<String>,
+    /// Inclusive (`at`) or exclusive (`before`) branch cut for `--fork-entry`.
+    pub fork_entry: Option<String>,
+    pub fork_position: String,
     pub timings_dir: PathBuf,
     pub model: Option<String>,
     pub provider: Option<String>,
@@ -744,6 +747,8 @@ impl HostSession {
             session_dir,
             saved_session: None,
             fork_source: fork_source.map(str::to_owned),
+            fork_entry: None,
+            fork_position: "at".to_owned(),
             timings_dir,
             model: None,
             provider: None,
@@ -772,6 +777,10 @@ impl HostSession {
             command.arg("--session").arg(path);
         } else if let Some(source) = &options.fork_source {
             command.arg("--fork").arg(source);
+            if let Some(entry) = &options.fork_entry {
+                command.arg("--fork-entry").arg(entry);
+                command.arg("--fork-position").arg(&options.fork_position);
+            }
         } else {
             command.arg("--session-id").arg(session_id);
         }
@@ -1963,6 +1972,8 @@ mod tests {
             session_dir: None,
             saved_session: None,
             fork_source: None,
+            fork_entry: None,
+            fork_position: "at".to_owned(),
             timings_dir: PathBuf::from("unused"),
             model: None,
             provider: None,
@@ -2011,6 +2022,8 @@ mod tests {
             session_dir: None,
             saved_session: None,
             fork_source: Some("source-session".into()),
+            fork_entry: None,
+            fork_position: "at".to_owned(),
             timings_dir: PathBuf::from("unused"),
             model: None,
             provider: None,

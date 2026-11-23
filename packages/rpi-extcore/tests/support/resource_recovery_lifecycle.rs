@@ -44,8 +44,8 @@ async fn caller_cancellation_alone_retains_fork_owner_source_fence_and_capacity(
     assert!(f.root.join(format!("stopped-{id}")).exists());
 }
 #[tokio::test]
-async fn failed_fork_navigation_cleans_candidates() {
-    for failure in ["fail-navigation"] {
+async fn failed_fork_launch_cleans_candidates() {
+    for failure in ["fail-readback"] {
         let f = Fixture::new(true);
         f.flag(failure);
         let reply = service::fork_session(

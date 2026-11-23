@@ -161,6 +161,40 @@ async fn fork_readback_failure_never_publishes_legacy_destination() {
     }
 }
 #[tokio::test]
+async fn fork_passes_the_message_entry_to_native() {
+    let f = Fixture::new(false);
+    let reply = service::fork_session(
+        &f.owner,
+        "source".into(),
+        ForkRequest {
+            entry_id: Some("message-42".into()),
+            title: Some("message-level fork".into()),
+        },
+    )
+    .await;
+    assert_eq!(reply.kind, ReplyKind::Created, "{}", reply.value);
+    let id = reply.value["sessionId"].as_str().unwrap();
+    wait_file(&f.root.join(format!("fork-entry-{id}"))).await;
+    assert_eq!(
+        std::fs::read_to_string(f.root.join(format!("fork-entry-{id}"))).unwrap(),
+        "message-42"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.root.join(format!("fork-position-{id}"))).unwrap(),
+        "at"
+    );
+    let disk = f.disk();
+    let record = disk
+        .entries()
+        .into_iter()
+        .find(|entry| entry.session_id == id)
+        .unwrap();
+    assert_eq!(record.fork_entry_id.as_deref(), Some("message-42"));
+    assert_eq!(record.relation.as_deref(), Some("fork"));
+    f.end().await;
+}
+
+#[tokio::test]
 async fn live_fork_and_clone_preserve_settings_and_refuse_busy_source() {
     let f = Fixture::new(false);
     f.open().await;

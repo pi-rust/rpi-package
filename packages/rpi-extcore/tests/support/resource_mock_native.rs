@@ -64,6 +64,14 @@ fn main() {
         r#"{{"type":"ready","protocol":"rpi","supportedCommands":["get_state","get_resource_state","get_messages","get_queue","get_session_branch","set_model","set_thinking_level","navigate","execute_command"],"resourceState":{resource}}}"#
     ));
     std::fs::write(format!("started-{id}"), std::process::id().to_string()).unwrap();
+    if let Some(entry) = arg("--fork-entry") {
+        std::fs::write(format!("fork-entry-{id}"), entry).unwrap();
+        std::fs::write(
+            format!("fork-position-{id}"),
+            arg("--fork-position").unwrap_or_else(|| "at".into()),
+        )
+        .unwrap();
+    }
     let watched_id = id.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(20));
