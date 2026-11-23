@@ -6849,6 +6849,66 @@ test("an operation accepted in another tab stays busy without an agent_start eve
   await expect(
     page.getByRole("button", { name: "Abort", exact: true }),
   ).toBeEnabled();
+  await expect(page.locator(".working-indicator")).toHaveCount(0);
+});
+
+test("a manual /compact shows the localized compacting indicator", async ({
+  page,
+}) => {
+  await mockHost(page, {
+    snapshotMessages: [
+      {
+        entryId: "compact-status-user",
+        role: "user",
+        content: [{ type: "text", text: "Keep the decisions" }],
+        timestamp: 1_700_000_000_000,
+      },
+    ],
+  });
+  await page.route("**/api/v1/capabilities", (route) =>
+    route.fulfill({
+      json: {
+        ...capabilities,
+        supportedCommands: [...capabilities.supportedCommands, "compact"],
+      },
+    }),
+  );
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let pending = false;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/commands`,
+    async (route) => {
+      if (route.request().postDataJSON().type !== "compact")
+        return route.fallback();
+      pending = true;
+      await held;
+      return route.fulfill({
+        json: {
+          type: "response",
+          command: "compact",
+          success: false,
+          error: "Cannot compact yet",
+        },
+      });
+    },
+  );
+  await page.goto("/");
+  await expect(page.locator(".working-indicator")).toHaveCount(0);
+  await chooseLanguage(page, "zh");
+  const input = page.locator(".composer textarea");
+  await input.fill("/compact keep recent context");
+  await input.press("Enter");
+  await expect.poll(() => pending).toBe(true);
+  const indicator = page.locator(".working-indicator");
+  await expect(indicator).toHaveText("压缩中…");
+  await release();
+  await expect(indicator).toHaveCount(0);
+  await expect(page.locator(".error-banner")).toContainText(
+    "Cannot compact yet",
+  );
 });
 
 test("a live settlement replaces the matching restored settlement", async ({
