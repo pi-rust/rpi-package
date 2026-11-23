@@ -857,6 +857,7 @@ code {
   letter-spacing: 0.1px;
 }
 .composer-area {
+  position: relative;
   padding: 12px 35px 17px;
   max-width: 900px;
   width: 100%;
@@ -3726,8 +3727,15 @@ details[open] > summary:before {
   color: var(--muted);
 }
 
-/* Slash commands: a browser-side palette above the composer. */
+/* Slash commands: an opaque palette that floats above the transcript and
+   stays anchored above the composer instead of competing with conversation
+   text in the same document flow. */
 .slash-menu {
+  position: absolute;
+  left: 35px;
+  right: 35px;
+  bottom: 100%;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   gap: 2px;
