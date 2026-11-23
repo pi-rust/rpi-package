@@ -578,6 +578,53 @@ function cacheHitRatio(stats: RuntimeState["stats"]): number | null {
   return total > 0 ? cached / total : null;
 }
 
+/**
+ * A compacted turn has no cache reads yet. Present that as an empty cache-hit
+ * badge instead of reusing the last assistant message's usage from history.
+ */
+function clearedFooterStats(stats: RuntimeState["stats"]): NonNullable<
+  RuntimeState["stats"]
+> {
+  const base: RuntimeState["stats"] = stats ?? {
+    messageCount: 0,
+    cachedTokens: 0,
+    uncachedTokens: 0,
+    totalTokens: 0,
+    costTotal: 0,
+  };
+  return {
+    ...base,
+    cachedTokens: 0,
+    uncachedTokens: 0,
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    cacheHitRatio: null,
+  };
+}
+
+function clearedFooterContext(
+  context: RuntimeState["context"],
+): NonNullable<RuntimeState["context"]> {
+  return {
+    tokens: 0,
+    window: context?.window ?? 0,
+    threshold: context?.threshold ?? 0,
+    percent: 0,
+    reserveTokens: context?.reserveTokens ?? 0,
+    keepRecentTokens: context?.keepRecentTokens ?? 0,
+    compactionEnabled: context?.compactionEnabled ?? false,
+    estimated: false,
+    trailingTokens: 0,
+  };
+}
+
 /** Native message usage keeps cache reads/writes separate from uncached input. */
 function latestMessageStats(messages: unknown[]): RuntimeState["stats"] {
   for (const message of [...messages].reverse()) {
@@ -909,6 +956,9 @@ export default function App() {
     hasMore: boolean;
   } | null>(null);
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
+  const [footerClearedSession, setFooterClearedSession] = useState<
+    string | null
+  >(null);
   const [messageStats, setMessageStats] = useState<{
     sessionId: string;
     stats: RuntimeState["stats"];
@@ -919,9 +969,18 @@ export default function App() {
     (outputTokenCount(runtime?.stats) ?? 0) <= 0 &&
     messageStats?.sessionId === sessionId &&
     !!messageStats?.stats;
-  const displayStats = usingMessageStats
+  const rawDisplayStats = usingMessageStats
     ? { ...runtime?.stats, ...messageStats!.stats! }
     : runtime?.stats;
+  // Keep the zeroed footer from a just-completed /compact even if a late
+  // get_state/read of retained assistant usage still carries pre-compact data.
+  const footerCleared = footerClearedSession === sessionId;
+  const displayStats = footerCleared
+    ? clearedFooterStats(rawDisplayStats)
+    : rawDisplayStats;
+  const displayContext = footerCleared
+    ? clearedFooterContext(runtime?.context)
+    : runtime?.context;
   const [authProviders, setAuthProviders] = useState<AuthProviderStatus[]>([]);
   const [authProvider, setAuthProvider] = useState("");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
@@ -977,6 +1036,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState("connecting");
   const [compacting, setCompacting] = useState(false);
+  const compactPending = useRef(false);
   /** Set when the native host reports `host_closed`; cleared on session switch. */
   const hostClosedRef = useRef(false);
   const [loadingSession, setLoadingSession] = useState(false);
@@ -1829,7 +1889,10 @@ export default function App() {
           );
           setRunActive(true);
           setStatus("running");
-          if (event.type === "agent_start") setCompacting(false);
+          if (event.type === "agent_start") {
+            setCompacting(false);
+            setFooterClearedSession(null);
+          }
           setInterrupted(false);
           setFailedRun(false);
           break;
@@ -1866,6 +1929,10 @@ export default function App() {
             ["failed", "error", "interrupted", "aborted", "stopped"].includes(
               outcome,
             ) || event.aborted === true;
+          if (compactPending.current) {
+            compactPending.current = false;
+            if (!failure) setFooterClearedSession(activeSessionRef.current);
+          }
           setFailedRun(failure);
           const errorReason = shortReason(event.error);
           const reason = errorReason ? ` · ${errorReason}` : "";
@@ -3355,6 +3422,7 @@ export default function App() {
         setStatus("running");
         setRunActive(true);
         setCompacting(true);
+        compactPending.current = true;
         await commandData(
           sessionId,
           "compact",
@@ -3463,7 +3531,11 @@ export default function App() {
         );
         setRunActive(priorActive);
       }
-      if (name === "/compact") setCompacting(false);
+      if (name === "/compact") {
+        setCompacting(false);
+        compactPending.current = false;
+        setFooterClearedSession(null);
+      }
       const text = errorText(cause);
       setError(text);
       note(`${name} failed: ${text}`);
@@ -4597,8 +4669,8 @@ export default function App() {
       <div className="stat-row">
         <span>{t("context")}</span>
         <strong>
-          {runtime?.context
-            ? `${runtime.context.percent}% / ${formatTokens(runtime.context.window)}`
+          {displayContext
+            ? `${displayContext.percent}% / ${formatTokens(displayContext.window)}`
             : "—"}
         </strong>
       </div>
@@ -6464,13 +6536,13 @@ export default function App() {
                   </span>
                   <span
                     className="composer-metric"
-                    title={`${t("context")}: ${runtime?.context ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)} (${runtime.context.percent}%)` : "—"}`}
-                    aria-label={`${t("context")}: ${runtime?.context ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)}` : "—"}`}
+                    title={`${t("context")}: ${displayContext ? `${formatTokens(displayContext.tokens)} / ${formatTokens(displayContext.window)} (${displayContext.percent}%)` : "—"}`}
+                    aria-label={`${t("context")}: ${displayContext ? `${formatTokens(displayContext.tokens)} / ${formatTokens(displayContext.window)}` : "—"}`}
                   >
                     <Gauge size={12} aria-hidden="true" />
                     <strong>
-                      {runtime?.context
-                        ? `${formatTokens(runtime.context.tokens)} / ${formatTokens(runtime.context.window)}`
+                      {displayContext
+                        ? `${formatTokens(displayContext.tokens)} / ${formatTokens(displayContext.window)}`
                         : "—"}
                     </strong>
                   </span>
