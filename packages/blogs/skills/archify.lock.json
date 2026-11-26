@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "repository": "tt-a1i/archify",
+  "path": "archify",
+  "ref": "1c2b42d660e4a7571813fb43839c79e3e9ca7720",
+  "tag": "v3.1.0",
+  "tree_sha": "7e1de2b2cf3a9a91823ee5dcc2089c1d96a7e4f1",
+  "release": "v3.1.0",
+  "artifact": {
+    "url": "https://github.com/tt-a1i/archify/releases/download/v3.1.0/archify.zip",
+    "sha256": "ffedc53390c9da6e859f41e432c5d2d0615a23cf00a503181f07efbba88a7ce8"
+  },
+  "license": "MIT",
+  "files": {
+    "SKILL.md": "55c126d68c1fbef114ccdef8dd0e7f046419dc9203ac7f6dab1728f6bab3ca71",
+    "package.json": "2cc00572b398dfcbdb078433733e3099c629a8225f8d47c76e7291e903812d05",
+    "skill-release.json": "654ba03f9d19229b2646dc74283b205fc4403b6205b7c56f62bd4747a3ffdfe4",
+    "bin/archify.mjs": "5737a0e720579722b167456b3eb4dd301699b8685ef8f3669975e3fd18c15408",
+    "references/repository-authoring.md": "c1648fc0c1b85a3a9bfbf3a8919dfa741ff0b5a55ea310d1fcacbf6ee837e139"
+  },
+  "installation": "skills/archify"
+}

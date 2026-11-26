@@ -1,0 +1,3 @@
+interface:
+  display_name: "博客图表"
+  short_description: "为博客生成中文折线图、柱状图与图片对比，保留源数据和可复现文件"

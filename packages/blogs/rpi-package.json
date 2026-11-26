@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "blogs",
+  "version": "0.1.0",
+  "agent": {
+    "instructions": [
+      "instructions/SYSTEM.md"
+    ],
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "docs",
+      "websearch",
+      "webfetch",
+      "mcp_list",
+      "mcp_call",
+      "mcp_resource",
+      "mcp_request"
+    ]
+  },
+  "commands": {
+    "review": {
+      "description": "按原有博客流程审阅文章",
+      "kind": "prompt",
+      "template": "commands/review.md",
+      "args": {
+        "path": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

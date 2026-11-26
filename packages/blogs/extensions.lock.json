@@ -1,0 +1,116 @@
+{
+  "targets": [
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc"
+  ],
+  "extensions": [
+    {
+      "name": "rpi-mcp-adapter",
+      "version": "0.2.11",
+      "repository": "pi-rust/rpi-extension",
+      "targets": {
+        "aarch64-apple-darwin": {
+          "url": "https://github.com/pi-rust/rpi-extension/releases/download/rpi-mcp-adapter-v0.2.11/rpi-mcp-adapter-0.2.11-aarch64-apple-darwin.tar.gz",
+          "sha256": "982af966d5fd2652298c4760b4013ccd30a6c8ffd234a9ae050b7d8fd86189cb",
+          "size": 2115218,
+          "format": "tar.gz",
+          "library": {
+            "path": "librpi_mcp_adapter.dylib",
+            "sha256": "91016547959b876723ba81d3c4948c1856a8e4e03c1eb3286b82b409d3d116b8"
+          }
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/pi-rust/rpi-extension/releases/download/rpi-mcp-adapter-v0.2.11/rpi-mcp-adapter-0.2.11-x86_64-pc-windows-msvc.zip",
+          "sha256": "b91871567bb3559a62f22a7ca95d11513971f795c5578d4af34e3faecfc15c09",
+          "size": 2558621,
+          "format": "zip",
+          "library": {
+            "path": "rpi_mcp_adapter.dll",
+            "sha256": "248ad3dd75f4356a7347f279a2d08e5c80b6fcd75cfde2ee86a57051968cdf53"
+          }
+        }
+      }
+    },
+    {
+      "name": "rpi-voice",
+      "version": "0.3.16",
+      "repository": "pi-rust/rpi-extension",
+      "targets": {
+        "aarch64-apple-darwin": {
+          "url": "https://github.com/pi-rust/rpi-extension/releases/download/rpi-voice-v0.3.16/rpi-voice-0.3.16-aarch64-apple-darwin.tar.gz",
+          "sha256": "15ea7985b26cd1729e844f6d5c45930d924675b295c0934c71e2c2df61b8ef85",
+          "size": 9623008,
+          "format": "tar.gz",
+          "library": {
+            "path": "librpi_voice.dylib",
+            "sha256": "880ee0eed233a908552c3bd9dabed729487c7045fa457e912e34e4acea6e6f44"
+          }
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/pi-rust/rpi-extension/releases/download/rpi-voice-v0.3.16/rpi-voice-0.3.16-x86_64-pc-windows-msvc.zip",
+          "sha256": "f719e3d5bca5bf1b12e38d689505dca1bdf52e596c76216e17699501dec0f30c",
+          "size": 10178396,
+          "format": "zip",
+          "library": {
+            "path": "rpi_voice.dll",
+            "sha256": "553e9c4a6ab2894d13c62275e56bd4f11fc93491428bd6d4f889cdd301caf98c"
+          }
+        }
+      }
+    },
+    {
+      "name": "rpi-webfetch",
+      "version": "0.1.10",
+      "repository": "pi-rust/rpi-extension",
+      "targets": {
+        "aarch64-apple-darwin": {
+          "url": "https://github.com/pi-rust/rpi-extension/releases/download/rpi-webfetch-v0.1.10/rpi-webfetch-0.1.10-aarch64-apple-darwin.tar.gz",
+          "sha256": "f70bb235069e692d4f43927e3f1804b67eab63b1afe53f76a7d073067998e92f",
+          "size": 1894767,
+          "format": "tar.gz",
+          "library": {
+            "path": "librpi_webfetch.dylib",
+            "sha256": "91af1815385305528fb1679d7ed779455feabd95f4a94be484a00040b707edfb"
+          }
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/pi-rust/rpi-extension/releases/download/rpi-webfetch-v0.1.10/rpi-webfetch-0.1.10-x86_64-pc-windows-msvc.zip",
+          "sha256": "cd0dc3df661ca698463fa7387ef129553c03130777629a9a6c5e2fad77245f52",
+          "size": 2279443,
+          "format": "zip",
+          "library": {
+            "path": "rpi_webfetch.dll",
+            "sha256": "7962ad45d14f18c6b0e8387d6281eb8dabdd5a709a709d6e2c06bb1b66f875d2"
+          }
+        }
+      }
+    },
+    {
+      "name": "rpi-websearch",
+      "version": "0.1.10",
+      "repository": "pi-rust/rpi-extension",
+      "targets": {
+        "aarch64-apple-darwin": {
+          "url": "https://github.com/pi-rust/rpi-extension/releases/download/rpi-websearch-v0.1.10/rpi-websearch-0.1.10-aarch64-apple-darwin.tar.gz",
+          "sha256": "a7b6da43c776754705c5c751281de20d79edf436ee079731760078fd20167124",
+          "size": 1898043,
+          "format": "tar.gz",
+          "library": {
+            "path": "librpi_websearch.dylib",
+            "sha256": "eba0e5356fb2c5132d8e259f8742a809f016d7c7c5e5a53365f06433c3ac299f"
+          }
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/pi-rust/rpi-extension/releases/download/rpi-websearch-v0.1.10/rpi-websearch-0.1.10-x86_64-pc-windows-msvc.zip",
+          "sha256": "e5fa8f79eaf7381df04bd1ce168743b8b78bf0c93977aa7c7829865283bcd798",
+          "size": 2291003,
+          "format": "zip",
+          "library": {
+            "path": "rpi_websearch.dll",
+            "sha256": "fa05fcea99ba60a2a045c62ee253c279989f788716b121470e48db8b59bac545"
+          }
+        }
+      }
+    }
+  ]
+}
