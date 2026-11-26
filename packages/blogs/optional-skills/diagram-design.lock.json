@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "repository": "cathrynlavery/diagram-design",
+  "path": "skills/diagram-design",
+  "ref": "550fd66edff058bc73056c3416b76d69cfe865ba",
+  "release": "2.6",
+  "license": "MIT",
+  "files": {
+    "SKILL.md": "b5155b43191ab360c5d1183e86bb9c10878bb11f9b0e097126c5a9be7a322b89",
+    "scripts/self_check.py": "46c70791d8d9a4a938330dab0d69235bc11b91b1b1d6850d4349b54b3838aa22",
+    "references/style-guide.md": "67d8c12508a06d1d7b813ab9073b1663f404fb80c581e1da046f573d9a54345c"
+  },
+  "installation": "optional-skills/diagram-design"
+}

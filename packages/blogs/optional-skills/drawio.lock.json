@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "repository": "Agents365-ai/drawio-skill",
+  "path": "skills/drawio-skill",
+  "ref": "57270820d3cd71cbdf4fb6b2f7091d4fb37bb019",
+  "release": "3.4.3",
+  "license": "MIT",
+  "files": {
+    "SKILL.md": "89f3d10a1ef08c8a439a85d0c900ec0894ddf4416c86e4f3b3068f7c2b2081ac",
+    "scripts/diagramctl.py": "5cfc83398b09ef8b36d5d3174ab715dd42e165892302e61204a32090aacba420",
+    "scripts/pyimports.py": "548ca8964b1c7e529d0bac54e1320ab1df48934991e72ade9472f7bd72d40c1e",
+    "scripts/rustimports.py": "def1b77b36636717494685ed6ac5b5d727618e01a5596c691be5ebb6544df654"
+  },
+  "installation": "optional-skills/drawio"
+}

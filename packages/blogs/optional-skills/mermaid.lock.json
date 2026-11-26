@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "repository": "sohampatwardhan/mermaid-skill",
+  "path": "mermaid",
+  "ref": "62e0b3422e1b72ae39c1b1b6a1eaab8dcd164158",
+  "license": "MIT",
+  "files": {
+    "SKILL.md": "68a508523704d4d013fb3526a6425589cbaacba5942382d03563c96c733cbe21",
+    "scripts/check.sh": "d6bbd79890ecbb8580ea6e7dafa2b44f4090bba5f7252667ba45f7e0724b5ef0",
+    "scripts/render.py": "0bf45f47ad41539fefc46b5fe380d79b2f44353a50f5bad6d456010cc3b3a234",
+    "reference/ir.md": "569fd28f9e16cc936de4337e278051b72376d2e31539bba45eb14bb03dfa3b96"
+  },
+  "installation": "optional-skills/mermaid"
+}
